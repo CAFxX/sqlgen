@@ -1,0 +1,267 @@
+# Comprehensive sqlgen configuration showcasing all DSL features and YAML forms.
+version: "1"
+package: example
+out: example_gen.go
+runtime_import: github.com/CAFxX/sqlgen/runtime
+dialect: postgres # Supported aliases: postgres, postgresql, pgx, cockroach, cockroachdb, dollar, $ | sqlite, sqlite3, mysql, mariadb, question, ?
+extra_imports:
+  - time
+
+statements:
+  # ---------------------------------------------------------------------------
+  # 1. Fixed-Arity Exec & Single-Row Queries (Shared result_type)
+  # ---------------------------------------------------------------------------
+  - name: DeleteUserByID
+    kind: exec
+    sql: |
+      DELETE FROM users
+      WHERE id = ID:int64 AND org_id = :OrgID:int64
+
+  - name: GetUserByID
+    kind: one
+    result_type: User
+    sql: |
+      SELECT
+        id:int64,
+        org_id:int64,
+        email:string,
+        role:string,
+        score:int64,
+        avatar_data:[]byte,
+        created_at:time.Time
+      FROM users
+      WHERE id = ID:int64
+
+  - name: GetUserByEmail
+    kind: one
+    result_type: User
+    sql: |
+      SELECT
+        id:int64,
+        org_id:int64,
+        email:string,
+        role:string,
+        score:int64,
+        avatar_data:[]byte,
+        created_at:time.Time
+      FROM users
+      WHERE LOWER(email) = LOWER(Email:string)
+
+  # Single-column scalar result_type
+  - name: CountUsersInOrg
+    kind: one
+    result_type: int64
+    sql: |
+      SELECT COUNT(*) AS count:int64
+      FROM users
+      WHERE org_id = OrgID:int64
+
+  # ---------------------------------------------------------------------------
+  # 2. 1D Slice Parameters (All 3 Inline Slice Notations) & Multi-Row Consumption
+  #    Generates: ListUsersByFilter, ListUsersByFilterInto, ListUsersByFilterSeq,
+  #               ListUsersByFilterEach, and ListUsersByFilterQuery
+  # ---------------------------------------------------------------------------
+  - name: ListUsersByFilter
+    kind: many
+    result_type: User
+    sql: |
+      SELECT
+        id:int64,
+        org_id:int64,
+        email:string,
+        role:string,
+        score:int64,
+        avatar_data:[]byte,
+        created_at:time.Time
+      FROM users
+      WHERE org_id IN (OrgIDs:[]int64)
+        AND role IN (Roles...:string)
+        AND status IN (Statuses:string...)
+      ORDER BY id ASC
+
+  # ---------------------------------------------------------------------------
+  # 3. YAML Fallback Declarations (All 3 YAML Forms for params and columns)
+  #    Plus auto-detected stdlib imports (time, encoding/json, net/netip, net/url)
+  # ---------------------------------------------------------------------------
+  - name: FindAuditEvents
+    kind: many
+    sql: |
+      SELECT id, actor_id, metadata, client_ip, webhook_url, created_at
+      FROM audit_events
+      WHERE actor_id = :ActorID
+        AND org_id IN (:org_ids...)
+        AND event_type IN (:event_types)
+      ORDER BY id DESC
+    params:
+      # Form 1: Explicit mapping
+      - { name: ActorID, type: int64, slice: false }
+      # Form 2: Single-key shorthand map (with ... slice indicator)
+      - org_ids...: int64
+      # Form 3: Compact scalar string (with ... slice indicator)
+      - "event_types:string..."
+    columns:
+      # Form 1: Explicit mapping
+      - { name: id, type: int64 }
+      # Form 2: Single-key shorthand map
+      - actor_id: int64
+      # Form 3: Compact scalar strings
+      - "metadata:json.RawMessage"
+      - "client_ip:netip.Addr"
+      - "webhook_url:*url.URL"
+      - "created_at:time.Time"
+
+  # ---------------------------------------------------------------------------
+  # 4. Dynamic Column Subsetting (SelectCols Bitmask) & Arithmetic Projections
+  #    Setting params_struct: true with >1 unconditional columns enables
+  #    SlotSelectCols and generates <StmtName>Col<Field> bitmask constants.
+  # ---------------------------------------------------------------------------
+  - name: ListUserSummaries
+    kind: many
+    params_struct: true
+    sql: |
+      SELECT
+        u.id:int64,
+        u.email:string,
+        u.role:string,
+        COALESCE(u.display_name, u.email) AS display_label:string
+        {?IncludeBio: , COALESCE(u.bio, '') AS bio:string }
+      FROM users u
+      WHERE u.org_id = OrgID:int64
+      ORDER BY u.id ASC
+
+  - name: CalculateUserWeightedScores
+    kind: many
+    sql: |
+      SELECT
+        u.id:int64,
+        u.score * Multiplier:int64 + Bonus:int64 AS weighted_score:int64
+      FROM users u
+      WHERE u.org_id = OrgID:int64
+      ORDER BY u.id ASC
+
+  # ---------------------------------------------------------------------------
+  # 5. Coupled Conditional Blocks ({?Flag: ...}) Across SELECT, JOIN, and WHERE
+  #    Multiple blocks with the same Flag name share one bool field and bit.
+  #    Inactive blocks skip inner slice and subquery validation and SQL rendering.
+  # ---------------------------------------------------------------------------
+  - name: SearchUsersAdvanced
+    kind: many
+    sql: |
+      SELECT
+        u.id:int64,
+        u.email:string,
+        u.role:string
+        {?WithOrg: , COALESCE(o.display_name, o.slug) AS org_name:string, o.tier:string }
+      FROM users u
+      {?WithOrg: LEFT JOIN organizations o ON o.id = u.org_id }
+      WHERE u.deleted_at IS NULL
+        {?WithOrg: AND o.tier IN (OrgTiers:[]string) AND u.org_id IN (AllowedOrgs:sqlgen.Query) }
+        {?FilterRoles: AND u.role IN (Roles:[]string) }
+        {?MinScoreFilter: AND u.score >= MinScore:int64 }
+      ORDER BY u.id ASC
+
+  # ---------------------------------------------------------------------------
+  # 6. Keyset Pagination (Seek:sqlgen.Seek) & Custom Multi-Column Ordering
+  #    (Order:sqlgen.Order(...)) with COALESCE for nullable sort columns.
+  #    Generates OrderPaginateUsersRow(...) and SeekPaginateUsersRow(row).
+  # ---------------------------------------------------------------------------
+  - name: PaginateUsers
+    kind: many
+    params_struct: true
+    sql: |
+      SELECT
+        u.id:int64,
+        u.role:string,
+        u.score:int64,
+        COALESCE(u.nickname, '') AS nickname:string,
+        u.email:string
+      FROM users u
+      WHERE u.org_id = OrgID:int64
+        AND Seek:sqlgen.Seek
+        {?OnlyRole: AND u.role = RoleFilter:string }
+      ORDER BY Order:sqlgen.Order(u.role, u.score, nickname, u.id)
+      LIMIT Limit:int64
+
+  # ---------------------------------------------------------------------------
+  # 7. Runtime Query Composition (kind: subquery + CTE & IN Subqueries)
+  # ---------------------------------------------------------------------------
+  - name: ActiveOrgIDsSubquery
+    kind: subquery
+    sql: |
+      SELECT o.id
+      FROM organizations o
+      WHERE o.active = Active:bool
+        {?FilterRegion: AND o.region IN (Regions:[]string) }
+
+  - name: HighScoreUsersFromCTE
+    kind: many
+    sql: |
+      WITH eligible_orgs AS (
+        OrgCTE:sqlgen.Query
+      ),
+      ranked_users AS (
+        SELECT u.id, u.email, u.score
+        FROM users u
+        WHERE u.org_id IN (SELECT id FROM eligible_orgs)
+      )
+      SELECT
+        r.id:int64,
+        r.email:string,
+        r.score:int64
+      FROM ranked_users r
+      WHERE r.id IN (UserSub:sqlgen.Query)
+      ORDER BY r.score DESC, r.id ASC
+
+  # ---------------------------------------------------------------------------
+  # 8. Adaptive Multi-Row Batch Execution (Tuple Slice Parameters)
+  #    Generates <Name>, <Name>Batch, <Name>BatchInto, <Name>BatchSeq, <Name>BatchEach
+  #    Supports nested SQL functions, NULL defaults, and PostgreSQL :: casts.
+  # ---------------------------------------------------------------------------
+  - name: UpsertUsersBatch
+    kind: many
+    sql: |
+      INSERT INTO users (org_id, email, role, score, bio, created_at)
+      VALUES Rows:[]NewUserTuple(
+        OrgID:int64,
+        LOWER(Email:string),
+        COALESCE(Role:*string, 'member'),
+        Score:int64::bigint,
+        COALESCE(Bio:*string, ''),
+        NOW()
+      )
+      ON CONFLICT (email) DO UPDATE
+      SET role = EXCLUDED.role,
+          score = EXCLUDED.score,
+          bio = EXCLUDED.bio
+      RETURNING id:int64, email:string, role:string, score:int64
+
+  - name: BulkUpdateUserScores
+    kind: exec
+    sql: |
+      UPDATE users AS u
+      SET score = u.score + v.delta
+      FROM (
+        VALUES Adjustments:[]ScoreAdjustmentTuple(UserID:int64::bigint, Delta:int64::bigint)
+      ) AS v(user_id, delta)
+      WHERE u.id = v.user_id
+
+  # ---------------------------------------------------------------------------
+  # 9. Protected Lexical Contexts (Quotes, Dollar-Quotes, Comments, Slices, Casts)
+  # ---------------------------------------------------------------------------
+  - name: QueryWithProtectedConstructs
+    kind: many
+    sql: |
+      -- Line comment containing ignored FakeParam:int64 and {?IgnoredFlag: ...}
+      /* Block comment containing ignored
+         BlockParam:string and {?BlockFlag: ...} */
+      SELECT
+        u.id:int64,
+        'literal with :colon and ''escaped'' {?NotABlock: 1}' AS note:string,
+        "quoted_col:not_a_type" AS quoted_ident:string,
+        $$dollar-quoted :not_a_param {?NotABlock: 2}$$ AS raw_doc:string,
+        $json_tag${"key:with:colons": true}$json_tag$ AS raw_json:string,
+        u.tags[1:3] AS tag_slice:[]string,
+        u.score::bigint AS score_i64:int64
+      FROM users u
+      WHERE u.id = ID:int64
+        AND (u.session_var := 'a:b') IS NOT NULL
