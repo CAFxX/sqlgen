@@ -1,0 +1,49 @@
+version: "1"
+package: ecommerce_inventory
+out: inventory_gen.go
+dialect: sqlite
+
+statements:
+  - name: GetInventoryBySKUs
+    kind: many
+    result_type: InventoryItem
+    sql: |
+      SELECT
+        warehouse_id:int64,
+        sku:string,
+        quantity:int64,
+        updated_at:int64
+      FROM inventory
+      WHERE (warehouse_id, sku) IN (:keys:[]SKUKey(WarehouseID:int64 ASC, SKU:string ASC))
+      ORDER BY warehouse_id ASC, sku ASC
+
+  - name: InsertOrderItems
+    kind: exec
+    sql: |
+      INSERT INTO order_items (order_id, sku, quantity, unit_price_cents)
+      VALUES :items:[]NewOrderItem(OrderID:int64, SKU:string, Quantity:int64, UnitPriceCents:int64)
+
+  - name: StreamFulfilledOrders
+    kind: many
+    result_type: FulfilledOrder
+    sql: |
+      SELECT
+        id:int64,
+        customer_id:int64,
+        total_cents:int64,
+        fulfilled_at:int64
+      FROM orders
+      WHERE status = 'fulfilled' AND fulfilled_at <= :cutoff_ts:int64
+      ORDER BY id ASC
+
+  - name: InsertArchivedOrders
+    kind: exec
+    sql: |
+      INSERT INTO archived_orders (id, customer_id, total_cents, fulfilled_at, archived_at)
+      VALUES :rows:[]ArchivedOrderRow(ID:int64, CustomerID:int64, TotalCents:int64, FulfilledAt:int64, ArchivedAt:int64)
+
+  - name: DeleteFulfilledOrdersByIDs
+    kind: exec
+    sql: |
+      DELETE FROM orders
+      WHERE id IN (:ids:[]int64 ASC)

@@ -1,0 +1,76 @@
+version: "1"
+package: saas_multitenant
+out: portal_gen.go
+dialect: sqlite
+
+statements:
+  - name: SearchMembers
+    kind: many
+    result_type: MemberRow
+    params_struct: true
+    sql: |
+      SELECT
+        m.id:int64,
+        m.org_id:int64,
+        m.email:string,
+        m.role:string,
+        m.status:string,
+        m.score:int64,
+        m.created_at:int64
+        {?WithOrgDetails: , o.name AS org_name:string, o.plan AS org_plan:string}
+      FROM members m
+      {?WithOrgDetails: JOIN orgs o ON o.id = m.org_id}
+      WHERE m.org_id = :org_id:int64
+        {?FilterRole: AND m.role = :role:string}
+        {?FilterStatuses: AND m.status IN (:statuses:[]string)}
+        {?FilterMinScore: AND m.score >= :min_score:int64}
+      ORDER BY m.id ASC
+
+  - name: ListMembersPaginated
+    kind: many
+    result_type: MemberItem
+    params_struct: true
+    sql: |
+      SELECT
+        m.id:int64,
+        m.org_id:int64,
+        m.email:string,
+        m.role:string,
+        m.score:int64,
+        m.created_at:int64
+      FROM members m
+      WHERE m.org_id = :org_id:int64
+        AND :After:sqlgen.Seek
+      ORDER BY :Sort:sqlgen.Order(m.role, m.score, m.created_at, m.id)
+      LIMIT :limit:int64
+
+  - name: ActiveOrgs
+    kind: subquery
+    sql: |
+      SELECT id
+      FROM orgs
+      WHERE status = 'active'
+        AND plan IN (:plans:[]string)
+
+  - name: CohortMemberIDs
+    kind: subquery
+    sql: |
+      SELECT id, org_id, role
+      FROM members
+      WHERE org_id IN (:active_orgs:sqlgen.Query)
+        AND score >= :min_score:int64
+
+  - name: AggregateCohortInvoices
+    kind: many
+    result_type: CohortInvoiceSummary
+    sql: |
+      WITH target_members AS (:member_query:sqlgen.Query)
+      SELECT
+        tm.org_id:int64,
+        tm.role:string,
+        COUNT(i.id) AS invoice_count:int64,
+        COALESCE(SUM(i.amount_cents), 0) AS total_cents:int64
+      FROM target_members tm
+      LEFT JOIN invoices i ON i.member_id = tm.id AND i.status = :invoice_status:string
+      GROUP BY tm.org_id, tm.role
+      ORDER BY tm.org_id ASC, tm.role ASC

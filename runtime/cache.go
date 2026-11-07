@@ -12,10 +12,6 @@ import (
 
 const (
 	numCacheShards        = 16
-	defaultMaxSQLVariants = 4096
-	defaultMaxPartialBytes = 16 * 1024 * 1024 // 16 MB total (1 MB per shard)
-	defaultMaxPrepared    = 256               // 256 total (16 per shard)
-	defaultPromoteThresh  = 2
 	maxSinglePartialBytes = 256 * 1024 // 256 KB
 )
 
@@ -68,7 +64,11 @@ func (m *ManagedStmt) Acquire() bool {
 }
 
 // Release decrements the reference count and closes the underlying *sql.Stmt when it hits 0.
+// Release is a no-op if m is nil.
 func (m *ManagedStmt) Release() error {
+	if m == nil {
+		return nil
+	}
 	next := m.refs.Add(-1)
 	if next == 0 && m.stmt != nil {
 		return m.stmt.Close()
@@ -76,14 +76,14 @@ func (m *ManagedStmt) Release() error {
 	return nil
 }
 
-// Stmt returns the underlying *sql.Stmt.
-func (m *ManagedStmt) Stmt() *sql.Stmt {
-	return m.stmt
-}
-
-// Refs returns the current reference count (for testing/diagnostics).
-func (m *ManagedStmt) Refs() int32 {
-	return m.refs.Load()
+// CloseRows closes rows (if non-nil) and releases ms (if non-nil).
+func CloseRows(rows *sql.Rows, ms *ManagedStmt) {
+	if rows != nil {
+		_ = rows.Close()
+	}
+	if ms != nil {
+		_ = ms.Release()
+	}
 }
 
 type txState struct {
@@ -126,9 +126,7 @@ func NewTxStmtCache(tx *sql.Tx) *TxStmtCache {
 		byBase: make(map[*ManagedStmt]*sql.Stmt, 8),
 		state:  state,
 	}
-	stdruntime.AddCleanup(tc, func(st *txState) {
-		st.releaseAll()
-	}, state)
+	stdruntime.AddCleanup(tc, (*txState).releaseAll, state)
 	return tc
 }
 
@@ -176,33 +174,38 @@ func (tc *TxStmtCache) Close() error {
 	return nil
 }
 
-// tinyLFUSketch is a 4-bit Count-Min Sketch with 4,096 counters (256 uint64 words = 2 KB).
+// tinyLFUSketch is a 4-bit Count-Min Sketch with 4,096 counters (256 uint64 words = 2 KB inline).
 type tinyLFUSketch struct {
 	table        [256]uint64
-	sampleCount  uint32
+	additions    uint32
 	sampleWindow uint32
 }
 
-func (s *tinyLFUSketch) init(window uint32) {
-	if window < 512 {
-		window = 512
+func (s *tinyLFUSketch) init(sampleWindow uint32) {
+	if sampleWindow < 512 {
+		sampleWindow = 4096
 	}
-	s.sampleWindow = window
+	s.sampleWindow = sampleWindow
 }
 
-func sketchCoords(h uint64, row int) (wordIdx uint8, shift uint) {
-	// Derive 4 independent 12-bit indices (0..4095) from the 64-bit hash.
-	sub := uint16((h >> uint(row*16)) & 0xFFF)
-	wordIdx = uint8(sub >> 4)
-	shift = uint(sub&0xF) * 4
-	return wordIdx, shift
-}
-
-func (s *tinyLFUSketch) estimate(h uint64) uint8 {
-	minVal := uint8(15)
-	for r := 0; r < 4; r++ {
-		wIdx, shift := sketchCoords(h, r)
-		val := uint8((s.table[wIdx] >> shift) & 0xF)
+func (s *tinyLFUSketch) increment(h uint64) uint8 {
+	s.additions++
+	if s.additions >= s.sampleWindow {
+		for i := range s.table {
+			s.table[i] = (s.table[i] >> 1) & 0x7777777777777777
+		}
+		s.additions = 0
+	}
+	var minVal uint8 = 15
+	for i := uint(0); i < 4; i++ {
+		idx := ((h >> (i * 12)) ^ (h * (uint64(i)*0x517cc1b727220a95 + 1))) & 4095
+		wordIdx := idx >> 4
+		shift := (idx & 15) << 2
+		val := uint8((s.table[wordIdx] >> shift) & 0xF)
+		if val < 15 {
+			val++
+			s.table[wordIdx] = (s.table[wordIdx] & ^(uint64(0xF) << shift)) | (uint64(val) << shift)
+		}
 		if val < minVal {
 			minVal = val
 		}
@@ -210,38 +213,18 @@ func (s *tinyLFUSketch) estimate(h uint64) uint8 {
 	return minVal
 }
 
-func (s *tinyLFUSketch) increment(h uint64) uint8 {
-	s.sampleCount++
-	if s.sampleCount >= s.sampleWindow {
-		for i := range s.table {
-			s.table[i] = (s.table[i] >> 1) & 0x7777777777777777
-		}
-		s.sampleCount = 0
-	}
-
-	var vals [4]uint8
-	var wIdxs [4]uint8
-	var shifts [4]uint
-	minVal := uint8(15)
-	for r := 0; r < 4; r++ {
-		wIdx, shift := sketchCoords(h, r)
-		wIdxs[r] = wIdx
-		shifts[r] = shift
-		v := uint8((s.table[wIdx] >> shift) & 0xF)
-		vals[r] = v
-		if v < minVal {
-			minVal = v
+func (s *tinyLFUSketch) estimate(h uint64) uint8 {
+	var minVal uint8 = 15
+	for i := uint(0); i < 4; i++ {
+		idx := ((h >> (i * 12)) ^ (h * (uint64(i)*0x517cc1b727220a95 + 1))) & 4095
+		wordIdx := idx >> 4
+		shift := (idx & 15) << 2
+		val := uint8((s.table[wordIdx] >> shift) & 0xF)
+		if val < minVal {
+			minVal = val
 		}
 	}
-	if minVal < 15 {
-		for r := 0; r < 4; r++ {
-			if vals[r] == minVal {
-				s.table[wIdxs[r]] += uint64(1) << shifts[r]
-			}
-		}
-		return minVal + 1
-	}
-	return 15
+	return minVal
 }
 
 type cacheEntry struct {
@@ -454,20 +437,22 @@ func (s *cacheShard) demoteToPartialLocked(victim *cacheEntry, c *StmtCache) *Ma
 			pv := s.partialVictim()
 			s.evictPartialEntryLocked(pv)
 		}
-		if s.maxPartialProt > 0 {
-			s.partialProt.pushFront(victim, tierPartialProt)
-			if s.partialProt.len > s.maxPartialProt {
-				stepDown := s.partialProt.tail
-				s.partialProt.remove(stepDown)
-				s.partialProb.pushFront(stepDown, tierPartialProb)
+		if s.partialProb.len+s.partialProt.len < s.maxPartial && s.partialBytes+sqlLen <= s.maxPartialBytes {
+			if s.maxPartialProt > 0 {
+				s.partialProt.pushFront(victim, tierPartialProt)
+				if s.partialProt.len > s.maxPartialProt {
+					stepDown := s.partialProt.tail
+					s.partialProt.remove(stepDown)
+					s.partialProb.pushFront(stepDown, tierPartialProb)
+				}
+			} else {
+				s.partialProb.pushFront(victim, tierPartialProb)
 			}
-		} else {
-			s.partialProb.pushFront(victim, tierPartialProb)
+			s.partialBytes += sqlLen
+			return demotedMS
 		}
-		s.partialBytes += sqlLen
-	} else {
-		s.removeMapLocked(victim)
 	}
+	s.removeMapLocked(victim)
 	return demotedMS
 }
 
@@ -494,6 +479,7 @@ type CacheConfig struct {
 	MaxPartialBytes  int
 	MaxPreparedStmts int
 	PromoteThreshold uint8
+	MaxBatchParams   int
 }
 
 // CacheOption configures a StmtCache.
@@ -533,6 +519,15 @@ func WithPromoteThreshold(threshold uint8) CacheOption {
 	}
 }
 
+// WithMaxBatchParams sets the maximum number of bind parameters per batch chunk statement.
+func WithMaxBatchParams(n int) CacheOption {
+	return func(cfg *CacheConfig) {
+		if n > 0 {
+			cfg.MaxBatchParams = n
+		}
+	}
+}
+
 // CacheStats reports cumulative and current telemetry across all StmtCache shards.
 type CacheStats struct {
 	PreparedHits   uint64
@@ -560,12 +555,13 @@ type batchShapeTracker struct {
 
 // StmtCache is a 16-way sharded, two-tier adaptive statement cache (W-TinyLFU + SLRU).
 type StmtCache struct {
-	shards          [numCacheShards]cacheShard
-	fastHits        atomic.Uint64
-	totalPrepared   atomic.Int64
-	globalMaxPrep   int
-	promoteThresh   uint8
-	closed          atomic.Bool
+	shards         [numCacheShards]cacheShard
+	fastHits       atomic.Uint64
+	totalPrepared  atomic.Int64
+	globalMaxPrep  int
+	promoteThresh  uint8
+	maxBatchParams int
+	closed         atomic.Bool
 
 	batchMu       sync.RWMutex
 	batchTrackers map[batchShapeKey]*batchShapeTracker
@@ -574,10 +570,11 @@ type StmtCache struct {
 // NewStmtCache creates a new 16-shard two-tier adaptive statement cache.
 func NewStmtCache(opts ...CacheOption) *StmtCache {
 	cfg := CacheConfig{
-		MaxSQLVariants:   defaultMaxSQLVariants,
-		MaxPartialBytes:  defaultMaxPartialBytes,
-		MaxPreparedStmts: defaultMaxPrepared,
-		PromoteThreshold: defaultPromoteThresh,
+		MaxSQLVariants:   DefaultMaxSQLVariants,
+		MaxPartialBytes:  DefaultMaxPartialBytes,
+		MaxPreparedStmts: DefaultMaxPreparedStmts,
+		PromoteThreshold: DefaultPromoteThreshold,
+		MaxBatchParams:   DefaultMaxBatchParams,
 	}
 	for _, opt := range opts {
 		if opt != nil {
@@ -586,9 +583,10 @@ func NewStmtCache(opts ...CacheOption) *StmtCache {
 	}
 
 	c := &StmtCache{
-		globalMaxPrep: cfg.MaxPreparedStmts,
-		promoteThresh: cfg.PromoteThreshold,
-		batchTrackers: make(map[batchShapeKey]*batchShapeTracker),
+		globalMaxPrep:  cfg.MaxPreparedStmts,
+		promoteThresh:  cfg.PromoteThreshold,
+		maxBatchParams: cfg.MaxBatchParams,
+		batchTrackers:  make(map[batchShapeKey]*batchShapeTracker),
 	}
 
 	perShardPartial := 0
@@ -633,6 +631,42 @@ func NewStmtCache(opts ...CacheOption) *StmtCache {
 	}
 
 	return c
+}
+
+// MaxBatchParams returns the configured maximum bind parameters per batch chunk.
+func (c *StmtCache) MaxBatchParams() int {
+	if c == nil || c.maxBatchParams <= 0 {
+		return DefaultMaxBatchParams
+	}
+	return c.maxBatchParams
+}
+
+// MaxRowsPerBatch computes the maximum rows per statement given dialect wire limits,
+// WithMaxBatchParams, scalar parameter count S, and tuple arity F.
+func (c *StmtCache) MaxRowsPerBatch(dialect Dialect, scalarCount, tupleFields int) int {
+	wireLimit := 65535
+	if dialect == DialectQuestion {
+		wireLimit = 32766
+	}
+	budget := c.MaxBatchParams()
+	if budget > wireLimit {
+		budget = wireLimit
+	}
+	avail := budget - scalarCount
+	if avail < 1 {
+		return 1
+	}
+	if tupleFields < 1 {
+		tupleFields = 1
+	}
+	maxRows := avail / tupleFields
+	if maxRows < 1 {
+		return 1
+	}
+	if maxRows > MaxPowerOfTwoChunk {
+		maxRows = MaxPowerOfTwoChunk
+	}
+	return maxRows
 }
 
 // ComputeBatchShapeTag computes a compact shape tag for batch size tracking.
@@ -684,11 +718,11 @@ func (c *StmtCache) removePreparedBatchSize(stmtID uint32, shapeTag uint64, batc
 	}
 }
 
-var fallbackPowerOf2 = [...]int{256, 128, 64, 32, 16, 8, 4, 2, 1}
+var fallbackPowerOf2 = [...]int{32768, 16384, 8192, 4096, 2048, 1024, 512, 256, 128, 64, 32, 16, 8, 4, 2, 1}
 
-// PlanBatchChunk selects the next batch chunk size for a tuple-slice statement.
+// PlanBatchChunk selects the next batch chunk size for a collection-slice statement.
 // It combines exact-size heavy-hitter promotion, greedy reuse of Tier-2 prepared
-// batch sizes, and power-of-2 fallback chunking (256..1).
+// batch sizes, and power-of-2 fallback chunking (32768..1).
 func (c *StmtCache) PlanBatchChunk(stmtID uint32, colMask, flagMask uint64, remainingRows, maxRowsPerStmt int, isFirstChunk bool) int {
 	if remainingRows <= 0 {
 		return 0
@@ -696,6 +730,9 @@ func (c *StmtCache) PlanBatchChunk(stmtID uint32, colMask, flagMask uint64, rema
 	capRows := remainingRows
 	if maxRowsPerStmt > 0 && capRows > maxRowsPerStmt {
 		capRows = maxRowsPerStmt
+	}
+	if capRows > MaxPowerOfTwoChunk {
+		capRows = MaxPowerOfTwoChunk
 	}
 	if c == nil {
 		for _, p2 := range fallbackPowerOf2 {
@@ -740,7 +777,7 @@ func (c *StmtCache) PlanBatchChunk(stmtID uint32, colMask, flagMask uint64, rema
 		}
 	}
 
-	// 3. Find the largest prepared Tier-2 batch size <= capRows.
+	// 3. Greedily reuse the largest prepared Tier-2 batch size <= capRows if available.
 	bestPrepared := 0
 	for i := len(tr.preparedSizes) - 1; i >= 0; i-- {
 		if tr.preparedSizes[i] <= capRows {
@@ -750,19 +787,21 @@ func (c *StmtCache) PlanBatchChunk(stmtID uint32, colMask, flagMask uint64, rema
 	}
 	c.batchMu.Unlock()
 
-	// 4. Find the largest power-of-2 fallback chunk <= capRows.
-	bestPow2 := 1
-	for _, p2 := range fallbackPowerOf2 {
-		if p2 <= capRows {
-			bestPow2 = p2
-			break
-		}
-	}
-
-	if bestPrepared >= bestPow2 {
+	if bestPrepared > 0 {
 		return bestPrepared
 	}
-	return bestPow2
+
+	// 4. Cold fallback: largest power-of-2 chunk <= capRows (and <= 256 when cold unless capRows < 1).
+	coldCap := capRows
+	if coldCap > 256 {
+		coldCap = 256
+	}
+	for _, p2 := range fallbackPowerOf2 {
+		if p2 <= coldCap {
+			return p2
+		}
+	}
+	return 1
 }
 
 // evictGlobalPreparedVictim demotes one prepared statement from another shard when globalMaxPrep < numCacheShards.
@@ -784,7 +823,161 @@ func (c *StmtCache) evictGlobalPreparedVictim(skipShardIdx int) *ManagedStmt {
 	return nil
 }
 
-func (c *StmtCache) resolve(
+// LookupSQL checks whether an exact VariantKey already has a rendered SQL string cached in Tier 1 or Tier 2.
+func (c *StmtCache) LookupSQL(key VariantKey) (string, bool) {
+	if c == nil || !key.IsExact() || c.closed.Load() {
+		return "", false
+	}
+	h := key.hash()
+	sh := &c.shards[h&(numCacheShards-1)]
+	sh.mu.Lock()
+	e := sh.byKey[key]
+	if e != nil && e.sqlStr != "" {
+		s := e.sqlStr
+		sh.mu.Unlock()
+		return s, true
+	}
+	sh.mu.Unlock()
+	return "", false
+}
+
+// admitToTier1Locked inserts a new or recycled entry into Tier 1 (partialProb) under sh.mu.
+// Returns the inserted *cacheEntry, or nil if rejected by W-TinyLFU admission.
+func (s *cacheShard) admitToTier1Locked(
+	exact bool,
+	key VariantKey,
+	sqlStr string,
+	h uint64,
+	freq uint8,
+	stmtID uint32,
+	shapeTag uint64,
+	batchSize int,
+	fastSlot *atomic.Pointer[ManagedStmt],
+	forceAdmit bool,
+) *cacheEntry {
+	sqlLen := len(sqlStr)
+	if s.maxPartial <= 0 || sqlLen > maxSinglePartialBytes || sqlLen > s.maxPartialBytes {
+		return nil
+	}
+
+	atCap := s.partialProb.len+s.partialProt.len >= s.maxPartial || s.partialBytes+sqlLen > s.maxPartialBytes
+	if atCap {
+		victim := s.partialVictim()
+		if !forceAdmit {
+			victimFreq := s.sketch.estimate(victim.hash)
+			if freq < victimFreq {
+				s.rejectedAdmits++
+				return nil
+			}
+		}
+		recycled := s.evictPartialEntryLocked(victim)
+		for (s.partialProb.len+s.partialProt.len >= s.maxPartial || s.partialBytes+sqlLen > s.maxPartialBytes) && s.partialVictim() != nil {
+			s.evictPartialEntryLocked(s.partialVictim())
+		}
+		s.initEntry(recycled, exact, key, sqlStr, h, stmtID, shapeTag, batchSize, fastSlot)
+		s.insertMapLocked(recycled)
+		s.partialProb.pushFront(recycled, tierPartialProb)
+		s.partialBytes += sqlLen
+		return recycled
+	}
+
+	e := &cacheEntry{}
+	s.initEntry(e, exact, key, sqlStr, h, stmtID, shapeTag, batchSize, fastSlot)
+	s.insertMapLocked(e)
+	s.partialProb.pushFront(e, tierPartialProb)
+	s.partialBytes += sqlLen
+	return e
+}
+
+// tryPromoteLocked attempts to promote entry (currently in sh.byKey/sh.bySQL) to Tier 2.
+// Caller must hold sh.mu, which tryPromoteLocked unlocks before Returning.
+func (c *StmtCache) tryPromoteLocked(
+	ctx context.Context,
+	db *sql.DB,
+	sh *cacheShard,
+	shardIdx int,
+	entry *cacheEntry,
+	freq uint8,
+	stmtID uint32,
+	shapeTag uint64,
+	batchSize int,
+	fastSlot *atomic.Pointer[ManagedStmt],
+) (*ManagedStmt, string, error) {
+	if sh.preparedProb.len+sh.preparedProt.len >= sh.maxPrepared {
+		if victim := sh.preparedVictim(); victim != nil && freq <= sh.sketch.estimate(victim.hash) {
+			s := entry.sqlStr
+			sh.partialHits++
+			sh.mu.Unlock()
+			return nil, s, nil
+		}
+	}
+
+	entry.preparing = true
+	s := entry.sqlStr
+	sh.mu.Unlock()
+
+	prepared, err := db.PrepareContext(ctx, s)
+
+	sh.mu.Lock()
+	entry.preparing = false
+	if err != nil {
+		if entry.tier == tierNone {
+			sh.removeMapLocked(entry)
+		}
+		sh.mu.Unlock()
+		return nil, "", err
+	}
+	if c.closed.Load() {
+		sh.mu.Unlock()
+		_ = prepared.Close()
+		return nil, "", errors.New("sqlgen: statement cache is closed")
+	}
+	if !entry.inMap {
+		newMS := newManagedStmt(prepared, 1)
+		sh.mu.Unlock()
+		return newMS, "", nil
+	}
+
+	sh.removeFromPartialListLocked(entry)
+
+	var demoted []*ManagedStmt
+	for sh.preparedProb.len+sh.preparedProt.len >= sh.maxPrepared {
+		victim := sh.preparedVictim()
+		if victim == nil {
+			break
+		}
+		if dms := sh.demoteToPartialLocked(victim, c); dms != nil {
+			demoted = append(demoted, dms)
+		}
+	}
+
+	newMS := newManagedStmt(prepared, 2)
+	entry.ms.Store(newMS)
+	if fastSlot != nil {
+		entry.fastSlot = fastSlot
+		fastSlot.Store(newMS)
+	}
+	sh.preparedProb.pushFront(entry, tierPreparedProb)
+	sh.promotions++
+	totalPrep := c.totalPrepared.Add(1)
+	if batchSize > 0 {
+		c.recordPreparedBatchSize(stmtID, shapeTag, batchSize)
+	}
+	sh.mu.Unlock()
+
+	if c.globalMaxPrep < numCacheShards && int(totalPrep) > c.globalMaxPrep {
+		if gdms := c.evictGlobalPreparedVictim(shardIdx); gdms != nil {
+			demoted = append(demoted, gdms)
+		}
+	}
+	for _, dms := range demoted {
+		_ = dms.Release()
+	}
+	return newMS, "", nil
+}
+
+// Resolve resolves a statement variation in the two-tier cache without closure allocations.
+func (c *StmtCache) Resolve(
 	ctx context.Context,
 	db *sql.DB,
 	txCache *TxStmtCache,
@@ -794,10 +987,12 @@ func (c *StmtCache) resolve(
 	shapeTag uint64,
 	batchSize int,
 	fastSlot *atomic.Pointer[ManagedStmt],
-	buildSQL func() string,
+	dialect Dialect,
+	desc *QueryDescriptor,
+	in *RenderInput,
 ) (*ManagedStmt, string, error) {
 	if c == nil {
-		return nil, buildSQL(), nil
+		return nil, BuildComposedSQL(desc, in, dialect), nil
 	}
 	if c.closed.Load() {
 		return nil, "", errors.New("sqlgen: statement cache is closed")
@@ -814,9 +1009,9 @@ func (c *StmtCache) resolve(
 	var sqlStr string
 	var h uint64
 	if exact {
-		h = key.Hash()
+		h = key.hash()
 	} else {
-		sqlStr = buildSQL()
+		sqlStr = BuildComposedSQL(desc, in, dialect)
 		h = HashString(sqlStr)
 	}
 
@@ -855,88 +1050,14 @@ func (c *StmtCache) resolve(
 	if entry != nil {
 		freq := sh.sketch.increment(entry.hash)
 		sh.touchPartialLocked(entry)
-		canPrepareOnDB := usePrepared && sh.maxPrepared > 0 && c.globalMaxPrep > 0 && (txCache == nil || db.Stats().MaxOpenConnections != 1)
+		canPrepareOnDB := usePrepared && db != nil && sh.maxPrepared > 0 && c.globalMaxPrep > 0 && (txCache == nil || db.Stats().MaxOpenConnections != 1)
 		effThresh := sh.promoteThreshold
 		if batchSize > 0 && effThresh > 1 && c.isPromotedBatchSize(stmtID, shapeTag, batchSize) {
 			effThresh = 1
 		}
-
 		if canPrepareOnDB && !entry.preparing && freq >= effThresh {
-			eligible := true
-			if sh.preparedProb.len+sh.preparedProt.len >= sh.maxPrepared {
-				if victim := sh.preparedVictim(); victim != nil {
-					if freq <= sh.sketch.estimate(victim.hash) {
-						eligible = false
-					}
-				}
-			}
-			if eligible {
-				entry.preparing = true
-				s := entry.sqlStr
-				sh.mu.Unlock()
-
-				prepared, err := db.PrepareContext(ctx, s)
-
-				sh.mu.Lock()
-				entry.preparing = false
-				if err != nil {
-					sh.mu.Unlock()
-					return nil, "", err
-				}
-				if c.closed.Load() {
-					sh.mu.Unlock()
-					_ = prepared.Close()
-					return nil, "", errors.New("sqlgen: statement cache is closed")
-				}
-				if existingMS := entry.ms.Load(); existingMS != nil && existingMS.Acquire() {
-					sh.mu.Unlock()
-					_ = prepared.Close()
-					return existingMS, "", nil
-				}
-				if !entry.inMap {
-					newMS := newManagedStmt(prepared, 1)
-					sh.mu.Unlock()
-					return newMS, "", nil
-				}
-
-				var demoted []*ManagedStmt
-				for sh.preparedProb.len+sh.preparedProt.len >= sh.maxPrepared {
-					victim := sh.preparedVictim()
-					if victim == nil {
-						break
-					}
-					if dms := sh.demoteToPartialLocked(victim, c); dms != nil {
-						demoted = append(demoted, dms)
-					}
-				}
-
-				sh.removeFromPartialListLocked(entry)
-				newMS := newManagedStmt(prepared, 2)
-				entry.ms.Store(newMS)
-				if fastSlot != nil {
-					entry.fastSlot = fastSlot
-					fastSlot.Store(newMS)
-				}
-				sh.preparedProb.pushFront(entry, tierPreparedProb)
-				sh.promotions++
-				totalPrep := c.totalPrepared.Add(1)
-				if batchSize > 0 {
-					c.recordPreparedBatchSize(stmtID, shapeTag, batchSize)
-				}
-				sh.mu.Unlock()
-
-				if c.globalMaxPrep < numCacheShards && int(totalPrep) > c.globalMaxPrep {
-					if gdms := c.evictGlobalPreparedVictim(shardIdx); gdms != nil {
-						demoted = append(demoted, gdms)
-					}
-				}
-				for _, dms := range demoted {
-					_ = dms.Release()
-				}
-				return newMS, "", nil
-			}
+			return c.tryPromoteLocked(ctx, db, sh, shardIdx, entry, freq, stmtID, shapeTag, batchSize, fastSlot)
 		}
-
 		s := entry.sqlStr
 		sh.partialHits++
 		sh.mu.Unlock()
@@ -946,123 +1067,28 @@ func (c *StmtCache) resolve(
 	// 3. Cache Miss (Unseen Variation)
 	freq := sh.sketch.increment(h)
 	sh.misses++
+	canPrepareOnDB := usePrepared && db != nil && sh.maxPrepared > 0 && c.globalMaxPrep > 0 && (txCache == nil || db.Stats().MaxOpenConnections != 1)
 	effThresh := sh.promoteThreshold
-	sh.mu.Unlock()
-
-	if exact {
-		sqlStr = buildSQL()
-	}
-
 	if batchSize > 0 && effThresh > 1 && c.isPromotedBatchSize(stmtID, shapeTag, batchSize) {
 		effThresh = 1
 	}
 
-	canPrepareOnDB := usePrepared && sh.maxPrepared > 0 && c.globalMaxPrep > 0 && (txCache == nil || db.Stats().MaxOpenConnections != 1)
+	if exact {
+		sqlStr = BuildComposedSQL(desc, in, dialect)
+	}
+
 	if effThresh == 1 && canPrepareOnDB {
-		prepared, err := db.PrepareContext(ctx, sqlStr)
-		if err != nil {
-			return nil, "", err
+		e := sh.admitToTier1Locked(exact, key, sqlStr, h, freq, stmtID, shapeTag, batchSize, fastSlot, true)
+		if e == nil {
+			e = &cacheEntry{}
+			sh.initEntry(e, exact, key, sqlStr, h, stmtID, shapeTag, batchSize, fastSlot)
+			sh.insertMapLocked(e)
 		}
-
-		sh.mu.Lock()
-		if c.closed.Load() {
-			sh.mu.Unlock()
-			_ = prepared.Close()
-			return nil, "", errors.New("sqlgen: statement cache is closed")
-		}
-		if existing := sh.lookupLocked(exact, key, sqlStr); existing != nil {
-			if ems := existing.ms.Load(); ems != nil && ems.Acquire() {
-				sh.mu.Unlock()
-				_ = prepared.Close()
-				return ems, "", nil
-			}
-			sh.removeFromPartialListLocked(existing)
-			sh.removeMapLocked(existing)
-		}
-
-		var demoted []*ManagedStmt
-		for sh.preparedProb.len+sh.preparedProt.len >= sh.maxPrepared {
-			victim := sh.preparedVictim()
-			if victim == nil {
-				break
-			}
-			if dms := sh.demoteToPartialLocked(victim, c); dms != nil {
-				demoted = append(demoted, dms)
-			}
-		}
-
-		e := &cacheEntry{}
-		sh.initEntry(e, exact, key, sqlStr, h, stmtID, shapeTag, batchSize, fastSlot)
-		newMS := newManagedStmt(prepared, 2)
-		e.ms.Store(newMS)
-		if fastSlot != nil {
-			fastSlot.Store(newMS)
-		}
-		sh.insertMapLocked(e)
-		sh.preparedProb.pushFront(e, tierPreparedProb)
-		sh.promotions++
-		totalPrep := c.totalPrepared.Add(1)
-		if batchSize > 0 {
-			c.recordPreparedBatchSize(stmtID, shapeTag, batchSize)
-		}
-		sh.mu.Unlock()
-
-		if c.globalMaxPrep < numCacheShards && int(totalPrep) > c.globalMaxPrep {
-			if gdms := c.evictGlobalPreparedVictim(shardIdx); gdms != nil {
-				demoted = append(demoted, gdms)
-			}
-		}
-		for _, dms := range demoted {
-			_ = dms.Release()
-		}
-		return newMS, "", nil
+		return c.tryPromoteLocked(ctx, db, sh, shardIdx, e, freq, stmtID, shapeTag, batchSize, fastSlot)
 	}
 
-	// Tier-1 W-TinyLFU Admission
-	sqlLen := len(sqlStr)
-	if sh.maxPartial <= 0 || sqlLen > maxSinglePartialBytes || sqlLen > sh.maxPartialBytes {
-		return nil, sqlStr, nil
-	}
-
-	sh.mu.Lock()
-	if c.closed.Load() {
-		sh.mu.Unlock()
-		return nil, sqlStr, nil
-	}
-	if existing := sh.lookupLocked(exact, key, sqlStr); existing != nil {
-		sh.mu.Unlock()
-		return nil, sqlStr, nil
-	}
-
-	atCap := sh.partialProb.len+sh.partialProt.len >= sh.maxPartial || sh.partialBytes+sqlLen > sh.maxPartialBytes
-	if atCap {
-		victim := sh.partialVictim()
-		if victim != nil {
-			victimFreq := sh.sketch.estimate(victim.hash)
-			if freq < victimFreq {
-				sh.rejectedAdmits++
-				sh.mu.Unlock()
-				return nil, sqlStr, nil
-			}
-			// Recycle victim's *cacheEntry struct in-place!
-			recycled := sh.evictPartialEntryLocked(victim)
-			for (sh.partialProb.len+sh.partialProt.len >= sh.maxPartial || sh.partialBytes+sqlLen > sh.maxPartialBytes) && sh.partialVictim() != nil {
-				sh.evictPartialEntryLocked(sh.partialVictim())
-			}
-			sh.initEntry(recycled, exact, key, sqlStr, h, stmtID, shapeTag, batchSize, fastSlot)
-			sh.insertMapLocked(recycled)
-			sh.partialProb.pushFront(recycled, tierPartialProb)
-			sh.partialBytes += sqlLen
-			sh.mu.Unlock()
-			return nil, sqlStr, nil
-		}
-	}
-
-	e := &cacheEntry{}
-	sh.initEntry(e, exact, key, sqlStr, h, stmtID, shapeTag, batchSize, fastSlot)
-	sh.insertMapLocked(e)
-	sh.partialProb.pushFront(e, tierPartialProb)
-	sh.partialBytes += sqlLen
+	// Standard Tier-1 W-TinyLFU Admission
+	sh.admitToTier1Locked(exact, key, sqlStr, h, freq, stmtID, shapeTag, batchSize, fastSlot, false)
 	sh.mu.Unlock()
 	return nil, sqlStr, nil
 }
@@ -1080,10 +1106,12 @@ func (c *StmtCache) Query(
 	shapeTag uint64,
 	batchSize int,
 	fastSlot *atomic.Pointer[ManagedStmt],
-	buildSQL func() string,
+	dialect Dialect,
+	desc *QueryDescriptor,
+	in *RenderInput,
 	args ...any,
 ) (*sql.Rows, *ManagedStmt, error) {
-	ms, sqlStr, err := c.resolve(ctx, db, txCache, usePrepared, key, stmtID, shapeTag, batchSize, fastSlot, buildSQL)
+	ms, sqlStr, err := c.Resolve(ctx, db, txCache, usePrepared, key, stmtID, shapeTag, batchSize, fastSlot, dialect, desc, in)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -1129,10 +1157,12 @@ func (c *StmtCache) QueryRow(
 	shapeTag uint64,
 	batchSize int,
 	fastSlot *atomic.Pointer[ManagedStmt],
-	buildSQL func() string,
+	dialect Dialect,
+	desc *QueryDescriptor,
+	in *RenderInput,
 	args ...any,
 ) (*sql.Row, *ManagedStmt, error) {
-	ms, sqlStr, err := c.resolve(ctx, db, txCache, usePrepared, key, stmtID, shapeTag, batchSize, fastSlot, buildSQL)
+	ms, sqlStr, err := c.Resolve(ctx, db, txCache, usePrepared, key, stmtID, shapeTag, batchSize, fastSlot, dialect, desc, in)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -1165,10 +1195,12 @@ func (c *StmtCache) Exec(
 	shapeTag uint64,
 	batchSize int,
 	fastSlot *atomic.Pointer[ManagedStmt],
-	buildSQL func() string,
+	dialect Dialect,
+	desc *QueryDescriptor,
+	in *RenderInput,
 	args ...any,
 ) (sql.Result, error) {
-	ms, sqlStr, err := c.resolve(ctx, db, txCache, usePrepared, key, stmtID, shapeTag, batchSize, fastSlot, buildSQL)
+	ms, sqlStr, err := c.Resolve(ctx, db, txCache, usePrepared, key, stmtID, shapeTag, batchSize, fastSlot, dialect, desc, in)
 	if err != nil {
 		return nil, err
 	}
@@ -1198,7 +1230,7 @@ func (c *StmtCache) LookupState(key VariantKey, sqlStr string) EntryState {
 	exact := key.IsExact()
 	var h uint64
 	if exact {
-		h = key.Hash()
+		h = key.hash()
 	} else {
 		h = HashString(sqlStr)
 	}

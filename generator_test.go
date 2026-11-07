@@ -1,23 +1,30 @@
 package sqlgen_test
 
 import (
+	"bytes"
 	"context"
 	"database/sql"
+	"database/sql/driver"
 	"errors"
 	"fmt"
-	"iter"
+	"go/ast"
+	"go/parser"
+	"go/token"
+	"math/rand/v2"
+	"os"
 	"path/filepath"
 	"slices"
+	"strconv"
 	"strings"
-	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/CAFxX/sqlgen"
 	"github.com/CAFxX/sqlgen/runtime"
 	_ "modernc.org/sqlite"
 )
 
-// e2eYAML is the canonical YAML specification used to generate the E2E test suite methods below.
+// e2eYAML is the canonical YAML specification used to generate e2e_gen_test.go.
 const e2eYAML = `version: "1"
 package: sqlgen_test
 out: e2e_gen_test.go
@@ -45,7 +52,7 @@ statements:
     sql: |
       SELECT id:int64, org_id:int64, email:string, role:string, score:int64, bio:string
       FROM users
-      WHERE id IN (IDs:[]int64)
+      WHERE id IN (IDs:[]int64 ASC)
       ORDER BY id ASC
 
   - name: SelectUserProfileSubset
@@ -104,18 +111,35 @@ statements:
     kind: many
     sql: |
       INSERT INTO batch_users (id, name, points)
-      VALUES Rows:[]BatchUserInput(ID:int64, Name:string, Points:int64)
+      VALUES Rows:[]BatchUserInput(ID:int64 ASC, Name:string, Points:int64)
       RETURNING id:int64, name:string, points:int64
 
   - name: UpdateUsersBatchFromValues
     kind: exec
     sql: |
       WITH updates(id, bonus) AS (
-        VALUES Rows:[]BatchBonusInput(ID:int64, Bonus:int64)
+        VALUES Rows:[]BatchBonusInput(ID:int64 ASC, Bonus:int64)
       )
       UPDATE batch_users
       SET points = batch_users.points + (SELECT u.bonus FROM updates u WHERE u.id = batch_users.id)
       WHERE batch_users.id IN (SELECT u.id FROM updates u)
+
+  - name: InsertQuadBatch
+    kind: exec
+    sql: |
+      INSERT INTO quad_items (id, group_key, priority, created_ts)
+      VALUES Rows:[]QuadInput(ID:int64 ASC, GroupKey:string, Priority:int64, CreatedTS:int64)
+
+  - name: PageQuad
+    kind: many
+    params_struct: true
+    result_type: QuadItem
+    sql: |
+      SELECT id:int64, group_key:string, priority:int64, created_ts:int64
+      FROM quad_items
+      WHERE Seek:sqlgen.Seek
+      ORDER BY Order:sqlgen.Order(group_key, priority, created_ts, id)
+      LIMIT Limit:int64
 `
 
 func TestParserProtectedContexts(t *testing.T) {
@@ -148,13 +172,11 @@ statements:
 	}
 	code := string(src)
 	normalizedCode := strings.Join(strings.Fields(code), " ")
-	// Ensure fake parameters/flags inside comments, quotes, dollar-quotes, brackets, and :: / := were NOT extracted
 	for _, forbidden := range []string{"FakeParam", "FakeFlag", "AnotherFake", "AnotherFlag", "NoFlag", "not_a_param", "not_param"} {
 		if strings.Contains(code, " "+forbidden+" ") || strings.Contains(code, forbidden+" bool") {
 			t.Fatalf("protected context leaked identifier %q into generated code:\n%s", forbidden, code)
 		}
 	}
-	// Ensure real columns and parameter ID were extracted
 	for _, expected := range []string{"ID int64", "Lit string", "Dq string", "Bq string", "D1 string", "D2 string", "SliceExpr string", "CastedScore int64"} {
 		if !strings.Contains(normalizedCode, expected) {
 			t.Fatalf("expected %q in generated code:\n%s", expected, code)
@@ -190,7 +212,7 @@ func TestParserUnclosedProtectedContexts(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			cfg := &sqlgen.Config{
+			cfg := sqlgen.Config{
 				Version:     "1",
 				PackageName: "store",
 				Dialect:     "postgres",
@@ -232,13 +254,11 @@ statements:
 	}
 	code := string(src)
 	normalizedCode := strings.Join(strings.Fields(code), " ")
-	// Row struct should have ID, Total, FinalBonus (NOT Rate, OrgID, Tax, BonusAdd, Active)
 	for _, rowField := range []string{"ID int64", "Total float64", "FinalBonus float64"} {
 		if !strings.Contains(normalizedCode, rowField) {
 			t.Fatalf("expected row field %q in generated code:\n%s", rowField, code)
 		}
 	}
-	// Params struct should have Rate, OrgID, Tax, BonusAdd, Active, WithBonus, SelectCols
 	for _, paramField := range []string{"Rate float64", "OrgID int64", "Tax float64", "BonusAdd float64", "Active bool", "WithBonus bool", "SelectCols uint64"} {
 		if !strings.Contains(normalizedCode, paramField) {
 			t.Fatalf("expected param field %q in generated code:\n%s", paramField, code)
@@ -247,7 +267,6 @@ statements:
 }
 
 func TestYAMLStrictValidationAndForms(t *testing.T) {
-	// Test all 3 YAML forms for params and columns + auto-imports
 	yamlStr := `version: "1"
 package: store
 dialect: postgres
@@ -286,12 +305,10 @@ statements:
 		t.Fatalf("expected deduplicated \"time\" import, got count=%d", strings.Count(code, `"time"`))
 	}
 
-	// Unknown top-level key must fail
 	if _, err := sqlgen.ParseYAML([]byte("version: \"1\"\nunknown_top_key: true\n")); err == nil {
 		t.Fatalf("expected error on unknown top-level YAML key")
 	}
 
-	// Unknown key in ParamSpec mapping must fail with line number
 	badParamYAML := `version: "1"
 package: store
 statements:
@@ -307,7 +324,6 @@ statements:
 		t.Fatalf("expected error with line number on unknown ParamSpec key, got: %v", err)
 	}
 
-	// Unknown key in ColumnSpec mapping must fail with line number
 	badColYAML := `version: "1"
 package: store
 statements:
@@ -431,7 +447,7 @@ func TestCompileTimeValidationErrors(t *testing.T) {
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			_, err := sqlgen.Generate(&tc.cfg)
+			_, err := sqlgen.Generate(tc.cfg)
 			if err == nil {
 				t.Fatalf("expected compile-time error containing %q, got nil", tc.wantErrText)
 			}
@@ -443,7 +459,6 @@ func TestCompileTimeValidationErrors(t *testing.T) {
 }
 
 func TestPostgresSQLGeneration(t *testing.T) {
-	// Verify PostgreSQL ($1, $2, ...) SQL rendering across all constructs
 	q1 := GetUserByIDQuery(42)
 	if got := q1.BuildSQL(runtime.DialectPostgres); got != "SELECT id, org_id, email, role, score, bio\nFROM users\nWHERE id = $1" {
 		t.Fatalf("GetUserByID Postgres SQL mismatch:\ngot:  %q", got)
@@ -454,7 +469,6 @@ func TestPostgresSQLGeneration(t *testing.T) {
 		t.Fatalf("ListUsersByIDs Postgres SQL mismatch:\ngot:  %q", got)
 	}
 
-	// SelectCols subsetting (2 of 4 unconditional columns + 1 conditional column)
 	q3 := SelectUserProfileSubsetQuery(SelectUserProfileSubsetParams{
 		OrgID:      7,
 		WithExtra:  true,
@@ -465,7 +479,6 @@ func TestPostgresSQLGeneration(t *testing.T) {
 		t.Fatalf("SelectUserProfileSubset Postgres SQL mismatch:\ngot:  %q\nwant: %q", got, wantQ3)
 	}
 
-	// Composed CTE + IN subquery with continuous $1..$N numbering
 	cteSub := PageUsersQuery(PageUsersParams{
 		RoleFilter: true,
 		FilterRole: "admin",
@@ -476,19 +489,18 @@ func TestPostgresSQLGeneration(t *testing.T) {
 	idSub := SubUserIDsByScoreQuery(30)
 	composed := UsersFromCTEAndInSubqueryQuery(cteSub, idSub)
 	gotComposed := composed.BuildSQL(runtime.DialectPostgres)
-	// Seek on (score DESC, id DESC) has 3 params ($1, $2, $3), FilterRole is $4, Limit is $5, and MinScore is $6!
-	if !strings.Contains(gotComposed, "((score < $1) OR (score = $2 AND id < $3))") {
-		t.Fatalf("expected $1..$3 keyset predicate in composed Postgres SQL, got:\n%s", gotComposed)
+	if !strings.Contains(gotComposed, "(score, id) < ($1, $2)") {
+		t.Fatalf("expected Row-Value Constructor keyset predicate in composed Postgres SQL, got:\n%s", gotComposed)
 	}
-	if !strings.Contains(gotComposed, "AND role = $4") || !strings.Contains(gotComposed, "LIMIT $5") || !strings.Contains(gotComposed, "WHERE score >= $6") {
-		t.Fatalf("expected continuous $4, $5, $6 placeholders across composed subqueries, got:\n%s", gotComposed)
+	if !strings.Contains(gotComposed, "AND role = $3") || !strings.Contains(gotComposed, "LIMIT $4") || !strings.Contains(gotComposed, "WHERE score >= $5") {
+		t.Fatalf("expected continuous $3, $4, $5 placeholders across composed subqueries, got:\n%s", gotComposed)
 	}
 }
 
 func setupE2EDB(t *testing.T) (*sql.DB, *Queries) {
 	t.Helper()
 	dbPath := filepath.Join(t.TempDir(), "e2e.db")
-	db, err := sql.Open("sqlite", dbPath+"?_pragma=journal_mode(WAL)&_pragma=busy_timeout(5000)")
+	db, err := sql.Open("sqlite", dbPath+"?_pragma=journal_mode(WAL)&_pragma=synchronous(OFF)&_pragma=busy_timeout(5000)")
 	if err != nil {
 		t.Fatalf("open sqlite: %v", err)
 	}
@@ -516,6 +528,12 @@ func setupE2EDB(t *testing.T) (*sql.DB, *Queries) {
 			id INTEGER PRIMARY KEY,
 			name TEXT NOT NULL,
 			points INTEGER NOT NULL
+		);
+		CREATE TABLE quad_items (
+			id INTEGER PRIMARY KEY,
+			group_key TEXT NOT NULL,
+			priority INTEGER NOT NULL,
+			created_ts INTEGER NOT NULL
 		);
 	`
 	if _, err := db.Exec(schema); err != nil {
@@ -564,7 +582,6 @@ func TestE2EFixedArityAndDualConsumption(t *testing.T) {
 		}
 	}
 
-	// Test kind: one (GetUserByID)
 	u3, err := q.GetUserByID(ctx, 3)
 	if err != nil {
 		t.Fatalf("GetUserByID(3): %v", err)
@@ -573,25 +590,21 @@ func TestE2EFixedArityAndDualConsumption(t *testing.T) {
 		t.Fatalf("unexpected GetUserByID(3): %+v", u3)
 	}
 
-	// Test empty slice rejection
 	if _, err := q.ListUsersByIDs(ctx, nil); !errors.Is(err, runtime.ErrEmptySliceParam) {
 		t.Fatalf("expected ErrEmptySliceParam on empty slice, got %v", err)
 	}
 
-	// Test kind: many Slice
 	users, err := q.ListUsersByIDs(ctx, []int64{1, 3, 5})
 	if err != nil || len(users) != 3 {
 		t.Fatalf("ListUsersByIDs: len=%d err=%v", len(users), err)
 	}
 
-	// Test kind: many Into (reusing preallocated slice)
 	prealloc := make([]User, 0, 8)
 	usersInto, err := q.ListUsersByIDsInto(ctx, prealloc, []int64{2, 4})
 	if err != nil || len(usersInto) != 2 || cap(usersInto) != 8 {
 		t.Fatalf("ListUsersByIDsInto failed: len=%d cap=%d err=%v", len(usersInto), cap(usersInto), err)
 	}
 
-	// Test kind: many Seq with early break
 	var seqIDs []int64
 	for u, err := range q.ListUsersByIDsSeq(ctx, []int64{1, 2, 3, 4, 5, 6}) {
 		if err != nil {
@@ -606,7 +619,6 @@ func TestE2EFixedArityAndDualConsumption(t *testing.T) {
 		t.Fatalf("unexpected seqIDs after early break: %v", seqIDs)
 	}
 
-	// Test kind: many Each
 	var eachIDs []int64
 	if err := q.ListUsersByIDsEach(ctx, []int64{4, 6}, func(u User) error {
 		eachIDs = append(eachIDs, u.ID)
@@ -630,14 +642,12 @@ func TestE2ESelectColsBitmaskSubsetting(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// Select 2 of 4 unconditional columns (ID + Score) plus 1 conditional column (WithExtra -> Bio)
 	params := SelectUserProfileSubsetParams{
 		OrgID:      1,
 		WithExtra:  true,
 		SelectCols: SelectUserProfileSubsetColID | SelectUserProfileSubsetColScore,
 	}
 
-	// Verify exact 3-column SQL emission
 	qBuilt := q.SelectUserProfileSubsetQuery(params).BuildSQL(runtime.DialectQuestion)
 	if !strings.HasPrefix(qBuilt, "SELECT u.id, u.score\n , u.bio \nFROM users u") {
 		t.Fatalf("expected exact 3-column SELECT list, got:\n%s", qBuilt)
@@ -650,7 +660,6 @@ func TestE2ESelectColsBitmaskSubsetting(t *testing.T) {
 	if len(rows) != 2 {
 		t.Fatalf("expected 2 rows, got %d", len(rows))
 	}
-	// Selected fields (ID, Score, Bio) must be populated; unselected fields (Email, Role) must remain zero
 	if rows[0].ID != 1 || rows[0].Score != 100 || rows[0].Bio != "CTO" || rows[0].Email != "" || rows[0].Role != "" {
 		t.Fatalf("unexpected row[0] with SelectCols subsetting: %+v", rows[0])
 	}
@@ -667,11 +676,10 @@ func TestE2ECoupledConditionalBlocks(t *testing.T) {
 	_, _ = q.CreateUser(ctx, 2, 2, "u2@beta.com", "member", 60, "b2")
 	_, _ = q.CreateUser(ctx, 3, 3, "u3@gamma.com", "admin", 70, "b3")
 
-	// 1. WithOrg = false (inactive OrgTiers empty slice and inactive uninitialized OrgSub Query MUST NOT error!)
 	rowsNoOrg, err := q.SearchUsersCoupled(ctx, SearchUsersCoupledParams{
 		WithOrg:   false,
-		OrgTiers:  nil,             // empty slice inside disabled block
-		OrgSub:    runtime.Query{}, // uninitialized Query inside disabled block
+		OrgTiers:  nil,
+		OrgSub:    runtime.Query{},
 		WithRoles: true,
 		Roles:     []string{"admin"},
 	})
@@ -682,7 +690,6 @@ func TestE2ECoupledConditionalBlocks(t *testing.T) {
 		t.Fatalf("unexpected rows with WithOrg=false: %+v", rowsNoOrg)
 	}
 
-	// 2. WithOrg = true (coupled across SELECT, LEFT JOIN, and WHERE)
 	orgSub := q.SubOrgsByMinIDQuery(SubOrgsByMinIDParams{
 		MinID:      1,
 		OnlyActive: true,
@@ -693,7 +700,7 @@ func TestE2ECoupledConditionalBlocks(t *testing.T) {
 		OrgTiers:  []string{"enterprise", "pro"},
 		OrgSub:    orgSub,
 		WithRoles: false,
-		Roles:     nil, // disabled block empty slice
+		Roles:     nil,
 	})
 	if err != nil {
 		t.Fatalf("SearchUsersCoupled with enabled WithOrg failed: %v", err)
@@ -707,7 +714,6 @@ func TestE2EKeysetPaginationUniformAndMixedOrders(t *testing.T) {
 	_, q := setupE2EDB(t)
 	ctx := context.Background()
 
-	// Seed 15 users with duplicate roles and duplicate scores to exercise multi-column keyset tie-breaking
 	seedData := []struct {
 		id    int64
 		role  string
@@ -743,7 +749,6 @@ func TestE2EKeysetPaginationUniformAndMixedOrders(t *testing.T) {
 
 	for _, tc := range orders {
 		t.Run(tc.name, func(t *testing.T) {
-			// Fetch all 15 rows in one page as ground truth
 			expectedAll, err := q.PageUsers(ctx, PageUsersParams{
 				Order: tc.order,
 				Limit: 100,
@@ -752,7 +757,6 @@ func TestE2EKeysetPaginationUniformAndMixedOrders(t *testing.T) {
 				t.Fatalf("full fetch failed: len=%d err=%v", len(expectedAll), err)
 			}
 
-			// Now paginate 4 rows at a time using SeekPageUsersRow
 			var collected []PageUsersRow
 			var seek runtime.Seek
 			for page := 0; page < 10; page++ {
@@ -798,18 +802,15 @@ func TestE2ECurriedQueryComposition(t *testing.T) {
 		}
 	}
 
-	// Curried CTE subquery using Order, Seek, and {?RoleFilter: ...}
 	cteSub := q.PageUsersQuery(PageUsersParams{
 		RoleFilter: true,
 		FilterRole: "admin",
 		Order:      OrderPageUsersRow(OrderPageUsersRowScoreAsc, OrderPageUsersRowIDAsc),
-		Seek:       runtime.NewSeek("admin", int64(20), int64(2)), // after id=2 (score=20) -> ids 3, 4, 5, 6
-		Limit:      3,                                             // ids 3, 4, 5
+		Seek:       runtime.NewSeek("admin", int64(20), int64(2)),
+		Limit:      3,
 	})
-	// Curried IN subquery filtering score >= 40 -> ids 4, 5, 6, 7, 8
 	idSub := q.SubUserIDsByScoreQuery(40)
 
-	// Intersection of {3, 4, 5} and {4, 5, 6, 7, 8} -> {4, 5}
 	res, err := q.UsersFromCTEAndInSubquery(ctx, cteSub, idSub)
 	if err != nil {
 		t.Fatalf("UsersFromCTEAndInSubquery: %v", err)
@@ -821,7 +822,6 @@ func TestE2ECurriedQueryComposition(t *testing.T) {
 
 func TestE2EAdaptiveMultiRowBatchExecution(t *testing.T) {
 	db, q := setupE2EDB(t)
-	// Allow multiple connections so Tier 2 prepares on db even inside transactions
 	db.SetMaxOpenConns(4)
 	ctx := context.Background()
 
@@ -838,7 +838,6 @@ func TestE2EAdaptiveMultiRowBatchExecution(t *testing.T) {
 		return out
 	}
 
-	// 1. Recurring 1000-row and 900-row batches -> promoted as exact-size heavy hitters in Tier 2
 	for run := 0; run < 2; run++ {
 		if _, err := db.Exec(`DELETE FROM batch_users`); err != nil {
 			t.Fatal(err)
@@ -853,7 +852,6 @@ func TestE2EAdaptiveMultiRowBatchExecution(t *testing.T) {
 		}
 	}
 
-	// Verify that 1000 and 900 are now promoted heavy-hitter sizes and 2900 rows greedily chunks as 1000 + 1000 + 900!
 	c1 := q.Cache().PlanBatchChunk(stmtIDInsertUsersBatchReturning, 0, 0, 2900, 10000, false)
 	c2 := q.Cache().PlanBatchChunk(stmtIDInsertUsersBatchReturning, 0, 0, 2900-c1, 10000, false)
 	c3 := q.Cache().PlanBatchChunk(stmtIDInsertUsersBatchReturning, 0, 0, 2900-c1-c2, 10000, false)
@@ -861,7 +859,6 @@ func TestE2EAdaptiveMultiRowBatchExecution(t *testing.T) {
 		t.Fatalf("expected greedy chunking 1000 + 1000 + 900 for 2900 rows, got %d + %d + %d", c1, c2, c3)
 	}
 
-	// Execute 2900-row batch INSERT ... RETURNING
 	if _, err := db.Exec(`DELETE FROM batch_users`); err != nil {
 		t.Fatal(err)
 	}
@@ -870,7 +867,6 @@ func TestE2EAdaptiveMultiRowBatchExecution(t *testing.T) {
 		t.Fatalf("Insert 2900 failed: len=%d err=%v", len(inserted2900), err)
 	}
 
-	// Execute multi-row batch UPDATE ... FROM (VALUES ...) across all 2900 rows
 	updates := make([]BatchBonusInput, 2900)
 	for i := 0; i < 2900; i++ {
 		updates[i] = BatchBonusInput{ID: int64(i + 1), Bonus: 5}
@@ -884,7 +880,6 @@ func TestE2EAdaptiveMultiRowBatchExecution(t *testing.T) {
 		t.Fatalf("expected 2900 rows updated, got %d", aff)
 	}
 
-	// Verify BatchSeq with early break does NOT open a hidden transaction or roll back completed chunks
 	if _, err := db.Exec(`DELETE FROM batch_users`); err != nil {
 		t.Fatal(err)
 	}
@@ -895,8 +890,6 @@ func TestE2EAdaptiveMultiRowBatchExecution(t *testing.T) {
 		}
 		yielded++
 		if yielded == 260 {
-			// Chunk 1 (256 rows) has completed and closed its *sql.Rows without a hidden transaction;
-			// verify a nested query inside the loop body can read committed rows from chunk 1.
 			var cnt int
 			if err := db.QueryRowContext(ctx, `SELECT COUNT(*) FROM batch_users WHERE id = ?`, row.ID).Scan(&cnt); err != nil {
 				t.Fatalf("nested query inside BatchSeq loop failed: %v", err)
@@ -904,7 +897,6 @@ func TestE2EAdaptiveMultiRowBatchExecution(t *testing.T) {
 			break
 		}
 	}
-	// First chunk of 300 (256 rows) was committed because BatchSeq does not open a hidden rollback transaction
 	var countAfterBreak int
 	if err := db.QueryRowContext(ctx, `SELECT COUNT(*) FROM batch_users`).Scan(&countAfterBreak); err != nil {
 		t.Fatal(err)
@@ -913,9 +905,8 @@ func TestE2EAdaptiveMultiRowBatchExecution(t *testing.T) {
 		t.Fatalf("expected at least 256 already-executed chunk rows to persist after early break in BatchSeq, got %d", countAfterBreak)
 	}
 
-	// Verify explicit InTx rollback on error
 	errBoom := errors.New("rollback test")
-	_ = q.InTx(ctx, func(txQ *Queries) error {
+	_ = q.InTx(ctx, nil, func(txQ *Queries) error {
 		if _, err := txQ.InsertUsersBatchReturningBatch(ctx, makeInsertBatch(5000, 20)); err != nil {
 			return err
 		}
@@ -931,7 +922,6 @@ func TestE2EAdaptiveMultiRowBatchExecution(t *testing.T) {
 }
 
 func TestE2EGeneratedCodeUpToDate(t *testing.T) {
-	// Ensure GenerateFromYAML([]byte(e2eYAML)) compiles cleanly without error
 	src, err := sqlgen.GenerateFromYAML([]byte(e2eYAML))
 	if err != nil {
 		t.Fatalf("GenerateFromYAML(e2eYAML) failed: %v", err)
@@ -939,1597 +929,1032 @@ func TestE2EGeneratedCodeUpToDate(t *testing.T) {
 	if len(src) == 0 {
 		t.Fatalf("expected non-empty generated Go source")
 	}
-}
-
-// ============================================================================
-// Generated E2E code under test (compiled directly into sqlgen_test)
-// ============================================================================
-
-type (
-	Query = runtime.Query
-	Order = runtime.Order
-	Seek  = runtime.Seek
-)
-
-const sqlDialect = runtime.DialectQuestion
-
-type Queries struct {
-	db          *sql.DB
-	cache       *runtime.StmtCache
-	txCache     *runtime.TxStmtCache
-	usePrepared bool
-	fastSlots   *[3]atomic.Pointer[runtime.ManagedStmt]
-}
-
-func New(db *sql.DB, opts ...runtime.CacheOption) *Queries {
-	return NewWithCache(db, runtime.NewStmtCache(opts...))
-}
-
-func NewWithCache(db *sql.DB, cache *runtime.StmtCache) *Queries {
-	if cache == nil {
-		cache = runtime.NewStmtCache()
-	}
-	return &Queries{
-		db:          db,
-		cache:       cache,
-		usePrepared: true,
-		fastSlots:   new([3]atomic.Pointer[runtime.ManagedStmt]),
-	}
-}
-
-func (q *Queries) Cache() *runtime.StmtCache { return q.cache }
-
-func (q *Queries) Close() error {
-	if q.txCache != nil {
-		return q.txCache.Close()
-	}
-	return q.cache.Close()
-}
-
-func (q *Queries) WithPrepared(enabled bool) *Queries {
-	cp := *q
-	cp.usePrepared = enabled
-	return &cp
-}
-
-func (q *Queries) WithTx(tx *sql.Tx) *Queries {
-	cp := *q
-	cp.txCache = runtime.NewTxStmtCache(tx)
-	return &cp
-}
-
-func (q *Queries) InTx(ctx context.Context, fn func(*Queries) error) error {
-	return q.InTxOpts(ctx, nil, fn)
-}
-
-func (q *Queries) InTxOpts(ctx context.Context, opts *sql.TxOptions, fn func(*Queries) error) error {
-	if q.txCache != nil {
-		return fn(q)
-	}
-	tx, err := q.db.BeginTx(ctx, opts)
+	onDisk, err := os.ReadFile("e2e_gen_test.go")
 	if err != nil {
-		return err
+		t.Fatalf("ReadFile(e2e_gen_test.go): %v", err)
 	}
-	tc := runtime.NewTxStmtCache(tx)
-	defer func() { _ = tc.Close() }()
-	txQ := *q
-	txQ.txCache = tc
-	if err := fn(&txQ); err != nil {
+	if !bytes.Equal(src, onDisk) {
+		t.Fatalf("e2e_gen_test.go is out of date with e2eYAML")
+	}
+}
+
+// ============================================================================
+// Section 12.2: Compilation Isolation Matrix (12 Orthogonal Schemas)
+// ============================================================================
+
+func TestCompilationIsolationMatrix(t *testing.T) {
+	schemas := []struct {
+		name string
+		yaml string
+	}{
+		{
+			name: "1_exec_zero_params",
+			yaml: `version: "1"
+package: iso1
+dialect: postgres
+statements:
+  - name: VacuumItems
+    kind: exec
+    sql: DELETE FROM items WHERE expired = true
+`,
+		},
+		{
+			name: "2_one_scalar_params",
+			yaml: `version: "1"
+package: iso2
+dialect: postgres
+statements:
+  - name: GetItem
+    kind: one
+    sql: SELECT id:int64, name:string FROM items WHERE id = ID:int64
+`,
+		},
+		{
+			name: "3_many_scalar_params",
+			yaml: `version: "1"
+package: iso3
+dialect: sqlite
+statements:
+  - name: ListItemsByScore
+    kind: many
+    sql: SELECT id:int64, score:float64 FROM items WHERE score >= MinScore:float64
+`,
+		},
+		{
+			name: "4_many_slice_param_presorted",
+			yaml: `version: "1"
+package: iso4
+dialect: postgres
+statements:
+  - name: ListItemsByIDs
+    kind: many
+    sql: SELECT id:int64 FROM items WHERE id IN (IDs:[]int64 ASC)
+`,
+		},
+		{
+			name: "5_many_conditional_block_only",
+			yaml: `version: "1"
+package: iso5
+dialect: mysql
+statements:
+  - name: ListItemsOpt
+    kind: many
+    sql: |
+      SELECT id:int64 FROM items WHERE 1=1 {?OnlyActive: AND active = 1 }
+`,
+		},
+		{
+			name: "6_many_select_cols_only",
+			yaml: `version: "1"
+package: iso6
+dialect: postgres
+statements:
+  - name: ListItemsProjection
+    kind: many
+    params_struct: true
+    sql: SELECT id:int64, name:string, created_at:time.Time FROM items
+`,
+		},
+		{
+			name: "7_many_order_only",
+			yaml: `version: "1"
+package: iso7
+dialect: postgres
+statements:
+  - name: ListItemsOrdered
+    kind: many
+    sql: SELECT id:int64, score:int64 FROM items ORDER BY Order:sqlgen.Order(score, id)
+`,
+		},
+		{
+			name: "8_many_order_and_seek",
+			yaml: `version: "1"
+package: iso8
+dialect: sqlite
+statements:
+  - name: PageItems
+    kind: many
+    sql: SELECT id:int64, score:int64 FROM items WHERE Seek:sqlgen.Seek ORDER BY Order:sqlgen.Order(score, id) LIMIT Limit:int64
+`,
+		},
+		{
+			name: "9_subquery_and_parent_query",
+			yaml: `version: "1"
+package: iso9
+dialect: postgres
+statements:
+  - name: SubActiveIDs
+    kind: subquery
+    sql: SELECT id FROM items WHERE active = Active:bool
+  - name: ListFromSub
+    kind: many
+    sql: SELECT id:int64 FROM items WHERE id IN (Sub:sqlgen.Query)
+`,
+		},
+		{
+			name: "10_exec_tuple_batch_and_stream",
+			yaml: `version: "1"
+package: iso10
+dialect: postgres
+statements:
+  - name: InsertItemsBatch
+    kind: exec
+    sql: INSERT INTO items (id, name) VALUES Rows:[]ItemInput(ID:int64 ASC, Name:string)
+`,
+		},
+		{
+			name: "11_many_tuple_batch_returning",
+			yaml: `version: "1"
+package: iso11
+dialect: postgres
+statements:
+  - name: InsertItemsReturning
+    kind: many
+    sql: INSERT INTO items (id, payload) VALUES Rows:[]ItemPayload(ID:int64, Payload:[]byte ASC) RETURNING id:int64
+`,
+		},
+		{
+			name: "12_pipeline_scalar_and_row_types",
+			yaml: `version: "1"
+package: iso12
+dialect: postgres
+statements:
+  - name: TouchItem
+    kind: exec
+    sql: UPDATE items SET updated_at = UpdatedAt:time.Time WHERE id = ID:int64
+  - name: GetItemScore
+    kind: one
+    result_type: int64
+    sql: SELECT score:int64 FROM items WHERE id = ID:int64
+`,
+		},
+	}
+
+	for _, tc := range schemas {
+		t.Run(tc.name, func(t *testing.T) {
+			src, err := sqlgen.GenerateFromYAML([]byte(tc.yaml))
+			if err != nil {
+				t.Fatalf("GenerateFromYAML(%s) failed: %v", tc.name, err)
+			}
+			fset := token.NewFileSet()
+			file, err := parser.ParseFile(fset, tc.name+".go", src, parser.AllErrors)
+			if err != nil {
+				t.Fatalf("ParseFile(%s) failed: %v\n%s", tc.name, err, string(src))
+			}
+
+			// Verify every imported package is referenced in the AST
+			usedPkgs := make(map[string]bool)
+			ast.Inspect(file, func(n ast.Node) bool {
+				if sel, ok := n.(*ast.SelectorExpr); ok {
+					if id, ok := sel.X.(*ast.Ident); ok {
+						usedPkgs[id.Name] = true
+					}
+				}
+				return true
+			})
+			for _, imp := range file.Imports {
+				pathVal, _ := strconv.Unquote(imp.Path.Value)
+				pkgIdent := filepath.Base(pathVal)
+				if imp.Name != nil {
+					pkgIdent = imp.Name.Name
+				}
+				if !usedPkgs[pkgIdent] {
+					t.Fatalf("schema %s emitted unused import %q (ident %q)\n%s", tc.name, pathVal, pkgIdent, string(src))
+				}
+			}
+		})
+	}
+}
+
+// ============================================================================
+// Section 12.5 PBT 2: Keyset Pagination Total-Order Equivalence (250 Rows, 16 Masks)
+// ============================================================================
+
+func TestPropertyKeysetPaginationEquivalence(t *testing.T) {
+	db, q := setupE2EDB(t)
+	ctx := context.Background()
+
+	rng := rand.New(rand.NewPCG(20260404, 99))
+	groups := []string{"alpha", "beta", "gamma"}
+	priorities := []int64{1, 2, 3, 4}
+	timestamps := []int64{1000, 1001, 1002, 1003}
+
+	const totalRows = 250
+	inputs := make([]QuadInput, totalRows)
+	for i := 0; i < totalRows; i++ {
+		inputs[i] = QuadInput{
+			ID:        int64(i + 1),
+			GroupKey:  groups[rng.IntN(len(groups))],
+			Priority:  priorities[rng.IntN(len(priorities))],
+			CreatedTs: timestamps[rng.IntN(len(timestamps))],
+		}
+	}
+	if _, err := q.InsertQuadBatchBatch(ctx, inputs); err != nil {
+		t.Fatalf("InsertQuadBatchBatch(250): %v", err)
+	}
+
+	pageSizes := []int64{1, 2, 7, 25, 250, 500}
+
+	// Test all 16 sort-direction masks over the 4 columns (group_key, priority, created_ts, id)
+	for mask := 0; mask < 16; mask++ {
+		var terms [4]uint8
+		if (mask & 1) == 0 {
+			terms[0] = QuadItemOrderByGroupKey.Asc()
+		} else {
+			terms[0] = QuadItemOrderByGroupKey.Desc()
+		}
+		if (mask & 2) == 0 {
+			terms[1] = QuadItemOrderByPriority.Asc()
+		} else {
+			terms[1] = QuadItemOrderByPriority.Desc()
+		}
+		if (mask & 4) == 0 {
+			terms[2] = QuadItemOrderByCreatedTs.Asc()
+		} else {
+			terms[2] = QuadItemOrderByCreatedTs.Desc()
+		}
+		if (mask & 8) == 0 {
+			terms[3] = QuadItemOrderByID.Asc()
+		} else {
+			terms[3] = QuadItemOrderByID.Desc()
+		}
+		orderSpec := OrderQuadItem(terms[0], terms[1], terms[2], terms[3])
+
+		// Ground truth: fetch all 250 rows in a single unpaginated query
+		expected, err := q.PageQuad(ctx, PageQuadParams{
+			Order: orderSpec,
+			Limit: 1000,
+		})
+		if err != nil || len(expected) != totalRows {
+			t.Fatalf("mask=%04b ground truth failed: len=%d err=%v", mask, len(expected), err)
+		}
+
+		// Verify Postgres ($1) vs SQLite (?) SQL & parameter count consistency on active Seek
+		sampleSeek := SeekQuadItem(expected[0])
+		qCurried := q.PageQuadQuery(PageQuadParams{
+			Seek:  sampleSeek,
+			Order: orderSpec,
+			Limit: 10,
+		})
+		pgSQL := qCurried.BuildSQL(runtime.DialectPostgres)
+		pgArgs := runtime.AcquireArgsCap(16)
+		if err := qCurried.AppendArgs(pgArgs, runtime.DialectPostgres); err != nil {
+			t.Fatalf("AppendArgs(DialectPostgres): %v", err)
+		}
+		// In Postgres, 4-column seek uses 4 args ($1..$4) + 1 Limit arg ($5) = 5 args total
+		if len(*pgArgs) != 5 || !strings.Contains(pgSQL, "$5") {
+			t.Fatalf("mask=%04b unexpected Postgres args=%d sql=%s", mask, len(*pgArgs), pgSQL)
+		}
+		runtime.ReleaseArgs(pgArgs)
+
+		for _, pageSize := range pageSizes {
+			var collected []QuadItem
+			var seek runtime.Seek
+			for page := 0; page <= totalRows+2; page++ {
+				rows, err := q.PageQuad(ctx, PageQuadParams{
+					Seek:  seek,
+					Order: orderSpec,
+					Limit: pageSize,
+				})
+				if err != nil {
+					t.Fatalf("mask=%04b pageSize=%d page=%d err=%v", mask, pageSize, page, err)
+				}
+				if len(rows) == 0 {
+					break
+				}
+				collected = append(collected, rows...)
+				seek = SeekQuadItem(rows[len(rows)-1])
+			}
+			if !slices.Equal(collected, expected) {
+				t.Fatalf("mask=%04b pageSize=%d pagination mismatch (got %d rows, want %d)", mask, pageSize, len(collected), len(expected))
+			}
+		}
+	}
+	_ = db
+}
+
+// ============================================================================
+// Section 12.5 PBT 3: Presort Immutability & Monotonicity (500 Inputs)
+// ============================================================================
+
+func TestPropertyPresortImmutabilityAndMonotonicity(t *testing.T) {
+	rng := rand.New(rand.NewPCG(777, 888))
+
+	for iterIdx := 0; iterIdx < 500; iterIdx++ {
+		n := 1 + rng.IntN(32)
+
+		// 1. 1D Slice Presort (IDs:[]int64 ASC in ListUsersByIDs)
+		origIDs := make([]int64, n)
+		for i := range origIDs {
+			switch iterIdx % 4 {
+			case 0: // random with duplicates
+				origIDs[i] = int64(rng.IntN(10))
+			case 1: // already sorted
+				origIDs[i] = int64(i)
+			case 2: // reverse sorted
+				origIDs[i] = int64(n - i)
+			default:
+				origIDs[i] = rng.Int64N(1000) - 500
+			}
+		}
+		snapshotIDs := slices.Clone(origIDs)
+
+		// Auto-presort via curried Query argument expansion
+		qVal := ListUsersByIDsQuery(origIDs)
+		argBuf := runtime.AcquireArgsCap(n)
+		if err := qVal.AppendArgs(argBuf, runtime.DialectQuestion); err != nil {
+			t.Fatalf("iter %d AppendArgs: %v", iterIdx, err)
+		}
+		// Caller's input slice MUST NOT be mutated!
+		if !slices.Equal(origIDs, snapshotIDs) {
+			t.Fatalf("iter %d: auto-presort mutated caller's 1D slice!", iterIdx)
+		}
+		// Bound arguments must be monotonically non-decreasing
+		for i := 1; i < len(*argBuf); i++ {
+			prev := (*argBuf)[i-1].(int64)
+			curr := (*argBuf)[i].(int64)
+			if prev > curr {
+				t.Fatalf("iter %d: 1D bind args not sorted at %d: %d > %d", iterIdx, i, prev, curr)
+			}
+		}
+		runtime.ReleaseArgs(argBuf)
+
+		// 2. 2D Tuple Slice Presort (Rows:[]BatchBonusInput(ID:int64 ASC, Bonus:int64))
+		origTuples := make([]BatchBonusInput, n)
+		for i := range origTuples {
+			origTuples[i] = BatchBonusInput{
+				ID:    int64(rng.IntN(16)),
+				Bonus: int64(i * 10),
+			}
+		}
+		snapshotTuples := slices.Clone(origTuples)
+
+		argBuf2 := runtime.AcquireArgsCap(n * 2)
+		if err := expandUpdateUsersBatchFromValuesParams(argBuf2, runtime.DialectQuestion, paramsUpdateUsersBatchFromValues{Rows: origTuples}); err != nil {
+			t.Fatalf("iter %d expandUpdateUsersBatchFromValuesParams: %v", iterIdx, err)
+		}
+		if !slices.Equal(origTuples, snapshotTuples) {
+			t.Fatalf("iter %d: auto-presort mutated caller's tuple slice!", iterIdx)
+		}
+		for i := 1; i < n; i++ {
+			prevID := (*argBuf2)[(i-1)*2].(int64)
+			currID := (*argBuf2)[i*2].(int64)
+			if prevID > currID {
+				t.Fatalf("iter %d: tuple bind args not sorted at row %d: %d > %d", iterIdx, i, prevID, currID)
+			}
+		}
+		runtime.ReleaseArgs(argBuf2)
+	}
+}
+
+// ============================================================================
+// Section 12.5 PBT 5: Pipeline Wire vs. Sequential Parity
+// ============================================================================
+
+type parityWireConn struct {
+	sqliteDB *sql.DB
+}
+
+func (c *parityWireConn) Prepare(string) (driver.Stmt, error) { return nil, driver.ErrSkip }
+func (c *parityWireConn) Close() error                        { return nil }
+func (c *parityWireConn) Begin() (driver.Tx, error)           { return &parityWireTx{}, nil }
+
+func (c *parityWireConn) ExecPipeline(ctx context.Context, ops []runtime.PipelineOp) error {
+	// Execute the pipeline batch against the mirror SQLite connection using the exact wire contract
+	condVals := make(map[int]bool)
+	for i := range ops {
+		op := &ops[i]
+		taken := true
+		for _, g := range op.Input.BranchGates {
+			if condVals[g.CondID] != g.WantTrue {
+				taken = false
+				break
+			}
+		}
+		if !taken {
+			op.Skipped = true
+			if op.OnSkipped != nil {
+				op.OnSkipped()
+			}
+			continue
+		}
+		if op.Decorators.IsAbort {
+			return runtime.TranslateWireError(op, errors.New("SQLSTATE 22003: integer out of range"))
+		}
+		if op.HasResultCols {
+			// Render clean core statement for mirror SQLite execution
+			coreSQL := runtime.BuildComposedSQL(op.Desc, &runtime.RenderInput{
+				ColMask:   op.Input.ColMask,
+				FlagMask:  op.Input.FlagMask,
+				OrderSpec: op.Input.OrderSpec,
+				HasSeek:   op.Input.HasSeek,
+				SliceLens: op.Input.SliceLens,
+				TupleLens: op.Input.TupleLens,
+				Subs:      op.Input.Subs,
+			}, runtime.DialectQuestion)
+			rows, err := c.sqliteDB.QueryContext(ctx, coreSQL, op.Args...)
+			if err != nil {
+				return err
+			}
+			n, scanErr := op.ScanWireRows(rows)
+			_ = rows.Close()
+			if scanErr != nil {
+				return scanErr
+			}
+			op.RowCount = n
+		} else {
+			coreSQL := runtime.BuildComposedSQL(op.Desc, &runtime.RenderInput{
+				ColMask:   op.Input.ColMask,
+				FlagMask:  op.Input.FlagMask,
+				OrderSpec: op.Input.OrderSpec,
+				HasSeek:   op.Input.HasSeek,
+				SliceLens: op.Input.SliceLens,
+				TupleLens: op.Input.TupleLens,
+				Subs:      op.Input.Subs,
+			}, runtime.DialectQuestion)
+			res, err := c.sqliteDB.ExecContext(ctx, coreSQL, op.Args...)
+			if err != nil {
+				return err
+			}
+			aff, _ := res.RowsAffected()
+			op.RowCount = aff
+		}
+		if op.Decorators.AssertRows >= 0 && op.RowCount != op.Decorators.AssertRows {
+			return runtime.TranslateWireError(op, errors.New("SQLSTATE 22003: numeric value out of range"))
+		}
+		if op.OnDone != nil {
+			op.OnDone(op.RowCount, nil)
+		}
+		if op.Decorators.ProduceCond != nil {
+			v := op.Decorators.ProduceCond.EvalGoFn()
+			op.CondVal = v
+			op.CondSet = true
+			condVals[op.Decorators.CondID] = v
+		}
+		for _, ec := range op.ExtraConds {
+			if ec.Cond != nil {
+				condVals[ec.CondID] = ec.Cond.EvalGoFn()
+			}
+		}
+	}
+	return nil
+}
+
+type parityWireTx struct{}
+
+func (t *parityWireTx) Commit() error   { return nil }
+func (t *parityWireTx) Rollback() error { return nil }
+
+type parityWireConnector struct {
+	sqliteDB *sql.DB
+}
+
+func (c *parityWireConnector) Connect(context.Context) (driver.Conn, error) {
+	return &parityWireConn{sqliteDB: c.sqliteDB}, nil
+}
+
+func (c *parityWireConnector) Driver() driver.Driver { return nil }
+
+func TestPropertyPipelineWireVsSequentialParity(t *testing.T) {
+	seqDB, seqQ := setupE2EDB(t)
+	wireMirrorDB, _ := setupE2EDB(t)
+	wireDB := sql.OpenDB(runtime.WrapConnector(&parityWireConnector{sqliteDB: wireMirrorDB}))
+	defer func() { _ = wireDB.Close() }()
+	wireQ := New(wireDB)
+	defer func() { _ = wireQ.Close() }()
+
+	ctx := context.Background()
+	for i := int64(1); i <= 5; i++ {
+		if _, err := seqQ.CreateUser(ctx, i, 1, fmt.Sprintf("u%d@p.com", i), "member", i*10, ""); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := wireMirrorDB.Exec(`INSERT INTO users (id, org_id, email, role, score, bio) VALUES (?, 1, ?, 'member', ?, '')`, i, fmt.Sprintf("u%d@p.com", i), i*10); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	rng := rand.New(rand.NewPCG(4242, 9999))
+	errCustomAbort := errors.New("custom pipeline abort")
+
+	for trial := 0; trial < 40; trial++ {
+		targetID := int64(1 + rng.IntN(7)) // IDs 1..5 exist, 6..7 do not exist
+		minScore := int64(rng.IntN(60))
+		triggerAbort := rng.IntN(5) == 0
+
+		runDAG := func(q *Queries) (User, error, bool, bool, error) {
+			var getFut *runtime.RowFuture[User]
+			var ifRes *IfResult
+			err := q.PipelineTx(ctx, nil, func(p *Pipeline) error {
+				getFut = p.GetUserByID(targetID)
+				cond := WhereCol(getFut, fmt.Sprintf("score >= %d", minScore), func(u User) bool {
+					return u.Score >= minScore
+				}).And(getFut.Found())
+
+				ifRes = p.If(cond, func(p *Pipeline) {
+					p.CreateUser(100+int64(trial), 1, "then@p.com", "admin", 99, "ok").AssertRowsAffected(1)
+				}, func(p *Pipeline) {
+					if triggerAbort {
+						p.Abort(errCustomAbort)
+					} else {
+						p.CreateUser(200+int64(trial), 1, "else@p.com", "guest", 1, "else").AssertFound()
+					}
+				})
+				return nil
+			})
+			u, getErr := getFut.Get()
+			return u, getErr, ifRes.Taken(), ifRes.Skipped(), err
+		}
+
+		uSeq, getErrSeq, takenSeq, skippedSeq, errSeq := runDAG(seqQ)
+		uWire, getErrWire, takenWire, skippedWire, errWire := runDAG(wireQ)
+
+		if (errSeq != nil) != (errWire != nil) || !errors.Is(errSeq, errCustomAbort) == errors.Is(errWire, errCustomAbort) {
+			t.Fatalf("trial %d: pipeline error mismatch: seq=%v wire=%v", trial, errSeq, errWire)
+		}
+		if errSeq == nil {
+			if uSeq != uWire || (getErrSeq != nil) != (getErrWire != nil) || takenSeq != takenWire || skippedSeq != skippedWire {
+				t.Fatalf("trial %d parity mismatch: seq=(%+v, %v, taken=%v) wire=(%+v, %v, taken=%v)",
+					trial, uSeq, getErrSeq, takenSeq, uWire, getErrWire, takenWire)
+			}
+		}
+	}
+	_ = seqDB
+}
+
+// ============================================================================
+// Section 12.2: MaxOpenConns(1) Live SQLite Deadlock Gate
+// ============================================================================
+
+func TestMaxOpenConns1DeadlockGate(t *testing.T) {
+	db, q := setupE2EDB(t)
+	db.SetMaxOpenConns(1)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	// 1. Warm statements into Tier 2 while MaxOpenConns(1) is active
+	for i := int64(1); i <= 4; i++ {
+		if _, err := q.CreateUser(ctx, i, 1, fmt.Sprintf("m%d@x.com", i), "admin", i*10, ""); err != nil {
+			t.Fatalf("CreateUser(%d): %v", i, err)
+		}
+	}
+
+	// 2. Seq iterator with early break followed immediately by a write on the single connection
+	for u, err := range q.ListUsersByIDsSeq(ctx, []int64{1, 2, 3, 4}) {
+		if err != nil {
+			t.Fatalf("ListUsersByIDsSeq: %v", err)
+		}
+		if u.ID == 2 {
+			break
+		}
+	}
+	if _, err := q.GetUserByID(ctx, 1); err != nil {
+		t.Fatalf("GetUserByID after Seq early break: %v", err)
+	}
+
+	// 3. InTx executing Tier-2 cached statements, unseen variations, Batch, Stream, and nested InTx
+	if err := q.InTx(ctx, nil, func(txQ *Queries) error {
+		if _, err := txQ.GetUserByID(ctx, 1); err != nil {
+			return err
+		}
+		// Unseen slice length inside transaction when MaxOpenConns == 1 must not deadlock trying to db.PrepareContext
+		if _, err := txQ.ListUsersByIDs(ctx, []int64{1, 2, 3}); err != nil {
+			return err
+		}
+		if _, err := txQ.InsertUsersBatchReturningBatch(ctx, []BatchUserInput{
+			{ID: 10, Name: "b10", Points: 1},
+			{ID: 11, Name: "b11", Points: 2},
+		}); err != nil {
+			return err
+		}
+		if _, err := txQ.UpdateUsersBatchFromValuesStream(ctx, runtime.FromSlice([]BatchBonusInput{
+			{ID: 10, Bonus: 5},
+			{ID: 11, Bonus: 5},
+		})); err != nil {
+			return err
+		}
+		return txQ.InTxOpts(ctx, nil, func(innerQ *Queries) error {
+			_, err := innerQ.GetUserByID(ctx, 2)
+			return err
+		})
+	}); err != nil {
+		t.Fatalf("InTx with MaxOpenConns(1) deadlocked or failed: %v", err)
+	}
+
+	// 4. Pipeline and PipelineTx on MaxOpenConns(1)
+	p := q.Pipeline(ctx)
+	rf := p.GetUserByID(1)
+	if err := p.Flush(); err != nil {
+		t.Fatalf("Pipeline.Flush on MaxOpenConns(1): %v", err)
+	}
+	if u, err := rf.Get(); err != nil || u.ID != 1 {
+		t.Fatalf("Pipeline GetUserByID(1): %+v, %v", u, err)
+	}
+
+	if err := q.PipelineTx(ctx, nil, func(ptx *Pipeline) error {
+		uFut := ptx.GetUserByID(2)
+		ptx.If(uFut.Found(), func(ptx *Pipeline) {
+			ptx.CreateUser(99, 1, "p99@x.com", "member", 50, "bio")
+		}, nil)
+		return nil
+	}); err != nil {
+		t.Fatalf("PipelineTx on MaxOpenConns(1): %v", err)
+	}
+
+	// 5. Manual WithTx + Close
+	tx, err := db.BeginTx(ctx, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	txQ := q.WithTx(tx)
+	if _, err := txQ.GetUserByID(ctx, 99); err != nil {
 		_ = tx.Rollback()
-		return err
+		t.Fatalf("WithTx GetUserByID(99): %v", err)
 	}
-	return tx.Commit()
-}
-
-type BatchUserInput struct {
-	ID     int64
-	Name   string
-	Points int64
-}
-
-type BatchBonusInput struct {
-	ID    int64
-	Bonus int64
-}
-
-type User struct {
-	ID    int64
-	OrgID int64
-	Email string
-	Role  string
-	Score int64
-	Bio   string
-}
-
-type SelectUserProfileSubsetRow struct {
-	ID    int64
-	Email string
-	Role  string
-	Score int64
-	Bio   string
-}
-
-type SearchUsersCoupledRow struct {
-	ID    int64
-	Email string
-	Name  string
-}
-
-type PageUsersRow struct {
-	ID    int64
-	Role  string
-	Score int64
-	Email string
-}
-
-type UsersFromCTEAndInSubqueryRow struct {
-	ID    int64
-	Email string
-}
-
-type InsertUsersBatchReturningRow struct {
-	ID     int64
-	Name   string
-	Points int64
-}
-
-const stmtIDCreateUser uint32 = 1
-
-type paramsCreateUser struct {
-	ID    int64
-	OrgID int64
-	Email string
-	Role  string
-	Score int64
-	Bio   string
-}
-
-var descCreateUser = &runtime.QueryDescriptor{
-	Segments: []string{"INSERT INTO users (id, org_id, email, role, score, bio)\nVALUES (", ", ", ", ", ", ", ", ", ", ", ")"},
-	Slots: []runtime.Slot{
-		{Kind: runtime.SlotScalar},
-		{Kind: runtime.SlotScalar},
-		{Kind: runtime.SlotScalar},
-		{Kind: runtime.SlotScalar},
-		{Kind: runtime.SlotScalar},
-		{Kind: runtime.SlotScalar},
-	},
-}
-
-func expandCreateUserParams(dst *[]any, p paramsCreateUser) error {
-	_ = p
-	*dst = append(*dst, p.ID)
-	*dst = append(*dst, p.OrgID)
-	*dst = append(*dst, p.Email)
-	*dst = append(*dst, p.Role)
-	*dst = append(*dst, p.Score)
-	*dst = append(*dst, p.Bio)
-	return nil
-}
-
-func expandCreateUserArgs(dst *[]any, q *runtime.Query) error {
-	return expandCreateUserParams(dst, q.Params.(paramsCreateUser))
-}
-
-func computeCreateUserKey(p paramsCreateUser) (runtime.VariantKey, uint64, uint64, int) {
-	_ = p
-	var colMask uint64
-	var flagMask uint64
-	var orderSpec runtime.Order
-	var hasSeek bool
-	orderKey := runtime.EncodeOrderKey(orderSpec, hasSeek)
-	approxArgs := 10
-	vk := runtime.MakeVariantKey(stmtIDCreateUser, colMask, flagMask, orderKey)
-	return vk, colMask, flagMask, approxArgs
-}
-
-func prepareCreateUser(id int64, orgID int64, email string, role string, score int64, bio string) (runtime.Query, runtime.VariantKey, int) {
-	p := paramsCreateUser{
-		ID:    id,
-		OrgID: orgID,
-		Email: email,
-		Role:  role,
-		Score: score,
-		Bio:   bio,
+	_ = txQ.Close()
+	if err := tx.Commit(); err != nil {
+		t.Fatal(err)
 	}
-	vk, colMask, flagMask, approxArgs := computeCreateUserKey(p)
-	var orderSpec runtime.Order
-	var hasSeek bool
-	orderKey := runtime.EncodeOrderKey(orderSpec, hasSeek)
-	var sliceLens []int
-	var tupleLens []int
-	var subs []runtime.Query
-	shapeTag := runtime.ComputeSubqueryShape(stmtIDCreateUser, colMask, flagMask, orderKey, false)
-	qVal := runtime.Query{
-		StmtID: stmtIDCreateUser,
-		Desc:   descCreateUser,
-		Input: runtime.RenderInput{
-			ColMask:   colMask,
-			FlagMask:  flagMask,
-			OrderSpec: orderSpec,
-			HasSeek:   hasSeek,
-			SliceLens: sliceLens,
-			TupleLens: tupleLens,
-			Subs:      subs,
-		},
-		Params:   p,
-		Expand:   expandCreateUserArgs,
-		ShapeTag: shapeTag,
-	}
-	return qVal, vk, approxArgs
 }
 
-func (q *Queries) CreateUser(ctx context.Context, id int64, orgID int64, email string, role string, score int64, bio string) (sql.Result, error) {
-	p := paramsCreateUser{
-		ID:    id,
-		OrgID: orgID,
-		Email: email,
-		Role:  role,
-		Score: score,
-		Bio:   bio,
+// ============================================================================
+// Additional Generator & E2E Coverage Tests
+// ============================================================================
+
+func TestGeneratorAndE2EAdditionalCoverage(t *testing.T) {
+	_, q := setupE2EDB(t)
+	ctx := context.Background()
+
+	// Exercise Stream methods, Pipeline methods, and helper methods on e2e_gen_test.go
+	_ = NewWithCache(nil, nil)
+	_ = q.CacheStats()
+	_ = q.WithPrepared(false)
+
+	batchIn := []BatchUserInput{
+		{ID: 2, Name: "b", Points: 20},
+		{ID: 1, Name: "a", Points: 10},
 	}
-	vk, colMask, flagMask, approxArgs := computeCreateUserKey(p)
-	argBuf := runtime.AcquireArgs(approxArgs)
-	defer runtime.ReleaseArgs(argBuf)
-	if err := expandCreateUserParams(argBuf, p); err != nil {
-		return nil, err
+	if _, err := q.InsertUsersBatchReturning(ctx, batchIn); err != nil {
+		t.Fatalf("InsertUsersBatchReturning: %v", err)
 	}
-	buildSQL := func() string {
-		qVal, _, _ := prepareCreateUser(id, orgID, email, role, score, bio)
-		return runtime.BuildComposedSQL(qVal.Desc, &qVal.Input, sqlDialect)
+	if _, err := q.InsertUsersBatchReturningInto(ctx, nil, []BatchUserInput{{ID: 3, Name: "c", Points: 30}}); err != nil {
+		t.Fatalf("InsertUsersBatchReturningInto: %v", err)
 	}
-	return q.cache.Exec(ctx, q.db, q.txCache, q.usePrepared, vk, stmtIDCreateUser, runtime.ComputeBatchShapeTag(colMask, flagMask), 0, &q.fastSlots[0], buildSQL, (*argBuf)...)
+	for _, err := range q.InsertUsersBatchReturningSeq(ctx, []BatchUserInput{{ID: 4, Name: "d", Points: 40}}) {
+		if err != nil {
+			t.Fatalf("InsertUsersBatchReturningSeq: %v", err)
+		}
+	}
+	_ = q.InsertUsersBatchReturningEach(ctx, []BatchUserInput{{ID: 5, Name: "e", Points: 50}}, func(InsertUsersBatchReturningRow) error { return nil })
+	_ = q.InsertUsersBatchReturningBatchEach(ctx, []BatchUserInput{{ID: 6, Name: "f", Points: 60}}, func(InsertUsersBatchReturningRow) error { return nil })
+	if _, err := q.InsertUsersBatchReturningStream(ctx, runtime.FromSlice([]BatchUserInput{{ID: 7, Name: "g", Points: 70}})); err != nil {
+		t.Fatalf("InsertUsersBatchReturningStream: %v", err)
+	}
+
+	bonusIn := []BatchBonusInput{{ID: 2, Bonus: 20}, {ID: 1, Bonus: 10}}
+	if _, err := q.UpdateUsersBatchFromValues(ctx, bonusIn); err != nil {
+		t.Fatalf("UpdateUsersBatchFromValues: %v", err)
+	}
+	if _, err := q.UpdateUsersBatchFromValuesStreamSeq(ctx, runtime.FromSlice(bonusIn)); err != nil {
+		t.Fatalf("UpdateUsersBatchFromValuesStreamSeq: %v", err)
+	}
+
+	quadIn := []QuadInput{{ID: 100, GroupKey: "g", Priority: 1, CreatedTs: 1}}
+	if _, err := q.InsertQuadBatch(ctx, quadIn); err != nil {
+		t.Fatalf("InsertQuadBatch: %v", err)
+	}
+	if _, err := q.InsertQuadBatchStream(ctx, runtime.FromSlice([]QuadInput{{ID: 101, GroupKey: "g", Priority: 1, CreatedTs: 2}})); err != nil {
+		t.Fatalf("InsertQuadBatchStream: %v", err)
+	}
+	if _, err := q.InsertQuadBatchStreamSeq(ctx, runtime.FromSlice([]QuadInput{{ID: 102, GroupKey: "g", Priority: 1, CreatedTs: 3}})); err != nil {
+		t.Fatalf("InsertQuadBatchStreamSeq: %v", err)
+	}
+
+	_, _ = q.CreateUser(ctx, 1, 1, "u1@c.com", "admin", 10, "bio")
+
+	for _, err := range q.SelectUserProfileSubsetSeq(ctx, SelectUserProfileSubsetParams{OrgID: 1}) {
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	_ = q.SelectUserProfileSubsetEach(ctx, SelectUserProfileSubsetParams{OrgID: 1}, func(SelectUserProfileSubsetRow) error { return nil })
+
+	for _, err := range q.SearchUsersCoupledSeq(ctx, SearchUsersCoupledParams{}) {
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	_ = q.SearchUsersCoupledEach(ctx, SearchUsersCoupledParams{}, func(SearchUsersCoupledRow) error { return nil })
+	_ = q.SearchUsersCoupledQuery(SearchUsersCoupledParams{})
+
+	for _, err := range q.PageUsersSeq(ctx, PageUsersParams{Limit: 5}) {
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	_ = q.PageUsersEach(ctx, PageUsersParams{Limit: 5}, func(PageUsersRow) error { return nil })
+	_, _ = q.PageUsersInto(ctx, nil, PageUsersParams{Limit: 5})
+
+	for _, err := range q.UsersFromCTEAndInSubquerySeq(ctx, q.PageUsersQuery(PageUsersParams{Limit: 5}), q.SubUserIDsByScoreQuery(0)) {
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	_ = q.UsersFromCTEAndInSubqueryEach(ctx, q.PageUsersQuery(PageUsersParams{Limit: 5}), q.SubUserIDsByScoreQuery(0), func(UsersFromCTEAndInSubqueryRow) error { return nil })
+	_, _ = q.UsersFromCTEAndInSubqueryInto(ctx, nil, q.PageUsersQuery(PageUsersParams{Limit: 5}), q.SubUserIDsByScoreQuery(0))
+	_ = q.UsersFromCTEAndInSubqueryQuery(q.PageUsersQuery(PageUsersParams{Limit: 5}), q.SubUserIDsByScoreQuery(0))
+
+	for _, err := range q.PageQuadSeq(ctx, PageQuadParams{Limit: 5}) {
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	_ = q.PageQuadEach(ctx, PageQuadParams{Limit: 5}, func(QuadItem) error { return nil })
+	_, _ = q.PageQuadInto(ctx, nil, PageQuadParams{Limit: 5})
+
+	// Pipeline queueing methods for all statements
+	pl := q.Pipeline(ctx)
+	_ = pl.ListUsersByIDs([]int64{1})
+	_ = pl.SelectUserProfileSubset(SelectUserProfileSubsetParams{OrgID: 1})
+	_ = pl.SearchUsersCoupled(SearchUsersCoupledParams{})
+	_ = pl.PageUsers(PageUsersParams{Limit: 5})
+	_ = pl.UsersFromCTEAndInSubquery(q.PageUsersQuery(PageUsersParams{Limit: 5}), q.SubUserIDsByScoreQuery(0))
+	_ = pl.InsertUsersBatchReturning([]BatchUserInput{{ID: 20, Name: "p", Points: 1}})
+	_ = pl.UpdateUsersBatchFromValues([]BatchBonusInput{{ID: 20, Bonus: 1}})
+	_ = pl.InsertQuadBatch([]QuadInput{{ID: 200, GroupKey: "g", Priority: 1, CreatedTs: 1}})
+	_ = pl.PageQuad(PageQuadParams{Limit: 5})
+	if err := pl.Exec(); err != nil {
+		t.Fatalf("pl.Exec(): %v", err)
+	}
 }
 
-const stmtIDGetUserByID uint32 = 2
-
-type paramsGetUserByID struct {
-	ID int64
-}
-
-var descGetUserByID = &runtime.QueryDescriptor{
-	Segments: []string{"SELECT id, org_id, email, role, score, bio\nFROM users\nWHERE id = ", ""},
-	Slots: []runtime.Slot{
-		{Kind: runtime.SlotScalar},
-	},
-}
-
-func expandGetUserByIDParams(dst *[]any, p paramsGetUserByID) error {
-	_ = p
-	*dst = append(*dst, p.ID)
-	return nil
-}
-
-func expandGetUserByIDArgs(dst *[]any, q *runtime.Query) error {
-	return expandGetUserByIDParams(dst, q.Params.(paramsGetUserByID))
-}
-
-func computeGetUserByIDKey(p paramsGetUserByID) (runtime.VariantKey, uint64, uint64, int) {
-	_ = p
-	var colMask uint64
-	var flagMask uint64
-	var orderSpec runtime.Order
-	var hasSeek bool
-	orderKey := runtime.EncodeOrderKey(orderSpec, hasSeek)
-	approxArgs := 5
-	vk := runtime.MakeVariantKey(stmtIDGetUserByID, colMask, flagMask, orderKey)
-	return vk, colMask, flagMask, approxArgs
-}
-
-func prepareGetUserByID(id int64) (runtime.Query, runtime.VariantKey, int) {
-	p := paramsGetUserByID{
-		ID: id,
+func TestGeneratorValidatorAndParserBranches(t *testing.T) {
+	// Exercise remaining validation and parser branches in generator.go
+	errCases := []sqlgen.Config{
+		{Version: "99", PackageName: "p", Statements: []sqlgen.StatementSpec{{Name: "S", Kind: sqlgen.KindExec, SQL: "DELETE FROM t"}}},
+		{Version: "1", PackageName: "123bad", Statements: []sqlgen.StatementSpec{{Name: "S", Kind: sqlgen.KindExec, SQL: "DELETE FROM t"}}},
+		{Version: "1", PackageName: "p", Dialect: "oracle", Statements: []sqlgen.StatementSpec{{Name: "S", Kind: sqlgen.KindExec, SQL: "DELETE FROM t"}}},
+		{Version: "1", PackageName: "p", Statements: nil},
+		{Version: "1", PackageName: "p", Statements: []sqlgen.StatementSpec{
+			{Name: "Dup", Kind: sqlgen.KindExec, SQL: "DELETE FROM t"},
+			{Name: "Dup", Kind: sqlgen.KindExec, SQL: "DELETE FROM t"},
+		}},
+		{Version: "1", PackageName: "p", Statements: []sqlgen.StatementSpec{
+			{Name: "123bad", Kind: sqlgen.KindExec, SQL: "DELETE FROM t"},
+		}},
+		{Version: "1", PackageName: "p", Statements: []sqlgen.StatementSpec{
+			{Name: "EmptySQL", Kind: sqlgen.KindExec, SQL: "   "},
+		}},
+		{Version: "1", PackageName: "p", Statements: []sqlgen.StatementSpec{
+			{Name: "BadKind", Kind: "invalid_kind", SQL: "SELECT 1"},
+		}},
+		{Version: "1", PackageName: "p", Statements: []sqlgen.StatementSpec{
+			{Name: "ExecWithCols", Kind: sqlgen.KindExec, SQL: "SELECT id:int64 FROM t"},
+		}},
+		{Version: "1", PackageName: "p", Statements: []sqlgen.StatementSpec{
+			{Name: "OneNoCols", Kind: sqlgen.KindOne, SQL: "UPDATE t SET a = 1"},
+		}},
+		{Version: "1", PackageName: "p", Statements: []sqlgen.StatementSpec{
+			{Name: "SeekWithoutOrder", Kind: sqlgen.KindMany, SQL: "SELECT id:int64 FROM t WHERE Seek:sqlgen.Seek"},
+		}},
+		{Version: "1", PackageName: "p", Statements: []sqlgen.StatementSpec{
+			{Name: "OrderUnknownCol", Kind: sqlgen.KindMany, SQL: "SELECT id:int64 FROM t ORDER BY Order:sqlgen.Order(missing_col)"},
+		}},
+		{Version: "1", PackageName: "p", Statements: []sqlgen.StatementSpec{
+			{Name: "NonOrderablePresort", Kind: sqlgen.KindMany, SQL: "SELECT id:int64 FROM t WHERE meta IN (Metas:[]json.RawMessage ASC)"},
+		}},
+		{Version: "1", PackageName: "p", Statements: []sqlgen.StatementSpec{
+			{Name: "ConflictingParamTypes", Kind: sqlgen.KindMany, SQL: "SELECT id:int64 FROM t WHERE id = ID:int64 OR id = ID:string"},
+		}},
+		{Version: "1", PackageName: "p", Statements: []sqlgen.StatementSpec{
+			{Name: "ConflictingSortDirs", Kind: sqlgen.KindMany, SQL: "SELECT id:int64 FROM t WHERE id IN (IDs:[]int64 ASC) OR id IN (IDs:[]int64 DESC)"},
+		}},
+		{Version: "1", PackageName: "p", Statements: []sqlgen.StatementSpec{
+			{Name: "T1", Kind: sqlgen.KindExec, SQL: "INSERT INTO t (a, b) VALUES Rows:[]SharedTup(A:int64, B:string)"},
+			{Name: "T2", Kind: sqlgen.KindExec, SQL: "INSERT INTO t (a, b) VALUES Rows:[]SharedTup(A:int64, B:int64)"},
+		}},
 	}
-	vk, colMask, flagMask, approxArgs := computeGetUserByIDKey(p)
-	var orderSpec runtime.Order
-	var hasSeek bool
-	orderKey := runtime.EncodeOrderKey(orderSpec, hasSeek)
-	var sliceLens []int
-	var tupleLens []int
-	var subs []runtime.Query
-	shapeTag := runtime.ComputeSubqueryShape(stmtIDGetUserByID, colMask, flagMask, orderKey, false)
-	qVal := runtime.Query{
-		StmtID: stmtIDGetUserByID,
-		Desc:   descGetUserByID,
-		Input: runtime.RenderInput{
-			ColMask:   colMask,
-			FlagMask:  flagMask,
-			OrderSpec: orderSpec,
-			HasSeek:   hasSeek,
-			SliceLens: sliceLens,
-			TupleLens: tupleLens,
-			Subs:      subs,
-		},
-		Params:   p,
-		Expand:   expandGetUserByIDArgs,
-		ShapeTag: shapeTag,
+	for i, cfg := range errCases {
+		if _, err := sqlgen.Generate(cfg); err == nil {
+			t.Fatalf("errCase %d (%+v) expected error, got nil", i, cfg)
+		}
 	}
-	return qVal, vk, approxArgs
+
+	// Test custom runtime_import alias, DESC slice presort, time.Time / []byte tuple presort, and scalar_result on kind: many
+	advYAML := `version: "1"
+package: adv
+runtime_import: example.com/custom/sqlgenrt
+dialect: mysql
+statements:
+  - name: ListScoresDesc
+    kind: many
+    result_type: int64
+    sql: |
+      SELECT score:int64
+      FROM items
+      WHERE tag IN (Tags:[]string DESC)
+        AND created_at IN (Times:[]time.Time ASC)
+        AND hash IN (Hashes:[][]byte DESC)
+  - name: UpsertEvents
+    kind: exec
+    sql: |
+      INSERT INTO events (id, ts, raw_hash)
+      VALUES Rows:[]EventTuple('const ''lit''', "dq""col", ` + "`bt``col`" + `, ID:int64::bigint DESC, TS:time.Time::timestamptz(6) ASC, RawHash:[]byte::bytea[] DESC)
+      ON DUPLICATE KEY UPDATE ts = VALUES(ts)
+  - name: DeleteBatchWithFlags
+    kind: exec
+    params_struct: true
+    sql: |
+      DELETE FROM events
+      WHERE org_id = OrgID:int64::bigint
+        AND id IN (IDs:[]int64 ASC)
+        {?WithCutoff: AND 'a''b' = 'a''b' AND "c""d" = "c""d" AND ` + "`e``f` = `e``f`" + ` AND $$dlr$$ = $$dlr$$ -- line cmt
+        /* block cmt */ AND ts < Cutoff:int64 }
+  - name: ComplexParenTuple
+    kind: many
+    sql: |
+      INSERT INTO events (id, meta)
+      VALUES Rows:[]ParenTuple((1 + 2), 'x''y', "a""b", ` + "`c``d`" + `, $$tag$$, -- cmt
+      /* blk */ ID:int64, Meta:string)
+      RETURNING id:int64 -- trailing comment
+      /* block comment before terminator */ ;
+  - name: ReuseInlineSliceAndNonValuesTuple
+    kind: many
+    sql: |
+      SELECT u.id:int64, u.http_server_url:string AS HTTPServerVal:string
+      FROM users u
+      WHERE u.id IN (IDs:[]int64)
+        AND u.id IN (:IDs ASC)
+        AND u.id = _type:int64
+        AND u.id = :_type
+        AND u.hash IN (Hashes...:[]byte)
+        AND u.code IN (:Codes)
+        AND u.tag IN (:Tags)
+        AND (u.id, u.name) IN (Pairs:[]PairItem(UserIDVal:int64, Name:string))
+    params:
+      - "Codes:[]int64 DESC"
+      - "Tags:string..."
+  - name: StreamTupleWithExtraScalar
+    kind: exec
+    sql: |
+      INSERT INTO events (id, meta)
+      VALUES Rows:[]ParenTuple(ID:int64, Meta:string)
+      ON CONFLICT (id) DO UPDATE SET meta = Fallback:string
+`
+	if _, err := sqlgen.GenerateFromYAML([]byte(advYAML)); err != nil {
+		t.Fatalf("GenerateFromYAML(advYAML) failed: %v", err)
+	}
+
+	// Test ParseSQL directly
+	if parsed, err := sqlgen.ParseSQL("SELECT id:int64 FROM users WHERE id = ID:int64"); err != nil || len(parsed.Segments) == 0 {
+		t.Fatalf("ParseSQL failed: %v", err)
+	}
+	if _, err := sqlgen.ParseSQL("SELECT 'unclosed FROM users"); err == nil {
+		t.Fatalf("expected ParseSQL error on unclosed literal")
+	}
+
+	// Test WriteFileAtomic, GenerateFromYAMLFile, and GenerateFile
+	tmpDir := t.TempDir()
+	cfgFile := filepath.Join(tmpDir, "sqlgen.yaml")
+	outFile := filepath.Join(tmpDir, "custom_out.go")
+	validFileYAML := `version: "1"
+package: filepkg
+dialect: sqlite
+statements:
+  - name: Ping
+    kind: one
+    sql: SELECT 1 AS id:int64
+`
+	if err := sqlgen.WriteFileAtomic(cfgFile, []byte(validFileYAML)); err != nil {
+		t.Fatalf("WriteFileAtomic: %v", err)
+	}
+	if err := sqlgen.GenerateFile(cfgFile); err != nil {
+		t.Fatalf("GenerateFile: %v", err)
+	}
+	if err := sqlgen.GenerateFromYAMLFile(cfgFile, outFile); err != nil {
+		t.Fatalf("GenerateFromYAMLFile: %v", err)
+	}
+	if err := sqlgen.GenerateFromYAMLFile(filepath.Join(tmpDir, "missing.yaml"), ""); err == nil {
+		t.Fatalf("expected error on missing YAML file")
+	}
+	badCfgFile := filepath.Join(tmpDir, "bad_yaml.yaml")
+	_ = sqlgen.WriteFileAtomic(badCfgFile, []byte("version: \"2\"\n"))
+	if err := sqlgen.GenerateFromYAMLFile(badCfgFile, ""); err == nil {
+		t.Fatalf("expected error on invalid YAML file")
+	}
+	badSQLCfgFile := filepath.Join(tmpDir, "bad_sql.yaml")
+	_ = sqlgen.WriteFileAtomic(badSQLCfgFile, []byte("version: \"1\"\npackage: p\nstatements:\n  - name: S\n    kind: one\n    sql: SELECT 1\n"))
+	if err := sqlgen.GenerateFromYAMLFile(badSQLCfgFile, ""); err == nil {
+		t.Fatalf("expected error on invalid SQL in YAML file")
+	}
+	if err := sqlgen.WriteFileAtomic(tmpDir, []byte("x")); err == nil {
+		t.Fatalf("expected WriteFileAtomic error when target is a directory")
+	}
+	if err := sqlgen.WriteFileAtomic(filepath.Join(tmpDir, "no_such_dir", "x.go"), []byte("x")); err == nil {
+		t.Fatalf("expected WriteFileAtomic error on missing directory")
+	}
+
+	// Test YAML error paths in ParseYAML, ParamSpec.UnmarshalYAML, and ColumnSpec.UnmarshalYAML
+	badYAMLs := []string{
+		"",
+		"version: \"2\"\npackage: p\nstatements:\n  - name: S\n    kind: exec\n    sql: DELETE FROM t\n",
+		"version: \"1\"\npackage: p\n---\nextra: doc\n",
+		"version: \"1\"\npackage: p\nstatements:\n  - name: S\n    kind: exec\n    sql: DELETE FROM t\n    params:\n      - \"invalid_no_colon\"\n",
+		"version: \"1\"\npackage: p\nstatements:\n  - name: S\n    kind: exec\n    sql: DELETE FROM t\n    params:\n      - \":int64\"\n",
+		"version: \"1\"\npackage: p\nstatements:\n  - name: S\n    kind: exec\n    sql: DELETE FROM t\n    params:\n      - [1, 2]\n",
+		"version: \"1\"\npackage: p\nstatements:\n  - name: S\n    kind: exec\n    sql: DELETE FROM t\n    params:\n      - { name: ID, type: int64, slice: true }\n      - { name: [bad], type: int64 }\n",
+		"version: \"1\"\npackage: p\nstatements:\n  - name: S\n    kind: exec\n    sql: DELETE FROM t\n    params:\n      - { name: ID, type: [bad] }\n",
+		"version: \"1\"\npackage: p\nstatements:\n  - name: S\n    kind: exec\n    sql: DELETE FROM t\n    params:\n      - { name: ID, type: int64, slice: notabool }\n",
+		"version: \"1\"\npackage: p\nstatements:\n  - name: S\n    kind: exec\n    sql: DELETE FROM t\n    params:\n      - { name: ID }\n",
+		"version: \"1\"\npackage: p\nstatements:\n  - name: S\n    kind: exec\n    sql: DELETE FROM t\n    params:\n      - ID: [bad]\n",
+		"version: \"1\"\npackage: p\nstatements:\n  - name: S\n    kind: one\n    sql: SELECT id FROM t\n    columns:\n      - \"bad_col\"\n",
+		"version: \"1\"\npackage: p\nstatements:\n  - name: S\n    kind: one\n    sql: SELECT id FROM t\n    columns:\n      - [1, 2]\n",
+		"version: \"1\"\npackage: p\nstatements:\n  - name: S\n    kind: one\n    sql: SELECT id FROM t\n    columns:\n      - id: [bad]\n",
+		"version: \"1\"\npackage: p\nstatements:\n  - name: S\n    kind: one\n    sql: SELECT id FROM t\n    columns:\n      - { name: [bad], type: int64 }\n",
+		"version: \"1\"\npackage: p\nstatements:\n  - name: S\n    kind: one\n    sql: SELECT id FROM t\n    columns:\n      - { name: id, type: [bad] }\n",
+		"version: \"1\"\npackage: p\nstatements:\n  - name: S\n    kind: one\n    sql: SELECT id FROM t\n    columns:\n      - { name: id }\n",
+	}
+	for i, by := range badYAMLs {
+		if _, err := sqlgen.GenerateFromYAML([]byte(by)); err == nil {
+			t.Fatalf("badYAML[%d] expected error, got nil:\n%s", i, by)
+		}
+	}
+
+	// Test parseTupleBody and findConditionalBlockClose error paths via ParseSQL
+	badSQLs := []string{
+		"INSERT INTO t VALUES Rows:[]123Bad(A:int64)",
+		"INSERT INTO t VALUES Rows:[]Tup('unclosed, A:int64)",
+		"INSERT INTO t VALUES Rows:[]Tup(\"unclosed, A:int64)",
+		"INSERT INTO t VALUES Rows:[]Tup(`unclosed, A:int64)",
+		"INSERT INTO t VALUES Rows:[]Tup(A:int64...",
+		"INSERT INTO t VALUES Rows:[]Tup(A:[]string)",
+		"INSERT INTO t VALUES Rows:[]Tup(A:int64, a:int64)",
+		"INSERT INTO t VALUES Rows:[]Tup($$unclosed)",
+		"INSERT INTO t VALUES Rows:[]Tup(/* unclosed)",
+		"SELECT id:int64 FROM t WHERE 1=1 {?F: AND x = $$unclosed }",
+		"SELECT id:int64 FROM t WHERE 1=1 {?F: AND x = /* unclosed }",
+		"SELECT id:int64 FROM t WHERE (a, b) IN (Pairs:[]PairItem(A:int64",
+		"SELECT id:int64 FROM t WHERE (a, b) IN (Pairs:[]PairItem(bad))",
+		"SELECT id:int64 FROM t WHERE id IN (IDs:[]int64 ASC) AND id IN (:IDs DESC)",
+	}
+	for i, bsql := range badSQLs {
+		if _, err := sqlgen.ParseSQL(bsql); err == nil {
+			t.Fatalf("badSQL[%d] expected error, got nil: %s", i, bsql)
+		}
+	}
 }
 
-func GetUserByIDQuery(id int64) runtime.Query {
-	qVal, _, _ := prepareGetUserByID(id)
-	return qVal
-}
+// ============================================================================
+// Section 12.6: Native Go Fuzzing Targets (FuzzParseSQL, FuzzParseYAML)
+// ============================================================================
 
-func (q *Queries) GetUserByIDQuery(id int64) runtime.Query {
-	return GetUserByIDQuery(id)
-}
+func FuzzParseSQL(f *testing.F) {
+	f.Add("SELECT id:int64, email:string FROM users WHERE id = ID:int64")
+	f.Add("SELECT u.id:int64 {?WithBio: , u.bio:string } FROM users u WHERE Seek:sqlgen.Seek ORDER BY Order:sqlgen.Order(id) LIMIT Limit:int64")
+	f.Add("INSERT INTO items (id, name) VALUES Rows:[]ItemInput(ID:int64 ASC, Name:string) RETURNING id:int64")
+	f.Add("SELECT 'quoted :not_param {?NoFlag: 1}', $$dollar :not_param$$, /* comment :bad */ u.id::bigint AS id:int64 FROM users u")
 
-func (q *Queries) GetUserByID(ctx context.Context, id int64) (User, error) {
-	var zero User
-	p := paramsGetUserByID{
-		ID: id,
-	}
-	vk, colMask, flagMask, approxArgs := computeGetUserByIDKey(p)
-	_ = colMask
-	argBuf := runtime.AcquireArgs(approxArgs)
-	defer runtime.ReleaseArgs(argBuf)
-	if err := expandGetUserByIDParams(argBuf, p); err != nil {
-		return zero, err
-	}
-	buildSQL := func() string {
-		qVal, _, _ := prepareGetUserByID(id)
-		return runtime.BuildComposedSQL(qVal.Desc, &qVal.Input, sqlDialect)
-	}
-	row, ms, err := q.cache.QueryRow(ctx, q.db, q.txCache, q.usePrepared, vk, stmtIDGetUserByID, runtime.ComputeBatchShapeTag(colMask, flagMask), 0, &q.fastSlots[1], buildSQL, (*argBuf)...)
-	if err != nil {
-		return zero, err
-	}
-	var item User
-	var scanBuf [6]any
-	scanBuf[0] = &item.ID
-	scanBuf[1] = &item.OrgID
-	scanBuf[2] = &item.Email
-	scanBuf[3] = &item.Role
-	scanBuf[4] = &item.Score
-	scanBuf[5] = &item.Bio
-	scanSlice := scanBuf[:6]
-	err = row.Scan(scanSlice...)
-	if ms != nil {
-		_ = ms.Release()
-	}
-	if err != nil {
-		return zero, err
-	}
-	return item, nil
-}
-
-const stmtIDListUsersByIDs uint32 = 3
-
-type paramsListUsersByIDs struct {
-	IDs []int64
-}
-
-var descListUsersByIDs = &runtime.QueryDescriptor{
-	Segments: []string{"SELECT id, org_id, email, role, score, bio\nFROM users\nWHERE id IN (", ")\nORDER BY id ASC"},
-	Slots: []runtime.Slot{
-		{Kind: runtime.SlotSlice},
-	},
-	NumSlices: 1,
-}
-
-func expandListUsersByIDsParams(dst *[]any, p paramsListUsersByIDs) error {
-	_ = p
-	if len(p.IDs) == 0 {
-		return runtime.ErrEmptySliceParam
-	}
-	for _, v := range p.IDs {
-		*dst = append(*dst, v)
-	}
-	return nil
-}
-
-func expandListUsersByIDsArgs(dst *[]any, q *runtime.Query) error {
-	return expandListUsersByIDsParams(dst, q.Params.(paramsListUsersByIDs))
-}
-
-func computeListUsersByIDsKey(p paramsListUsersByIDs) (runtime.VariantKey, uint64, uint64, int) {
-	_ = p
-	var colMask uint64
-	var flagMask uint64
-	var orderSpec runtime.Order
-	var hasSeek bool
-	orderKey := runtime.EncodeOrderKey(orderSpec, hasSeek)
-	approxArgs := 5
-	var d0 uint64
-	d0 = uint64(len(p.IDs))
-	approxArgs += len(p.IDs)
-	vk := runtime.MakeVariantKey(stmtIDListUsersByIDs, colMask, flagMask, orderKey, d0)
-	return vk, colMask, flagMask, approxArgs
-}
-
-func prepareListUsersByIDs(ids []int64) (runtime.Query, runtime.VariantKey, int) {
-	p := paramsListUsersByIDs{
-		IDs: ids,
-	}
-	vk, colMask, flagMask, approxArgs := computeListUsersByIDsKey(p)
-	var orderSpec runtime.Order
-	var hasSeek bool
-	orderKey := runtime.EncodeOrderKey(orderSpec, hasSeek)
-	sliceLens := make([]int, 1)
-	var tupleLens []int
-	var subs []runtime.Query
-	sliceLens[0] = len(p.IDs)
-	shapeLens := make([]int, 0, 1)
-	shapeLens = append(shapeLens, sliceLens...)
-	shapeTag := runtime.ComputeSubqueryShape(stmtIDListUsersByIDs, colMask, flagMask, orderKey, false, shapeLens...)
-	qVal := runtime.Query{
-		StmtID: stmtIDListUsersByIDs,
-		Desc:   descListUsersByIDs,
-		Input: runtime.RenderInput{
-			ColMask:   colMask,
-			FlagMask:  flagMask,
-			OrderSpec: orderSpec,
-			HasSeek:   hasSeek,
-			SliceLens: sliceLens,
-			TupleLens: tupleLens,
-			Subs:      subs,
-		},
-		Params:   p,
-		Expand:   expandListUsersByIDsArgs,
-		ShapeTag: shapeTag,
-	}
-	return qVal, vk, approxArgs
-}
-
-func ListUsersByIDsQuery(ids []int64) runtime.Query {
-	qVal, _, _ := prepareListUsersByIDs(ids)
-	return qVal
-}
-
-func (q *Queries) ListUsersByIDsQuery(ids []int64) runtime.Query {
-	return ListUsersByIDsQuery(ids)
-}
-
-func (q *Queries) ListUsersByIDs(ctx context.Context, ids []int64) ([]User, error) {
-	return q.ListUsersByIDsInto(ctx, nil, ids)
-}
-
-func (q *Queries) ListUsersByIDsInto(ctx context.Context, dst []User, ids []int64) ([]User, error) {
-	p := paramsListUsersByIDs{
-		IDs: ids,
-	}
-	vk, colMask, flagMask, approxArgs := computeListUsersByIDsKey(p)
-	_ = colMask
-	argBuf := runtime.AcquireArgs(approxArgs)
-	defer runtime.ReleaseArgs(argBuf)
-	if err := expandListUsersByIDsParams(argBuf, p); err != nil {
-		return nil, err
-	}
-	buildSQL := func() string {
-		qVal, _, _ := prepareListUsersByIDs(ids)
-		return runtime.BuildComposedSQL(qVal.Desc, &qVal.Input, sqlDialect)
-	}
-	rows, ms, err := q.cache.Query(ctx, q.db, q.txCache, q.usePrepared, vk, stmtIDListUsersByIDs, runtime.ComputeBatchShapeTag(colMask, flagMask), 0, nil, buildSQL, (*argBuf)...)
-	if err != nil {
-		return nil, err
-	}
-	var item User
-	var scanBuf [6]any
-	scanBuf[0] = &item.ID
-	scanBuf[1] = &item.OrgID
-	scanBuf[2] = &item.Email
-	scanBuf[3] = &item.Role
-	scanBuf[4] = &item.Score
-	scanBuf[5] = &item.Bio
-	scanSlice := scanBuf[:6]
-	for rows.Next() {
-		item = User{}
-		if err := rows.Scan(scanSlice...); err != nil {
-			_ = rows.Close()
-			if ms != nil {
-				_ = ms.Release()
+	f.Fuzz(func(t *testing.T, sqlText string) {
+		_, _ = sqlgen.ParseSQL(sqlText)
+		for _, kind := range []sqlgen.StatementKind{sqlgen.KindOne, sqlgen.KindMany, sqlgen.KindExec, sqlgen.KindSubquery} {
+			cfg := sqlgen.Config{
+				Version:     "1",
+				PackageName: "fuzzpkg",
+				Dialect:     "postgres",
+				Statements: []sqlgen.StatementSpec{
+					{
+						Name: "FuzzStmt",
+						Kind: kind,
+						SQL:  sqlText,
+					},
+				},
 			}
-			return nil, err
+			src, err := sqlgen.Generate(cfg)
+			if err == nil && len(src) > 0 {
+				fset := token.NewFileSet()
+				if _, parseErr := parser.ParseFile(fset, "fuzz.go", src, parser.AllErrors); parseErr != nil {
+					t.Fatalf("Generate succeeded but emitted invalid Go syntax: %v\nSQL: %q\nCode:\n%s", parseErr, sqlText, string(src))
+				}
+			}
 		}
-		dst = append(dst, item)
-	}
-	err = rows.Err()
-	_ = rows.Close()
-	if ms != nil {
-		_ = ms.Release()
-	}
-	if err != nil {
-		return nil, err
-	}
-	return dst, nil
+	})
 }
 
-func (q *Queries) ListUsersByIDsSeq(ctx context.Context, ids []int64) iter.Seq2[User, error] {
-	return func(yield func(User, error) bool) {
-		var zero User
-		p := paramsListUsersByIDs{
-			IDs: ids,
-		}
-		vk, colMask, flagMask, approxArgs := computeListUsersByIDsKey(p)
-		_ = colMask
-		argBuf := runtime.AcquireArgs(approxArgs)
-		defer runtime.ReleaseArgs(argBuf)
-		if err := expandListUsersByIDsParams(argBuf, p); err != nil {
-			yield(zero, err)
+func FuzzParseYAML(f *testing.F) {
+	f.Add([]byte(e2eYAML))
+	f.Add([]byte("version: \"1\"\npackage: p\ndialect: sqlite\nstatements:\n  - name: S1\n    kind: one\n    sql: SELECT id:int64 FROM t WHERE id = :ID\n    params:\n      - ID: int64\n"))
+
+	f.Fuzz(func(t *testing.T, data []byte) {
+		cfg, err := sqlgen.ParseYAML(data)
+		if err != nil {
 			return
 		}
-		buildSQL := func() string {
-			qVal, _, _ := prepareListUsersByIDs(ids)
-			return runtime.BuildComposedSQL(qVal.Desc, &qVal.Input, sqlDialect)
-		}
-		rows, ms, err := q.cache.Query(ctx, q.db, q.txCache, q.usePrepared, vk, stmtIDListUsersByIDs, runtime.ComputeBatchShapeTag(colMask, flagMask), 0, nil, buildSQL, (*argBuf)...)
-		if err != nil {
-			yield(zero, err)
-			return
-		}
-		var item User
-		var scanBuf [6]any
-		scanBuf[0] = &item.ID
-		scanBuf[1] = &item.OrgID
-		scanBuf[2] = &item.Email
-		scanBuf[3] = &item.Role
-		scanBuf[4] = &item.Score
-		scanBuf[5] = &item.Bio
-		scanSlice := scanBuf[:6]
-		for rows.Next() {
-			item = User{}
-			if err := rows.Scan(scanSlice...); err != nil {
-				_ = rows.Close()
-				if ms != nil {
-					_ = ms.Release()
-				}
-				yield(zero, err)
-				return
-			}
-			if !yield(item, nil) {
-				_ = rows.Close()
-				if ms != nil {
-					_ = ms.Release()
-				}
-				return
+		src, err := sqlgen.Generate(cfg)
+		if err == nil && len(src) > 0 {
+			fset := token.NewFileSet()
+			if _, parseErr := parser.ParseFile(fset, "fuzz_yaml.go", src, parser.AllErrors); parseErr != nil {
+				t.Fatalf("GenerateFromYAML succeeded but emitted invalid Go syntax: %v\nYAML:\n%s\nCode:\n%s", parseErr, string(data), string(src))
 			}
 		}
-		err = rows.Err()
-		_ = rows.Close()
-		if ms != nil {
-			_ = ms.Release()
-		}
-		if err != nil {
-			yield(zero, err)
-		}
-	}
-}
-
-func (q *Queries) ListUsersByIDsEach(ctx context.Context, ids []int64, fn func(User) error) error {
-	for row, err := range q.ListUsersByIDsSeq(ctx, ids) {
-		if err != nil {
-			return err
-		}
-		if err := fn(row); err != nil {
-			return err
-		}
-	}
-	return nil
-}
-
-const stmtIDSelectUserProfileSubset uint32 = 4
-
-const (
-	SelectUserProfileSubsetColID    uint64 = 1 << 0
-	SelectUserProfileSubsetColEmail uint64 = 1 << 1
-	SelectUserProfileSubsetColRole  uint64 = 1 << 2
-	SelectUserProfileSubsetColScore uint64 = 1 << 3
-	SelectUserProfileSubsetColsAll  uint64 = (1 << 4) - 1
-)
-
-type SelectUserProfileSubsetParams struct {
-	OrgID      int64
-	WithExtra  bool
-	SelectCols uint64
-}
-
-var descSelectUserProfileSubset = &runtime.QueryDescriptor{
-	Segments: []string{"SELECT ", "\n", "\nFROM users u\nWHERE u.org_id = ", "\nORDER BY u.id ASC"},
-	Slots: []runtime.Slot{
-		{Kind: runtime.SlotSelectCols},
-		{Kind: runtime.SlotOptBlock, FlagBit: 0, Inner: &runtime.QueryDescriptor{
-			Segments: []string{" , u.bio "},
-		}},
-		{Kind: runtime.SlotScalar},
-	},
-	SelectColExprs: []string{"u.id", "u.email", "u.role", "u.score"},
-}
-
-func expandSelectUserProfileSubsetParams(dst *[]any, p SelectUserProfileSubsetParams) error {
-	_ = p
-	if p.WithExtra {
-	}
-	*dst = append(*dst, p.OrgID)
-	return nil
-}
-
-func expandSelectUserProfileSubsetArgs(dst *[]any, q *runtime.Query) error {
-	return expandSelectUserProfileSubsetParams(dst, q.Params.(SelectUserProfileSubsetParams))
-}
-
-func computeSelectUserProfileSubsetKey(p SelectUserProfileSubsetParams) (runtime.VariantKey, uint64, uint64, int) {
-	_ = p
-	var colMask uint64
-	colMask = p.SelectCols & SelectUserProfileSubsetColsAll
-	if colMask == 0 {
-		colMask = SelectUserProfileSubsetColsAll
-	}
-	var flagMask uint64
-	if p.WithExtra {
-		flagMask |= 1 << 0
-	}
-	var orderSpec runtime.Order
-	var hasSeek bool
-	orderKey := runtime.EncodeOrderKey(orderSpec, hasSeek)
-	approxArgs := 5
-	vk := runtime.MakeVariantKey(stmtIDSelectUserProfileSubset, colMask, flagMask, orderKey)
-	return vk, colMask, flagMask, approxArgs
-}
-
-func prepareSelectUserProfileSubset(p SelectUserProfileSubsetParams) (runtime.Query, runtime.VariantKey, int) {
-	vk, colMask, flagMask, approxArgs := computeSelectUserProfileSubsetKey(p)
-	var orderSpec runtime.Order
-	var hasSeek bool
-	orderKey := runtime.EncodeOrderKey(orderSpec, hasSeek)
-	var sliceLens []int
-	var tupleLens []int
-	var subs []runtime.Query
-	shapeTag := runtime.ComputeSubqueryShape(stmtIDSelectUserProfileSubset, colMask, flagMask, orderKey, false)
-	qVal := runtime.Query{
-		StmtID: stmtIDSelectUserProfileSubset,
-		Desc:   descSelectUserProfileSubset,
-		Input: runtime.RenderInput{
-			ColMask:   colMask,
-			FlagMask:  flagMask,
-			OrderSpec: orderSpec,
-			HasSeek:   hasSeek,
-			SliceLens: sliceLens,
-			TupleLens: tupleLens,
-			Subs:      subs,
-		},
-		Params:   p,
-		Expand:   expandSelectUserProfileSubsetArgs,
-		ShapeTag: shapeTag,
-	}
-	return qVal, vk, approxArgs
-}
-
-func SelectUserProfileSubsetQuery(p SelectUserProfileSubsetParams) runtime.Query {
-	qVal, _, _ := prepareSelectUserProfileSubset(p)
-	return qVal
-}
-
-func (q *Queries) SelectUserProfileSubsetQuery(p SelectUserProfileSubsetParams) runtime.Query {
-	return SelectUserProfileSubsetQuery(p)
-}
-
-func (q *Queries) SelectUserProfileSubset(ctx context.Context, p SelectUserProfileSubsetParams) ([]SelectUserProfileSubsetRow, error) {
-	return q.SelectUserProfileSubsetInto(ctx, nil, p)
-}
-
-func (q *Queries) SelectUserProfileSubsetInto(ctx context.Context, dst []SelectUserProfileSubsetRow, p SelectUserProfileSubsetParams) ([]SelectUserProfileSubsetRow, error) {
-	vk, colMask, flagMask, approxArgs := computeSelectUserProfileSubsetKey(p)
-	_ = colMask
-	argBuf := runtime.AcquireArgs(approxArgs)
-	defer runtime.ReleaseArgs(argBuf)
-	if err := expandSelectUserProfileSubsetParams(argBuf, p); err != nil {
-		return nil, err
-	}
-	buildSQL := func() string {
-		qVal, _, _ := prepareSelectUserProfileSubset(p)
-		return runtime.BuildComposedSQL(qVal.Desc, &qVal.Input, sqlDialect)
-	}
-	rows, ms, err := q.cache.Query(ctx, q.db, q.txCache, q.usePrepared, vk, stmtIDSelectUserProfileSubset, runtime.ComputeBatchShapeTag(colMask, flagMask), 0, nil, buildSQL, (*argBuf)...)
-	if err != nil {
-		return nil, err
-	}
-	var item SelectUserProfileSubsetRow
-	var scanBuf [5]any
-	scanCount := 0
-	effMask := colMask
-	if (effMask & (1 << 0)) != 0 {
-		scanBuf[scanCount] = &item.ID
-		scanCount++
-	}
-	if (effMask & (1 << 1)) != 0 {
-		scanBuf[scanCount] = &item.Email
-		scanCount++
-	}
-	if (effMask & (1 << 2)) != 0 {
-		scanBuf[scanCount] = &item.Role
-		scanCount++
-	}
-	if (effMask & (1 << 3)) != 0 {
-		scanBuf[scanCount] = &item.Score
-		scanCount++
-	}
-	if p.WithExtra {
-		scanBuf[scanCount] = &item.Bio
-		scanCount++
-	}
-	scanSlice := scanBuf[:scanCount]
-	for rows.Next() {
-		item = SelectUserProfileSubsetRow{}
-		if err := rows.Scan(scanSlice...); err != nil {
-			_ = rows.Close()
-			if ms != nil {
-				_ = ms.Release()
-			}
-			return nil, err
-		}
-		dst = append(dst, item)
-	}
-	err = rows.Err()
-	_ = rows.Close()
-	if ms != nil {
-		_ = ms.Release()
-	}
-	if err != nil {
-		return nil, err
-	}
-	return dst, nil
-}
-
-const stmtIDSearchUsersCoupled uint32 = 5
-
-const (
-	SearchUsersCoupledColID    uint64 = 1 << 0
-	SearchUsersCoupledColEmail uint64 = 1 << 1
-	SearchUsersCoupledColsAll  uint64 = (1 << 2) - 1
-)
-
-type SearchUsersCoupledParams struct {
-	OrgTiers   []string
-	OrgSub     runtime.Query
-	Roles      []string
-	WithOrg    bool
-	WithRoles  bool
-	SelectCols uint64
-}
-
-var descSearchUsersCoupled = &runtime.QueryDescriptor{
-	Segments: []string{"SELECT ", "\n", "\nFROM users u\n", "\nWHERE 1=1\n", "\n", "\nORDER BY u.id ASC"},
-	Slots: []runtime.Slot{
-		{Kind: runtime.SlotSelectCols},
-		{Kind: runtime.SlotOptBlock, FlagBit: 0, Inner: &runtime.QueryDescriptor{
-			Segments: []string{" , o.name "},
-		}},
-		{Kind: runtime.SlotOptBlock, FlagBit: 0, Inner: &runtime.QueryDescriptor{
-			Segments: []string{" LEFT JOIN orgs o ON o.id = u.org_id "},
-		}},
-		{Kind: runtime.SlotOptBlock, FlagBit: 0, Inner: &runtime.QueryDescriptor{
-			Segments: []string{" AND o.tier IN (", ") AND u.org_id IN (", ") "},
-			Slots: []runtime.Slot{
-				{Kind: runtime.SlotSlice},
-				{Kind: runtime.SlotQuery},
-			},
-			NumSlices: 1,
-			NumSubs:   1,
-		}},
-		{Kind: runtime.SlotOptBlock, FlagBit: 1, Inner: &runtime.QueryDescriptor{
-			Segments: []string{" AND u.role IN (", ") "},
-			Slots: []runtime.Slot{
-				{Kind: runtime.SlotSlice},
-			},
-			NumSlices: 1,
-		}},
-	},
-	SelectColExprs: []string{"u.id", "u.email"},
-	NumSlices:      2,
-	NumSubs:        1,
-}
-
-func expandSearchUsersCoupledParams(dst *[]any, p SearchUsersCoupledParams) error {
-	_ = p
-	if p.WithOrg {
-		if len(p.OrgTiers) == 0 {
-			return runtime.ErrEmptySliceParam
-		}
-		for _, v := range p.OrgTiers {
-			*dst = append(*dst, v)
-		}
-		if err := p.OrgSub.AppendArgs(dst); err != nil {
-			return err
-		}
-	}
-	if p.WithRoles {
-		if len(p.Roles) == 0 {
-			return runtime.ErrEmptySliceParam
-		}
-		for _, v := range p.Roles {
-			*dst = append(*dst, v)
-		}
-	}
-	return nil
-}
-
-func expandSearchUsersCoupledArgs(dst *[]any, q *runtime.Query) error {
-	return expandSearchUsersCoupledParams(dst, q.Params.(SearchUsersCoupledParams))
-}
-
-func computeSearchUsersCoupledKey(p SearchUsersCoupledParams) (runtime.VariantKey, uint64, uint64, int) {
-	_ = p
-	var colMask uint64
-	colMask = p.SelectCols & SearchUsersCoupledColsAll
-	if colMask == 0 {
-		colMask = SearchUsersCoupledColsAll
-	}
-	var flagMask uint64
-	if p.WithOrg {
-		flagMask |= 1 << 0
-	}
-	if p.WithRoles {
-		flagMask |= 1 << 1
-	}
-	var orderSpec runtime.Order
-	var hasSeek bool
-	orderKey := runtime.EncodeOrderKey(orderSpec, hasSeek)
-	approxArgs := 7
-	var d0 uint64
-	if p.WithOrg {
-		d0 = uint64(len(p.OrgTiers))
-		approxArgs += len(p.OrgTiers)
-	}
-	var d1 uint64
-	if p.WithOrg {
-		d1 = p.OrgSub.ShapeTag
-	}
-	var d2 uint64
-	if p.WithRoles {
-		d2 = uint64(len(p.Roles))
-		approxArgs += len(p.Roles)
-	}
-	vk := runtime.MakeVariantKey(stmtIDSearchUsersCoupled, colMask, flagMask, orderKey, d0, d1, d2)
-	return vk, colMask, flagMask, approxArgs
-}
-
-func prepareSearchUsersCoupled(p SearchUsersCoupledParams) (runtime.Query, runtime.VariantKey, int) {
-	vk, colMask, flagMask, approxArgs := computeSearchUsersCoupledKey(p)
-	var orderSpec runtime.Order
-	var hasSeek bool
-	orderKey := runtime.EncodeOrderKey(orderSpec, hasSeek)
-	sliceLens := make([]int, 2)
-	var tupleLens []int
-	subs := make([]runtime.Query, 1)
-	if p.WithOrg {
-		sliceLens[0] = len(p.OrgTiers)
-		subs[0] = p.OrgSub
-	}
-	if p.WithRoles {
-		sliceLens[1] = len(p.Roles)
-	}
-	shapeLens := make([]int, 0, 2)
-	shapeLens = append(shapeLens, sliceLens...)
-	shapeTag := runtime.ComputeSubqueryShape(stmtIDSearchUsersCoupled, colMask, flagMask, orderKey, true, shapeLens...)
-	qVal := runtime.Query{
-		StmtID: stmtIDSearchUsersCoupled,
-		Desc:   descSearchUsersCoupled,
-		Input: runtime.RenderInput{
-			ColMask:   colMask,
-			FlagMask:  flagMask,
-			OrderSpec: orderSpec,
-			HasSeek:   hasSeek,
-			SliceLens: sliceLens,
-			TupleLens: tupleLens,
-			Subs:      subs,
-		},
-		Params:   p,
-		Expand:   expandSearchUsersCoupledArgs,
-		ShapeTag: shapeTag,
-	}
-	return qVal, vk, approxArgs
-}
-
-func (q *Queries) SearchUsersCoupled(ctx context.Context, p SearchUsersCoupledParams) ([]SearchUsersCoupledRow, error) {
-	vk, colMask, flagMask, approxArgs := computeSearchUsersCoupledKey(p)
-	_ = colMask
-	argBuf := runtime.AcquireArgs(approxArgs)
-	defer runtime.ReleaseArgs(argBuf)
-	if err := expandSearchUsersCoupledParams(argBuf, p); err != nil {
-		return nil, err
-	}
-	buildSQL := func() string {
-		qVal, _, _ := prepareSearchUsersCoupled(p)
-		return runtime.BuildComposedSQL(qVal.Desc, &qVal.Input, sqlDialect)
-	}
-	rows, ms, err := q.cache.Query(ctx, q.db, q.txCache, q.usePrepared, vk, stmtIDSearchUsersCoupled, runtime.ComputeBatchShapeTag(colMask, flagMask), 0, nil, buildSQL, (*argBuf)...)
-	if err != nil {
-		return nil, err
-	}
-	var dst []SearchUsersCoupledRow
-	var item SearchUsersCoupledRow
-	var scanBuf [3]any
-	scanCount := 0
-	effMask := colMask
-	if (effMask & (1 << 0)) != 0 {
-		scanBuf[scanCount] = &item.ID
-		scanCount++
-	}
-	if (effMask & (1 << 1)) != 0 {
-		scanBuf[scanCount] = &item.Email
-		scanCount++
-	}
-	if p.WithOrg {
-		scanBuf[scanCount] = &item.Name
-		scanCount++
-	}
-	scanSlice := scanBuf[:scanCount]
-	for rows.Next() {
-		item = SearchUsersCoupledRow{}
-		if err := rows.Scan(scanSlice...); err != nil {
-			_ = rows.Close()
-			if ms != nil {
-				_ = ms.Release()
-			}
-			return nil, err
-		}
-		dst = append(dst, item)
-	}
-	err = rows.Err()
-	_ = rows.Close()
-	if ms != nil {
-		_ = ms.Release()
-	}
-	if err != nil {
-		return nil, err
-	}
-	return dst, nil
-}
-
-const stmtIDSubOrgsByMinID uint32 = 6
-
-type SubOrgsByMinIDParams struct {
-	MinID      int64
-	ActiveVal  int64
-	OnlyActive bool
-}
-
-var descSubOrgsByMinID = &runtime.QueryDescriptor{
-	Segments: []string{"SELECT id FROM orgs WHERE id >= ", " ", ""},
-	Slots: []runtime.Slot{
-		{Kind: runtime.SlotScalar},
-		{Kind: runtime.SlotOptBlock, FlagBit: 0, Inner: &runtime.QueryDescriptor{
-			Segments: []string{" AND active = ", " "},
-			Slots: []runtime.Slot{
-				{Kind: runtime.SlotScalar},
-			},
-		}},
-	},
-}
-
-func expandSubOrgsByMinIDParams(dst *[]any, p SubOrgsByMinIDParams) error {
-	*dst = append(*dst, p.MinID)
-	if p.OnlyActive {
-		*dst = append(*dst, p.ActiveVal)
-	}
-	return nil
-}
-
-func expandSubOrgsByMinIDArgs(dst *[]any, q *runtime.Query) error {
-	return expandSubOrgsByMinIDParams(dst, q.Params.(SubOrgsByMinIDParams))
-}
-
-func SubOrgsByMinIDQuery(p SubOrgsByMinIDParams) runtime.Query {
-	var flagMask uint64
-	if p.OnlyActive {
-		flagMask |= 1
-	}
-	shapeTag := runtime.ComputeSubqueryShape(stmtIDSubOrgsByMinID, 0, flagMask, 0, false)
-	return runtime.Query{
-		StmtID: stmtIDSubOrgsByMinID,
-		Desc:   descSubOrgsByMinID,
-		Input: runtime.RenderInput{
-			FlagMask: flagMask,
-		},
-		Params:   p,
-		Expand:   expandSubOrgsByMinIDArgs,
-		ShapeTag: shapeTag,
-	}
-}
-
-func (q *Queries) SubOrgsByMinIDQuery(p SubOrgsByMinIDParams) runtime.Query {
-	return SubOrgsByMinIDQuery(p)
-}
-
-const stmtIDPageUsers uint32 = 7
-
-const (
-	PageUsersColID    uint64 = 1 << 0
-	PageUsersColRole  uint64 = 1 << 1
-	PageUsersColScore uint64 = 1 << 2
-	PageUsersColEmail uint64 = 1 << 3
-	PageUsersColsAll  uint64 = (1 << 4) - 1
-)
-
-const (
-	OrderPageUsersRowRoleAsc   uint8 = 2
-	OrderPageUsersRowRoleDesc  uint8 = 3
-	OrderPageUsersRowScoreAsc  uint8 = 4
-	OrderPageUsersRowScoreDesc uint8 = 5
-	OrderPageUsersRowIDAsc     uint8 = 6
-	OrderPageUsersRowIDDesc    uint8 = 7
-)
-
-func OrderPageUsersRow(terms ...uint8) runtime.Order {
-	return runtime.PackOrder(terms...)
-}
-
-func SeekPageUsersRow(row PageUsersRow) runtime.Seek {
-	return runtime.NewSeek(row.Role, row.Score, row.ID)
-}
-
-type PageUsersParams struct {
-	Seek       runtime.Seek
-	FilterRole string
-	Order      runtime.Order
-	Limit      int64
-	RoleFilter bool
-	SelectCols uint64
-}
-
-var descPageUsers = &runtime.QueryDescriptor{
-	Segments: []string{"SELECT ", "\nFROM users\nWHERE ", "\n", "\nORDER BY ", "\nLIMIT ", ""},
-	Slots: []runtime.Slot{
-		{Kind: runtime.SlotSelectCols},
-		{Kind: runtime.SlotSeek},
-		{Kind: runtime.SlotOptBlock, FlagBit: 0, Inner: &runtime.QueryDescriptor{
-			Segments: []string{" AND role = ", " "},
-			Slots: []runtime.Slot{
-				{Kind: runtime.SlotScalar},
-			},
-		}},
-		{Kind: runtime.SlotOrder},
-		{Kind: runtime.SlotScalar},
-	},
-	SelectColExprs: []string{"id", "role", "score", "email"},
-	OrderCols:      []string{"role", "score", "id"},
-}
-
-func expandPageUsersParams(dst *[]any, p PageUsersParams) error {
-	if err := runtime.AppendSeekArgs(dst, p.Seek, p.Order, 3); err != nil {
-		return err
-	}
-	if p.RoleFilter {
-		*dst = append(*dst, p.FilterRole)
-	}
-	if _, _, err := runtime.ExpandOrder(p.Order, 3); err != nil {
-		return err
-	}
-	*dst = append(*dst, p.Limit)
-	return nil
-}
-
-func expandPageUsersArgs(dst *[]any, q *runtime.Query) error {
-	return expandPageUsersParams(dst, q.Params.(PageUsersParams))
-}
-
-func computePageUsersKey(p PageUsersParams) (runtime.VariantKey, uint64, uint64, int) {
-	colMask := p.SelectCols & PageUsersColsAll
-	if colMask == 0 {
-		colMask = PageUsersColsAll
-	}
-	var flagMask uint64
-	if p.RoleFilter {
-		flagMask |= 1
-	}
-	orderKey := runtime.EncodeOrderKey(p.Order, p.Seek.IsActive())
-	vk := runtime.MakeVariantKey(stmtIDPageUsers, colMask, flagMask, orderKey)
-	return vk, colMask, flagMask, 8
-}
-
-func preparePageUsers(p PageUsersParams) (runtime.Query, runtime.VariantKey, int) {
-	vk, colMask, flagMask, approxArgs := computePageUsersKey(p)
-	orderKey := runtime.EncodeOrderKey(p.Order, p.Seek.IsActive())
-	shapeTag := runtime.ComputeSubqueryShape(stmtIDPageUsers, colMask, flagMask, orderKey, false)
-	qVal := runtime.Query{
-		StmtID: stmtIDPageUsers,
-		Desc:   descPageUsers,
-		Input: runtime.RenderInput{
-			ColMask:   colMask,
-			FlagMask:  flagMask,
-			OrderSpec: p.Order,
-			HasSeek:   p.Seek.IsActive(),
-		},
-		Params:   p,
-		Expand:   expandPageUsersArgs,
-		ShapeTag: shapeTag,
-	}
-	return qVal, vk, approxArgs
-}
-
-func PageUsersQuery(p PageUsersParams) runtime.Query {
-	qVal, _, _ := preparePageUsers(p)
-	return qVal
-}
-
-func (q *Queries) PageUsersQuery(p PageUsersParams) runtime.Query {
-	return PageUsersQuery(p)
-}
-
-func (q *Queries) PageUsers(ctx context.Context, p PageUsersParams) ([]PageUsersRow, error) {
-	vk, colMask, flagMask, approxArgs := computePageUsersKey(p)
-	argBuf := runtime.AcquireArgs(approxArgs)
-	defer runtime.ReleaseArgs(argBuf)
-	if err := expandPageUsersParams(argBuf, p); err != nil {
-		return nil, err
-	}
-	buildSQL := func() string {
-		qVal, _, _ := preparePageUsers(p)
-		return runtime.BuildComposedSQL(qVal.Desc, &qVal.Input, sqlDialect)
-	}
-	rows, ms, err := q.cache.Query(ctx, q.db, q.txCache, q.usePrepared, vk, stmtIDPageUsers, runtime.ComputeBatchShapeTag(colMask, flagMask), 0, nil, buildSQL, (*argBuf)...)
-	if err != nil {
-		return nil, err
-	}
-	var dst []PageUsersRow
-	var item PageUsersRow
-	var scanBuf [4]any
-	scanCount := 0
-	if (colMask & (1 << 0)) != 0 {
-		scanBuf[scanCount] = &item.ID
-		scanCount++
-	}
-	if (colMask & (1 << 1)) != 0 {
-		scanBuf[scanCount] = &item.Role
-		scanCount++
-	}
-	if (colMask & (1 << 2)) != 0 {
-		scanBuf[scanCount] = &item.Score
-		scanCount++
-	}
-	if (colMask & (1 << 3)) != 0 {
-		scanBuf[scanCount] = &item.Email
-		scanCount++
-	}
-	scanSlice := scanBuf[:scanCount]
-	for rows.Next() {
-		item = PageUsersRow{}
-		if err := rows.Scan(scanSlice...); err != nil {
-			_ = rows.Close()
-			if ms != nil {
-				_ = ms.Release()
-			}
-			return nil, err
-		}
-		dst = append(dst, item)
-	}
-	err = rows.Err()
-	_ = rows.Close()
-	if ms != nil {
-		_ = ms.Release()
-	}
-	if err != nil {
-		return nil, err
-	}
-	return dst, nil
-}
-
-const stmtIDUsersFromCTEAndInSubquery uint32 = 8
-
-type paramsUsersFromCTEAndInSubquery struct {
-	CTESub runtime.Query
-	IDSub  runtime.Query
-}
-
-var descUsersFromCTEAndInSubquery = &runtime.QueryDescriptor{
-	Segments: []string{"WITH filtered AS (", ")\nSELECT f.id, f.email\nFROM filtered f\nWHERE f.id IN (", ")\nORDER BY f.id ASC"},
-	Slots: []runtime.Slot{
-		{Kind: runtime.SlotQuery},
-		{Kind: runtime.SlotQuery},
-	},
-	NumSubs: 2,
-}
-
-func expandUsersFromCTEAndInSubqueryParams(dst *[]any, p paramsUsersFromCTEAndInSubquery) error {
-	if err := p.CTESub.AppendArgs(dst); err != nil {
-		return err
-	}
-	if err := p.IDSub.AppendArgs(dst); err != nil {
-		return err
-	}
-	return nil
-}
-
-func expandUsersFromCTEAndInSubqueryArgs(dst *[]any, q *runtime.Query) error {
-	return expandUsersFromCTEAndInSubqueryParams(dst, q.Params.(paramsUsersFromCTEAndInSubquery))
-}
-
-func UsersFromCTEAndInSubqueryQuery(cteSub runtime.Query, idSub runtime.Query) runtime.Query {
-	p := paramsUsersFromCTEAndInSubquery{CTESub: cteSub, IDSub: idSub}
-	shapeTag := runtime.ComputeSubqueryShape(stmtIDUsersFromCTEAndInSubquery, 0, 0, 0, true)
-	return runtime.Query{
-		StmtID: stmtIDUsersFromCTEAndInSubquery,
-		Desc:   descUsersFromCTEAndInSubquery,
-		Input: runtime.RenderInput{
-			Subs: []runtime.Query{cteSub, idSub},
-		},
-		Params:   p,
-		Expand:   expandUsersFromCTEAndInSubqueryArgs,
-		ShapeTag: shapeTag,
-	}
-}
-
-func (q *Queries) UsersFromCTEAndInSubquery(ctx context.Context, cteSub runtime.Query, idSub runtime.Query) ([]UsersFromCTEAndInSubqueryRow, error) {
-	p := paramsUsersFromCTEAndInSubquery{CTESub: cteSub, IDSub: idSub}
-	vk := runtime.MakeVariantKey(stmtIDUsersFromCTEAndInSubquery, 0, 0, 0, cteSub.ShapeTag, idSub.ShapeTag)
-	argBuf := runtime.AcquireArgs(8)
-	defer runtime.ReleaseArgs(argBuf)
-	if err := expandUsersFromCTEAndInSubqueryParams(argBuf, p); err != nil {
-		return nil, err
-	}
-	buildSQL := func() string {
-		qVal := UsersFromCTEAndInSubqueryQuery(cteSub, idSub)
-		return runtime.BuildComposedSQL(qVal.Desc, &qVal.Input, sqlDialect)
-	}
-	rows, ms, err := q.cache.Query(ctx, q.db, q.txCache, q.usePrepared, vk, stmtIDUsersFromCTEAndInSubquery, 0, 0, nil, buildSQL, (*argBuf)...)
-	if err != nil {
-		return nil, err
-	}
-	var dst []UsersFromCTEAndInSubqueryRow
-	var item UsersFromCTEAndInSubqueryRow
-	scanBuf := [2]any{&item.ID, &item.Email}
-	for rows.Next() {
-		item = UsersFromCTEAndInSubqueryRow{}
-		if err := rows.Scan(scanBuf[:]...); err != nil {
-			_ = rows.Close()
-			if ms != nil {
-				_ = ms.Release()
-			}
-			return nil, err
-		}
-		dst = append(dst, item)
-	}
-	err = rows.Err()
-	_ = rows.Close()
-	if ms != nil {
-		_ = ms.Release()
-	}
-	if err != nil {
-		return nil, err
-	}
-	return dst, nil
-}
-
-const stmtIDSubUserIDsByScore uint32 = 9
-
-type paramsSubUserIDsByScore struct {
-	MinScore int64
-}
-
-var descSubUserIDsByScore = &runtime.QueryDescriptor{
-	Segments: []string{"SELECT id FROM users WHERE score >= ", ""},
-	Slots:    []runtime.Slot{{Kind: runtime.SlotScalar}},
-}
-
-func expandSubUserIDsByScoreArgs(dst *[]any, q *runtime.Query) error {
-	p := q.Params.(paramsSubUserIDsByScore)
-	*dst = append(*dst, p.MinScore)
-	return nil
-}
-
-func SubUserIDsByScoreQuery(minScore int64) runtime.Query {
-	return runtime.Query{
-		StmtID:   stmtIDSubUserIDsByScore,
-		Desc:     descSubUserIDsByScore,
-		Params:   paramsSubUserIDsByScore{MinScore: minScore},
-		Expand:   expandSubUserIDsByScoreArgs,
-		ShapeTag: runtime.ComputeSubqueryShape(stmtIDSubUserIDsByScore, 0, 0, 0, false),
-	}
-}
-
-func (q *Queries) SubUserIDsByScoreQuery(minScore int64) runtime.Query {
-	return SubUserIDsByScoreQuery(minScore)
-}
-
-const stmtIDInsertUsersBatchReturning uint32 = 10
-
-type paramsInsertUsersBatchReturning struct {
-	Rows []BatchUserInput
-}
-
-var descInsertUsersBatchReturning = &runtime.QueryDescriptor{
-	Segments: []string{"INSERT INTO batch_users (id, name, points)\nVALUES ", "\nRETURNING id, name, points"},
-	Slots: []runtime.Slot{
-		{Kind: runtime.SlotTupleSlice, Tuple: &runtime.TupleDescriptor{Segments: []string{"", ", ", ", ", ""}, NumFields: 3}},
-	},
-	NumTuples: 1,
-}
-
-func expandInsertUsersBatchReturningParams(dst *[]any, p paramsInsertUsersBatchReturning) error {
-	if len(p.Rows) == 0 {
-		return runtime.ErrEmptySliceParam
-	}
-	for i := range p.Rows {
-		*dst = append(*dst, p.Rows[i].ID, p.Rows[i].Name, p.Rows[i].Points)
-	}
-	return nil
-}
-
-func computeInsertUsersBatchReturningKey(p paramsInsertUsersBatchReturning) (runtime.VariantKey, uint64, uint64, int) {
-	vk := runtime.MakeVariantKey(stmtIDInsertUsersBatchReturning, 0, 0, 0, uint64(len(p.Rows)))
-	return vk, 0, 0, len(p.Rows)*3 + 4
-}
-
-func prepareInsertUsersBatchReturning(rows []BatchUserInput) (runtime.Query, runtime.VariantKey, int) {
-	p := paramsInsertUsersBatchReturning{Rows: rows}
-	vk, _, _, approxArgs := computeInsertUsersBatchReturningKey(p)
-	qVal := runtime.Query{
-		StmtID: stmtIDInsertUsersBatchReturning,
-		Desc:   descInsertUsersBatchReturning,
-		Input: runtime.RenderInput{
-			TupleLens: []int{len(rows)},
-		},
-		Params: p,
-	}
-	return qVal, vk, approxArgs
-}
-
-func (q *Queries) InsertUsersBatchReturningBatch(ctx context.Context, rows []BatchUserInput) ([]InsertUsersBatchReturningRow, error) {
-	return q.InsertUsersBatchReturningBatchInto(ctx, nil, rows)
-}
-
-func (q *Queries) InsertUsersBatchReturningBatchInto(ctx context.Context, dst []InsertUsersBatchReturningRow, rows []BatchUserInput) ([]InsertUsersBatchReturningRow, error) {
-	totalRows := len(rows)
-	if totalRows == 0 {
-		return nil, runtime.ErrEmptySliceParam
-	}
-	p := paramsInsertUsersBatchReturning{Rows: rows}
-	_, colMask, flagMask, _ := computeInsertUsersBatchReturningKey(p)
-	shapeTag := runtime.ComputeBatchShapeTag(colMask, flagMask)
-	firstChunk := q.cache.PlanBatchChunk(stmtIDInsertUsersBatchReturning, colMask, flagMask, totalRows, 10922, true)
-	txCache := q.txCache
-	var autoTx *sql.Tx
-	if txCache == nil && firstChunk < totalRows {
-		var err error
-		autoTx, err = q.db.BeginTx(ctx, nil)
-		if err != nil {
-			return nil, err
-		}
-		txCache = runtime.NewTxStmtCache(autoTx)
-		defer func() { _ = txCache.Close() }()
-	}
-	for offset := 0; offset < totalRows; {
-		chunkSize := firstChunk
-		if offset > 0 {
-			chunkSize = q.cache.PlanBatchChunk(stmtIDInsertUsersBatchReturning, colMask, flagMask, totalRows-offset, 10922, false)
-		}
-		chunkRows := rows[offset : offset+chunkSize]
-		chunkP := p
-		chunkP.Rows = chunkRows
-		vk, _, _, approxArgs := computeInsertUsersBatchReturningKey(chunkP)
-		argBuf := runtime.AcquireArgs(approxArgs)
-		if err := expandInsertUsersBatchReturningParams(argBuf, chunkP); err != nil {
-			runtime.ReleaseArgs(argBuf)
-			if autoTx != nil {
-				_ = autoTx.Rollback()
-			}
-			return nil, err
-		}
-		buildSQL := func() string {
-			qVal, _, _ := prepareInsertUsersBatchReturning(chunkRows)
-			return runtime.BuildComposedSQL(qVal.Desc, &qVal.Input, sqlDialect)
-		}
-		r, ms, err := q.cache.Query(ctx, q.db, txCache, q.usePrepared, vk, stmtIDInsertUsersBatchReturning, shapeTag, chunkSize, nil, buildSQL, (*argBuf)...)
-		runtime.ReleaseArgs(argBuf)
-		if err != nil {
-			if autoTx != nil {
-				_ = autoTx.Rollback()
-			}
-			return nil, err
-		}
-		var item InsertUsersBatchReturningRow
-		scanBuf := [3]any{&item.ID, &item.Name, &item.Points}
-		for r.Next() {
-			item = InsertUsersBatchReturningRow{}
-			if err := r.Scan(scanBuf[:]...); err != nil {
-				_ = r.Close()
-				if ms != nil {
-					_ = ms.Release()
-				}
-				if autoTx != nil {
-					_ = autoTx.Rollback()
-				}
-				return nil, err
-			}
-			dst = append(dst, item)
-		}
-		err = r.Err()
-		_ = r.Close()
-		if ms != nil {
-			_ = ms.Release()
-		}
-		if err != nil {
-			if autoTx != nil {
-				_ = autoTx.Rollback()
-			}
-			return nil, err
-		}
-		offset += chunkSize
-	}
-	if autoTx != nil {
-		if err := autoTx.Commit(); err != nil {
-			return nil, err
-		}
-	}
-	return dst, nil
-}
-
-func (q *Queries) InsertUsersBatchReturningBatchSeq(ctx context.Context, rows []BatchUserInput) iter.Seq2[InsertUsersBatchReturningRow, error] {
-	return func(yield func(InsertUsersBatchReturningRow, error) bool) {
-		var zero InsertUsersBatchReturningRow
-		totalRows := len(rows)
-		if totalRows == 0 {
-			yield(zero, runtime.ErrEmptySliceParam)
-			return
-		}
-		p := paramsInsertUsersBatchReturning{Rows: rows}
-		_, colMask, flagMask, _ := computeInsertUsersBatchReturningKey(p)
-		shapeTag := runtime.ComputeBatchShapeTag(colMask, flagMask)
-		firstChunk := q.cache.PlanBatchChunk(stmtIDInsertUsersBatchReturning, colMask, flagMask, totalRows, 10922, true)
-		for offset := 0; offset < totalRows; {
-			chunkSize := firstChunk
-			if offset > 0 {
-				chunkSize = q.cache.PlanBatchChunk(stmtIDInsertUsersBatchReturning, colMask, flagMask, totalRows-offset, 10922, false)
-			}
-			chunkRows := rows[offset : offset+chunkSize]
-			chunkP := p
-			chunkP.Rows = chunkRows
-			vk, _, _, approxArgs := computeInsertUsersBatchReturningKey(chunkP)
-			argBuf := runtime.AcquireArgs(approxArgs)
-			if err := expandInsertUsersBatchReturningParams(argBuf, chunkP); err != nil {
-				runtime.ReleaseArgs(argBuf)
-				yield(zero, err)
-				return
-			}
-			buildSQL := func() string {
-				qVal, _, _ := prepareInsertUsersBatchReturning(chunkRows)
-				return runtime.BuildComposedSQL(qVal.Desc, &qVal.Input, sqlDialect)
-			}
-			r, ms, err := q.cache.Query(ctx, q.db, q.txCache, q.usePrepared, vk, stmtIDInsertUsersBatchReturning, shapeTag, chunkSize, nil, buildSQL, (*argBuf)...)
-			runtime.ReleaseArgs(argBuf)
-			if err != nil {
-				yield(zero, err)
-				return
-			}
-			var item InsertUsersBatchReturningRow
-			scanBuf := [3]any{&item.ID, &item.Name, &item.Points}
-			for r.Next() {
-				item = InsertUsersBatchReturningRow{}
-				if err := r.Scan(scanBuf[:]...); err != nil {
-					_ = r.Close()
-					if ms != nil {
-						_ = ms.Release()
-					}
-					yield(zero, err)
-					return
-				}
-				if !yield(item, nil) {
-					_ = r.Close()
-					if ms != nil {
-						_ = ms.Release()
-					}
-					return
-				}
-			}
-			err = r.Err()
-			_ = r.Close()
-			if ms != nil {
-				_ = ms.Release()
-			}
-			if err != nil {
-				yield(zero, err)
-				return
-			}
-			offset += chunkSize
-		}
-	}
-}
-
-const stmtIDUpdateUsersBatchFromValues uint32 = 11
-
-type paramsUpdateUsersBatchFromValues struct {
-	Rows []BatchBonusInput
-}
-
-var descUpdateUsersBatchFromValues = &runtime.QueryDescriptor{
-	Segments: []string{
-		"WITH updates(id, bonus) AS (\n  VALUES ",
-		"\n)\nUPDATE batch_users\nSET points = batch_users.points + (SELECT u.bonus FROM updates u WHERE u.id = batch_users.id)\nWHERE batch_users.id IN (SELECT u.id FROM updates u)",
-	},
-	Slots: []runtime.Slot{
-		{Kind: runtime.SlotTupleSlice, Tuple: &runtime.TupleDescriptor{Segments: []string{"", ", ", ""}, NumFields: 2}},
-	},
-	NumTuples: 1,
-}
-
-func expandUpdateUsersBatchFromValuesParams(dst *[]any, p paramsUpdateUsersBatchFromValues) error {
-	if len(p.Rows) == 0 {
-		return runtime.ErrEmptySliceParam
-	}
-	for i := range p.Rows {
-		*dst = append(*dst, p.Rows[i].ID, p.Rows[i].Bonus)
-	}
-	return nil
-}
-
-func computeUpdateUsersBatchFromValuesKey(p paramsUpdateUsersBatchFromValues) (runtime.VariantKey, uint64, uint64, int) {
-	vk := runtime.MakeVariantKey(stmtIDUpdateUsersBatchFromValues, 0, 0, 0, uint64(len(p.Rows)))
-	return vk, 0, 0, len(p.Rows)*2 + 4
-}
-
-func prepareUpdateUsersBatchFromValues(rows []BatchBonusInput) (runtime.Query, runtime.VariantKey, int) {
-	p := paramsUpdateUsersBatchFromValues{Rows: rows}
-	vk, _, _, approxArgs := computeUpdateUsersBatchFromValuesKey(p)
-	qVal := runtime.Query{
-		StmtID: stmtIDUpdateUsersBatchFromValues,
-		Desc:   descUpdateUsersBatchFromValues,
-		Input: runtime.RenderInput{
-			TupleLens: []int{len(rows)},
-		},
-		Params: p,
-	}
-	return qVal, vk, approxArgs
-}
-
-func (q *Queries) UpdateUsersBatchFromValuesBatch(ctx context.Context, rows []BatchBonusInput) (sql.Result, error) {
-	totalRows := len(rows)
-	if totalRows == 0 {
-		return nil, runtime.ErrEmptySliceParam
-	}
-	p := paramsUpdateUsersBatchFromValues{Rows: rows}
-	_, colMask, flagMask, _ := computeUpdateUsersBatchFromValuesKey(p)
-	shapeTag := runtime.ComputeBatchShapeTag(colMask, flagMask)
-	firstChunk := q.cache.PlanBatchChunk(stmtIDUpdateUsersBatchFromValues, colMask, flagMask, totalRows, 16383, true)
-	txCache := q.txCache
-	var autoTx *sql.Tx
-	if txCache == nil && firstChunk < totalRows {
-		var err error
-		autoTx, err = q.db.BeginTx(ctx, nil)
-		if err != nil {
-			return nil, err
-		}
-		txCache = runtime.NewTxStmtCache(autoTx)
-		defer func() { _ = txCache.Close() }()
-	}
-	var batchRes runtime.BatchExecResult
-	for offset := 0; offset < totalRows; {
-		chunkSize := firstChunk
-		if offset > 0 {
-			chunkSize = q.cache.PlanBatchChunk(stmtIDUpdateUsersBatchFromValues, colMask, flagMask, totalRows-offset, 16383, false)
-		}
-		chunkRows := rows[offset : offset+chunkSize]
-		chunkP := p
-		chunkP.Rows = chunkRows
-		vk, _, _, approxArgs := computeUpdateUsersBatchFromValuesKey(chunkP)
-		argBuf := runtime.AcquireArgs(approxArgs)
-		if err := expandUpdateUsersBatchFromValuesParams(argBuf, chunkP); err != nil {
-			runtime.ReleaseArgs(argBuf)
-			if autoTx != nil {
-				_ = autoTx.Rollback()
-			}
-			return nil, err
-		}
-		buildSQL := func() string {
-			qVal, _, _ := prepareUpdateUsersBatchFromValues(chunkRows)
-			return runtime.BuildComposedSQL(qVal.Desc, &qVal.Input, sqlDialect)
-		}
-		res, err := q.cache.Exec(ctx, q.db, txCache, q.usePrepared, vk, stmtIDUpdateUsersBatchFromValues, shapeTag, chunkSize, nil, buildSQL, (*argBuf)...)
-		runtime.ReleaseArgs(argBuf)
-		if err != nil {
-			if autoTx != nil {
-				_ = autoTx.Rollback()
-			}
-			return nil, err
-		}
-		batchRes.Add(res)
-		offset += chunkSize
-	}
-	if autoTx != nil {
-		if err := autoTx.Commit(); err != nil {
-			return nil, err
-		}
-	}
-	return batchRes, nil
+	})
 }

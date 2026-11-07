@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"go/format"
 	"go/token"
+	"io"
 	"os"
 	"path/filepath"
 	"slices"
@@ -22,7 +23,6 @@ type (
 	Query           = runtime.Query
 	Order           = runtime.Order
 	Seek            = runtime.Seek
-	Dialect         = runtime.Dialect
 	StmtCache       = runtime.StmtCache
 	TxStmtCache     = runtime.TxStmtCache
 	ManagedStmt     = runtime.ManagedStmt
@@ -35,23 +35,34 @@ type (
 	TupleDescriptor = runtime.TupleDescriptor
 	Slot            = runtime.Slot
 	SlotKind        = runtime.SlotKind
+	StmtVerb        = runtime.StmtVerb
 	RenderInput     = runtime.RenderInput
+	OpDecorators    = runtime.OpDecorators
+	BranchGate      = runtime.BranchGate
+	Pipeline        = runtime.Pipeline
+	PipelineOp      = runtime.PipelineOp
+	PipelineCond    = runtime.PipelineCond
+	ExecFuture      = runtime.ExecFuture
+	IfResult        = runtime.IfResult
+	WirePipeliner   = runtime.WirePipeliner
+	TxRetryPolicy   = runtime.TxRetryPolicy
+	TxOption        = runtime.TxOption
 )
 
 const (
-	DialectPostgres = runtime.DialectPostgres
-	DialectQuestion = runtime.DialectQuestion
-
 	StateAbsent   = runtime.StateAbsent
 	StatePartial  = runtime.StatePartial
 	StatePrepared = runtime.StatePrepared
 )
 
 var (
-	ErrEmptySliceParam = runtime.ErrEmptySliceParam
-	ErrNilQuery        = runtime.ErrNilQuery
-	ErrInvalidSeek     = runtime.ErrInvalidSeek
-	ErrInvalidOrder    = runtime.ErrInvalidOrder
+	ErrEmptySliceParam    = runtime.ErrEmptySliceParam
+	ErrUninitializedQuery = runtime.ErrUninitializedQuery
+	ErrNilQuery           = runtime.ErrNilQuery
+	ErrAssertionFailed    = runtime.ErrAssertionFailed
+	ErrBranchNotTaken     = runtime.ErrBranchNotTaken
+	ErrInvalidSeek        = runtime.ErrInvalidSeek
+	ErrInvalidOrder       = runtime.ErrInvalidOrder
 
 	NewStmtCache           = runtime.NewStmtCache
 	NewTxStmtCache         = runtime.NewTxStmtCache
@@ -59,6 +70,7 @@ var (
 	WithMaxPartialBytes    = runtime.WithMaxPartialBytes
 	WithMaxPreparedStmts   = runtime.WithMaxPreparedStmts
 	WithPromoteThreshold   = runtime.WithPromoteThreshold
+	WithMaxBatchParams     = runtime.WithMaxBatchParams
 	NewSeek                = runtime.NewSeek
 	PackOrder              = runtime.PackOrder
 	ExpandOrder            = runtime.ExpandOrder
@@ -66,18 +78,63 @@ var (
 	Desc                   = runtime.Desc
 	MakeVariantKey         = runtime.MakeVariantKey
 	ComputeSubqueryShape   = runtime.ComputeSubqueryShape
+	DefaultRetryPolicy     = runtime.DefaultRetryPolicy
+	WithTxRetry            = runtime.WithTxRetry
+	WrapConnector          = runtime.WrapConnector
+	IsRetryableTxError     = runtime.IsRetryableTxError
 )
 
-// StatementKind specifies the execution and return cardinality of a SQL statement.
-type StatementKind string
+// QueryKind specifies the execution and return cardinality of a SQL statement.
+type QueryKind string
+
+// StatementKind is an alias for QueryKind.
+type StatementKind = QueryKind
 
 const (
-	KindExec     StatementKind = "exec"
-	KindOne      StatementKind = "one"
-	KindMany     StatementKind = "many"
-	KindSubquery StatementKind = "subquery"
-	KindQuery    StatementKind = "query" // alias for KindSubquery
+	KindExec     QueryKind = "exec"
+	KindOne      QueryKind = "one"
+	KindMany     QueryKind = "many"
+	KindSubquery QueryKind = "subquery"
+	KindQuery    QueryKind = "query" // alias for KindSubquery
 )
+
+// Dialect specifies the SQL placeholder syntax in sqlgen.yaml.
+type Dialect string
+
+const (
+	DialectQuestion Dialect = "question" // ? (SQLite, MySQL, MariaDB)
+	DialectDollar   Dialect = "dollar"   // $1, $2, ... (PostgreSQL, CockroachDB)
+	DialectPostgres Dialect = "dollar"
+)
+
+// ColumnSpec defines a fallback output column declaration in YAML.
+type ColumnSpec struct {
+	Name     string `yaml:"name"`
+	GoType   string `yaml:"type"`
+	SQLExpr  string `yaml:"-"`
+	FlagName string `yaml:"-"`
+	FlagBit  uint64 `yaml:"-"`
+}
+
+// ParamSpec defines a fallback parameter declaration in YAML.
+type ParamSpec struct {
+	Name    string `yaml:"name"`
+	GoType  string `yaml:"type"`
+	Slice   bool   `yaml:"slice"`
+	HasSort bool   `yaml:"-"`
+	Desc    bool   `yaml:"-"`
+}
+
+// StatementSpec defines a single SQL statement in the YAML configuration.
+type StatementSpec struct {
+	Name         string       `yaml:"name"`
+	Kind         QueryKind    `yaml:"kind"`
+	ResultType   string       `yaml:"result_type"`
+	ParamsStruct bool         `yaml:"params_struct"`
+	SQL          string       `yaml:"sql"`
+	Params       []ParamSpec  `yaml:"params"`
+	Columns      []ColumnSpec `yaml:"columns"`
+}
 
 // Config represents the top-level YAML configuration schema (sqlgen.yaml).
 type Config struct {
@@ -85,27 +142,50 @@ type Config struct {
 	PackageName   string          `yaml:"package"`
 	Out           string          `yaml:"out"`
 	RuntimeImport string          `yaml:"runtime_import"`
-	Dialect       string          `yaml:"dialect"`
 	ExtraImports  []string        `yaml:"extra_imports"`
+	Dialect       Dialect         `yaml:"dialect"`
 	Statements    []StatementSpec `yaml:"statements"`
 }
 
-// StatementSpec defines a single SQL statement in the YAML configuration.
-type StatementSpec struct {
-	Name         string        `yaml:"name"`
-	Kind         StatementKind `yaml:"kind"`
-	ResultType   string        `yaml:"result_type"`
-	ParamsStruct bool          `yaml:"params_struct"`
-	SQL          string        `yaml:"sql"`
-	Params       []ParamSpec   `yaml:"params"`
-	Columns      []ColumnSpec  `yaml:"columns"`
-}
+func parseParamScalarString(line int, raw string) (ParamSpec, error) {
+	raw = strings.TrimSpace(raw)
+	colon := strings.IndexByte(raw, ':')
+	if colon <= 0 || colon == len(raw)-1 {
+		return ParamSpec{}, fmt.Errorf("line %d: invalid compact param spec %q (expected \"name:type\")", line, raw)
+	}
+	namePart := strings.TrimSpace(raw[:colon])
+	typePart := strings.TrimSpace(raw[colon+1:])
+	isSlice := false
+	hasSort := false
+	desc := false
 
-// ParamSpec defines a fallback parameter declaration in YAML.
-type ParamSpec struct {
-	Name  string
-	Type  string
-	Slice bool
+	if strings.HasSuffix(namePart, "...") {
+		isSlice = true
+		namePart = strings.TrimSpace(strings.TrimSuffix(namePart, "..."))
+	}
+	// Check for trailing ASC / DESC modifier on typePart
+	if fields := strings.Fields(typePart); len(fields) == 2 {
+		mod := strings.ToLower(fields[1])
+		if mod == "asc" || mod == "desc" {
+			hasSort = true
+			desc = mod == "desc"
+			typePart = fields[0]
+		}
+	}
+	if strings.HasSuffix(typePart, "...") {
+		isSlice = true
+		typePart = strings.TrimSpace(strings.TrimSuffix(typePart, "..."))
+	}
+	if namePart == "" || typePart == "" {
+		return ParamSpec{}, fmt.Errorf("line %d: invalid compact param spec %q", line, raw)
+	}
+	return ParamSpec{
+		Name:    namePart,
+		GoType:  typePart,
+		Slice:   isSlice,
+		HasSort: hasSort,
+		Desc:    desc,
+	}, nil
 }
 
 // UnmarshalYAML supports 3 YAML forms for ParamSpec:
@@ -115,28 +195,11 @@ type ParamSpec struct {
 func (p *ParamSpec) UnmarshalYAML(value *yaml.Node) error {
 	switch value.Kind {
 	case yaml.ScalarNode:
-		raw := strings.TrimSpace(value.Value)
-		colon := strings.IndexByte(raw, ':')
-		if colon <= 0 || colon == len(raw)-1 {
-			return fmt.Errorf("line %d: invalid compact param spec %q (expected \"name:type\")", value.Line, raw)
+		ps, err := parseParamScalarString(value.Line, value.Value)
+		if err != nil {
+			return err
 		}
-		namePart := strings.TrimSpace(raw[:colon])
-		typePart := strings.TrimSpace(raw[colon+1:])
-		isSlice := false
-		if strings.HasSuffix(namePart, "...") {
-			isSlice = true
-			namePart = strings.TrimSpace(strings.TrimSuffix(namePart, "..."))
-		}
-		if strings.HasSuffix(typePart, "...") {
-			isSlice = true
-			typePart = strings.TrimSpace(strings.TrimSuffix(typePart, "..."))
-		}
-		if namePart == "" || typePart == "" {
-			return fmt.Errorf("line %d: invalid compact param spec %q", value.Line, raw)
-		}
-		p.Name = namePart
-		p.Type = typePart
-		p.Slice = isSlice
+		*p = ps
 		return nil
 
 	case yaml.MappingNode:
@@ -147,23 +210,11 @@ func (p *ParamSpec) UnmarshalYAML(value *yaml.Node) error {
 				if vNode.Kind != yaml.ScalarNode {
 					return fmt.Errorf("line %d: shorthand param %q value must be a scalar type", vNode.Line, kNode.Value)
 				}
-				namePart := strings.TrimSpace(kNode.Value)
-				typePart := strings.TrimSpace(vNode.Value)
-				isSlice := false
-				if strings.HasSuffix(namePart, "...") {
-					isSlice = true
-					namePart = strings.TrimSpace(strings.TrimSuffix(namePart, "..."))
+				ps, err := parseParamScalarString(kNode.Line, kNode.Value+":"+vNode.Value)
+				if err != nil {
+					return err
 				}
-				if strings.HasSuffix(typePart, "...") {
-					isSlice = true
-					typePart = strings.TrimSpace(strings.TrimSuffix(typePart, "..."))
-				}
-				if namePart == "" || typePart == "" {
-					return fmt.Errorf("line %d: shorthand param requires non-empty name and type", kNode.Line)
-				}
-				p.Name = namePart
-				p.Type = typePart
-				p.Slice = isSlice
+				*p = ps
 				return nil
 			}
 		}
@@ -185,38 +236,30 @@ func (p *ParamSpec) UnmarshalYAML(value *yaml.Node) error {
 				}
 				typ = strings.TrimSpace(vNode.Value)
 			case "slice":
-				if err := vNode.Decode(&slice); err != nil {
-					return fmt.Errorf("line %d: param \"slice\" must be a boolean: %w", vNode.Line, err)
+				if vNode.Kind != yaml.ScalarNode || (vNode.Value != "true" && vNode.Value != "false") {
+					return fmt.Errorf("line %d: param \"slice\" must be a boolean", vNode.Line)
 				}
+				slice = vNode.Value == "true"
 			default:
 				return fmt.Errorf("line %d: unknown field %q in param spec", kNode.Line, kNode.Value)
 			}
 		}
-		if strings.HasSuffix(name, "...") {
-			slice = true
-			name = strings.TrimSpace(strings.TrimSuffix(name, "..."))
-		}
-		if strings.HasSuffix(typ, "...") {
-			slice = true
-			typ = strings.TrimSpace(strings.TrimSuffix(typ, "..."))
-		}
 		if name == "" || typ == "" {
 			return fmt.Errorf("line %d: param mapping requires both \"name\" and \"type\"", value.Line)
 		}
-		p.Name = name
-		p.Type = typ
-		p.Slice = slice
+		ps, err := parseParamScalarString(value.Line, name+":"+typ)
+		if err != nil {
+			return err
+		}
+		if slice {
+			ps.Slice = true
+		}
+		*p = ps
 		return nil
 
 	default:
 		return fmt.Errorf("line %d: invalid param spec YAML node kind", value.Line)
 	}
-}
-
-// ColumnSpec defines a fallback output column declaration in YAML.
-type ColumnSpec struct {
-	Name string
-	Type string
 }
 
 // UnmarshalYAML supports 3 YAML forms for ColumnSpec:
@@ -237,7 +280,7 @@ func (c *ColumnSpec) UnmarshalYAML(value *yaml.Node) error {
 			return fmt.Errorf("line %d: invalid compact column spec %q", value.Line, raw)
 		}
 		c.Name = namePart
-		c.Type = typePart
+		c.GoType = typePart
 		return nil
 
 	case yaml.MappingNode:
@@ -254,7 +297,7 @@ func (c *ColumnSpec) UnmarshalYAML(value *yaml.Node) error {
 					return fmt.Errorf("line %d: shorthand column requires non-empty name and type", kNode.Line)
 				}
 				c.Name = namePart
-				c.Type = typePart
+				c.GoType = typePart
 				return nil
 			}
 		}
@@ -282,7 +325,7 @@ func (c *ColumnSpec) UnmarshalYAML(value *yaml.Node) error {
 			return fmt.Errorf("line %d: column mapping requires both \"name\" and \"type\"", value.Line)
 		}
 		c.Name = name
-		c.Type = typ
+		c.GoType = typ
 		return nil
 
 	default:
@@ -291,17 +334,27 @@ func (c *ColumnSpec) UnmarshalYAML(value *yaml.Node) error {
 }
 
 // ParseYAML strictly decodes a sqlgen YAML configuration using KnownFields(true).
-func ParseYAML(data []byte) (*Config, error) {
+func ParseYAML(data []byte) (Config, error) {
 	if len(bytes.TrimSpace(data)) == 0 {
-		return nil, errors.New("sqlgen: empty YAML configuration")
+		return Config{}, errors.New("sqlgen: empty YAML configuration")
 	}
 	dec := yaml.NewDecoder(bytes.NewReader(data))
 	dec.KnownFields(true)
 	var cfg Config
 	if err := dec.Decode(&cfg); err != nil {
-		return nil, fmt.Errorf("sqlgen: parse YAML: %w", err)
+		return Config{}, fmt.Errorf("sqlgen: parse YAML: %w", err)
 	}
-	return &cfg, nil
+	var trailing any
+	if err := dec.Decode(&trailing); err != io.EOF {
+		if err == nil {
+			return Config{}, errors.New("sqlgen: trailing YAML document is not allowed")
+		}
+		return Config{}, fmt.Errorf("sqlgen: trailing YAML content: %w", err)
+	}
+	if cfg.Version != "" && cfg.Version != "1" {
+		return Config{}, fmt.Errorf("sqlgen: unsupported config version %q (expected \"1\")", cfg.Version)
+	}
+	return cfg, nil
 }
 
 // GenerateFromYAML parses YAML configuration bytes and generates formatted Go source code.
@@ -313,8 +366,40 @@ func GenerateFromYAML(data []byte) ([]byte, error) {
 	return Generate(cfg)
 }
 
-// GenerateFile reads a YAML file from cfgPath, generates Go source code, and writes it to cfg.Out.
-func GenerateFile(cfgPath string) error {
+// WriteFileAtomic writes data to targetPath atomically using a temporary file in the same directory.
+func WriteFileAtomic(targetPath string, data []byte) error {
+	dir := filepath.Dir(targetPath)
+	tmp, err := os.CreateTemp(dir, ".sqlgen-*.tmp")
+	if err != nil {
+		return fmt.Errorf("sqlgen: create temp file: %w", err)
+	}
+	tmpName := tmp.Name()
+	cleanup := func() {
+		_ = os.Remove(tmpName)
+	}
+	if _, err := tmp.Write(data); err != nil {
+		_ = tmp.Close()
+		cleanup()
+		return fmt.Errorf("sqlgen: write temp file: %w", err)
+	}
+	if err := tmp.Chmod(0o644); err != nil {
+		_ = tmp.Close()
+		cleanup()
+		return fmt.Errorf("sqlgen: chmod temp file: %w", err)
+	}
+	if err := tmp.Close(); err != nil {
+		cleanup()
+		return fmt.Errorf("sqlgen: close temp file: %w", err)
+	}
+	if err := os.Rename(tmpName, targetPath); err != nil {
+		cleanup()
+		return fmt.Errorf("sqlgen: rename %s: %w", targetPath, err)
+	}
+	return nil
+}
+
+// GenerateFromYAMLFile reads a YAML file from cfgPath, generates Go source code, and writes it atomically.
+func GenerateFromYAMLFile(cfgPath, outOverride string) error {
 	data, err := os.ReadFile(cfgPath)
 	if err != nil {
 		return fmt.Errorf("sqlgen: read %s: %w", cfgPath, err)
@@ -322,6 +407,9 @@ func GenerateFile(cfgPath string) error {
 	cfg, err := ParseYAML(data)
 	if err != nil {
 		return err
+	}
+	if outOverride != "" {
+		cfg.Out = outOverride
 	}
 	src, err := Generate(cfg)
 	if err != nil {
@@ -331,16 +419,15 @@ func GenerateFile(cfgPath string) error {
 	if outPath == "" {
 		outPath = "sqlgen_gen.go"
 	}
-	if !filepath.IsAbs(outPath) {
+	if !filepath.IsAbs(outPath) && outOverride == "" {
 		outPath = filepath.Join(filepath.Dir(cfgPath), outPath)
 	}
-	if err := os.MkdirAll(filepath.Dir(outPath), 0o755); err != nil {
-		return fmt.Errorf("sqlgen: create output directory: %w", err)
-	}
-	if err := os.WriteFile(outPath, src, 0o644); err != nil {
-		return fmt.Errorf("sqlgen: write %s: %w", outPath, err)
-	}
-	return nil
+	return WriteFileAtomic(outPath, src)
+}
+
+// GenerateFile reads a YAML file from cfgPath, generates Go source code, and writes it to cfg.Out.
+func GenerateFile(cfgPath string) error {
+	return GenerateFromYAMLFile(cfgPath, "")
 }
 
 var predeclaredGoTypes = []string{
@@ -354,6 +441,18 @@ var predeclaredGoTypes = []string{
 
 func isPredeclaredGoType(t string) bool {
 	return slices.Contains(predeclaredGoTypes, t)
+}
+
+func isOrderableGoType(t string) bool {
+	switch t {
+	case "int", "int8", "int16", "int32", "int64",
+		"uint", "uint8", "uint16", "uint32", "uint64", "uintptr",
+		"byte", "rune", "float32", "float64", "string",
+		"time.Time", "[]byte", "[]uint8":
+		return true
+	default:
+		return false
+	}
 }
 
 func levenshtein(a, b string) int {
@@ -469,6 +568,8 @@ func isValidGoIdent(s string) bool {
 var commonInitialisms = map[string]string{
 	"id":    "ID",
 	"ids":   "IDs",
+	"sku":   "SKU",
+	"skus":  "SKUs",
 	"url":   "URL",
 	"urls":  "URLs",
 	"uri":   "URI",
@@ -500,7 +601,6 @@ func splitIdentWords(s string) []string {
 				words = append(words, string(runes[start:i]))
 				start = i
 			} else if unicode.IsUpper(prev) && unicode.IsUpper(curr) && i+1 < len(runes) && unicode.IsLower(runes[i+1]) {
-				// Keep plural 's' attached to an uppercase acronym, e.g. "IDs", "URLs", "UUIDs".
 				if curr == 'S' || (runes[i+1] == 's' && (i+2 == len(runes) || unicode.IsUpper(runes[i+2]))) {
 					continue
 				}
@@ -518,18 +618,18 @@ func toGoFieldName(s string) string {
 	if len(words) == 0 {
 		return "Field"
 	}
-	var b strings.Builder
+	var buf []byte
 	for _, w := range words {
 		low := strings.ToLower(w)
 		if initCap, ok := commonInitialisms[low]; ok {
-			b.WriteString(initCap)
+			buf = append(buf, initCap...)
 		} else {
 			runes := []rune(low)
 			runes[0] = unicode.ToUpper(runes[0])
-			b.WriteString(string(runes))
+			buf = append(buf, string(runes)...)
 		}
 	}
-	out := b.String()
+	out := string(buf)
 	if !unicode.IsLetter(rune(out[0])) && out[0] != '_' {
 		out = "F" + out
 	}
@@ -541,26 +641,35 @@ func toGoParamName(s string) string {
 	if len(words) == 0 {
 		return "param"
 	}
-	var b strings.Builder
+	var buf []byte
 	for i, w := range words {
 		low := strings.ToLower(w)
 		if i == 0 {
-			b.WriteString(low)
+			buf = append(buf, low...)
 			continue
 		}
 		if initCap, ok := commonInitialisms[low]; ok {
-			b.WriteString(initCap)
+			buf = append(buf, initCap...)
 		} else {
 			runes := []rune(low)
 			runes[0] = unicode.ToUpper(runes[0])
-			b.WriteString(string(runes))
+			buf = append(buf, string(runes)...)
 		}
 	}
-	out := b.String()
-	if token.Lookup(out).IsKeyword() || out == "ctx" || out == "q" || out == "dst" || out == "fn" {
+	out := string(buf)
+	if token.Lookup(out).IsKeyword() || out == "ctx" || out == "q" || out == "p" || out == "dst" || out == "fn" || out == "seq" {
 		out += "Param"
 	}
 	return out
+}
+
+func lowerFirstIdent(s string) string {
+	if s == "" {
+		return "v"
+	}
+	runes := []rune(s)
+	runes[0] = unicode.ToLower(runes[0])
+	return string(runes)
 }
 
 type paramKind uint8
@@ -578,12 +687,15 @@ type tupleFieldDef struct {
 	RawName   string
 	FieldName string
 	GoType    string
+	HasSort   bool
+	Desc      bool
 }
 
 type tupleStructDef struct {
 	Name     string
 	Fields   []tupleFieldDef
 	Segments []string
+	HasSort  bool
 }
 
 type paramDef struct {
@@ -591,9 +703,12 @@ type paramDef struct {
 	FieldName  string
 	ParamName  string
 	Kind       paramKind
-	GoType     string // full parameter Go type (e.g., int64, []int64, []UserInput, runtime.Query, runtime.Order, runtime.Seek)
-	ElemGoType string // element type for paramSlice or struct name for paramTupleSlice
+	GoType     string
+	ElemGoType string
 	Tuple      *tupleStructDef
+	HasSort    bool
+	Desc       bool
+	InOptBlock bool
 }
 
 type colDef struct {
@@ -601,8 +716,8 @@ type colDef struct {
 	FieldName string
 	GoType    string
 	SQLExpr   string
-	CondFlag  string // empty if unconditional
-	UncondIdx int    // 0..len(UncondCols)-1 if unconditional, -1 if conditional
+	CondFlag  string
+	UncondIdx int
 }
 
 type optFlagDef struct {
@@ -612,11 +727,11 @@ type optFlagDef struct {
 }
 
 type slotRef struct {
-	Kind      runtime.SlotKind
-	ParamIdx  int // index into compiledStmt.Params (-1 for SlotSelectCols / SlotOptBlock)
-	FlagBit   uint8
-	Tuple     *tupleStructDef
-	Inner     *parsedBlock
+	Kind     runtime.SlotKind
+	ParamIdx int
+	FlagBit  uint8
+	Tuple    *tupleStructDef
+	Inner    *parsedBlock
 }
 
 type parsedBlock struct {
@@ -628,8 +743,8 @@ type parsedBlock struct {
 }
 
 type orderColRef struct {
-	RawRef    string // e.g., "u.created_at" or "created_at"
-	ColIdx    int    // index into compiledStmt.Cols
+	RawRef    string
+	ColIdx    int
 	FieldName string
 	GoType    string
 }
@@ -637,38 +752,67 @@ type orderColRef struct {
 type compiledStmt struct {
 	ID              uint32
 	Name            string
-	Kind            StatementKind
+	Kind            QueryKind
+	StmtVerb        runtime.StmtVerb
+	HasReturning    bool
 	RowTypeName     string
 	ScalarResult    bool
 	UseParamsStruct bool
 	CanBatch        bool
+	CanStream       bool
 	BatchParamIdx   int
+	BatchIsTuple    bool
+	ScalarParamCnt  int
+	BatchArity      int
 	MaxRowsPerStmt  int
 	IsStatic        bool
+	StaticSQL       string
 
-	Root            parsedBlock
-	SelectColExprs  []string
-	Params          []paramDef
-	Cols            []colDef
-	UncondCols      []colDef
-	CondCols        []colDef
-	Flags           []optFlagDef
-	OrderCols       []orderColRef
-	HasOrder        bool
-	HasSeek         bool
-	TotalSlices     int
-	TotalTuples     int
-	TotalSubs       int
+	Root           parsedBlock
+	SelectColExprs []string
+	Params         []paramDef
+	Cols           []colDef
+	UncondCols     []colDef
+	CondCols       []colDef
+	Flags          []optFlagDef
+	OrderCols      []orderColRef
+	HasOrder       bool
+	HasSeek        bool
+	TotalSlices    int
+	TotalTuples    int
+	TotalSubs      int
 }
 
-func parseDialect(raw string) (runtime.Dialect, error) {
-	switch strings.ToLower(strings.TrimSpace(raw)) {
+// ParsedSQL holds the parsed segments and slot occurrences of a SQL statement for testing/fuzzing.
+type ParsedSQL struct {
+	Segments    []string
+	Occurrences []slotRef
+}
+
+// ParseSQL parses a raw annotated SQL query string and returns its segments and occurrences.
+func ParseSQL(sqlStr string) (*ParsedSQL, error) {
+	cs, err := compileStatement(1, StatementSpec{
+		Name: "FuzzStmt",
+		Kind: KindSubquery,
+		SQL:  sqlStr,
+	})
+	if err != nil {
+		return nil, err
+	}
+	return &ParsedSQL{
+		Segments:    cs.Root.Segments,
+		Occurrences: cs.Root.Slots,
+	}, nil
+}
+
+func parseDialect(raw Dialect) (runtime.Dialect, error) {
+	switch strings.ToLower(strings.TrimSpace(string(raw))) {
 	case "", "dollar", "postgres", "postgresql", "pgx", "cockroach", "cockroachdb", "$":
-		return runtime.DialectPostgres, nil
+		return runtime.DialectDollar, nil
 	case "question", "sqlite", "sqlite3", "mysql", "mariadb", "?":
 		return runtime.DialectQuestion, nil
 	default:
-		return runtime.DialectPostgres, fmt.Errorf("sqlgen: unsupported dialect %q", raw)
+		return runtime.DialectDollar, fmt.Errorf("sqlgen: unsupported dialect %q", raw)
 	}
 }
 
@@ -701,8 +845,6 @@ var projectionTerminators = map[string]bool{
 	"except":    true,
 }
 
-// matchDollarQuoteTag checks if s[pos:] starts a valid PostgreSQL dollar-quoted tag ($$ or $tag$ where tag does not start with [0-9]).
-// Returns the tag string (including both '$' delimiters) and true if matched.
 func matchDollarQuoteTag(s string, pos int) (string, bool) {
 	if pos >= len(s) || s[pos] != '$' {
 		return "", false
@@ -723,7 +865,6 @@ func matchDollarQuoteTag(s string, pos int) (string, bool) {
 	return "", false
 }
 
-// findConditionalBlockClose finds the matching '}' for a '{?Flag: ...}' block starting at openBracePos.
 func findConditionalBlockClose(s string, bodyStart int) (int, error) {
 	i := bodyStart
 	for i < len(s) {
@@ -809,7 +950,6 @@ func findConditionalBlockClose(s string, bodyStart int) (int, error) {
 	return -1, errors.New("unclosed conditional {?...} block")
 }
 
-// isEndOfProjectionItem implements the exact lookahead algorithm from Section 4.3.
 func isEndOfProjectionItem(span string, pos int) bool {
 	i := pos
 	for i < len(span) {
@@ -859,7 +999,6 @@ func isEndOfProjectionItem(span string, pos int) bool {
 	return false
 }
 
-// scanGoType scans a Go type annotation starting at pos: { "[]" | "*" } , [ identifier , "." ] , identifier , [ "..." ]
 func scanGoType(s string, pos int) (goType string, hasEllipsis bool, nextPos int, ok bool) {
 	i := pos
 	for i < len(s) {
@@ -900,6 +1039,50 @@ func scanGoType(s string, pos int) (goType string, hasEllipsis bool, nextPos int
 	return goType, hasEllipsis, end, true
 }
 
+// scanOptionalSortModifier checks if s[pos:] has horizontal whitespace followed by ASC or DESC.
+func scanOptionalSortModifier(s string, pos int) (hasSort bool, desc bool, nextPos int) {
+	i := pos
+	for i < len(s) && (s[i] == ' ' || s[i] == '\t') {
+		i++
+	}
+	if i == pos || i >= len(s) || !isIdentStartByte(s[i]) {
+		return false, false, pos
+	}
+	wEnd := i + 1
+	for wEnd < len(s) && isIdentContByte(s[wEnd]) {
+		wEnd++
+	}
+	if wEnd < len(s) && s[wEnd] == ':' {
+		return false, false, pos
+	}
+	word := strings.ToLower(s[i:wEnd])
+	if word != "asc" && word != "desc" {
+		return false, false, pos
+	}
+	return true, word == "desc", wEnd
+}
+
+// scanOptionalTypecastSuffix scans an optional PostgreSQL ::type[(...)] suffix starting at s[pos:].
+func scanOptionalTypecastSuffix(s string, pos int) (suffix string, nextPos int) {
+	if pos+2 >= len(s) || s[pos] != ':' || s[pos+1] != ':' || !isIdentStartByte(s[pos+2]) {
+		return "", pos
+	}
+	end := pos + 3
+	for end < len(s) && isIdentContByte(s[end]) {
+		end++
+	}
+	if end < len(s) && s[end] == '(' {
+		closeParen := strings.IndexByte(s[end:], ')')
+		if closeParen > 0 {
+			end += closeParen + 1
+		}
+	}
+	if strings.HasPrefix(s[end:], "[]") {
+		end += 2
+	}
+	return s[pos:end], end
+}
+
 func normalizeScalarOrSliceType(rawType string, explicitSlice bool) (isSlice bool, fullGoType string, elemGoType string, err error) {
 	t := strings.TrimSpace(rawType)
 	if err := validateGoType(t); err != nil {
@@ -921,7 +1104,6 @@ func normalizeScalarOrSliceType(rawType string, explicitSlice bool) (isSlice boo
 	return false, t, "", nil
 }
 
-// findMatchingParen finds the matching ')' for '(' at openPos, respecting SQL quotes and comments.
 func findMatchingParen(s string, openPos int) (int, error) {
 	depth := 1
 	i := openPos + 1
@@ -1010,8 +1192,6 @@ func findMatchingParen(s string, openPos int) (int, error) {
 	return -1, errors.New("unclosed parenthesis")
 }
 
-// parseTupleBody extracts Field:GoType tokens inside a tuple slice body while preserving
-// all surrounding SQL text (casts, functions, nested parentheses, quotes) in Segments.
 func parseTupleBody(structName, body string) (*tupleStructDef, error) {
 	if !isValidGoIdent(structName) {
 		return nil, fmt.Errorf("invalid tuple struct name %q", structName)
@@ -1019,12 +1199,11 @@ func parseTupleBody(structName, body string) (*tupleStructDef, error) {
 	td := &tupleStructDef{
 		Name: structName,
 	}
-	var seg strings.Builder
+	var seg []byte
 	seenFields := make(map[string]bool)
 	i := 0
 	for i < len(body) {
 		ch := body[i]
-		// Protected contexts inside tuple body
 		if ch == '\'' {
 			start := i
 			i++
@@ -1044,7 +1223,7 @@ func parseTupleBody(structName, body string) (*tupleStructDef, error) {
 			if !closed {
 				return nil, errors.New("unclosed single-quoted literal in tuple body")
 			}
-			seg.WriteString(body[start:i])
+			seg = append(seg, body[start:i]...)
 			continue
 		}
 		if ch == '"' {
@@ -1066,7 +1245,7 @@ func parseTupleBody(structName, body string) (*tupleStructDef, error) {
 			if !closed {
 				return nil, errors.New("unclosed double-quoted identifier in tuple body")
 			}
-			seg.WriteString(body[start:i])
+			seg = append(seg, body[start:i]...)
 			continue
 		}
 		if ch == '`' {
@@ -1088,11 +1267,11 @@ func parseTupleBody(structName, body string) (*tupleStructDef, error) {
 			if !closed {
 				return nil, errors.New("unclosed backtick identifier in tuple body")
 			}
-			seg.WriteString(body[start:i])
+			seg = append(seg, body[start:i]...)
 			continue
 		}
 		if ch == ':' && i+1 < len(body) && (body[i+1] == ':' || body[i+1] == '=') {
-			seg.WriteString(body[i : i+2])
+			seg = append(seg, body[i:i+2]...)
 			i += 2
 			continue
 		}
@@ -1118,24 +1297,43 @@ func parseTupleBody(structName, body string) (*tupleStructDef, error) {
 					return nil, fmt.Errorf("duplicate field %q in tuple struct %s", fieldName, structName)
 				}
 				seenFields[fieldName] = true
-				td.Segments = append(td.Segments, seg.String())
-				seg.Reset()
+
+				// Check for optional ::typecast suffix and optional ASC / DESC modifier
+				castSuffix, afterCast := scanOptionalTypecastSuffix(body, nextPos)
+				hasSort, desc, afterSort := scanOptionalSortModifier(body, afterCast)
+				if hasSort {
+					if !isOrderableGoType(goType) {
+						return nil, fmt.Errorf("tuple %s field %q of type %q is not orderable for ASC/DESC presorting", structName, ident, goType)
+					}
+					td.HasSort = true
+					nextPos = afterSort
+				} else {
+					nextPos = afterCast
+				}
+
+				td.Segments = append(td.Segments, string(seg))
+				seg = seg[:0]
+				if castSuffix != "" {
+					seg = append(seg, castSuffix...)
+				}
 				td.Fields = append(td.Fields, tupleFieldDef{
 					RawName:   ident,
 					FieldName: fieldName,
 					GoType:    goType,
+					HasSort:   hasSort,
+					Desc:      desc,
 				})
 				i = nextPos
 				continue
 			}
-			seg.WriteString(ident)
+			seg = append(seg, ident...)
 			i = wEnd
 			continue
 		}
-		seg.WriteByte(ch)
+		seg = append(seg, ch)
 		i++
 	}
-	td.Segments = append(td.Segments, seg.String())
+	td.Segments = append(td.Segments, string(seg))
 	if len(td.Fields) == 0 {
 		return nil, fmt.Errorf("tuple struct %s must contain at least one Field:Type annotation", structName)
 	}
@@ -1143,43 +1341,65 @@ func parseTupleBody(structName, body string) (*tupleStructDef, error) {
 }
 
 type stmtParser struct {
-	spec          StatementSpec
-	yamlParams    map[string]ParamSpec
-	paramsByName  map[string]int
-	flagsByName   map[string]uint8
-	rawOrderCols  []string
-	inOptBlock    bool
-	currentFlag   string
+	spec         StatementSpec
+	yamlParams   map[string]ParamSpec
+	paramsByCanon map[string]int
+	flagsByName  map[string]uint8
+	rawOrderCols []string
+	inOptBlock   bool
+	currentFlag  string
 
-	parenDepth    int
-	bracketDepth  int
-	seenMainSel   bool
-	inProjection  bool
+	parenDepth   int
+	bracketDepth int
+	seenMainSel  bool
+	inProjection bool
 
-	// Tracking for unconditional SELECT/RETURNING projection items
-	projActive         bool
-	projStartSegIdx    int
-	projStartByteIdx   int
-	projEndSegIdx      int
-	projEndByteIdx     int
-	projItemStartSeg   int
-	projItemStartByte  int
-	projHasParamSlot   bool
-	projHasOptBlock    bool
+	hasTopWhere          bool
+	needBranchGuardClose bool
+	inSingleInsertValues bool
+
+	projActive        bool
+	projStartSegIdx   int
+	projStartByteIdx  int
+	projEndSegIdx     int
+	projEndByteIdx    int
+	projItemStartSeg  int
+	projItemStartByte int
+	projHasParamSlot  bool
+	projHasOptBlock   bool
 
 	cs *compiledStmt
 }
 
-func (p *stmtParser) addOrGetParam(rawName string, kind paramKind, goType, elemGoType string, tuple *tupleStructDef) (int, error) {
-	fieldName := toGoFieldName(rawName)
-	for idx, existing := range p.cs.Params {
-		if existing.FieldName == fieldName || existing.RawName == rawName {
-			if existing.Kind != kind || existing.GoType != goType {
-				return -1, fmt.Errorf("statement %s: parameter %q redeclared with conflicting types (%s vs %s)", p.spec.Name, rawName, existing.GoType, goType)
-			}
-			return idx, nil
+func (p *stmtParser) addOrGetParam(rawName string, kind paramKind, goType, elemGoType string, tuple *tupleStructDef, hasSort, desc bool) (int, error) {
+	canonKey := strings.ToLower(toGoParamName(rawName))
+	if idx, exists := p.paramsByCanon[canonKey]; exists {
+		existing := &p.cs.Params[idx]
+		if existing.Kind != kind || existing.GoType != goType {
+			return -1, fmt.Errorf("statement %s: parameter %q redeclared with conflicting types (%s vs %s)", p.spec.Name, rawName, existing.GoType, goType)
+		}
+		if existing.HasSort && hasSort && existing.Desc != desc {
+			return -1, fmt.Errorf("statement %s: parameter %q redeclared with conflicting sort directions", p.spec.Name, rawName)
+		}
+		if hasSort {
+			existing.HasSort = true
+			existing.Desc = desc
+		}
+		if !p.inOptBlock {
+			existing.InOptBlock = false
+		}
+		return idx, nil
+	}
+	if hasSort && kind != paramTupleSlice {
+		targetType := elemGoType
+		if targetType == "" {
+			targetType = goType
+		}
+		if !isOrderableGoType(targetType) {
+			return -1, fmt.Errorf("statement %s: parameter %q of type %q is not orderable for ASC/DESC presorting", p.spec.Name, rawName, targetType)
 		}
 	}
+	fieldName := toGoFieldName(rawName)
 	idx := len(p.cs.Params)
 	p.cs.Params = append(p.cs.Params, paramDef{
 		RawName:    rawName,
@@ -1189,8 +1409,11 @@ func (p *stmtParser) addOrGetParam(rawName string, kind paramKind, goType, elemG
 		GoType:     goType,
 		ElemGoType: elemGoType,
 		Tuple:      tuple,
+		HasSort:    hasSort,
+		Desc:       desc,
+		InOptBlock: p.inOptBlock,
 	})
-	p.paramsByName[rawName] = idx
+	p.paramsByCanon[canonKey] = idx
 	return idx, nil
 }
 
@@ -1243,31 +1466,31 @@ func (p *stmtParser) addColumn(rawName, goType, sqlExpr string) error {
 }
 
 func extractCurrentItemExpr(segments []string, curSeg string, itemSegIdx, itemByteIdx int) string {
-	var b strings.Builder
+	var buf []byte
 	allSegs := append(slices.Clone(segments), curSeg)
 	for sIdx := itemSegIdx; sIdx < len(allSegs); sIdx++ {
 		seg := allSegs[sIdx]
 		if sIdx == itemSegIdx {
 			if itemByteIdx < len(seg) {
-				b.WriteString(seg[itemByteIdx:])
+				buf = append(buf, seg[itemByteIdx:]...)
 			}
 		} else {
-			b.WriteString(seg)
+			buf = append(buf, seg...)
 		}
 	}
-	return strings.TrimSpace(b.String())
+	return strings.TrimSpace(string(buf))
 }
 
 func (p *stmtParser) scanSpan(span string, blk *parsedBlock, isTopLevel bool) error {
-	var seg strings.Builder
+	var seg []byte
 	i := 0
 
 	emitSlot := func(s slotRef) {
 		if p.inProjection && !p.inOptBlock && s.Kind != runtime.SlotOptBlock && !p.projHasOptBlock {
 			p.projHasParamSlot = true
 		}
-		blk.Segments = append(blk.Segments, seg.String())
-		seg.Reset()
+		blk.Segments = append(blk.Segments, string(seg))
+		seg = seg[:0]
 		blk.Slots = append(blk.Slots, s)
 		switch s.Kind {
 		case runtime.SlotSlice:
@@ -1284,6 +1507,21 @@ func (p *stmtParser) scanSpan(span string, blk *parsedBlock, isTopLevel bool) er
 				blk.NumSlices += s.Inner.NumSlices
 				blk.NumTuples += s.Inner.NumTuples
 				blk.NumSubs += s.Inner.NumSubs
+			}
+		}
+	}
+
+	flushBranchGuardBeforeEnd := func() {
+		if !isTopLevel || p.inOptBlock {
+			return
+		}
+		if p.cs.StmtVerb == runtime.VerbUpdate || p.cs.StmtVerb == runtime.VerbDelete {
+			if p.needBranchGuardClose {
+				p.needBranchGuardClose = false
+				emitSlot(slotRef{Kind: runtime.SlotBranchGuardClose, ParamIdx: -1})
+			} else if !p.hasTopWhere {
+				p.hasTopWhere = true
+				emitSlot(slotRef{Kind: runtime.SlotBranchGuardWhere, ParamIdx: -1})
 			}
 		}
 	}
@@ -1311,7 +1549,7 @@ func (p *stmtParser) scanSpan(span string, blk *parsedBlock, isTopLevel bool) er
 			if !closed {
 				return fmt.Errorf("statement %s: unclosed single-quoted string literal", p.spec.Name)
 			}
-			seg.WriteString(span[start:i])
+			seg = append(seg, span[start:i]...)
 			continue
 		}
 
@@ -1335,7 +1573,7 @@ func (p *stmtParser) scanSpan(span string, blk *parsedBlock, isTopLevel bool) er
 			if !closed {
 				return fmt.Errorf("statement %s: unclosed double-quoted identifier", p.spec.Name)
 			}
-			seg.WriteString(span[start:i])
+			seg = append(seg, span[start:i]...)
 			continue
 		}
 
@@ -1359,7 +1597,7 @@ func (p *stmtParser) scanSpan(span string, blk *parsedBlock, isTopLevel bool) er
 			if !closed {
 				return fmt.Errorf("statement %s: unclosed backtick-quoted identifier", p.spec.Name)
 			}
-			seg.WriteString(span[start:i])
+			seg = append(seg, span[start:i]...)
 			continue
 		}
 
@@ -1371,7 +1609,7 @@ func (p *stmtParser) scanSpan(span string, blk *parsedBlock, isTopLevel bool) er
 					return fmt.Errorf("statement %s: unclosed dollar-quoted literal %s", p.spec.Name, tag)
 				}
 				end := i + len(tag) + closeOffset + len(tag)
-				seg.WriteString(span[i:end])
+				seg = append(seg, span[i:end]...)
 				i = end
 				continue
 			}
@@ -1384,7 +1622,7 @@ func (p *stmtParser) scanSpan(span string, blk *parsedBlock, isTopLevel bool) er
 			for i < len(span) && span[i] != '\n' {
 				i++
 			}
-			seg.WriteString(span[start:i])
+			seg = append(seg, span[start:i]...)
 			continue
 		}
 
@@ -1395,7 +1633,7 @@ func (p *stmtParser) scanSpan(span string, blk *parsedBlock, isTopLevel bool) er
 				return fmt.Errorf("statement %s: unclosed block comment", p.spec.Name)
 			}
 			end := i + 2 + closeOffset + 2
-			seg.WriteString(span[i:end])
+			seg = append(seg, span[i:end]...)
 			i = end
 			continue
 		}
@@ -1403,7 +1641,7 @@ func (p *stmtParser) scanSpan(span string, blk *parsedBlock, isTopLevel bool) er
 		// 7. Bracket tracking [ ... ]
 		if ch == '[' {
 			p.bracketDepth++
-			seg.WriteByte(ch)
+			seg = append(seg, ch)
 			i++
 			continue
 		}
@@ -1412,14 +1650,13 @@ func (p *stmtParser) scanSpan(span string, blk *parsedBlock, isTopLevel bool) er
 				return fmt.Errorf("statement %s: unmatched closing bracket ']'", p.spec.Name)
 			}
 			p.bracketDepth--
-			seg.WriteByte(ch)
+			seg = append(seg, ch)
 			i++
 			continue
 		}
 
-		// If inside brackets, copy verbatim without interpreting ':' or '{?...}'
 		if p.bracketDepth > 0 {
-			seg.WriteByte(ch)
+			seg = append(seg, ch)
 			i++
 			continue
 		}
@@ -1427,7 +1664,7 @@ func (p *stmtParser) scanSpan(span string, blk *parsedBlock, isTopLevel bool) er
 		// Parenthesis depth tracking
 		if ch == '(' {
 			p.parenDepth++
-			seg.WriteByte(ch)
+			seg = append(seg, ch)
 			i++
 			continue
 		}
@@ -1436,23 +1673,37 @@ func (p *stmtParser) scanSpan(span string, blk *parsedBlock, isTopLevel bool) er
 				return fmt.Errorf("statement %s: unmatched closing parenthesis ')'", p.spec.Name)
 			}
 			p.parenDepth--
-			seg.WriteByte(ch)
+			if isTopLevel && p.inSingleInsertValues && p.parenDepth == 0 {
+				p.inSingleInsertValues = false
+				emitSlot(slotRef{Kind: runtime.SlotInsertValuesClose, ParamIdx: -1})
+				i++
+				continue
+			}
+			seg = append(seg, ch)
+			i++
+			continue
+		}
+
+		// Top-level semicolon
+		if ch == ';' && isTopLevel && p.parenDepth == 0 && p.bracketDepth == 0 {
+			flushBranchGuardBeforeEnd()
+			seg = append(seg, ch)
 			i++
 			continue
 		}
 
 		// Track top-level comma separating unconditional projection items
 		if ch == ',' && p.inProjection && p.parenDepth == 0 && p.bracketDepth == 0 && !p.inOptBlock {
-			seg.WriteByte(ch)
+			seg = append(seg, ch)
 			i++
 			p.projItemStartSeg = len(blk.Segments)
-			p.projItemStartByte = seg.Len()
+			p.projItemStartByte = len(seg)
 			continue
 		}
 
 		// 8. Colon operators :: and :=
 		if ch == ':' && i+1 < len(span) && (span[i+1] == ':' || span[i+1] == '=') {
-			seg.WriteString(span[i : i+2])
+			seg = append(seg, span[i:i+2]...)
 			i += 2
 			continue
 		}
@@ -1534,14 +1785,22 @@ func (p *stmtParser) scanSpan(span string, blk *parsedBlock, isTopLevel bool) er
 
 			if !hasTypeColon {
 				if hasLeadingColon {
-					// yaml_ref_param (:ident or :ident...)
-					yp, ok := p.yamlParams[ident]
+					// yaml_ref_param (:ident or :ident... [ASC|DESC])
+					canonKey := strings.ToLower(toGoParamName(ident))
+					yp, ok := p.yamlParams[canonKey]
 					if !ok {
-						if existingIdx, exists := p.paramsByName[ident]; exists {
+						if existingIdx, exists := p.paramsByCanon[canonKey]; exists {
 							ep := p.cs.Params[existingIdx]
 							sk := runtime.SlotScalar
 							if ep.Kind == paramSlice {
 								sk = runtime.SlotSlice
+							}
+							hasSort, desc, nextAfterSort := scanOptionalSortModifier(span, afterIdent)
+							if hasSort && sk == runtime.SlotSlice {
+								if _, err := p.addOrGetParam(ident, ep.Kind, ep.GoType, ep.ElemGoType, nil, hasSort, desc); err != nil {
+									return err
+								}
+								afterIdent = nextAfterSort
 							}
 							emitSlot(slotRef{Kind: sk, ParamIdx: existingIdx})
 							i = afterIdent
@@ -1549,7 +1808,7 @@ func (p *stmtParser) scanSpan(span string, blk *parsedBlock, isTopLevel bool) er
 						}
 						return fmt.Errorf("statement %s: parameter %q referenced as :%s is not declared in params", p.spec.Name, ident, ident)
 					}
-					isSlice, fullType, elemType, err := normalizeScalarOrSliceType(yp.Type, yp.Slice || hasPreEllipsis)
+					isSlice, fullType, elemType, err := normalizeScalarOrSliceType(yp.GoType, yp.Slice || hasPreEllipsis)
 					if err != nil {
 						return fmt.Errorf("statement %s param %q: %w", p.spec.Name, ident, err)
 					}
@@ -1559,7 +1818,16 @@ func (p *stmtParser) scanSpan(span string, blk *parsedBlock, isTopLevel bool) er
 						pk = paramSlice
 						sk = runtime.SlotSlice
 					}
-					pIdx, err := p.addOrGetParam(ident, pk, fullType, elemType, nil)
+					hasSort := yp.HasSort
+					desc := yp.Desc
+					if isSlice {
+						if hs, d, nextAfterSort := scanOptionalSortModifier(span, afterIdent); hs {
+							hasSort = true
+							desc = d
+							afterIdent = nextAfterSort
+						}
+					}
+					pIdx, err := p.addOrGetParam(ident, pk, fullType, elemType, nil, hasSort, desc)
 					if err != nil {
 						return err
 					}
@@ -1571,54 +1839,140 @@ func (p *stmtParser) scanSpan(span string, blk *parsedBlock, isTopLevel bool) er
 				// Plain SQL word (identifier or keyword)
 				if p.parenDepth == 0 && p.bracketDepth == 0 {
 					low := strings.ToLower(ident)
-					if low == "select" && !p.seenMainSel {
+					if p.cs.StmtVerb == runtime.VerbOther {
+						switch low {
+						case "select":
+							p.cs.StmtVerb = runtime.VerbSelect
+						case "insert":
+							p.cs.StmtVerb = runtime.VerbInsert
+						case "update":
+							p.cs.StmtVerb = runtime.VerbUpdate
+						case "delete":
+							p.cs.StmtVerb = runtime.VerbDelete
+						}
+					}
+
+					if low == "select" && p.cs.StmtVerb == runtime.VerbSelect && !p.seenMainSel {
 						p.inProjection = true
 						p.seenMainSel = true
-						seg.WriteString(span[tokenStart:identEnd])
+						seg = append(seg, span[tokenStart:identEnd]...)
 						i = identEnd
 						for i < len(span) && isSpaceByte(span[i]) {
-							seg.WriteByte(span[i])
+							seg = append(seg, span[i])
 							i++
 						}
-						// Handle optional DISTINCT keyword right after SELECT
 						if i+8 <= len(span) && strings.EqualFold(span[i:i+8], "distinct") && (i+8 == len(span) || !isIdentContByte(span[i+8])) {
-							seg.WriteString(span[i : i+8])
+							seg = append(seg, span[i:i+8]...)
 							i += 8
 							for i < len(span) && isSpaceByte(span[i]) {
-								seg.WriteByte(span[i])
+								seg = append(seg, span[i])
 								i++
 							}
 						}
 						if isTopLevel {
 							p.projActive = true
 							p.projStartSegIdx = len(blk.Segments)
-							p.projStartByteIdx = seg.Len()
+							p.projStartByteIdx = len(seg)
 							p.projItemStartSeg = p.projStartSegIdx
 							p.projItemStartByte = p.projStartByteIdx
 						}
 						continue
 					} else if low == "returning" {
+						if isTopLevel && !p.inOptBlock {
+							flushBranchGuardBeforeEnd()
+						}
 						p.inProjection = true
-						seg.WriteString(span[tokenStart:identEnd])
+						p.cs.HasReturning = true
+						seg = append(seg, span[tokenStart:identEnd]...)
 						i = identEnd
 						for i < len(span) && isSpaceByte(span[i]) {
-							seg.WriteByte(span[i])
+							seg = append(seg, span[i])
 							i++
 						}
 						if isTopLevel && len(p.cs.UncondCols) == 0 {
 							p.projActive = true
 							p.projStartSegIdx = len(blk.Segments)
-							p.projStartByteIdx = seg.Len()
+							p.projStartByteIdx = len(seg)
 							p.projItemStartSeg = p.projStartSegIdx
 							p.projItemStartByte = p.projStartByteIdx
 						}
 						continue
+					} else if isTopLevel && !p.inOptBlock && low == "where" && (p.cs.StmtVerb == runtime.VerbUpdate || p.cs.StmtVerb == runtime.VerbDelete) && !p.hasTopWhere {
+						p.inProjection = false
+						p.hasTopWhere = true
+						p.needBranchGuardClose = true
+						seg = append(seg, span[tokenStart:identEnd]...)
+						i = identEnd
+						for i < len(span) && isSpaceByte(span[i]) {
+							seg = append(seg, span[i])
+							i++
+						}
+						emitSlot(slotRef{Kind: runtime.SlotBranchGuardOpen, ParamIdx: -1})
+						continue
+					} else if isTopLevel && !p.inOptBlock && low == "values" && p.cs.StmtVerb == runtime.VerbInsert {
+						p.inProjection = false
+						j := identEnd
+						for j < len(span) && isSpaceByte(span[j]) {
+							j++
+						}
+						if j < len(span) && span[j] == '(' {
+							if closeParen, err := findMatchingParen(span, j); err == nil {
+								k := closeParen + 1
+								for k < len(span) && isSpaceByte(span[k]) {
+									k++
+								}
+								if k >= len(span) || span[k] != ',' {
+									emitSlot(slotRef{Kind: runtime.SlotInsertValuesOpen, ParamIdx: -1})
+									p.parenDepth = 1
+									p.inSingleInsertValues = true
+									i = j + 1
+									continue
+								}
+							}
+						} else if j < len(span) && (span[j] == ':' || isIdentStartByte(span[j])) {
+							// Check if VALUES is followed by a tuple_slice_param: [":"] ident ":" "[]" go_ident "(" ... ")"
+							tStart := j
+							if span[tStart] == ':' {
+								tStart++
+							}
+							tEnd := tStart
+							for tEnd < len(span) && isIdentContByte(span[tEnd]) {
+								tEnd++
+							}
+							if tEnd > tStart && strings.HasPrefix(span[tEnd:], ":[]") {
+								stStart := tEnd + 3
+								stEnd := stStart
+								for stEnd < len(span) && isIdentContByte(span[stEnd]) {
+									stEnd++
+								}
+								if stEnd > stStart && stEnd < len(span) && span[stEnd] == '(' {
+									if closeParen, err := findMatchingParen(span, stEnd); err == nil {
+										tIdent := span[tStart:tEnd]
+										structName := span[stStart:stEnd]
+										tupleBody := span[stEnd+1 : closeParen]
+										td, err := parseTupleBody(structName, tupleBody)
+										if err != nil {
+											return fmt.Errorf("statement %s: %w", p.spec.Name, err)
+										}
+										pIdx, err := p.addOrGetParam(tIdent, paramTupleSlice, "[]"+structName, structName, td, td.HasSort, false)
+										if err != nil {
+											return err
+										}
+										emitSlot(slotRef{Kind: runtime.SlotInsertTupleValuesOpen, ParamIdx: -1})
+										emitSlot(slotRef{Kind: runtime.SlotTupleSlice, ParamIdx: pIdx, Tuple: td})
+										emitSlot(slotRef{Kind: runtime.SlotInsertTupleValuesClose, ParamIdx: -1})
+										i = closeParen + 1
+										continue
+									}
+								}
+							}
+						}
 					} else if p.inProjection && projectionTerminators[low] {
 						p.inProjection = false
 					}
 				}
 
-				seg.WriteString(span[tokenStart:identEnd])
+				seg = append(seg, span[tokenStart:identEnd]...)
 				i = identEnd
 				continue
 			}
@@ -1646,7 +2000,7 @@ func (p *stmtParser) scanSpan(span string, blk *parsedBlock, isTopLevel bool) er
 						if err != nil {
 							return fmt.Errorf("statement %s: %w", p.spec.Name, err)
 						}
-						pIdx, err := p.addOrGetParam(ident, paramTupleSlice, "[]"+structName, structName, td)
+						pIdx, err := p.addOrGetParam(ident, paramTupleSlice, "[]"+structName, structName, td, td.HasSort, false)
 						if err != nil {
 							return err
 						}
@@ -1693,7 +2047,7 @@ func (p *stmtParser) scanSpan(span string, blk *parsedBlock, isTopLevel bool) er
 					}
 					p.rawOrderCols = cols
 					p.cs.HasOrder = true
-					pIdx, err := p.addOrGetParam(ident, paramOrder, "runtime.Order", "", nil)
+					pIdx, err := p.addOrGetParam(ident, paramOrder, "runtime.Order", "", nil, false, false)
 					if err != nil {
 						return err
 					}
@@ -1715,7 +2069,7 @@ func (p *stmtParser) scanSpan(span string, blk *parsedBlock, isTopLevel bool) er
 			// 3. Check seek_directive: sqlgen.Seek | runtime.Seek
 			if !hasPreEllipsis && !hasPostEllipsis && (goType == "sqlgen.Seek" || goType == "runtime.Seek") {
 				p.cs.HasSeek = true
-				pIdx, err := p.addOrGetParam(ident, paramSeek, "runtime.Seek", "", nil)
+				pIdx, err := p.addOrGetParam(ident, paramSeek, "runtime.Seek", "", nil, false, false)
 				if err != nil {
 					return err
 				}
@@ -1729,7 +2083,7 @@ func (p *stmtParser) scanSpan(span string, blk *parsedBlock, isTopLevel bool) er
 
 			// 4. Check query_param: sqlgen.Query | runtime.Query | Query
 			if !hasPreEllipsis && !hasPostEllipsis && (goType == "sqlgen.Query" || goType == "runtime.Query" || goType == "Query") {
-				pIdx, err := p.addOrGetParam(ident, paramSubquery, "runtime.Query", "", nil)
+				pIdx, err := p.addOrGetParam(ident, paramSubquery, "runtime.Query", "", nil, false, false)
 				if err != nil {
 					return err
 				}
@@ -1741,23 +2095,35 @@ func (p *stmtParser) scanSpan(span string, blk *parsedBlock, isTopLevel bool) er
 				continue
 			}
 
+			// Check if this is a 1D slice parameter or has a sort modifier
+			isSliceCandidate := hasPreEllipsis || hasPostEllipsis || (strings.HasPrefix(goType, "[]") && goType != "[]byte" && goType != "[]uint8")
+			hasSort := false
+			desc := false
+			if isSliceCandidate {
+				if hs, d, afterSort := scanOptionalSortModifier(span, nextPos); hs {
+					hasSort = true
+					desc = d
+					nextPos = afterSort
+				}
+			}
+
 			// 5. Disambiguate Output Column vs Input Parameter (Section 4.3)
 			isOutputCol := !hasLeadingColon &&
 				!hasPreEllipsis &&
 				!hasPostEllipsis &&
+				!hasSort &&
 				p.inProjection &&
 				p.parenDepth == 0 &&
 				p.bracketDepth == 0 &&
 				isEndOfProjectionItem(span, nextPos)
 
 			if isOutputCol {
-				// Write the column identifier into the SQL segment, stripping :goType
-				seg.WriteString(ident)
+				seg = append(seg, ident...)
 				var colExpr string
 				if !p.inOptBlock && p.projActive {
-					colExpr = extractCurrentItemExpr(blk.Segments, seg.String(), p.projItemStartSeg, p.projItemStartByte)
+					colExpr = extractCurrentItemExpr(blk.Segments, string(seg), p.projItemStartSeg, p.projItemStartByte)
 					p.projEndSegIdx = len(blk.Segments)
-					p.projEndByteIdx = seg.Len()
+					p.projEndByteIdx = len(seg)
 				} else {
 					colExpr = ident
 				}
@@ -1779,7 +2145,7 @@ func (p *stmtParser) scanSpan(span string, blk *parsedBlock, isTopLevel bool) er
 				pk = paramSlice
 				sk = runtime.SlotSlice
 			}
-			pIdx, err := p.addOrGetParam(ident, pk, fullType, elemType, nil)
+			pIdx, err := p.addOrGetParam(ident, pk, fullType, elemType, nil, hasSort, desc)
 			if err != nil {
 				return err
 			}
@@ -1791,7 +2157,7 @@ func (p *stmtParser) scanSpan(span string, blk *parsedBlock, isTopLevel bool) er
 			continue
 		}
 
-		seg.WriteByte(ch)
+		seg = append(seg, ch)
 		i++
 	}
 
@@ -1802,9 +2168,10 @@ func (p *stmtParser) scanSpan(span string, blk *parsedBlock, isTopLevel bool) er
 		if p.bracketDepth != 0 {
 			return fmt.Errorf("statement %s: unbalanced brackets in SQL", p.spec.Name)
 		}
+		flushBranchGuardBeforeEnd()
 	}
 
-	blk.Segments = append(blk.Segments, seg.String())
+	blk.Segments = append(blk.Segments, string(seg))
 	return nil
 }
 
@@ -1839,10 +2206,11 @@ func compileStatement(id uint32, spec StatementSpec) (*compiledStmt, error) {
 		if !isValidGoIdent(ps.Name) {
 			return nil, fmt.Errorf("statement %s: invalid YAML param name %q", spec.Name, ps.Name)
 		}
-		if _, exists := yamlParams[ps.Name]; exists {
+		canon := strings.ToLower(toGoParamName(ps.Name))
+		if _, exists := yamlParams[canon]; exists {
 			return nil, fmt.Errorf("statement %s: duplicate YAML param %q", spec.Name, ps.Name)
 		}
-		yamlParams[ps.Name] = ps
+		yamlParams[canon] = ps
 	}
 
 	cs := &compiledStmt{
@@ -1853,21 +2221,20 @@ func compileStatement(id uint32, spec StatementSpec) (*compiledStmt, error) {
 	}
 
 	parser := &stmtParser{
-		spec:         spec,
-		yamlParams:   yamlParams,
-		paramsByName: make(map[string]int),
-		flagsByName:  make(map[string]uint8),
-		cs:           cs,
+		spec:          spec,
+		yamlParams:    yamlParams,
+		paramsByCanon: make(map[string]int),
+		flagsByName:   make(map[string]uint8),
+		cs:            cs,
 	}
 
 	if err := parser.scanSpan(trimmedSQL, &cs.Root, true); err != nil {
 		return nil, err
 	}
 
-	// Fallback output columns from YAML if no inline output columns were declared
 	if len(cs.Cols) == 0 && len(spec.Columns) > 0 {
 		for _, cSpec := range spec.Columns {
-			if err := parser.addColumn(cSpec.Name, cSpec.Type, cSpec.Name); err != nil {
+			if err := parser.addColumn(cSpec.Name, cSpec.GoType, cSpec.Name); err != nil {
 				return nil, err
 			}
 		}
@@ -1880,7 +2247,6 @@ func compileStatement(id uint32, spec StatementSpec) (*compiledStmt, error) {
 		return nil, fmt.Errorf("statement %s: kind %q requires at least one output column", spec.Name, kind)
 	}
 
-	// Validate Order and Seek directives
 	if cs.HasSeek && !cs.HasOrder {
 		return nil, fmt.Errorf("statement %s: sqlgen.Seek requires a paired sqlgen.Order(...) directive in the same statement", spec.Name)
 	}
@@ -1916,11 +2282,10 @@ func compileStatement(id uint32, spec StatementSpec) (*compiledStmt, error) {
 		}
 	}
 
-	// Determine UseParamsStruct (forced true if conditional blocks are present)
 	cs.UseParamsStruct = spec.ParamsStruct || len(cs.Flags) > 0
 
-	// Replace unconditional projection span with SlotSelectCols when UseParamsStruct && len(UncondCols) > 1 (Section 4.4)
-	if cs.UseParamsStruct && len(cs.UncondCols) > 1 && parser.projActive && !parser.projHasParamSlot &&
+	// Section 4.4: Unconditional SlotSelectCols splicing whenever len(UncondCols) > 1 && len(spec.Columns) == 0
+	if len(cs.UncondCols) > 1 && len(spec.Columns) == 0 && parser.projActive && !parser.projHasParamSlot &&
 		parser.projStartSegIdx == parser.projEndSegIdx {
 		segIdx := parser.projStartSegIdx
 		origSeg := cs.Root.Segments[segIdx]
@@ -1944,7 +2309,6 @@ func compileStatement(id uint32, spec StatementSpec) (*compiledStmt, error) {
 		}
 	}
 
-	// Determine RowTypeName
 	if kind == KindOne || kind == KindMany {
 		if spec.ResultType != "" {
 			if len(cs.Cols) == 1 && isPredeclaredGoType(spec.ResultType) {
@@ -1958,20 +2322,32 @@ func compileStatement(id uint32, spec StatementSpec) (*compiledStmt, error) {
 		}
 	}
 
-	// Determine CanBatch (single unconditional SlotTupleSlice, no SlotSlice, no SlotQuery, no Order/Seek)
+	// Section 4.6.3: Exact CanBatch and CanStream predicates
+	collectionOccs := cs.TotalSlices + cs.TotalTuples
 	if (kind == KindExec || kind == KindMany) &&
-		cs.TotalTuples == 1 &&
-		cs.TotalSlices == 0 &&
+		collectionOccs == 1 &&
 		cs.TotalSubs == 0 &&
 		!cs.HasOrder &&
 		!cs.HasSeek {
 		for _, sl := range cs.Root.Slots {
 			if sl.Kind == runtime.SlotTupleSlice {
 				cs.CanBatch = true
+				cs.CanStream = true
 				cs.BatchParamIdx = sl.ParamIdx
-				numFields := len(sl.Tuple.Fields)
-				scalarCount := len(cs.Params) - 1
-				cs.MaxRowsPerStmt = max(1, (32766-scalarCount)/max(1, numFields))
+				cs.BatchIsTuple = true
+				cs.BatchArity = len(sl.Tuple.Fields)
+				cs.ScalarParamCnt = len(cs.Params) - 1
+				cs.MaxRowsPerStmt = max(1, (32766-cs.ScalarParamCnt)/max(1, cs.BatchArity))
+				break
+			}
+			if sl.Kind == runtime.SlotSlice {
+				cs.CanBatch = true
+				cs.CanStream = false
+				cs.BatchParamIdx = sl.ParamIdx
+				cs.BatchIsTuple = false
+				cs.BatchArity = 1
+				cs.ScalarParamCnt = len(cs.Params) - 1
+				cs.MaxRowsPerStmt = max(1, 32766-cs.ScalarParamCnt)
 				break
 			}
 		}
@@ -1981,7 +2357,7 @@ func compileStatement(id uint32, spec StatementSpec) (*compiledStmt, error) {
 		cs.TotalTuples == 0 &&
 		cs.TotalSubs == 0 &&
 		len(cs.Flags) == 0 &&
-		len(cs.SelectColExprs) == 0 &&
+		!cs.UseParamsStruct &&
 		!cs.HasOrder &&
 		!cs.HasSeek
 
@@ -1997,32 +2373,61 @@ var autoImportPrefixes = map[string]string{
 	"driver.": "database/sql/driver",
 }
 
-func collectImports(cfg *Config, stmts []*compiledStmt, runtimePkg string) []string {
+func resolveImports(cfg *Config, stmts []*compiledStmt, runtimePkg string) []string {
 	impSet := map[string]bool{
 		"context":      true,
 		"database/sql": true,
 		runtimePkg:     true,
 	}
 	hasStatic := false
+	hasSort := false
+	hasByteSliceSort := false
+	hasStream := false
+	hasIter := false
+
 	for _, s := range stmts {
-		if s.IsStatic {
+		if s.IsStatic && s.Kind != KindSubquery {
 			hasStatic = true
 		}
-		if s.Kind == KindMany {
-			impSet["iter"] = true
+		if s.Kind == KindMany || s.CanStream {
+			hasIter = true
+		}
+		if s.CanStream {
+			hasStream = true
 		}
 		checkType := func(t string) {
 			for prefix, pkg := range autoImportPrefixes {
-				if strings.Contains(t, prefix) {
-					impSet[pkg] = true
+				search := t
+				for {
+					idx := strings.Index(search, prefix)
+					if idx < 0 {
+						break
+					}
+					if idx == 0 || !isIdentContByte(search[idx-1]) {
+						impSet[pkg] = true
+						break
+					}
+					search = search[idx+len(prefix):]
 				}
 			}
 		}
 		for _, p := range s.Params {
 			checkType(p.GoType)
+			if p.HasSort {
+				hasSort = true
+				if p.ElemGoType == "[]byte" || p.ElemGoType == "[]uint8" {
+					hasByteSliceSort = true
+				}
+			}
 			if p.Tuple != nil {
+				if p.Tuple.HasSort {
+					hasSort = true
+				}
 				for _, f := range p.Tuple.Fields {
 					checkType(f.GoType)
+					if f.HasSort && (f.GoType == "[]byte" || f.GoType == "[]uint8") {
+						hasByteSliceSort = true
+					}
 				}
 			}
 		}
@@ -2032,6 +2437,18 @@ func collectImports(cfg *Config, stmts []*compiledStmt, runtimePkg string) []str
 	}
 	if hasStatic {
 		impSet["sync/atomic"] = true
+	}
+	if hasIter {
+		impSet["iter"] = true
+	}
+	if hasStream {
+		impSet["sync"] = true
+	}
+	if hasSort {
+		impSet["slices"] = true
+	}
+	if hasByteSliceSort {
+		impSet["bytes"] = true
 	}
 	for _, extra := range cfg.ExtraImports {
 		trimmed := strings.TrimSpace(extra)
@@ -2047,11 +2464,50 @@ func collectImports(cfg *Config, stmts []*compiledStmt, runtimePkg string) []str
 	return out
 }
 
-// Generate validates cfg and generates formatted Go source code.
-func Generate(cfg *Config) ([]byte, error) {
-	if cfg == nil {
-		return nil, errors.New("sqlgen: nil Config")
+func buildRuntimeDescriptor(cs *compiledStmt, blk *parsedBlock) *runtime.QueryDescriptor {
+	d := &runtime.QueryDescriptor{
+		StmtID:         cs.ID,
+		StmtVerb:       cs.StmtVerb,
+		HasReturning:   cs.HasReturning,
+		SelectColExprs: cs.SelectColExprs,
+		Segments:       blk.Segments,
 	}
+	for _, sl := range blk.Slots {
+		d.Slots = append(d.Slots, runtime.Slot{Kind: sl.Kind})
+	}
+	return d
+}
+
+func sanitizeTypeIdent(t string) string {
+	var buf []byte
+	for i := 0; i < len(t); i++ {
+		c := t[i]
+		if (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') {
+			buf = append(buf, c)
+		} else {
+			buf = append(buf, '_')
+		}
+	}
+	return string(buf)
+}
+
+func emitCompareExpr(b *bytes.Buffer, goType, lhs, rhs string, desc bool) {
+	a, bExpr := lhs, rhs
+	if desc {
+		a, bExpr = rhs, lhs
+	}
+	switch goType {
+	case "time.Time":
+		fmt.Fprintf(b, "if c := %s.Compare(%s); c != 0 {\n\t\treturn c\n\t}\n", a, bExpr)
+	case "[]byte", "[]uint8":
+		fmt.Fprintf(b, "if c := bytes.Compare(%s, %s); c != 0 {\n\t\treturn c\n\t}\n", a, bExpr)
+	default:
+		fmt.Fprintf(b, "if %s < %s {\n\t\treturn -1\n\t}\n\tif %s > %s {\n\t\treturn 1\n\t}\n", a, bExpr, a, bExpr)
+	}
+}
+
+// Generate validates cfg and generates formatted Go source code.
+func Generate(cfg Config) ([]byte, error) {
 	if cfg.Version != "" && cfg.Version != "1" {
 		return nil, fmt.Errorf("sqlgen: unsupported config version %q (expected \"1\")", cfg.Version)
 	}
@@ -2074,11 +2530,11 @@ func Generate(cfg *Config) ([]byte, error) {
 	seenStmts := make(map[string]bool, len(cfg.Statements))
 	compiled := make([]*compiledStmt, 0, len(cfg.Statements))
 
-	// Track shared row structs and tuple structs for conflict detection
 	rowStructs := make(map[string][]colDef)
 	var rowStructOrder []string
 	tupleStructs := make(map[string]*tupleStructDef)
 	var tupleStructOrder []string
+	streamTupleStructs := make(map[string]bool)
 
 	for i, spec := range cfg.Statements {
 		if seenStmts[spec.Name] {
@@ -2090,9 +2546,12 @@ func Generate(cfg *Config) ([]byte, error) {
 		if err != nil {
 			return nil, err
 		}
+		if cs.IsStatic {
+			rtDesc := buildRuntimeDescriptor(cs, &cs.Root)
+			cs.StaticSQL = runtime.BuildComposedSQL(rtDesc, &runtime.RenderInput{}, dialect)
+		}
 		compiled = append(compiled, cs)
 
-		// Validate shared result_type structs
 		if (cs.Kind == KindOne || cs.Kind == KindMany) && !cs.ScalarResult {
 			if prevCols, exists := rowStructs[cs.RowTypeName]; exists {
 				if len(prevCols) != len(cs.Cols) {
@@ -2113,7 +2572,6 @@ func Generate(cfg *Config) ([]byte, error) {
 			}
 		}
 
-		// Validate shared tuple structs
 		for _, p := range cs.Params {
 			if p.Kind == paramTupleSlice && p.Tuple != nil {
 				if prevT, exists := tupleStructs[p.Tuple.Name]; exists {
@@ -2125,15 +2583,27 @@ func Generate(cfg *Config) ([]byte, error) {
 							return nil, fmt.Errorf("sqlgen: conflicting tuple struct %q field %d in statement %s", p.Tuple.Name, fIdx, cs.Name)
 						}
 					}
+					if p.Tuple.HasSort {
+						prevT.HasSort = true
+						for fIdx := range p.Tuple.Fields {
+							if p.Tuple.Fields[fIdx].HasSort {
+								prevT.Fields[fIdx].HasSort = true
+								prevT.Fields[fIdx].Desc = p.Tuple.Fields[fIdx].Desc
+							}
+						}
+					}
 				} else {
 					tupleStructs[p.Tuple.Name] = p.Tuple
 					tupleStructOrder = append(tupleStructOrder, p.Tuple.Name)
+				}
+				if cs.CanStream {
+					streamTupleStructs[p.Tuple.Name] = true
 				}
 			}
 		}
 	}
 
-	imports := collectImports(cfg, compiled, runtimeImport)
+	imports := resolveImports(&cfg, compiled, runtimeImport)
 	var b bytes.Buffer
 
 	b.WriteString("// Code generated by sqlgen. DO NOT EDIT.\n\n")
@@ -2148,24 +2618,37 @@ func Generate(cfg *Config) ([]byte, error) {
 	}
 	b.WriteString(")\n\n")
 
-	// Type aliases so generated types and callers can refer to Query, Order, Seek directly
 	b.WriteString("type (\n")
-	b.WriteString("\tQuery = runtime.Query\n")
-	b.WriteString("\tOrder = runtime.Order\n")
-	b.WriteString("\tSeek  = runtime.Seek\n")
+	b.WriteString("\tQuery         = runtime.Query\n")
+	b.WriteString("\tOrder         = runtime.Order\n")
+	b.WriteString("\tSeek          = runtime.Seek\n")
+	b.WriteString("\tPipelineCond  = runtime.PipelineCond\n")
+	b.WriteString("\tExecFuture    = runtime.ExecFuture\n")
+	b.WriteString("\tIfResult      = runtime.IfResult\n")
+	b.WriteString("\tTxOption      = runtime.TxOption\n")
+	b.WriteString("\tTxRetryPolicy = runtime.TxRetryPolicy\n")
 	b.WriteString(")\n\n")
 
-	dialectConst := "runtime.DialectPostgres"
+	b.WriteString("var (\n")
+	b.WriteString("\tNewSeek            = runtime.NewSeek\n")
+	b.WriteString("\tWithTxRetry        = runtime.WithTxRetry\n")
+	b.WriteString("\tDefaultRetryPolicy = runtime.DefaultRetryPolicy\n")
+	b.WriteString(")\n\n")
+
+	b.WriteString("func WhereCol[T any](f *runtime.RowFuture[T], sqlPred string, goPred func(T) bool) runtime.PipelineCond {\n")
+	b.WriteString("\treturn runtime.WhereCol(f, sqlPred, goPred)\n")
+	b.WriteString("}\n\n")
+
+	dialectConst := "runtime.DialectDollar"
 	if dialect == runtime.DialectQuestion {
 		dialectConst = "runtime.DialectQuestion"
 	}
 	fmt.Fprintf(&b, "const sqlDialect = %s\n\n", dialectConst)
 
-	// EmitQueries struct and lifecycle helpers
 	numStatic := 0
 	staticIdxByStmt := make(map[uint32]int)
 	for _, cs := range compiled {
-		if cs.IsStatic {
+		if cs.IsStatic && cs.Kind != KindSubquery {
 			staticIdxByStmt[cs.ID] = numStatic
 			numStatic++
 		}
@@ -2205,6 +2688,9 @@ func Generate(cfg *Config) ([]byte, error) {
 	b.WriteString("// Cache returns the underlying StmtCache.\n")
 	b.WriteString("func (q *Queries) Cache() *runtime.StmtCache { return q.cache }\n\n")
 
+	b.WriteString("// CacheStats returns aggregated telemetry across all 16 statement cache shards.\n")
+	b.WriteString("func (q *Queries) CacheStats() runtime.CacheStats { return q.cache.Stats() }\n\n")
+
 	b.WriteString("// Close closes the underlying StmtCache.\n")
 	b.WriteString("func (q *Queries) Close() error {\n")
 	b.WriteString("\tif q.txCache != nil {\n")
@@ -2227,32 +2713,61 @@ func Generate(cfg *Config) ([]byte, error) {
 	b.WriteString("\treturn &cp\n")
 	b.WriteString("}\n\n")
 
-	b.WriteString("// InTx executes fn inside a database transaction, committing on nil error and rolling back otherwise.\n")
-	b.WriteString("func (q *Queries) InTx(ctx context.Context, fn func(*Queries) error) error {\n")
-	b.WriteString("\treturn q.InTxOpts(ctx, nil, fn)\n")
+	b.WriteString("// InTx executes fn inside a database transaction with optional retry policy.\n")
+	b.WriteString("func (q *Queries) InTx(ctx context.Context, txOpts *sql.TxOptions, fn func(*Queries) error, opts ...runtime.TxOption) error {\n")
+	b.WriteString("\treturn runtime.RunTxWithRetry(ctx, q.db, q.txCache, txOpts, opts, func(tc *runtime.TxStmtCache) error {\n")
+	b.WriteString("\t\ttxQ := *q\n")
+	b.WriteString("\t\ttxQ.txCache = tc\n")
+	b.WriteString("\t\treturn fn(&txQ)\n")
+	b.WriteString("\t})\n")
 	b.WriteString("}\n\n")
 
-	b.WriteString("// InTxOpts executes fn inside a database transaction with custom sql.TxOptions.\n")
-	b.WriteString("func (q *Queries) InTxOpts(ctx context.Context, opts *sql.TxOptions, fn func(*Queries) error) error {\n")
-	b.WriteString("\tif q.txCache != nil {\n")
-	b.WriteString("\t\treturn fn(q)\n")
-	b.WriteString("\t}\n")
-	b.WriteString("\ttx, err := q.db.BeginTx(ctx, opts)\n")
-	b.WriteString("\tif err != nil {\n")
-	b.WriteString("\t\treturn err\n")
-	b.WriteString("\t}\n")
-	b.WriteString("\ttc := runtime.NewTxStmtCache(tx)\n")
-	b.WriteString("\tdefer func() { _ = tc.Close() }()\n")
-	b.WriteString("\ttxQ := *q\n")
-	b.WriteString("\ttxQ.txCache = tc\n")
-	b.WriteString("\tif err := fn(&txQ); err != nil {\n")
-	b.WriteString("\t\t_ = tx.Rollback()\n")
-	b.WriteString("\t\treturn err\n")
-	b.WriteString("\t}\n")
-	b.WriteString("\treturn tx.Commit()\n")
+	b.WriteString("// InTxOpts is an alias for InTx.\n")
+	b.WriteString("func (q *Queries) InTxOpts(ctx context.Context, txOpts *sql.TxOptions, fn func(*Queries) error, opts ...runtime.TxOption) error {\n")
+	b.WriteString("\treturn q.InTx(ctx, txOpts, fn, opts...)\n")
 	b.WriteString("}\n\n")
 
-	// Emit tuple struct definitions
+	// Emit Pipeline wrapper type
+	b.WriteString("// Pipeline queues strongly-typed SQL operations for single-roundtrip execution or sequential fallback.\n")
+	b.WriteString("type Pipeline struct {\n")
+	b.WriteString("\t*runtime.Pipeline\n")
+	b.WriteString("\tq *Queries\n")
+	b.WriteString("}\n\n")
+
+	b.WriteString("// Pipeline creates a new Pipeline bound to ctx.\n")
+	b.WriteString("func (q *Queries) Pipeline(ctx context.Context) *Pipeline {\n")
+	b.WriteString("\treturn &Pipeline{\n")
+	b.WriteString("\t\tPipeline: runtime.NewPipeline(ctx, q.db, q.cache, q.txCache, q.usePrepared, sqlDialect),\n")
+	b.WriteString("\t\tq:        q,\n")
+	b.WriteString("\t}\n")
+	b.WriteString("}\n\n")
+
+	b.WriteString("// PipelineTx executes a transactional pipeline batch with optional retry policy.\n")
+	b.WriteString("func (q *Queries) PipelineTx(ctx context.Context, txOpts *sql.TxOptions, fn func(*Pipeline) error, opts ...runtime.TxOption) error {\n")
+	b.WriteString("\treturn runtime.RunTxWithRetry(ctx, q.db, q.txCache, txOpts, opts, func(tc *runtime.TxStmtCache) error {\n")
+	b.WriteString("\t\ttxQ := *q\n")
+	b.WriteString("\t\ttxQ.txCache = tc\n")
+	b.WriteString("\t\tp := txQ.Pipeline(ctx)\n")
+	b.WriteString("\t\tif err := fn(p); err != nil {\n")
+	b.WriteString("\t\t\treturn err\n")
+	b.WriteString("\t\t}\n")
+	b.WriteString("\t\treturn p.Flush()\n")
+	b.WriteString("\t})\n")
+	b.WriteString("}\n\n")
+
+	b.WriteString("// If queues conditional thenFn and optional elseFn branches gated on cond.\n")
+	b.WriteString("func (p *Pipeline) If(cond runtime.PipelineCond, thenFn func(*Pipeline), elseFn func(*Pipeline)) *runtime.IfResult {\n")
+	b.WriteString("\tvar tFn, eFn func()\n")
+	b.WriteString("\tif thenFn != nil {\n")
+	b.WriteString("\t\ttFn = func() { thenFn(p) }\n")
+	b.WriteString("\t}\n")
+	b.WriteString("\tif elseFn != nil {\n")
+	b.WriteString("\t\teFn = func() { elseFn(p) }\n")
+	b.WriteString("\t}\n")
+	b.WriteString("\treturn p.Pipeline.If(cond, tFn, eFn)\n")
+	b.WriteString("}\n\n")
+
+	// Emit tuple struct definitions, chunk pools, and presort comparators
 	for _, tName := range tupleStructOrder {
 		td := tupleStructs[tName]
 		fmt.Fprintf(&b, "type %s struct {\n", td.Name)
@@ -2260,6 +2775,58 @@ func Generate(cfg *Config) ([]byte, error) {
 			fmt.Fprintf(&b, "\t%s %s\n", f.FieldName, f.GoType)
 		}
 		b.WriteString("}\n\n")
+
+		if streamTupleStructs[tName] {
+			poolName := lowerFirstIdent(td.Name) + "ChunkPool"
+			fmt.Fprintf(&b, "var %s = sync.Pool{\n", poolName)
+			fmt.Fprintf(&b, "\tNew: func() any {\n\t\ts := make([]%s, 0, 256)\n\t\treturn &s\n\t},\n", td.Name)
+			b.WriteString("}\n\n")
+		}
+
+		if td.HasSort {
+			fmt.Fprintf(&b, "func compare%s(a, b %s) int {\n", td.Name, td.Name)
+			for _, f := range td.Fields {
+				if !f.HasSort {
+					continue
+				}
+				b.WriteString("\t")
+				emitCompareExpr(&b, f.GoType, "a."+f.FieldName, "b."+f.FieldName, f.Desc)
+			}
+			b.WriteString("\treturn 0\n}\n\n")
+
+			fmt.Fprintf(&b, "func is%sSorted(rows []%s) bool {\n", td.Name, td.Name)
+			b.WriteString("\tfor i := 1; i < len(rows); i++ {\n")
+			fmt.Fprintf(&b, "\t\tif compare%s(rows[i-1], rows[i]) > 0 {\n\t\t\treturn false\n\t\t}\n", td.Name)
+			b.WriteString("\t}\n\treturn true\n}\n\n")
+		}
+	}
+
+	// Emit 1D slice presort helpers for each unique (elemGoType, desc) pair
+	emittedSliceSort := make(map[string]bool)
+	for _, cs := range compiled {
+		for _, p := range cs.Params {
+			if p.Kind == paramSlice && p.HasSort {
+				dirTag := "Asc"
+				if p.Desc {
+					dirTag = "Desc"
+				}
+				typeIdent := sanitizeTypeIdent(p.ElemGoType)
+				key := typeIdent + "_" + dirTag
+				if emittedSliceSort[key] {
+					continue
+				}
+				emittedSliceSort[key] = true
+
+				fmt.Fprintf(&b, "func compare%s%s(a, b %s) int {\n\t", typeIdent, dirTag, p.ElemGoType)
+				emitCompareExpr(&b, p.ElemGoType, "a", "b", p.Desc)
+				b.WriteString("\treturn 0\n}\n\n")
+
+				fmt.Fprintf(&b, "func is%s%sSorted(s []%s) bool {\n", typeIdent, dirTag, p.ElemGoType)
+				b.WriteString("\tfor i := 1; i < len(s); i++ {\n")
+				fmt.Fprintf(&b, "\t\tif compare%s%s(s[i-1], s[i]) > 0 {\n\t\t\treturn false\n\t\t}\n", typeIdent, dirTag)
+				b.WriteString("\t}\n\treturn true\n}\n\n")
+			}
+		}
 	}
 
 	// Emit result row struct definitions
@@ -2272,11 +2839,12 @@ func Generate(cfg *Config) ([]byte, error) {
 		b.WriteString("}\n\n")
 	}
 
-	// Track emitted Order<RowType> / Seek<RowType> helpers to avoid redeclaring if multiple statements share RowType
 	emittedRowOrder := make(map[string]bool)
+	emittedRowCols := make(map[string]bool)
+	emittedRowSeek := make(map[string]bool)
 
 	for _, cs := range compiled {
-		emitStatementCode(&b, cs, staticIdxByStmt, emittedRowOrder)
+		emitStatementCode(&b, cs, staticIdxByStmt, emittedRowOrder, emittedRowCols, emittedRowSeek)
 	}
 
 	formatted, err := format.Source(b.Bytes())
@@ -2286,8 +2854,27 @@ func Generate(cfg *Config) ([]byte, error) {
 	return formatted, nil
 }
 
-func emitBlockLiteral(b *bytes.Buffer, blk *parsedBlock, selectColExprs []string, orderCols []orderColRef) {
+func emitBlockLiteral(b *bytes.Buffer, cs *compiledStmt, blk *parsedBlock, isRoot bool) {
 	b.WriteString("&runtime.QueryDescriptor{\n")
+	if isRoot {
+		fmt.Fprintf(b, "\tStmtID: %d,\n", cs.ID)
+		switch cs.StmtVerb {
+		case runtime.VerbSelect:
+			b.WriteString("\tStmtVerb: runtime.VerbSelect,\n")
+		case runtime.VerbInsert:
+			b.WriteString("\tStmtVerb: runtime.VerbInsert,\n")
+		case runtime.VerbUpdate:
+			b.WriteString("\tStmtVerb: runtime.VerbUpdate,\n")
+		case runtime.VerbDelete:
+			b.WriteString("\tStmtVerb: runtime.VerbDelete,\n")
+		}
+		if cs.HasReturning {
+			b.WriteString("\tHasReturning: true,\n")
+		}
+		if cs.StaticSQL != "" {
+			fmt.Fprintf(b, "\tStaticSQL: %s,\n", strconv.Quote(cs.StaticSQL))
+		}
+	}
 	b.WriteString("\tSegments: []string{")
 	for i, seg := range blk.Segments {
 		if i > 0 {
@@ -2316,7 +2903,7 @@ func emitBlockLiteral(b *bytes.Buffer, blk *parsedBlock, selectColExprs []string
 				fmt.Fprintf(b, "}, NumFields: %d}", len(sl.Tuple.Fields))
 			case runtime.SlotOptBlock:
 				fmt.Fprintf(b, "runtime.SlotOptBlock, FlagBit: %d, Inner: ", sl.FlagBit)
-				emitBlockLiteral(b, sl.Inner, nil, nil)
+				emitBlockLiteral(b, cs, sl.Inner, false)
 			case runtime.SlotQuery:
 				b.WriteString("runtime.SlotQuery")
 			case runtime.SlotSelectCols:
@@ -2325,14 +2912,28 @@ func emitBlockLiteral(b *bytes.Buffer, blk *parsedBlock, selectColExprs []string
 				b.WriteString("runtime.SlotOrder")
 			case runtime.SlotSeek:
 				b.WriteString("runtime.SlotSeek")
+			case runtime.SlotBranchGuardOpen:
+				b.WriteString("runtime.SlotBranchGuardOpen")
+			case runtime.SlotBranchGuardClose:
+				b.WriteString("runtime.SlotBranchGuardClose")
+			case runtime.SlotBranchGuardWhere:
+				b.WriteString("runtime.SlotBranchGuardWhere")
+			case runtime.SlotInsertValuesOpen:
+				b.WriteString("runtime.SlotInsertValuesOpen")
+			case runtime.SlotInsertValuesClose:
+				b.WriteString("runtime.SlotInsertValuesClose")
+			case runtime.SlotInsertTupleValuesOpen:
+				b.WriteString("runtime.SlotInsertTupleValuesOpen")
+			case runtime.SlotInsertTupleValuesClose:
+				b.WriteString("runtime.SlotInsertTupleValuesClose")
 			}
 			b.WriteString("},\n")
 		}
 		b.WriteString("\t},\n")
 	}
-	if len(selectColExprs) > 0 {
+	if isRoot && len(cs.SelectColExprs) > 0 {
 		b.WriteString("\tSelectColExprs: []string{")
-		for i, expr := range selectColExprs {
+		for i, expr := range cs.SelectColExprs {
 			if i > 0 {
 				b.WriteString(", ")
 			}
@@ -2340,9 +2941,9 @@ func emitBlockLiteral(b *bytes.Buffer, blk *parsedBlock, selectColExprs []string
 		}
 		b.WriteString("},\n")
 	}
-	if len(orderCols) > 0 {
+	if isRoot && len(cs.OrderCols) > 0 {
 		b.WriteString("\tOrderCols: []string{")
-		for i, oc := range orderCols {
+		for i, oc := range cs.OrderCols {
 			if i > 0 {
 				b.WriteString(", ")
 			}
@@ -2372,35 +2973,68 @@ func emitSlotArgExpansion(b *bytes.Buffer, cs *compiledStmt, blk *parsedBlock, p
 			p := cs.Params[sl.ParamIdx]
 			acc := paramAccess(p)
 			fmt.Fprintf(b, "\tif len(%s) == 0 {\n\t\treturn runtime.ErrEmptySliceParam\n\t}\n", acc)
-			fmt.Fprintf(b, "\tfor _, v := range %s {\n\t\t*dst = append(*dst, v)\n\t}\n", acc)
+			if p.HasSort {
+				dirTag := "Asc"
+				if p.Desc {
+					dirTag = "Desc"
+				}
+				typeIdent := sanitizeTypeIdent(p.ElemGoType)
+				fmt.Fprintf(b, "\tif is%s%sSorted(%s) {\n", typeIdent, dirTag, acc)
+				fmt.Fprintf(b, "\t\tfor _, v := range %s {\n\t\t\t*dst = append(*dst, v)\n\t\t}\n", acc)
+				b.WriteString("\t} else {\n")
+				fmt.Fprintf(b, "\t\tidxBuf := runtime.AcquireIndices(len(%s))\n", acc)
+				b.WriteString("\t\tidx := *idxBuf\n")
+				fmt.Fprintf(b, "\t\tslices.SortFunc(idx, func(i, j int) int { return compare%s%s(%s[i], %s[j]) })\n", typeIdent, dirTag, acc, acc)
+				fmt.Fprintf(b, "\t\tfor _, k := range idx {\n\t\t\t*dst = append(*dst, %s[k])\n\t\t}\n", acc)
+				b.WriteString("\t\truntime.ReleaseIndices(idxBuf)\n")
+				b.WriteString("\t}\n")
+			} else {
+				fmt.Fprintf(b, "\tfor _, v := range %s {\n\t\t*dst = append(*dst, v)\n\t}\n", acc)
+			}
 		case runtime.SlotTupleSlice:
 			p := cs.Params[sl.ParamIdx]
 			acc := paramAccess(p)
 			fmt.Fprintf(b, "\tif len(%s) == 0 {\n\t\treturn runtime.ErrEmptySliceParam\n\t}\n", acc)
-			fmt.Fprintf(b, "\tfor i := range %s {\n", acc)
-			for _, f := range sl.Tuple.Fields {
-				fmt.Fprintf(b, "\t\t*dst = append(*dst, %s[i].%s)\n", acc, f.FieldName)
+			if sl.Tuple.HasSort {
+				fmt.Fprintf(b, "\tif is%sSorted(%s) {\n", sl.Tuple.Name, acc)
+				fmt.Fprintf(b, "\t\tfor i := range %s {\n", acc)
+				for _, f := range sl.Tuple.Fields {
+					fmt.Fprintf(b, "\t\t\t*dst = append(*dst, %s[i].%s)\n", acc, f.FieldName)
+				}
+				b.WriteString("\t\t}\n\t} else {\n")
+				fmt.Fprintf(b, "\t\tidxBuf := runtime.AcquireIndices(len(%s))\n", acc)
+				b.WriteString("\t\tidx := *idxBuf\n")
+				fmt.Fprintf(b, "\t\tslices.SortFunc(idx, func(i, j int) int { return compare%s(%s[i], %s[j]) })\n", sl.Tuple.Name, acc, acc)
+				b.WriteString("\t\tfor _, k := range idx {\n")
+				for _, f := range sl.Tuple.Fields {
+					fmt.Fprintf(b, "\t\t\t*dst = append(*dst, %s[k].%s)\n", acc, f.FieldName)
+				}
+				b.WriteString("\t\t}\n\t\truntime.ReleaseIndices(idxBuf)\n\t}\n")
+			} else {
+				fmt.Fprintf(b, "\tfor i := range %s {\n", acc)
+				for _, f := range sl.Tuple.Fields {
+					fmt.Fprintf(b, "\t\t*dst = append(*dst, %s[i].%s)\n", acc, f.FieldName)
+				}
+				b.WriteString("\t}\n")
 			}
-			b.WriteString("\t}\n")
 		case runtime.SlotQuery:
 			p := cs.Params[sl.ParamIdx]
 			acc := paramAccess(p)
-			fmt.Fprintf(b, "\tif err := %s.AppendArgs(dst); err != nil {\n\t\treturn err\n\t}\n", acc)
+			fmt.Fprintf(b, "\tif err := %s.AppendArgs(dst, dialect); err != nil {\n\t\treturn err\n\t}\n", acc)
 		case runtime.SlotSeek:
 			p := cs.Params[sl.ParamIdx]
 			acc := paramAccess(p)
-			orderExpr := "runtime.Order(0)"
+			orderExpr := "uint64(0)"
 			for _, op := range cs.Params {
 				if op.Kind == paramOrder {
 					orderExpr = paramAccess(op)
 					break
 				}
 			}
-			fmt.Fprintf(b, "\tif err := runtime.AppendSeekArgs(dst, %s, %s, %d); err != nil {\n\t\treturn err\n\t}\n", acc, orderExpr, len(cs.OrderCols))
-		case runtime.SlotOrder:
-			p := cs.Params[sl.ParamIdx]
-			acc := paramAccess(p)
-			fmt.Fprintf(b, "\tif _, _, err := runtime.ExpandOrder(%s, %d); err != nil {\n\t\treturn err\n\t}\n", acc, len(cs.OrderCols))
+			fmt.Fprintf(b, "\tif %s.IsActive() {\n", acc)
+			fmt.Fprintf(b, "\t\tif len(%s.Values) != %d {\n\t\t\treturn runtime.ErrInvalidSeek\n\t\t}\n", acc, len(cs.OrderCols))
+			fmt.Fprintf(b, "\t\truntime.AppendSeekArgs(dst, dialect, %s, %d, %s.Values)\n", orderExpr, len(cs.OrderCols), acc)
+			b.WriteString("\t}\n")
 		case runtime.SlotOptBlock:
 			flag := cs.Flags[sl.FlagBit]
 			fmt.Fprintf(b, "\tif p.%s {\n", flag.FieldName)
@@ -2410,65 +3044,95 @@ func emitSlotArgExpansion(b *bytes.Buffer, cs *compiledStmt, blk *parsedBlock, p
 	}
 }
 
-func emitStatementCode(b *bytes.Buffer, cs *compiledStmt, staticIdxByStmt map[uint32]int, emittedRowOrder map[string]bool) {
+func emitSortHelperGroup(b *bytes.Buffer, typeTag string, orderCols []orderColRef) {
+	fmt.Fprintf(b, "type %sSortCol uint8\n\n", typeTag)
+	fmt.Fprintf(b, "func (c %sSortCol) Asc() uint8  { return runtime.Asc(uint8(c)) }\n", typeTag)
+	fmt.Fprintf(b, "func (c %sSortCol) Desc() uint8 { return runtime.Desc(uint8(c)) }\n\n", typeTag)
+
+	b.WriteString("const (\n")
+	for idx, oc := range orderCols {
+		ascVal := runtime.Asc(uint8(idx))
+		descVal := runtime.Desc(uint8(idx))
+		fmt.Fprintf(b, "\t%sOrderBy%s %sSortCol = %d\n", typeTag, oc.FieldName, typeTag, idx)
+		fmt.Fprintf(b, "\tOrder%s%sAsc uint8 = %d\n", typeTag, oc.FieldName, ascVal)
+		fmt.Fprintf(b, "\tOrder%s%sDesc uint8 = %d\n", typeTag, oc.FieldName, descVal)
+		fmt.Fprintf(b, "\t%sOrder%sAsc uint8 = %d\n", typeTag, oc.FieldName, ascVal)
+		fmt.Fprintf(b, "\t%sOrder%sDesc uint8 = %d\n", typeTag, oc.FieldName, descVal)
+	}
+	b.WriteString(")\n\n")
+
+	fmt.Fprintf(b, "func Order%s(terms ...uint8) runtime.Order {\n", typeTag)
+	b.WriteString("\treturn runtime.PackOrder(terms...)\n")
+	b.WriteString("}\n\n")
+}
+
+func emitColMaskConstants(b *bytes.Buffer, prefix string, uncondCols []colDef) {
+	b.WriteString("const (\n")
+	for i, uc := range uncondCols {
+		fmt.Fprintf(b, "\t%sCol%s uint64 = 1 << %d\n", prefix, uc.FieldName, i)
+	}
+	fmt.Fprintf(b, "\t%sColsAll uint64 = (1 << %d) - 1\n", prefix, len(uncondCols))
+	b.WriteString(")\n\n")
+}
+
+func emitStatementCode(
+	b *bytes.Buffer,
+	cs *compiledStmt,
+	staticIdxByStmt map[uint32]int,
+	emittedRowOrder map[string]bool,
+	emittedRowCols map[string]bool,
+	emittedRowSeek map[string]bool,
+) {
 	fmt.Fprintf(b, "const stmtID%s uint32 = %d\n\n", cs.Name, cs.ID)
 
-	// Emit SelectCols bitmask constants when UseParamsStruct && len(UncondCols) > 0
-	if cs.UseParamsStruct && len(cs.UncondCols) > 0 {
-		b.WriteString("const (\n")
-		for i, uc := range cs.UncondCols {
-			fmt.Fprintf(b, "\t%sCol%s uint64 = 1 << %d\n", cs.Name, uc.FieldName, i)
+	// Emit SelectCols bitmask constants on both <RowType> and <StmtName>
+	if len(cs.UncondCols) > 0 {
+		if !cs.ScalarResult && cs.RowTypeName != "" && !emittedRowCols[cs.RowTypeName] {
+			emittedRowCols[cs.RowTypeName] = true
+			emitColMaskConstants(b, cs.RowTypeName, cs.UncondCols)
 		}
-		fmt.Fprintf(b, "\t%sColsAll uint64 = (1 << %d) - 1\n", cs.Name, len(cs.UncondCols))
-		b.WriteString(")\n\n")
+		if cs.RowTypeName != cs.Name && !emittedRowCols[cs.Name] {
+			emittedRowCols[cs.Name] = true
+			emitColMaskConstants(b, cs.Name, cs.UncondCols)
+		}
 	}
 
-	// Emit Order and Seek helpers for sortable columns
+	// Emit Order and Seek helpers
 	if cs.HasOrder {
-		typeTag := cs.RowTypeName
-		if typeTag == "" || cs.ScalarResult || emittedRowOrder[typeTag] {
-			typeTag = cs.Name
+		primaryTag := cs.RowTypeName
+		if primaryTag == "" || cs.ScalarResult {
+			primaryTag = cs.Name
 		}
-		emittedRowOrder[typeTag] = true
-
-		b.WriteString("const (\n")
-		for idx, oc := range cs.OrderCols {
-			ascVal := runtime.Asc(uint8(idx))
-			descVal := runtime.Desc(uint8(idx))
-			fmt.Fprintf(b, "\tOrder%s%sAsc uint8 = %d\n", typeTag, oc.FieldName, ascVal)
-			fmt.Fprintf(b, "\tOrder%s%sDesc uint8 = %d\n", typeTag, oc.FieldName, descVal)
-			if typeTag != cs.Name {
-				fmt.Fprintf(b, "\tOrder%s%sAsc_%s uint8 = %d\n", cs.Name, oc.FieldName, cs.Name, ascVal)
-				fmt.Fprintf(b, "\t%sOrder%sAsc uint8 = %d\n", typeTag, oc.FieldName, ascVal)
-				fmt.Fprintf(b, "\t%sOrder%sDesc uint8 = %d\n", typeTag, oc.FieldName, descVal)
-			}
+		if !emittedRowOrder[primaryTag] {
+			emittedRowOrder[primaryTag] = true
+			emitSortHelperGroup(b, primaryTag, cs.OrderCols)
 		}
-		b.WriteString(")\n\n")
-
-		fmt.Fprintf(b, "func Order%s(terms ...uint8) runtime.Order {\n", typeTag)
-		b.WriteString("\treturn runtime.PackOrder(terms...)\n")
-		b.WriteString("}\n\n")
-
-		if typeTag != cs.Name {
-			fmt.Fprintf(b, "func Order%sStmt(terms ...uint8) runtime.Order {\n", cs.Name)
-			b.WriteString("\treturn runtime.PackOrder(terms...)\n")
-			b.WriteString("}\n\n")
+		if primaryTag != cs.Name && !emittedRowOrder[cs.Name] {
+			emittedRowOrder[cs.Name] = true
+			emitSortHelperGroup(b, cs.Name, cs.OrderCols)
 		}
 
 		if cs.HasSeek && !cs.ScalarResult && cs.RowTypeName != "" {
-			fmt.Fprintf(b, "func Seek%s(row %s) runtime.Seek {\n", typeTag, cs.RowTypeName)
-			b.WriteString("\treturn runtime.NewSeek(")
-			for idx, oc := range cs.OrderCols {
-				if idx > 0 {
-					b.WriteString(", ")
+			if !emittedRowSeek[cs.RowTypeName] {
+				emittedRowSeek[cs.RowTypeName] = true
+				fmt.Fprintf(b, "func (r %s) Seek() runtime.Seek {\n\treturn runtime.NewSeek(", cs.RowTypeName)
+				for idx, oc := range cs.OrderCols {
+					if idx > 0 {
+						b.WriteString(", ")
+					}
+					fmt.Fprintf(b, "r.%s", oc.FieldName)
 				}
-				fmt.Fprintf(b, "row.%s", oc.FieldName)
+				b.WriteString(")\n}\n\n")
+
+				fmt.Fprintf(b, "func Seek%s(row %s) runtime.Seek {\n\treturn row.Seek()\n}\n\n", cs.RowTypeName, cs.RowTypeName)
 			}
-			b.WriteString(")\n}\n\n")
+			if cs.RowTypeName != cs.Name && !emittedRowSeek[cs.Name] {
+				emittedRowSeek[cs.Name] = true
+				fmt.Fprintf(b, "func Seek%s(row %s) runtime.Seek {\n\treturn row.Seek()\n}\n\n", cs.Name, cs.RowTypeName)
+			}
 		}
 	}
 
-	// Emit Params struct (either public <Name>Params when UseParamsStruct is true, or internal <name>Args for Query currying)
 	paramsStructName := cs.Name + "Params"
 	if !cs.UseParamsStruct {
 		paramsStructName = "params" + cs.Name
@@ -2485,46 +3149,45 @@ func emitStatementCode(b *bytes.Buffer, cs *compiledStmt, staticIdxByStmt map[ui
 	}
 	b.WriteString("}\n\n")
 
-	// Emit static QueryDescriptor variable
 	fmt.Fprintf(b, "var desc%s = ", cs.Name)
-	emitBlockLiteral(b, &cs.Root, cs.SelectColExprs, cs.OrderCols)
+	emitBlockLiteral(b, cs, &cs.Root, true)
 	b.WriteString("\n\n")
 
-	// Emit static non-capturing expander function expand<Name>Params and expand<Name>Args
-	fmt.Fprintf(b, "func expand%sParams(dst *[]any, p %s) error {\n", cs.Name, paramsStructName)
-	b.WriteString("\t_ = p\n")
+	fmt.Fprintf(b, "func expand%sParams(dst *[]any, dialect runtime.Dialect, p %s) error {\n", cs.Name, paramsStructName)
+	b.WriteString("\t_ = dialect\n\t_ = p\n")
 	emitSlotArgExpansion(b, cs, &cs.Root, func(p paramDef) string {
 		return "p." + p.FieldName
 	})
 	b.WriteString("\treturn nil\n")
 	b.WriteString("}\n\n")
 
-	fmt.Fprintf(b, "func expand%sArgs(dst *[]any, q *runtime.Query) error {\n", cs.Name)
-	if len(cs.Params) > 0 || len(cs.Flags) > 0 {
-		fmt.Fprintf(b, "\treturn expand%sParams(dst, q.Params.(%s))\n", cs.Name, paramsStructName)
-	} else {
-		fmt.Fprintf(b, "\treturn expand%sParams(dst, %s{})\n", cs.Name, paramsStructName)
+	if cs.Kind != KindExec {
+		fmt.Fprintf(b, "func expand%sArgs(dst *[]any, dialect runtime.Dialect, q *runtime.Query) error {\n", cs.Name)
+		if len(cs.Params) > 0 || len(cs.Flags) > 0 {
+			fmt.Fprintf(b, "\treturn expand%sParams(dst, dialect, q.Params.(%s))\n", cs.Name, paramsStructName)
+		} else {
+			fmt.Fprintf(b, "\treturn expand%sParams(dst, dialect, %s{})\n", cs.Name, paramsStructName)
+		}
+		b.WriteString("}\n\n")
 	}
-	b.WriteString("}\n\n")
 
-	// Helper to format method parameter signature and call arguments
-	var sigParams strings.Builder
-	var callArgs strings.Builder
+	var sigParams []byte
+	var callArgs []byte
 	if cs.UseParamsStruct {
-		fmt.Fprintf(&sigParams, "p %s", paramsStructName)
-		callArgs.WriteString("p")
+		sigParams = append(sigParams, ("p " + paramsStructName)...)
+		callArgs = append(callArgs, 'p')
 	} else {
 		for i, p := range cs.Params {
 			if i > 0 {
-				sigParams.WriteString(", ")
-				callArgs.WriteString(", ")
+				sigParams = append(sigParams, ", "...)
+				callArgs = append(callArgs, ", "...)
 			}
-			fmt.Fprintf(&sigParams, "%s %s", p.ParamName, p.GoType)
-			callArgs.WriteString(p.ParamName)
+			sigParams = append(sigParams, (p.ParamName + " " + p.GoType)...)
+			callArgs = append(callArgs, p.ParamName...)
 		}
 	}
-	sigStr := sigParams.String()
-	callStr := callArgs.String()
+	sigStr := string(sigParams)
+	callStr := string(callArgs)
 	sigWithLeadingComma := ""
 	callWithLeadingComma := ""
 	if sigStr != "" {
@@ -2532,7 +3195,7 @@ func emitStatementCode(b *bytes.Buffer, cs *compiledStmt, staticIdxByStmt map[ui
 		callWithLeadingComma = ", " + callStr
 	}
 
-	// Emit zero-allocation compute<Name>Key helper for direct query execution
+	// Zero-allocation compute<Name>Key helper
 	fmt.Fprintf(b, "func compute%sKey(p %s) (runtime.VariantKey, uint64, uint64, int) {\n", cs.Name, paramsStructName)
 	b.WriteString("\t_ = p\n")
 	b.WriteString("\tvar colMask uint64\n")
@@ -2612,128 +3275,129 @@ func emitStatementCode(b *bytes.Buffer, cs *compiledStmt, staticIdxByStmt map[ui
 	b.WriteString("\treturn vk, colMask, flagMask, approxArgs\n")
 	b.WriteString("}\n\n")
 
-	// Emit prepare<Name> helper that builds runtime.Query for currying and SQL rendering on cache miss
-	fmt.Fprintf(b, "func prepare%s(%s) (runtime.Query, runtime.VariantKey, int) {\n", cs.Name, sigStr)
-	if !cs.UseParamsStruct {
-		fmt.Fprintf(b, "\tp := %s{\n", paramsStructName)
+	// Helper to emit stack-allocated RenderInput construction (zero heap allocations on cache hits)
+	emitStackRenderInput := func(indent, pVar string) {
+		var orderField, seekField string
 		for _, p := range cs.Params {
-			fmt.Fprintf(b, "\t\t%s: %s,\n", p.FieldName, p.ParamName)
-		}
-		b.WriteString("\t}\n")
-	}
-	fmt.Fprintf(b, "\tvk, colMask, flagMask, approxArgs := compute%sKey(p)\n", cs.Name)
-	b.WriteString("\tvar orderSpec runtime.Order\n")
-	b.WriteString("\tvar hasSeek bool\n")
-	for _, p := range cs.Params {
-		if p.Kind == paramOrder {
-			fmt.Fprintf(b, "\torderSpec = p.%s\n", p.FieldName)
-		}
-		if p.Kind == paramSeek {
-			fmt.Fprintf(b, "\thasSeek = p.%s.IsActive()\n", p.FieldName)
-		}
-	}
-	b.WriteString("\torderKey := runtime.EncodeOrderKey(orderSpec, hasSeek)\n")
-
-	if cs.TotalSlices > 0 {
-		fmt.Fprintf(b, "\tsliceLens := make([]int, %d)\n", cs.TotalSlices)
-	} else {
-		b.WriteString("\tvar sliceLens []int\n")
-	}
-	if cs.TotalTuples > 0 {
-		fmt.Fprintf(b, "\ttupleLens := make([]int, %d)\n", cs.TotalTuples)
-	} else {
-		b.WriteString("\tvar tupleLens []int\n")
-	}
-	if cs.TotalSubs > 0 {
-		fmt.Fprintf(b, "\tsubs := make([]runtime.Query, %d)\n", cs.TotalSubs)
-	} else {
-		b.WriteString("\tvar subs []runtime.Query\n")
-	}
-
-	sliceCursor := 0
-	tupleCursor := 0
-	subCursor := 0
-	var emitCoordCollection func(blk *parsedBlock, activeCond string)
-	emitCoordCollection = func(blk *parsedBlock, activeCond string) {
-		for _, sl := range blk.Slots {
-			switch sl.Kind {
-			case runtime.SlotSlice:
-				p := cs.Params[sl.ParamIdx]
-				idx := sliceCursor
-				sliceCursor++
-				if activeCond == "" {
-					fmt.Fprintf(b, "\tsliceLens[%d] = len(p.%s)\n", idx, p.FieldName)
-				} else {
-					fmt.Fprintf(b, "\tif %s {\n\t\tsliceLens[%d] = len(p.%s)\n\t}\n", activeCond, idx, p.FieldName)
-				}
-			case runtime.SlotTupleSlice:
-				p := cs.Params[sl.ParamIdx]
-				idx := tupleCursor
-				tupleCursor++
-				if activeCond == "" {
-					fmt.Fprintf(b, "\ttupleLens[%d] = len(p.%s)\n", idx, p.FieldName)
-				} else {
-					fmt.Fprintf(b, "\tif %s {\n\t\ttupleLens[%d] = len(p.%s)\n\t}\n", activeCond, idx, p.FieldName)
-				}
-			case runtime.SlotQuery:
-				p := cs.Params[sl.ParamIdx]
-				idx := subCursor
-				subCursor++
-				if activeCond == "" {
-					fmt.Fprintf(b, "\tsubs[%d] = p.%s\n", idx, p.FieldName)
-				} else {
-					fmt.Fprintf(b, "\tif %s {\n\t\tsubs[%d] = p.%s\n\t}\n", activeCond, idx, p.FieldName)
-				}
-			case runtime.SlotOptBlock:
-				flag := cs.Flags[sl.FlagBit]
-				emitCoordCollection(sl.Inner, "p."+flag.FieldName)
+			if p.Kind == paramOrder {
+				orderField = pVar + "." + p.FieldName
+			}
+			if p.Kind == paramSeek {
+				seekField = pVar + "." + p.FieldName + ".IsActive()"
 			}
 		}
-	}
-	emitCoordCollection(&cs.Root, "")
-
-	hasSubsLiteral := "false"
-	if cs.TotalSubs > 0 {
-		hasSubsLiteral = "true"
-	}
-	if cs.TotalSlices+cs.TotalTuples == 0 {
-		fmt.Fprintf(b, "\tshapeTag := runtime.ComputeSubqueryShape(stmtID%s, colMask, flagMask, orderKey, %s)\n", cs.Name, hasSubsLiteral)
-	} else {
-		fmt.Fprintf(b, "\tshapeLens := make([]int, 0, %d)\n", cs.TotalSlices+cs.TotalTuples)
 		if cs.TotalSlices > 0 {
-			b.WriteString("\tshapeLens = append(shapeLens, sliceLens...)\n")
+			fmt.Fprintf(b, "%svar sliceLensBuf [%d]int\n", indent, cs.TotalSlices)
 		}
 		if cs.TotalTuples > 0 {
-			b.WriteString("\tshapeLens = append(shapeLens, tupleLens...)\n")
+			fmt.Fprintf(b, "%svar tupleLensBuf [%d]int\n", indent, cs.TotalTuples)
 		}
-		fmt.Fprintf(b, "\tshapeTag := runtime.ComputeSubqueryShape(stmtID%s, colMask, flagMask, orderKey, %s, shapeLens...)\n", cs.Name, hasSubsLiteral)
-	}
+		if cs.TotalSubs > 0 {
+			fmt.Fprintf(b, "%svar subsBuf [%d]runtime.Query\n", indent, cs.TotalSubs)
+		}
+		sc := 0
+		tc := 0
+		subc := 0
+		var fillCoords func(blk *parsedBlock, cond string)
+		fillCoords = func(blk *parsedBlock, cond string) {
+			for _, sl := range blk.Slots {
+				switch sl.Kind {
+				case runtime.SlotSlice:
+					p := cs.Params[sl.ParamIdx]
+					idx := sc
+					sc++
+					if cond == "" {
+						fmt.Fprintf(b, "%ssliceLensBuf[%d] = len(%s.%s)\n", indent, idx, pVar, p.FieldName)
+					} else {
+						fmt.Fprintf(b, "%sif %s {\n%s\tsliceLensBuf[%d] = len(%s.%s)\n%s}\n", indent, cond, indent, idx, pVar, p.FieldName, indent)
+					}
+				case runtime.SlotTupleSlice:
+					p := cs.Params[sl.ParamIdx]
+					idx := tc
+					tc++
+					if cond == "" {
+						fmt.Fprintf(b, "%stupleLensBuf[%d] = len(%s.%s)\n", indent, idx, pVar, p.FieldName)
+					} else {
+						fmt.Fprintf(b, "%sif %s {\n%s\ttupleLensBuf[%d] = len(%s.%s)\n%s}\n", indent, cond, indent, idx, pVar, p.FieldName, indent)
+					}
+				case runtime.SlotQuery:
+					p := cs.Params[sl.ParamIdx]
+					idx := subc
+					subc++
+					if cond == "" {
+						fmt.Fprintf(b, "%ssubsBuf[%d] = %s.%s\n", indent, idx, pVar, p.FieldName)
+					} else {
+						fmt.Fprintf(b, "%sif %s {\n%s\tsubsBuf[%d] = %s.%s\n%s}\n", indent, cond, indent, idx, pVar, p.FieldName, indent)
+					}
+				case runtime.SlotOptBlock:
+					flag := cs.Flags[sl.FlagBit]
+					fillCoords(sl.Inner, pVar+"."+flag.FieldName)
+				}
+			}
+		}
+		fillCoords(&cs.Root, "")
 
-	fmt.Fprintf(b, "\tqVal := runtime.Query{\n")
-	fmt.Fprintf(b, "\t\tStmtID: stmtID%s,\n", cs.Name)
-	fmt.Fprintf(b, "\t\tDesc:   desc%s,\n", cs.Name)
-	b.WriteString("\t\tInput: runtime.RenderInput{\n")
-	b.WriteString("\t\t\tColMask:   colMask,\n")
-	b.WriteString("\t\t\tFlagMask:  flagMask,\n")
-	b.WriteString("\t\t\tOrderSpec: orderSpec,\n")
-	b.WriteString("\t\t\tHasSeek:   hasSeek,\n")
-	b.WriteString("\t\t\tSliceLens: sliceLens,\n")
-	b.WriteString("\t\t\tTupleLens: tupleLens,\n")
-	b.WriteString("\t\t\tSubs:      subs,\n")
-	b.WriteString("\t\t},\n")
-	b.WriteString("\t\tParams:   p,\n")
-	fmt.Fprintf(b, "\t\tExpand:   expand%sArgs,\n", cs.Name)
-	b.WriteString("\t\tShapeTag: shapeTag,\n")
-	b.WriteString("\t}\n")
-	b.WriteString("\treturn qVal, vk, approxArgs\n")
-	b.WriteString("}\n\n")
+		fmt.Fprintf(b, "%sin := runtime.RenderInput{\n", indent)
+		fmt.Fprintf(b, "%s\tColMask:  colMask,\n", indent)
+		fmt.Fprintf(b, "%s\tFlagMask: flagMask,\n", indent)
+		if orderField != "" {
+			fmt.Fprintf(b, "%s\tOrderSpec: %s,\n", indent, orderField)
+		}
+		if seekField != "" {
+			fmt.Fprintf(b, "%s\tHasSeek: %s,\n", indent, seekField)
+		}
+		if cs.TotalSlices > 0 {
+			fmt.Fprintf(b, "%s\tSliceLens: sliceLensBuf[:],\n", indent)
+		}
+		if cs.TotalTuples > 0 {
+			fmt.Fprintf(b, "%s\tTupleLens: tupleLensBuf[:],\n", indent)
+		}
+		if cs.TotalSubs > 0 {
+			fmt.Fprintf(b, "%s\tSubs: subsBuf[:],\n", indent)
+		}
+		fmt.Fprintf(b, "%s}\n", indent)
+	}
 
 	// 1. Currying Constructor (<Name>Query) for all kinds except exec
 	if cs.Kind != KindExec {
 		fmt.Fprintf(b, "// %sQuery constructs a composable runtime.Query without executing it.\n", cs.Name)
 		fmt.Fprintf(b, "func %sQuery(%s) runtime.Query {\n", cs.Name, sigStr)
-		fmt.Fprintf(b, "\tqVal, _, _ := prepare%s(%s)\n", cs.Name, callStr)
-		b.WriteString("\treturn qVal\n")
+		if !cs.UseParamsStruct {
+			fmt.Fprintf(b, "\tp := %s{\n", paramsStructName)
+			for _, p := range cs.Params {
+				fmt.Fprintf(b, "\t\t%s: %s,\n", p.FieldName, p.ParamName)
+			}
+			b.WriteString("\t}\n")
+		}
+		fmt.Fprintf(b, "\t_, colMask, flagMask, _ := compute%sKey(p)\n", cs.Name)
+		emitStackRenderInput("\t", "p")
+		b.WriteString("\torderKey := runtime.EncodeOrderKey(in.OrderSpec, in.HasSeek)\n")
+
+		hasSubsLiteral := "false"
+		if cs.TotalSubs > 0 {
+			hasSubsLiteral = "true"
+		}
+		if cs.TotalSlices+cs.TotalTuples == 0 {
+			fmt.Fprintf(b, "\tshapeTag := runtime.ComputeSubqueryShape(stmtID%s, colMask, flagMask, orderKey, %s)\n", cs.Name, hasSubsLiteral)
+		} else {
+			fmt.Fprintf(b, "\tvar shapeLens [%d]int\n", cs.TotalSlices+cs.TotalTuples)
+			if cs.TotalSlices > 0 {
+				b.WriteString("\tcopy(shapeLens[:], in.SliceLens)\n")
+			}
+			if cs.TotalTuples > 0 {
+				fmt.Fprintf(b, "\tcopy(shapeLens[%d:], in.TupleLens)\n", cs.TotalSlices)
+			}
+			fmt.Fprintf(b, "\tshapeTag := runtime.ComputeSubqueryShape(stmtID%s, colMask, flagMask, orderKey, %s, shapeLens[:]...)\n", cs.Name, hasSubsLiteral)
+		}
+
+		fmt.Fprintf(b, "\treturn runtime.Query{\n")
+		fmt.Fprintf(b, "\t\tStmtID:   stmtID%s,\n", cs.Name)
+		fmt.Fprintf(b, "\t\tDesc:     desc%s,\n", cs.Name)
+		b.WriteString("\t\tInput:    in,\n")
+		b.WriteString("\t\tParams:   p,\n")
+		fmt.Fprintf(b, "\t\tExpand:   expand%sArgs,\n", cs.Name)
+		b.WriteString("\t\tShapeTag: shapeTag,\n")
+		b.WriteString("\t}\n")
 		b.WriteString("}\n\n")
 
 		fmt.Fprintf(b, "// %sQuery constructs a composable runtime.Query without executing it.\n", cs.Name)
@@ -2747,8 +3411,10 @@ func emitStatementCode(b *bytes.Buffer, cs *compiledStmt, staticIdxByStmt map[ui
 	}
 
 	fastSlotExpr := "nil"
+	pipelineFastSlotExpr := "nil"
 	if slotIdx, ok := staticIdxByStmt[cs.ID]; ok {
 		fastSlotExpr = fmt.Sprintf("&q.fastSlots[%d]", slotIdx)
+		pipelineFastSlotExpr = fmt.Sprintf("&pl.q.fastSlots[%d]", slotIdx)
 	}
 
 	emitLocalParamsInit := func(indent string) {
@@ -2766,22 +3432,31 @@ func emitStatementCode(b *bytes.Buffer, cs *compiledStmt, staticIdxByStmt map[ui
 		fmt.Fprintf(b, "func (q *Queries) %s(ctx context.Context%s) (sql.Result, error) {\n", cs.Name, sigWithLeadingComma)
 		emitLocalParamsInit("\t")
 		fmt.Fprintf(b, "\tvk, colMask, flagMask, approxArgs := compute%sKey(p)\n", cs.Name)
-		b.WriteString("\targBuf := runtime.AcquireArgs(approxArgs)\n")
+		b.WriteString("\targBuf := runtime.AcquireArgsCap(approxArgs)\n")
 		b.WriteString("\tdefer runtime.ReleaseArgs(argBuf)\n")
-		fmt.Fprintf(b, "\tif err := expand%sParams(argBuf, p); err != nil {\n", cs.Name)
+		fmt.Fprintf(b, "\tif err := expand%sParams(argBuf, sqlDialect, p); err != nil {\n", cs.Name)
 		b.WriteString("\t\treturn nil, err\n")
 		b.WriteString("\t}\n")
-		fmt.Fprintf(b, "\tbuildSQL := func() string {\n\t\tqVal, _, _ := prepare%s(%s)\n\t\treturn runtime.BuildComposedSQL(qVal.Desc, &qVal.Input, sqlDialect)\n\t}\n", cs.Name, callStr)
-		fmt.Fprintf(b, "\treturn q.cache.Exec(ctx, q.db, q.txCache, q.usePrepared, vk, stmtID%s, runtime.ComputeBatchShapeTag(colMask, flagMask), 0, %s, buildSQL, (*argBuf)...)\n", cs.Name, fastSlotExpr)
+		emitStackRenderInput("\t", "p")
+		fmt.Fprintf(b, "\treturn q.cache.Exec(ctx, q.db, q.txCache, q.usePrepared, vk, stmtID%s, runtime.ComputeBatchShapeTag(colMask, flagMask), 0, %s, sqlDialect, desc%s, &in, (*argBuf)...)\n", cs.Name, fastSlotExpr, cs.Name)
+		b.WriteString("}\n\n")
+
+		// Pipeline queuing method for KindExec
+		fmt.Fprintf(b, "func (pl *Pipeline) %s(%s) *runtime.ExecFuture {\n", cs.Name, sigStr)
+		emitLocalParamsInit("\t")
+		fmt.Fprintf(b, "\tvk, colMask, flagMask, approxArgs := compute%sKey(p)\n", cs.Name)
+		b.WriteString("\targBuf := runtime.AcquireArgsCap(approxArgs)\n")
+		fmt.Fprintf(b, "\texpandErr := expand%sParams(argBuf, sqlDialect, p)\n", cs.Name)
+		emitStackRenderInput("\t", "p")
+		fmt.Fprintf(b, "\treturn pl.Pipeline.QueueExec(stmtID%s, desc%s, in, vk, %s, argBuf, expandErr)\n", cs.Name, cs.Name, pipelineFastSlotExpr)
 		b.WriteString("}\n\n")
 
 		if cs.CanBatch {
-			emitExecBatchMethod(b, cs, sigWithLeadingComma, callStr, paramsStructName)
+			emitExecBatchAndStreamMethods(b, cs, sigWithLeadingComma, paramsStructName, emitStackRenderInput)
 		}
 		return
 	}
 
-	// Helper to emit scanDest setup before rows.Next() / row.Scan()
 	emitScanSetup := func(indent string) {
 		fmt.Fprintf(b, "%svar item %s\n", indent, cs.RowTypeName)
 		if cs.ScalarResult {
@@ -2828,6 +3503,13 @@ func emitStatementCode(b *bytes.Buffer, cs *compiledStmt, staticIdxByStmt map[ui
 		}
 	}
 
+	// Emit single unified scan<Name>Row helper (accepts both *sql.Row and *sql.Rows)
+	fmt.Fprintf(b, "func scan%sRow(scanner interface{ Scan(...any) error }, dst *%s, colMask uint64, p %s) error {\n", cs.Name, cs.RowTypeName, paramsStructName)
+	b.WriteString("\t_ = colMask\n\t_ = p\n")
+	emitScanSetup("\t")
+	b.WriteString("\tif err := scanner.Scan(scanSlice...); err != nil {\n\t\treturn err\n\t}\n")
+	b.WriteString("\t*dst = item\n\treturn nil\n}\n\n")
+
 	// 3. KindOne method
 	if cs.Kind == KindOne {
 		fmt.Fprintf(b, "func (q *Queries) %s(ctx context.Context%s) (%s, error) {\n", cs.Name, sigWithLeadingComma, cs.RowTypeName)
@@ -2835,26 +3517,36 @@ func emitStatementCode(b *bytes.Buffer, cs *compiledStmt, staticIdxByStmt map[ui
 		emitLocalParamsInit("\t")
 		fmt.Fprintf(b, "\tvk, colMask, flagMask, approxArgs := compute%sKey(p)\n", cs.Name)
 		b.WriteString("\t_ = colMask\n")
-		b.WriteString("\targBuf := runtime.AcquireArgs(approxArgs)\n")
+		b.WriteString("\targBuf := runtime.AcquireArgsCap(approxArgs)\n")
 		b.WriteString("\tdefer runtime.ReleaseArgs(argBuf)\n")
-		fmt.Fprintf(b, "\tif err := expand%sParams(argBuf, p); err != nil {\n", cs.Name)
+		fmt.Fprintf(b, "\tif err := expand%sParams(argBuf, sqlDialect, p); err != nil {\n", cs.Name)
 		b.WriteString("\t\treturn zero, err\n")
 		b.WriteString("\t}\n")
-		fmt.Fprintf(b, "\tbuildSQL := func() string {\n\t\tqVal, _, _ := prepare%s(%s)\n\t\treturn runtime.BuildComposedSQL(qVal.Desc, &qVal.Input, sqlDialect)\n\t}\n", cs.Name, callStr)
-		fmt.Fprintf(b, "\tsqlRow, ms, err := q.cache.QueryRow(ctx, q.db, q.txCache, q.usePrepared, vk, stmtID%s, runtime.ComputeBatchShapeTag(colMask, flagMask), 0, %s, buildSQL, (*argBuf)...)\n", cs.Name, fastSlotExpr)
+		emitStackRenderInput("\t", "p")
+		fmt.Fprintf(b, "\tsqlRow, ms, err := q.cache.QueryRow(ctx, q.db, q.txCache, q.usePrepared, vk, stmtID%s, runtime.ComputeBatchShapeTag(colMask, flagMask), 0, %s, sqlDialect, desc%s, &in, (*argBuf)...)\n", cs.Name, fastSlotExpr, cs.Name)
 		b.WriteString("\tif err != nil {\n")
 		b.WriteString("\t\treturn zero, err\n")
 		b.WriteString("\t}\n")
-		emitScanSetup("\t")
-		b.WriteString("\terr = sqlRow.Scan(scanSlice...)\n")
-		b.WriteString("\tif ms != nil {\n")
-		b.WriteString("\t\t_ = ms.Release()\n")
-		b.WriteString("\t}\n")
+		fmt.Fprintf(b, "\tvar item %s\n", cs.RowTypeName)
+		fmt.Fprintf(b, "\terr = scan%sRow(sqlRow, &item, colMask, p)\n", cs.Name)
+		b.WriteString("\t_ = ms.Release()\n")
 		b.WriteString("\tif err != nil {\n")
 		b.WriteString("\t\treturn zero, err\n")
 		b.WriteString("\t}\n")
 		b.WriteString("\treturn item, nil\n")
 		b.WriteString("}\n\n")
+
+		// Pipeline queuing method for KindOne
+		fmt.Fprintf(b, "func (pl *Pipeline) %s(%s) *runtime.RowFuture[%s] {\n", cs.Name, sigStr, cs.RowTypeName)
+		emitLocalParamsInit("\t")
+		fmt.Fprintf(b, "\tvk, colMask, flagMask, approxArgs := compute%sKey(p)\n", cs.Name)
+		b.WriteString("\targBuf := runtime.AcquireArgsCap(approxArgs)\n")
+		fmt.Fprintf(b, "\texpandErr := expand%sParams(argBuf, sqlDialect, p)\n", cs.Name)
+		emitStackRenderInput("\t", "p")
+		fmt.Fprintf(b, "\treturn runtime.QueueRow(pl.Pipeline, stmtID%s, desc%s, in, vk, %s, argBuf, expandErr,\n", cs.Name, cs.Name, pipelineFastSlotExpr)
+		fmt.Fprintf(b, "\t\tfunc(r *sql.Row, dst *%s) error { return scan%sRow(r, dst, colMask, p) },\n", cs.RowTypeName, cs.Name)
+		fmt.Fprintf(b, "\t\tfunc(rs *sql.Rows, dst *%s) error { return scan%sRow(rs, dst, colMask, p) },\n", cs.RowTypeName, cs.Name)
+		b.WriteString("\t)\n}\n\n")
 		return
 	}
 
@@ -2864,86 +3556,51 @@ func emitStatementCode(b *bytes.Buffer, cs *compiledStmt, staticIdxByStmt map[ui
 	b.WriteString("}\n\n")
 
 	fmt.Fprintf(b, "func (q *Queries) %sInto(ctx context.Context, dst []%s%s) ([]%s, error) {\n", cs.Name, cs.RowTypeName, sigWithLeadingComma, cs.RowTypeName)
-	emitLocalParamsInit("\t")
-	fmt.Fprintf(b, "\tvk, colMask, flagMask, approxArgs := compute%sKey(p)\n", cs.Name)
-	b.WriteString("\t_ = colMask\n")
-	b.WriteString("\targBuf := runtime.AcquireArgs(approxArgs)\n")
-	b.WriteString("\tdefer runtime.ReleaseArgs(argBuf)\n")
-	fmt.Fprintf(b, "\tif err := expand%sParams(argBuf, p); err != nil {\n", cs.Name)
-	b.WriteString("\t\treturn nil, err\n")
-	b.WriteString("\t}\n")
-	fmt.Fprintf(b, "\tbuildSQL := func() string {\n\t\tqVal, _, _ := prepare%s(%s)\n\t\treturn runtime.BuildComposedSQL(qVal.Desc, &qVal.Input, sqlDialect)\n\t}\n", cs.Name, callStr)
-	fmt.Fprintf(b, "\tsqlRows, ms, err := q.cache.Query(ctx, q.db, q.txCache, q.usePrepared, vk, stmtID%s, runtime.ComputeBatchShapeTag(colMask, flagMask), 0, %s, buildSQL, (*argBuf)...)\n", cs.Name, fastSlotExpr)
-	b.WriteString("\tif err != nil {\n")
-	b.WriteString("\t\treturn nil, err\n")
-	b.WriteString("\t}\n")
-	emitScanSetup("\t")
-	b.WriteString("\tfor sqlRows.Next() {\n")
-	if !cs.ScalarResult {
-		fmt.Fprintf(b, "\t\titem = %s{}\n", cs.RowTypeName)
-	}
-	b.WriteString("\t\tif err := sqlRows.Scan(scanSlice...); err != nil {\n")
-	b.WriteString("\t\t\t_ = sqlRows.Close()\n")
-	b.WriteString("\t\t\tif ms != nil {\n\t\t\t\t_ = ms.Release()\n\t\t\t}\n")
-	b.WriteString("\t\t\treturn nil, err\n")
-	b.WriteString("\t\t}\n")
-	b.WriteString("\t\tdst = append(dst, item)\n")
-	b.WriteString("\t}\n")
-	b.WriteString("\terr = sqlRows.Err()\n")
-	b.WriteString("\t_ = sqlRows.Close()\n")
-	b.WriteString("\tif ms != nil {\n\t\t_ = ms.Release()\n\t}\n")
-	b.WriteString("\tif err != nil {\n")
-	b.WriteString("\t\treturn nil, err\n")
+	fmt.Fprintf(b, "\tfor row, err := range q.%sSeq(ctx%s) {\n", cs.Name, callWithLeadingComma)
+	b.WriteString("\t\tif err != nil {\n\t\t\treturn nil, err\n\t\t}\n")
+	b.WriteString("\t\tdst = append(dst, row)\n")
 	b.WriteString("\t}\n")
 	b.WriteString("\treturn dst, nil\n")
 	b.WriteString("}\n\n")
 
-	// <Name>Seq returning iter.Seq2[Row, error]
 	fmt.Fprintf(b, "func (q *Queries) %sSeq(ctx context.Context%s) iter.Seq2[%s, error] {\n", cs.Name, sigWithLeadingComma, cs.RowTypeName)
 	b.WriteString("\treturn func(yield func(" + cs.RowTypeName + ", error) bool) {\n")
 	fmt.Fprintf(b, "\t\tvar zero %s\n", cs.RowTypeName)
 	emitLocalParamsInit("\t\t")
 	fmt.Fprintf(b, "\t\tvk, colMask, flagMask, approxArgs := compute%sKey(p)\n", cs.Name)
 	b.WriteString("\t\t_ = colMask\n")
-	b.WriteString("\t\targBuf := runtime.AcquireArgs(approxArgs)\n")
+	b.WriteString("\t\targBuf := runtime.AcquireArgsCap(approxArgs)\n")
 	b.WriteString("\t\tdefer runtime.ReleaseArgs(argBuf)\n")
-	fmt.Fprintf(b, "\t\tif err := expand%sParams(argBuf, p); err != nil {\n", cs.Name)
+	fmt.Fprintf(b, "\t\tif err := expand%sParams(argBuf, sqlDialect, p); err != nil {\n", cs.Name)
 	b.WriteString("\t\t\tyield(zero, err)\n")
 	b.WriteString("\t\t\treturn\n")
 	b.WriteString("\t\t}\n")
-	fmt.Fprintf(b, "\t\tbuildSQL := func() string {\n\t\t\tqVal, _, _ := prepare%s(%s)\n\t\t\treturn runtime.BuildComposedSQL(qVal.Desc, &qVal.Input, sqlDialect)\n\t\t}\n", cs.Name, callStr)
-	fmt.Fprintf(b, "\t\tsqlRows, ms, err := q.cache.Query(ctx, q.db, q.txCache, q.usePrepared, vk, stmtID%s, runtime.ComputeBatchShapeTag(colMask, flagMask), 0, %s, buildSQL, (*argBuf)...)\n", cs.Name, fastSlotExpr)
+	emitStackRenderInput("\t\t", "p")
+	fmt.Fprintf(b, "\t\tsqlRows, ms, err := q.cache.Query(ctx, q.db, q.txCache, q.usePrepared, vk, stmtID%s, runtime.ComputeBatchShapeTag(colMask, flagMask), 0, %s, sqlDialect, desc%s, &in, (*argBuf)...)\n", cs.Name, fastSlotExpr, cs.Name)
 	b.WriteString("\t\tif err != nil {\n")
 	b.WriteString("\t\t\tyield(zero, err)\n")
 	b.WriteString("\t\t\treturn\n")
 	b.WriteString("\t\t}\n")
-	emitScanSetup("\t\t")
+	fmt.Fprintf(b, "\t\tvar item %s\n", cs.RowTypeName)
 	b.WriteString("\t\tfor sqlRows.Next() {\n")
-	if !cs.ScalarResult {
-		fmt.Fprintf(b, "\t\t\titem = %s{}\n", cs.RowTypeName)
-	}
-	b.WriteString("\t\t\tif err := sqlRows.Scan(scanSlice...); err != nil {\n")
-	b.WriteString("\t\t\t\t_ = sqlRows.Close()\n")
-	b.WriteString("\t\t\t\tif ms != nil {\n\t\t\t\t\t_ = ms.Release()\n\t\t\t\t}\n")
+	fmt.Fprintf(b, "\t\t\tif err := scan%sRow(sqlRows, &item, colMask, p); err != nil {\n", cs.Name)
+	b.WriteString("\t\t\t\truntime.CloseRows(sqlRows, ms)\n")
 	b.WriteString("\t\t\t\tyield(zero, err)\n")
 	b.WriteString("\t\t\t\treturn\n")
 	b.WriteString("\t\t\t}\n")
 	b.WriteString("\t\t\tif !yield(item, nil) {\n")
-	b.WriteString("\t\t\t\t_ = sqlRows.Close()\n")
-	b.WriteString("\t\t\t\tif ms != nil {\n\t\t\t\t\t_ = ms.Release()\n\t\t\t\t}\n")
+	b.WriteString("\t\t\t\truntime.CloseRows(sqlRows, ms)\n")
 	b.WriteString("\t\t\t\treturn\n")
 	b.WriteString("\t\t\t}\n")
 	b.WriteString("\t\t}\n")
 	b.WriteString("\t\terr = sqlRows.Err()\n")
-	b.WriteString("\t\t_ = sqlRows.Close()\n")
-	b.WriteString("\t\tif ms != nil {\n\t\t\t_ = ms.Release()\n\t\t}\n")
+	b.WriteString("\t\truntime.CloseRows(sqlRows, ms)\n")
 	b.WriteString("\t\tif err != nil {\n")
 	b.WriteString("\t\t\tyield(zero, err)\n")
 	b.WriteString("\t\t}\n")
 	b.WriteString("\t}\n")
 	b.WriteString("}\n\n")
 
-	// <Name>Each
 	fmt.Fprintf(b, "func (q *Queries) %sEach(ctx context.Context%s, fn func(%s) error) error {\n", cs.Name, sigWithLeadingComma, cs.RowTypeName)
 	fmt.Fprintf(b, "\tfor row, err := range q.%sSeq(ctx%s) {\n", cs.Name, callWithLeadingComma)
 	b.WriteString("\t\tif err != nil {\n\t\t\treturn err\n\t\t}\n")
@@ -2952,20 +3609,127 @@ func emitStatementCode(b *bytes.Buffer, cs *compiledStmt, staticIdxByStmt map[ui
 	b.WriteString("\treturn nil\n")
 	b.WriteString("}\n\n")
 
+	// Pipeline queuing method for KindMany
+	fmt.Fprintf(b, "func (pl *Pipeline) %s(%s) *runtime.SliceFuture[%s] {\n", cs.Name, sigStr, cs.RowTypeName)
+	emitLocalParamsInit("\t")
+	fmt.Fprintf(b, "\tvk, colMask, flagMask, approxArgs := compute%sKey(p)\n", cs.Name)
+	b.WriteString("\targBuf := runtime.AcquireArgsCap(approxArgs)\n")
+	fmt.Fprintf(b, "\texpandErr := expand%sParams(argBuf, sqlDialect, p)\n", cs.Name)
+	emitStackRenderInput("\t", "p")
+	fmt.Fprintf(b, "\treturn runtime.QueueSlice(pl.Pipeline, stmtID%s, desc%s, in, vk, %s, argBuf, expandErr,\n", cs.Name, cs.Name, pipelineFastSlotExpr)
+	fmt.Fprintf(b, "\t\tfunc(rs *sql.Rows, dst *%s) error { return scan%sRow(rs, dst, colMask, p) },\n", cs.RowTypeName, cs.Name)
+	b.WriteString("\t)\n}\n\n")
+
 	if cs.CanBatch {
-		emitManyBatchMethods(b, cs, sigWithLeadingComma, callWithLeadingComma, callStr, paramsStructName, emitScanSetup)
+		emitManyBatchAndStreamMethods(b, cs, sigWithLeadingComma, callWithLeadingComma, paramsStructName, emitStackRenderInput)
 	}
 }
 
-func emitExecBatchMethod(b *bytes.Buffer, cs *compiledStmt, sigWithLeadingComma, callStr, paramsStructName string) {
+// emitBatchGlobalPresortSetup emits global index sorting before chunk slicing when the batched collection has HasSort == true.
+func emitBatchGlobalPresortSetup(b *bytes.Buffer, cs *compiledStmt, indent, collAccess string) {
 	batchParam := cs.Params[cs.BatchParamIdx]
-	tupleAccess := batchParam.ParamName
+	if cs.BatchIsTuple && batchParam.Tuple != nil && batchParam.Tuple.HasSort {
+		fmt.Fprintf(b, "%svar sortedIdx *[]int\n", indent)
+		fmt.Fprintf(b, "%sif !is%sSorted(%s) {\n", indent, batchParam.Tuple.Name, collAccess)
+		fmt.Fprintf(b, "%s\tsortedIdx = runtime.AcquireIndices(totalRows)\n", indent)
+		fmt.Fprintf(b, "%s\tdefer runtime.ReleaseIndices(sortedIdx)\n", indent)
+		fmt.Fprintf(b, "%s\tslices.SortFunc(*sortedIdx, func(i, j int) int { return compare%s(%s[i], %s[j]) })\n", indent, batchParam.Tuple.Name, collAccess, collAccess)
+		fmt.Fprintf(b, "%s}\n", indent)
+	} else if !cs.BatchIsTuple && batchParam.HasSort {
+		dirTag := "Asc"
+		if batchParam.Desc {
+			dirTag = "Desc"
+		}
+		typeIdent := sanitizeTypeIdent(batchParam.ElemGoType)
+		fmt.Fprintf(b, "%svar sortedIdx *[]int\n", indent)
+		fmt.Fprintf(b, "%sif !is%s%sSorted(%s) {\n", indent, typeIdent, dirTag, collAccess)
+		fmt.Fprintf(b, "%s\tsortedIdx = runtime.AcquireIndices(totalRows)\n", indent)
+		fmt.Fprintf(b, "%s\tdefer runtime.ReleaseIndices(sortedIdx)\n", indent)
+		fmt.Fprintf(b, "%s\tslices.SortFunc(*sortedIdx, func(i, j int) int { return compare%s%s(%s[i], %s[j]) })\n", indent, typeIdent, dirTag, collAccess, collAccess)
+		fmt.Fprintf(b, "%s}\n", indent)
+	}
+}
+
+// emitBatchChunkExpansion emits argument expansion for a single batch chunk [offset : offset+chunkSize],
+// using sortedIdx if non-nil so global presort order is preserved across chunks without mutating caller memory.
+func emitBatchChunkExpansion(b *bytes.Buffer, cs *compiledStmt, indent, collAccess, _ string) {
+	batchParam := cs.Params[cs.BatchParamIdx]
+	hasSort := (cs.BatchIsTuple && batchParam.Tuple != nil && batchParam.Tuple.HasSort) || (!cs.BatchIsTuple && batchParam.HasSort)
+	if !hasSort {
+		fmt.Fprintf(b, "%s_ = expand%sParams(argBuf, sqlDialect, chunkP)\n", indent, cs.Name)
+		return
+	}
+
+	// When HasSort is true and sortedIdx == nil, chunkP is already sorted so expand<Name>Params handles it directly.
+	fmt.Fprintf(b, "%sif sortedIdx == nil {\n", indent)
+	fmt.Fprintf(b, "%s\t_ = expand%sParams(argBuf, sqlDialect, chunkP)\n", indent, cs.Name)
+	fmt.Fprintf(b, "%s} else {\n", indent)
+	for _, sl := range cs.Root.Slots {
+		switch sl.Kind {
+		case runtime.SlotScalar:
+			p := cs.Params[sl.ParamIdx]
+			fmt.Fprintf(b, "%s\t*argBuf = append(*argBuf, chunkP.%s)\n", indent, p.FieldName)
+		case runtime.SlotSlice:
+			fmt.Fprintf(b, "%s\tidx := (*sortedIdx)[offset : offset+chunkSize]\n", indent)
+			fmt.Fprintf(b, "%s\tfor _, k := range idx {\n%s\t\t*argBuf = append(*argBuf, %s[k])\n%s\t}\n", indent, indent, collAccess, indent)
+		case runtime.SlotTupleSlice:
+			fmt.Fprintf(b, "%s\tidx := (*sortedIdx)[offset : offset+chunkSize]\n", indent)
+			fmt.Fprintf(b, "%s\tfor _, k := range idx {\n", indent)
+			for _, f := range sl.Tuple.Fields {
+				fmt.Fprintf(b, "%s\t\t*argBuf = append(*argBuf, %s[k].%s)\n", indent, collAccess, f.FieldName)
+			}
+			fmt.Fprintf(b, "%s\t}\n", indent)
+		case runtime.SlotOptBlock:
+			flag := cs.Flags[sl.FlagBit]
+			fmt.Fprintf(b, "%s\tif chunkP.%s {\n", indent, flag.FieldName)
+			for _, innerSl := range sl.Inner.Slots {
+				if innerSl.Kind == runtime.SlotScalar {
+					ip := cs.Params[innerSl.ParamIdx]
+					fmt.Fprintf(b, "%s\t\t*argBuf = append(*argBuf, chunkP.%s)\n", indent, ip.FieldName)
+				}
+			}
+			fmt.Fprintf(b, "%s\t}\n", indent)
+		}
+	}
+	fmt.Fprintf(b, "%s}\n", indent)
+}
+
+func buildStreamSignatures(cs *compiledStmt, paramsStructName string) (sigStream, callBatchArgs string) {
+	batchParam := cs.Params[cs.BatchParamIdx]
+	seqType := "iter.Seq2[" + batchParam.ElemGoType + ", error]"
 	if cs.UseParamsStruct {
-		tupleAccess = "p." + batchParam.FieldName
+		return ", p " + paramsStructName + ", seq " + seqType, ", chunkP"
+	}
+	var sig []byte
+	var call []byte
+	for i, p := range cs.Params {
+		sig = append(sig, ", "...)
+		call = append(call, ", "...)
+		if i == cs.BatchParamIdx {
+			sig = append(sig, ("seq " + seqType)...)
+			call = append(call, "chunk"...)
+		} else {
+			sig = append(sig, (p.ParamName + " " + p.GoType)...)
+			call = append(call, p.ParamName...)
+		}
+	}
+	return string(sig), string(call)
+}
+
+func emitExecBatchAndStreamMethods(
+	b *bytes.Buffer,
+	cs *compiledStmt,
+	sigWithLeadingComma, paramsStructName string,
+	emitStackRenderInput func(indent, pVar string),
+) {
+	batchParam := cs.Params[cs.BatchParamIdx]
+	collAccess := batchParam.ParamName
+	if cs.UseParamsStruct {
+		collAccess = "p." + batchParam.FieldName
 	}
 
 	fmt.Fprintf(b, "func (q *Queries) %sBatch(ctx context.Context%s) (sql.Result, error) {\n", cs.Name, sigWithLeadingComma)
-	fmt.Fprintf(b, "\ttotalRows := len(%s)\n", tupleAccess)
+	fmt.Fprintf(b, "\ttotalRows := len(%s)\n", collAccess)
 	b.WriteString("\tif totalRows == 0 {\n\t\treturn nil, runtime.ErrEmptySliceParam\n\t}\n")
 	if !cs.UseParamsStruct {
 		fmt.Fprintf(b, "\tp := %s{\n", paramsStructName)
@@ -2974,9 +3738,11 @@ func emitExecBatchMethod(b *bytes.Buffer, cs *compiledStmt, sigWithLeadingComma,
 		}
 		b.WriteString("\t}\n")
 	}
+	emitBatchGlobalPresortSetup(b, cs, "\t", collAccess)
 	fmt.Fprintf(b, "\t_, colMask, flagMask, _ := compute%sKey(p)\n", cs.Name)
 	b.WriteString("\tshapeTag := runtime.ComputeBatchShapeTag(colMask, flagMask)\n")
-	fmt.Fprintf(b, "\tfirstChunk := q.cache.PlanBatchChunk(stmtID%s, colMask, flagMask, totalRows, %d, true)\n", cs.Name, cs.MaxRowsPerStmt)
+	fmt.Fprintf(b, "\tmaxRows := q.cache.MaxRowsPerBatch(sqlDialect, %d, %d)\n", cs.ScalarParamCnt, cs.BatchArity)
+	fmt.Fprintf(b, "\tfirstChunk := q.cache.PlanBatchChunk(stmtID%s, colMask, flagMask, totalRows, maxRows, true)\n", cs.Name)
 	b.WriteString("\ttxCache := q.txCache\n")
 	b.WriteString("\tvar autoTx *sql.Tx\n")
 	b.WriteString("\tif txCache == nil && firstChunk < totalRows {\n")
@@ -2990,37 +3756,16 @@ func emitExecBatchMethod(b *bytes.Buffer, cs *compiledStmt, sigWithLeadingComma,
 	b.WriteString("\tfor offset := 0; offset < totalRows; {\n")
 	b.WriteString("\t\tchunkSize := firstChunk\n")
 	b.WriteString("\t\tif offset > 0 {\n")
-	fmt.Fprintf(b, "\t\t\tchunkSize = q.cache.PlanBatchChunk(stmtID%s, colMask, flagMask, totalRows-offset, %d, false)\n", cs.Name, cs.MaxRowsPerStmt)
+	fmt.Fprintf(b, "\t\t\tchunkSize = q.cache.PlanBatchChunk(stmtID%s, colMask, flagMask, totalRows-offset, maxRows, false)\n", cs.Name)
 	b.WriteString("\t\t}\n")
-	fmt.Fprintf(b, "\t\tchunkRows := %s[offset : offset+chunkSize]\n", tupleAccess)
+	fmt.Fprintf(b, "\t\tchunkRows := %s[offset : offset+chunkSize]\n", collAccess)
 	b.WriteString("\t\tchunkP := p\n")
 	fmt.Fprintf(b, "\t\tchunkP.%s = chunkRows\n", batchParam.FieldName)
 	fmt.Fprintf(b, "\t\tvk, _, _, approxArgs := compute%sKey(chunkP)\n", cs.Name)
-	b.WriteString("\t\targBuf := runtime.AcquireArgs(approxArgs)\n")
-	fmt.Fprintf(b, "\t\tif err := expand%sParams(argBuf, chunkP); err != nil {\n", cs.Name)
-	b.WriteString("\t\t\truntime.ReleaseArgs(argBuf)\n")
-	b.WriteString("\t\t\tif autoTx != nil {\n\t\t\t\t_ = autoTx.Rollback()\n\t\t\t}\n")
-	b.WriteString("\t\t\treturn nil, err\n")
-	b.WriteString("\t\t}\n")
-	var buildCall string
-	if cs.UseParamsStruct {
-		buildCall = "chunkP"
-	} else {
-		var chunkCall strings.Builder
-		for i, p := range cs.Params {
-			if i > 0 {
-				chunkCall.WriteString(", ")
-			}
-			if i == cs.BatchParamIdx {
-				chunkCall.WriteString("chunkRows")
-			} else {
-				chunkCall.WriteString(p.ParamName)
-			}
-		}
-		buildCall = chunkCall.String()
-	}
-	fmt.Fprintf(b, "\t\tbuildSQL := func() string {\n\t\t\tqVal, _, _ := prepare%s(%s)\n\t\t\treturn runtime.BuildComposedSQL(qVal.Desc, &qVal.Input, sqlDialect)\n\t\t}\n", cs.Name, buildCall)
-	fmt.Fprintf(b, "\t\tres, err := q.cache.Exec(ctx, q.db, txCache, q.usePrepared, vk, stmtID%s, shapeTag, chunkSize, nil, buildSQL, (*argBuf)...)\n", cs.Name)
+	b.WriteString("\t\targBuf := runtime.AcquireArgsCap(approxArgs)\n")
+	emitBatchChunkExpansion(b, cs, "\t\t", collAccess, "\t\t\truntime.ReleaseArgs(argBuf)\n\t\t\tif autoTx != nil {\n\t\t\t\t_ = autoTx.Rollback()\n\t\t\t}\n\t\t\treturn nil, err\n")
+	emitStackRenderInput("\t\t", "chunkP")
+	fmt.Fprintf(b, "\t\tres, err := q.cache.Exec(ctx, q.db, txCache, q.usePrepared, vk, stmtID%s, shapeTag, chunkSize, nil, sqlDialect, desc%s, &in, (*argBuf)...)\n", cs.Name, cs.Name)
 	b.WriteString("\t\truntime.ReleaseArgs(argBuf)\n")
 	b.WriteString("\t\tif err != nil {\n")
 	b.WriteString("\t\t\tif autoTx != nil {\n\t\t\t\t_ = autoTx.Rollback()\n\t\t\t}\n")
@@ -3034,31 +3779,67 @@ func emitExecBatchMethod(b *bytes.Buffer, cs *compiledStmt, sigWithLeadingComma,
 	b.WriteString("\t}\n")
 	b.WriteString("\treturn batchRes, nil\n")
 	b.WriteString("}\n\n")
+
+	if cs.CanStream {
+		sigStream, callBatchArgs := buildStreamSignatures(cs, paramsStructName)
+		poolName := lowerFirstIdent(batchParam.ElemGoType) + "ChunkPool"
+
+		fmt.Fprintf(b, "func (q *Queries) %sStream(ctx context.Context%s) (sql.Result, error) {\n", cs.Name, sigStream)
+		fmt.Fprintf(b, "\tchunkCap := min(256, q.cache.MaxRowsPerBatch(sqlDialect, %d, %d))\n", cs.ScalarParamCnt, cs.BatchArity)
+		fmt.Fprintf(b, "\tbufPtr := %s.Get().(*[]%s)\n", poolName, batchParam.ElemGoType)
+		b.WriteString("\tchunk := (*bufPtr)[:0]\n")
+		b.WriteString("\tdefer func() {\n\t\tclear(chunk)\n\t\t*bufPtr = chunk[:0]\n")
+		fmt.Fprintf(b, "\t\t%s.Put(bufPtr)\n\t}()\n", poolName)
+		b.WriteString("\tvar batchRes runtime.BatchExecResult\n")
+		b.WriteString("\tflushChunk := func() error {\n")
+		b.WriteString("\t\tif len(chunk) == 0 {\n\t\t\treturn nil\n\t\t}\n")
+		if cs.UseParamsStruct {
+			b.WriteString("\t\tchunkP := p\n")
+			fmt.Fprintf(b, "\t\tchunkP.%s = chunk\n", batchParam.FieldName)
+		}
+		fmt.Fprintf(b, "\t\tres, err := q.%sBatch(ctx%s)\n", cs.Name, callBatchArgs)
+		b.WriteString("\t\tif err != nil {\n\t\t\treturn err\n\t\t}\n")
+		b.WriteString("\t\tbatchRes.Add(res)\n")
+		b.WriteString("\t\tchunk = chunk[:0]\n\t\treturn nil\n\t}\n")
+		b.WriteString("\tfor item, err := range seq {\n")
+		b.WriteString("\t\tif err != nil {\n\t\t\treturn nil, err\n\t\t}\n")
+		b.WriteString("\t\tchunk = append(chunk, item)\n")
+		b.WriteString("\t\tif len(chunk) >= chunkCap {\n")
+		b.WriteString("\t\t\tif err := flushChunk(); err != nil {\n\t\t\t\treturn nil, err\n\t\t\t}\n")
+		b.WriteString("\t\t}\n\t}\n")
+		b.WriteString("\tif err := flushChunk(); err != nil {\n\t\treturn nil, err\n\t}\n")
+		b.WriteString("\treturn batchRes, nil\n")
+		b.WriteString("}\n\n")
+
+		fmt.Fprintf(b, "func (q *Queries) %sStreamSeq(ctx context.Context%s) (sql.Result, error) {\n", cs.Name, sigStream)
+		if cs.UseParamsStruct {
+			fmt.Fprintf(b, "\treturn q.%sStream(ctx, p, seq)\n", cs.Name)
+		} else {
+			var forwardArgs []byte
+			for i, p := range cs.Params {
+				forwardArgs = append(forwardArgs, ", "...)
+				if i == cs.BatchParamIdx {
+					forwardArgs = append(forwardArgs, "seq"...)
+				} else {
+					forwardArgs = append(forwardArgs, p.ParamName...)
+				}
+			}
+			fmt.Fprintf(b, "\treturn q.%sStream(ctx%s)\n", cs.Name, string(forwardArgs))
+		}
+		b.WriteString("}\n\n")
+	}
 }
 
-func emitManyBatchMethods(b *bytes.Buffer, cs *compiledStmt, sigWithLeadingComma, callWithLeadingComma, callStr, paramsStructName string, emitScanSetup func(indent string)) {
+func emitManyBatchAndStreamMethods(
+	b *bytes.Buffer,
+	cs *compiledStmt,
+	sigWithLeadingComma, callWithLeadingComma, paramsStructName string,
+	emitStackRenderInput func(indent, pVar string),
+) {
 	batchParam := cs.Params[cs.BatchParamIdx]
-	tupleAccess := batchParam.ParamName
+	collAccess := batchParam.ParamName
 	if cs.UseParamsStruct {
-		tupleAccess = "p." + batchParam.FieldName
-	}
-
-	var buildCall string
-	if cs.UseParamsStruct {
-		buildCall = "chunkP"
-	} else {
-		var chunkCall strings.Builder
-		for i, p := range cs.Params {
-			if i > 0 {
-				chunkCall.WriteString(", ")
-			}
-			if i == cs.BatchParamIdx {
-				chunkCall.WriteString("chunkRows")
-			} else {
-				chunkCall.WriteString(p.ParamName)
-			}
-		}
-		buildCall = chunkCall.String()
+		collAccess = "p." + batchParam.FieldName
 	}
 
 	// <Name>Batch
@@ -3066,9 +3847,9 @@ func emitManyBatchMethods(b *bytes.Buffer, cs *compiledStmt, sigWithLeadingComma
 	fmt.Fprintf(b, "\treturn q.%sBatchInto(ctx, nil%s)\n", cs.Name, callWithLeadingComma)
 	b.WriteString("}\n\n")
 
-	// <Name>BatchInto (starts internal transaction if q.txCache == nil && firstChunk < totalRows)
+	// <Name>BatchInto
 	fmt.Fprintf(b, "func (q *Queries) %sBatchInto(ctx context.Context, dst []%s%s) ([]%s, error) {\n", cs.Name, cs.RowTypeName, sigWithLeadingComma, cs.RowTypeName)
-	fmt.Fprintf(b, "\ttotalRows := len(%s)\n", tupleAccess)
+	fmt.Fprintf(b, "\ttotalRows := len(%s)\n", collAccess)
 	b.WriteString("\tif totalRows == 0 {\n\t\treturn nil, runtime.ErrEmptySliceParam\n\t}\n")
 	if !cs.UseParamsStruct {
 		fmt.Fprintf(b, "\tp := %s{\n", paramsStructName)
@@ -3078,60 +3859,23 @@ func emitManyBatchMethods(b *bytes.Buffer, cs *compiledStmt, sigWithLeadingComma
 		b.WriteString("\t}\n")
 	}
 	fmt.Fprintf(b, "\t_, colMask, flagMask, _ := compute%sKey(p)\n", cs.Name)
-	b.WriteString("\tshapeTag := runtime.ComputeBatchShapeTag(colMask, flagMask)\n")
-	fmt.Fprintf(b, "\tfirstChunk := q.cache.PlanBatchChunk(stmtID%s, colMask, flagMask, totalRows, %d, true)\n", cs.Name, cs.MaxRowsPerStmt)
-	b.WriteString("\ttxCache := q.txCache\n")
+	fmt.Fprintf(b, "\tmaxRows := q.cache.MaxRowsPerBatch(sqlDialect, %d, %d)\n", cs.ScalarParamCnt, cs.BatchArity)
+	fmt.Fprintf(b, "\tfirstChunk := q.cache.PlanBatchChunk(stmtID%s, colMask, flagMask, totalRows, maxRows, true)\n", cs.Name)
+	b.WriteString("\ttargetQ := q\n")
 	b.WriteString("\tvar autoTx *sql.Tx\n")
-	b.WriteString("\tif txCache == nil && firstChunk < totalRows {\n")
+	b.WriteString("\tif q.txCache == nil && firstChunk < totalRows {\n")
 	b.WriteString("\t\tvar err error\n")
 	b.WriteString("\t\tautoTx, err = q.db.BeginTx(ctx, nil)\n")
 	b.WriteString("\t\tif err != nil {\n\t\t\treturn nil, err\n\t\t}\n")
-	b.WriteString("\t\ttxCache = runtime.NewTxStmtCache(autoTx)\n")
-	b.WriteString("\t\tdefer func() { _ = txCache.Close() }()\n")
+	b.WriteString("\t\ttargetQ = q.WithTx(autoTx)\n")
+	b.WriteString("\t\tdefer func() { _ = targetQ.Close() }()\n")
 	b.WriteString("\t}\n")
-	b.WriteString("\tfor offset := 0; offset < totalRows; {\n")
-	b.WriteString("\t\tchunkSize := firstChunk\n")
-	b.WriteString("\t\tif offset > 0 {\n")
-	fmt.Fprintf(b, "\t\t\tchunkSize = q.cache.PlanBatchChunk(stmtID%s, colMask, flagMask, totalRows-offset, %d, false)\n", cs.Name, cs.MaxRowsPerStmt)
-	b.WriteString("\t\t}\n")
-	fmt.Fprintf(b, "\t\tchunkRows := %s[offset : offset+chunkSize]\n", tupleAccess)
-	b.WriteString("\t\tchunkP := p\n")
-	fmt.Fprintf(b, "\t\tchunkP.%s = chunkRows\n", batchParam.FieldName)
-	fmt.Fprintf(b, "\t\tvk, _, _, approxArgs := compute%sKey(chunkP)\n", cs.Name)
-	b.WriteString("\t\targBuf := runtime.AcquireArgs(approxArgs)\n")
-	fmt.Fprintf(b, "\t\tif err := expand%sParams(argBuf, chunkP); err != nil {\n", cs.Name)
-	b.WriteString("\t\t\truntime.ReleaseArgs(argBuf)\n")
-	b.WriteString("\t\t\tif autoTx != nil {\n\t\t\t\t_ = autoTx.Rollback()\n\t\t\t}\n")
-	b.WriteString("\t\t\treturn nil, err\n")
-	b.WriteString("\t\t}\n")
-	fmt.Fprintf(b, "\t\tbuildSQL := func() string {\n\t\t\tqVal, _, _ := prepare%s(%s)\n\t\t\treturn runtime.BuildComposedSQL(qVal.Desc, &qVal.Input, sqlDialect)\n\t\t}\n", cs.Name, buildCall)
-	fmt.Fprintf(b, "\t\tsqlRows, ms, err := q.cache.Query(ctx, q.db, txCache, q.usePrepared, vk, stmtID%s, shapeTag, chunkSize, nil, buildSQL, (*argBuf)...)\n", cs.Name)
-	b.WriteString("\t\truntime.ReleaseArgs(argBuf)\n")
+	fmt.Fprintf(b, "\tfor row, err := range targetQ.%sBatchSeq(ctx%s) {\n", cs.Name, callWithLeadingComma)
 	b.WriteString("\t\tif err != nil {\n")
 	b.WriteString("\t\t\tif autoTx != nil {\n\t\t\t\t_ = autoTx.Rollback()\n\t\t\t}\n")
 	b.WriteString("\t\t\treturn nil, err\n")
 	b.WriteString("\t\t}\n")
-	emitScanSetup("\t\t")
-	b.WriteString("\t\tfor sqlRows.Next() {\n")
-	if !cs.ScalarResult {
-		fmt.Fprintf(b, "\t\t\titem = %s{}\n", cs.RowTypeName)
-	}
-	b.WriteString("\t\t\tif err := sqlRows.Scan(scanSlice...); err != nil {\n")
-	b.WriteString("\t\t\t\t_ = sqlRows.Close()\n")
-	b.WriteString("\t\t\t\tif ms != nil {\n\t\t\t\t\t_ = ms.Release()\n\t\t\t\t}\n")
-	b.WriteString("\t\t\t\tif autoTx != nil {\n\t\t\t\t\t_ = autoTx.Rollback()\n\t\t\t\t}\n")
-	b.WriteString("\t\t\t\treturn nil, err\n")
-	b.WriteString("\t\t\t}\n")
-	b.WriteString("\t\t\tdst = append(dst, item)\n")
-	b.WriteString("\t\t}\n")
-	b.WriteString("\t\terr = sqlRows.Err()\n")
-	b.WriteString("\t\t_ = sqlRows.Close()\n")
-	b.WriteString("\t\tif ms != nil {\n\t\t\t_ = ms.Release()\n\t\t}\n")
-	b.WriteString("\t\tif err != nil {\n")
-	b.WriteString("\t\t\tif autoTx != nil {\n\t\t\t\t_ = autoTx.Rollback()\n\t\t\t}\n")
-	b.WriteString("\t\t\treturn nil, err\n")
-	b.WriteString("\t\t}\n")
-	b.WriteString("\t\toffset += chunkSize\n")
+	b.WriteString("\t\tdst = append(dst, row)\n")
 	b.WriteString("\t}\n")
 	b.WriteString("\tif autoTx != nil {\n")
 	b.WriteString("\t\tif err := autoTx.Commit(); err != nil {\n\t\t\treturn nil, err\n\t\t}\n")
@@ -3139,11 +3883,11 @@ func emitManyBatchMethods(b *bytes.Buffer, cs *compiledStmt, sigWithLeadingComma
 	b.WriteString("\treturn dst, nil\n")
 	b.WriteString("}\n\n")
 
-	// <Name>BatchSeq (executes chunks using q.txCache as-is, without opening a hidden transaction)
+	// <Name>BatchSeq
 	fmt.Fprintf(b, "func (q *Queries) %sBatchSeq(ctx context.Context%s) iter.Seq2[%s, error] {\n", cs.Name, sigWithLeadingComma, cs.RowTypeName)
 	b.WriteString("\treturn func(yield func(" + cs.RowTypeName + ", error) bool) {\n")
 	fmt.Fprintf(b, "\t\tvar zero %s\n", cs.RowTypeName)
-	fmt.Fprintf(b, "\t\ttotalRows := len(%s)\n", tupleAccess)
+	fmt.Fprintf(b, "\t\ttotalRows := len(%s)\n", collAccess)
 	b.WriteString("\t\tif totalRows == 0 {\n\t\t\tyield(zero, runtime.ErrEmptySliceParam)\n\t\t\treturn\n\t\t}\n")
 	if !cs.UseParamsStruct {
 		fmt.Fprintf(b, "\t\tp := %s{\n", paramsStructName)
@@ -3152,51 +3896,43 @@ func emitManyBatchMethods(b *bytes.Buffer, cs *compiledStmt, sigWithLeadingComma
 		}
 		b.WriteString("\t\t}\n")
 	}
+	emitBatchGlobalPresortSetup(b, cs, "\t\t", collAccess)
 	fmt.Fprintf(b, "\t\t_, colMask, flagMask, _ := compute%sKey(p)\n", cs.Name)
 	b.WriteString("\t\tshapeTag := runtime.ComputeBatchShapeTag(colMask, flagMask)\n")
-	fmt.Fprintf(b, "\t\tfirstChunk := q.cache.PlanBatchChunk(stmtID%s, colMask, flagMask, totalRows, %d, true)\n", cs.Name, cs.MaxRowsPerStmt)
+	fmt.Fprintf(b, "\t\tmaxRows := q.cache.MaxRowsPerBatch(sqlDialect, %d, %d)\n", cs.ScalarParamCnt, cs.BatchArity)
+	fmt.Fprintf(b, "\t\tfirstChunk := q.cache.PlanBatchChunk(stmtID%s, colMask, flagMask, totalRows, maxRows, true)\n", cs.Name)
 	b.WriteString("\t\tfor offset := 0; offset < totalRows; {\n")
 	b.WriteString("\t\t\tchunkSize := firstChunk\n")
 	b.WriteString("\t\t\tif offset > 0 {\n")
-	fmt.Fprintf(b, "\t\t\t\tchunkSize = q.cache.PlanBatchChunk(stmtID%s, colMask, flagMask, totalRows-offset, %d, false)\n", cs.Name, cs.MaxRowsPerStmt)
+	fmt.Fprintf(b, "\t\t\t\tchunkSize = q.cache.PlanBatchChunk(stmtID%s, colMask, flagMask, totalRows-offset, maxRows, false)\n", cs.Name)
 	b.WriteString("\t\t\t}\n")
-	fmt.Fprintf(b, "\t\t\tchunkRows := %s[offset : offset+chunkSize]\n", tupleAccess)
+	fmt.Fprintf(b, "\t\t\tchunkRows := %s[offset : offset+chunkSize]\n", collAccess)
 	b.WriteString("\t\t\tchunkP := p\n")
 	fmt.Fprintf(b, "\t\t\tchunkP.%s = chunkRows\n", batchParam.FieldName)
 	fmt.Fprintf(b, "\t\t\tvk, _, _, approxArgs := compute%sKey(chunkP)\n", cs.Name)
-	b.WriteString("\t\t\targBuf := runtime.AcquireArgs(approxArgs)\n")
-	fmt.Fprintf(b, "\t\t\tif err := expand%sParams(argBuf, chunkP); err != nil {\n", cs.Name)
-	b.WriteString("\t\t\t\truntime.ReleaseArgs(argBuf)\n")
-	b.WriteString("\t\t\t\tyield(zero, err)\n")
-	b.WriteString("\t\t\t\treturn\n")
-	b.WriteString("\t\t\t}\n")
-	fmt.Fprintf(b, "\t\t\tbuildSQL := func() string {\n\t\t\t\tqVal, _, _ := prepare%s(%s)\n\t\t\t\treturn runtime.BuildComposedSQL(qVal.Desc, &qVal.Input, sqlDialect)\n\t\t\t}\n", cs.Name, buildCall)
-	fmt.Fprintf(b, "\t\t\tsqlRows, ms, err := q.cache.Query(ctx, q.db, q.txCache, q.usePrepared, vk, stmtID%s, shapeTag, chunkSize, nil, buildSQL, (*argBuf)...)\n", cs.Name)
+	b.WriteString("\t\t\targBuf := runtime.AcquireArgsCap(approxArgs)\n")
+	emitBatchChunkExpansion(b, cs, "\t\t\t", collAccess, "\t\t\t\truntime.ReleaseArgs(argBuf)\n\t\t\t\tyield(zero, err)\n\t\t\t\treturn\n")
+	emitStackRenderInput("\t\t\t", "chunkP")
+	fmt.Fprintf(b, "\t\t\tsqlRows, ms, err := q.cache.Query(ctx, q.db, q.txCache, q.usePrepared, vk, stmtID%s, shapeTag, chunkSize, nil, sqlDialect, desc%s, &in, (*argBuf)...)\n", cs.Name, cs.Name)
 	b.WriteString("\t\t\truntime.ReleaseArgs(argBuf)\n")
 	b.WriteString("\t\t\tif err != nil {\n")
 	b.WriteString("\t\t\t\tyield(zero, err)\n")
 	b.WriteString("\t\t\t\treturn\n")
 	b.WriteString("\t\t\t}\n")
-	emitScanSetup("\t\t\t")
+	fmt.Fprintf(b, "\t\t\tvar item %s\n", cs.RowTypeName)
 	b.WriteString("\t\t\tfor sqlRows.Next() {\n")
-	if !cs.ScalarResult {
-		fmt.Fprintf(b, "\t\t\t\titem = %s{}\n", cs.RowTypeName)
-	}
-	b.WriteString("\t\t\t\tif err := sqlRows.Scan(scanSlice...); err != nil {\n")
-	b.WriteString("\t\t\t\t\t_ = sqlRows.Close()\n")
-	b.WriteString("\t\t\t\t\tif ms != nil {\n\t\t\t\t\t\t_ = ms.Release()\n\t\t\t\t\t}\n")
+	fmt.Fprintf(b, "\t\t\t\tif err := scan%sRow(sqlRows, &item, colMask, chunkP); err != nil {\n", cs.Name)
+	b.WriteString("\t\t\t\t\truntime.CloseRows(sqlRows, ms)\n")
 	b.WriteString("\t\t\t\t\tyield(zero, err)\n")
 	b.WriteString("\t\t\t\t\treturn\n")
 	b.WriteString("\t\t\t\t}\n")
 	b.WriteString("\t\t\t\tif !yield(item, nil) {\n")
-	b.WriteString("\t\t\t\t\t_ = sqlRows.Close()\n")
-	b.WriteString("\t\t\t\t\tif ms != nil {\n\t\t\t\t\t\t_ = ms.Release()\n\t\t\t\t\t}\n")
+	b.WriteString("\t\t\t\t\truntime.CloseRows(sqlRows, ms)\n")
 	b.WriteString("\t\t\t\t\treturn\n")
 	b.WriteString("\t\t\t\t}\n")
 	b.WriteString("\t\t\t}\n")
 	b.WriteString("\t\t\terr = sqlRows.Err()\n")
-	b.WriteString("\t\t\t_ = sqlRows.Close()\n")
-	b.WriteString("\t\t\tif ms != nil {\n\t\t\t\t_ = ms.Release()\n\t\t\t}\n")
+	b.WriteString("\t\t\truntime.CloseRows(sqlRows, ms)\n")
 	b.WriteString("\t\t\tif err != nil {\n")
 	b.WriteString("\t\t\t\tyield(zero, err)\n")
 	b.WriteString("\t\t\t\treturn\n")
@@ -3214,4 +3950,61 @@ func emitManyBatchMethods(b *bytes.Buffer, cs *compiledStmt, sigWithLeadingComma
 	b.WriteString("\t}\n")
 	b.WriteString("\treturn nil\n")
 	b.WriteString("}\n\n")
+
+	// <Name>Stream and <Name>StreamSeq
+	if cs.CanStream {
+		sigStream, callBatchArgs := buildStreamSignatures(cs, paramsStructName)
+		poolName := lowerFirstIdent(batchParam.ElemGoType) + "ChunkPool"
+
+		fmt.Fprintf(b, "func (q *Queries) %sStreamSeq(ctx context.Context%s) iter.Seq2[%s, error] {\n", cs.Name, sigStream, cs.RowTypeName)
+		b.WriteString("\treturn func(yield func(" + cs.RowTypeName + ", error) bool) {\n")
+		fmt.Fprintf(b, "\t\tvar zero %s\n", cs.RowTypeName)
+		fmt.Fprintf(b, "\t\tchunkCap := min(256, q.cache.MaxRowsPerBatch(sqlDialect, %d, %d))\n", cs.ScalarParamCnt, cs.BatchArity)
+		fmt.Fprintf(b, "\t\tbufPtr := %s.Get().(*[]%s)\n", poolName, batchParam.ElemGoType)
+		b.WriteString("\t\tchunk := (*bufPtr)[:0]\n")
+		b.WriteString("\t\tdefer func() {\n\t\t\tclear(chunk)\n\t\t\t*bufPtr = chunk[:0]\n")
+		fmt.Fprintf(b, "\t\t\t%s.Put(bufPtr)\n\t\t}()\n", poolName)
+		b.WriteString("\t\tflushChunk := func() bool {\n")
+		b.WriteString("\t\t\tif len(chunk) == 0 {\n\t\t\t\treturn true\n\t\t\t}\n")
+		if cs.UseParamsStruct {
+			b.WriteString("\t\t\tchunkP := p\n")
+			fmt.Fprintf(b, "\t\t\tchunkP.%s = chunk\n", batchParam.FieldName)
+		}
+		fmt.Fprintf(b, "\t\t\tfor r, err := range q.%sBatchSeq(ctx%s) {\n", cs.Name, callBatchArgs)
+		b.WriteString("\t\t\t\tif err != nil {\n\t\t\t\t\tyield(zero, err)\n\t\t\t\t\treturn false\n\t\t\t\t}\n")
+		b.WriteString("\t\t\t\tif !yield(r, nil) {\n\t\t\t\t\treturn false\n\t\t\t\t}\n")
+		b.WriteString("\t\t\t}\n")
+		b.WriteString("\t\t\tchunk = chunk[:0]\n\t\t\treturn true\n\t\t}\n")
+		b.WriteString("\t\tfor item, err := range seq {\n")
+		b.WriteString("\t\t\tif err != nil {\n\t\t\t\tyield(zero, err)\n\t\t\t\treturn\n\t\t\t}\n")
+		b.WriteString("\t\t\tchunk = append(chunk, item)\n")
+		b.WriteString("\t\t\tif len(chunk) >= chunkCap {\n")
+		b.WriteString("\t\t\t\tif !flushChunk() {\n\t\t\t\t\treturn\n\t\t\t\t}\n")
+		b.WriteString("\t\t\t}\n\t\t}\n")
+		b.WriteString("\t\t_ = flushChunk()\n")
+		b.WriteString("\t}\n")
+		b.WriteString("}\n\n")
+
+		fmt.Fprintf(b, "func (q *Queries) %sStream(ctx context.Context%s) ([]%s, error) {\n", cs.Name, sigStream, cs.RowTypeName)
+		fmt.Fprintf(b, "\tvar out []%s\n", cs.RowTypeName)
+		var forwardArgs []byte
+		if cs.UseParamsStruct {
+			forwardArgs = append(forwardArgs, ", p, seq"...)
+		} else {
+			for i, p := range cs.Params {
+				forwardArgs = append(forwardArgs, ", "...)
+				if i == cs.BatchParamIdx {
+					forwardArgs = append(forwardArgs, "seq"...)
+				} else {
+					forwardArgs = append(forwardArgs, p.ParamName...)
+				}
+			}
+		}
+		fmt.Fprintf(b, "\tfor r, err := range q.%sStreamSeq(ctx%s) {\n", cs.Name, string(forwardArgs))
+		b.WriteString("\t\tif err != nil {\n\t\t\treturn nil, err\n\t\t}\n")
+		b.WriteString("\t\tout = append(out, r)\n")
+		b.WriteString("\t}\n")
+		b.WriteString("\treturn out, nil\n")
+		b.WriteString("}\n\n")
+	}
 }

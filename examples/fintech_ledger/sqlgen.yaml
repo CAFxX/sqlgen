@@ -1,0 +1,67 @@
+version: "1"
+package: fintech_ledger
+out: ledger_gen.go
+dialect: sqlite
+
+statements:
+  - name: GetAccount
+    kind: one
+    result_type: Account
+    sql: |
+      SELECT
+        org_id:int64,
+        id:int64,
+        currency:string,
+        balance_cents:int64,
+        status:string
+      FROM accounts
+      WHERE org_id = :org_id:int64 AND id = :account_id:int64
+
+  - name: TotalSupplyByOrg
+    kind: one
+    result_type: int64
+    sql: |
+      SELECT COALESCE(SUM(balance_cents), 0) AS total_cents:int64
+      FROM accounts
+      WHERE org_id = :org_id:int64
+
+  - name: SetAccountStatus
+    kind: exec
+    sql: |
+      UPDATE accounts
+      SET status = :status:string
+      WHERE org_id = :org_id:int64 AND id = :account_id:int64
+
+  - name: DebitAccount
+    kind: exec
+    sql: |
+      UPDATE accounts
+      SET balance_cents = balance_cents - :amount_cents:int64
+      WHERE org_id = :org_id:int64 AND id = :account_id:int64
+
+  - name: CreditAccount
+    kind: exec
+    sql: |
+      UPDATE accounts
+      SET balance_cents = balance_cents + :amount_cents:int64
+      WHERE org_id = :org_id:int64 AND id = :account_id:int64
+
+  - name: InsertTransferReceipt
+    kind: exec
+    sql: |
+      INSERT INTO transfer_receipts (idempotency_key, org_id, sender_id, receiver_id, amount_cents)
+      VALUES (:idempotency_key:string, :org_id:int64, :sender_id:int64, :receiver_id:int64, :amount_cents:int64)
+
+  - name: InsertAuditEvent
+    kind: exec
+    sql: |
+      INSERT INTO audit_events (org_id, account_id, event_type, amount_cents)
+      VALUES (:org_id:int64, :account_id:int64, :event_type:string, :amount_cents:int64)
+
+  - name: UpsertAccountBalances
+    kind: exec
+    sql: |
+      INSERT INTO accounts (org_id, id, currency, balance_cents, status)
+      VALUES :items:[]AccountSettlement(OrgID:int64 ASC, AccountID:int64 ASC, Currency:string, DeltaCents:int64, 'active')
+      ON CONFLICT (org_id, id)
+      DO UPDATE SET balance_cents = accounts.balance_cents + EXCLUDED.balance_cents
