@@ -370,9 +370,7 @@ func (q *Queries) CreateUser(ctx context.Context, id int64, orgID int64, email s
 	vk, colMask, flagMask, approxArgs := computeCreateUserKey(p)
 	argBuf := runtime.AcquireArgsCap(approxArgs)
 	defer runtime.ReleaseArgs(argBuf)
-	if err := expandCreateUserParams(argBuf, sqlDialect, p); err != nil {
-		return nil, err
-	}
+	_ = expandCreateUserParams(argBuf, sqlDialect, p)
 	in := runtime.RenderInput{
 		ColMask:  colMask,
 		FlagMask: flagMask,
@@ -515,9 +513,7 @@ func (q *Queries) GetUserByID(ctx context.Context, id int64) (User, error) {
 	_ = colMask
 	argBuf := runtime.AcquireArgsCap(approxArgs)
 	defer runtime.ReleaseArgs(argBuf)
-	if err := expandGetUserByIDParams(argBuf, sqlDialect, p); err != nil {
-		return zero, err
-	}
+	_ = expandGetUserByIDParams(argBuf, sqlDialect, p)
 	in := runtime.RenderInput{
 		ColMask:  colMask,
 		FlagMask: flagMask,
@@ -1043,10 +1039,7 @@ func (q *Queries) SelectUserProfileSubsetSeq(ctx context.Context, p SelectUserPr
 		_ = colMask
 		argBuf := runtime.AcquireArgsCap(approxArgs)
 		defer runtime.ReleaseArgs(argBuf)
-		if err := expandSelectUserProfileSubsetParams(argBuf, sqlDialect, p); err != nil {
-			yield(zero, err)
-			return
-		}
+		_ = expandSelectUserProfileSubsetParams(argBuf, sqlDialect, p)
 		in := runtime.RenderInput{
 			ColMask:  colMask,
 			FlagMask: flagMask,
@@ -1250,8 +1243,11 @@ func SearchUsersCoupledQuery(p SearchUsersCoupledParams) runtime.Query {
 		Subs:      subsBuf[:],
 	}
 	orderKey := runtime.EncodeOrderKey(in.OrderSpec, in.HasSeek)
-	var shapeLens [2]int
+	var shapeLens [3]int
 	copy(shapeLens[:], in.SliceLens)
+	for i, sub := range in.Subs {
+		shapeLens[2+i] = int(sub.ShapeTag)
+	}
 	shapeTag := runtime.ComputeSubqueryShape(stmtIDSearchUsersCoupled, colMask, flagMask, orderKey, true, shapeLens[:]...)
 	return runtime.Query{
 		StmtID:   stmtIDSearchUsersCoupled,
@@ -1852,7 +1848,11 @@ func UsersFromCTEAndInSubqueryQuery(ctesub runtime.Query, idsub runtime.Query) r
 		Subs:     subsBuf[:],
 	}
 	orderKey := runtime.EncodeOrderKey(in.OrderSpec, in.HasSeek)
-	shapeTag := runtime.ComputeSubqueryShape(stmtIDUsersFromCTEAndInSubquery, colMask, flagMask, orderKey, true)
+	var shapeLens [2]int
+	for i, sub := range in.Subs {
+		shapeLens[0+i] = int(sub.ShapeTag)
+	}
+	shapeTag := runtime.ComputeSubqueryShape(stmtIDUsersFromCTEAndInSubquery, colMask, flagMask, orderKey, true, shapeLens[:]...)
 	return runtime.Query{
 		StmtID:   stmtIDUsersFromCTEAndInSubquery,
 		Desc:     descUsersFromCTEAndInSubquery,

@@ -917,7 +917,11 @@ func CohortMemberIDsQuery(activeOrgs runtime.Query, minScore int64) runtime.Quer
 		Subs:     subsBuf[:],
 	}
 	orderKey := runtime.EncodeOrderKey(in.OrderSpec, in.HasSeek)
-	shapeTag := runtime.ComputeSubqueryShape(stmtIDCohortMemberIDs, colMask, flagMask, orderKey, true)
+	var shapeLens [1]int
+	for i, sub := range in.Subs {
+		shapeLens[0+i] = int(sub.ShapeTag)
+	}
+	shapeTag := runtime.ComputeSubqueryShape(stmtIDCohortMemberIDs, colMask, flagMask, orderKey, true, shapeLens[:]...)
 	return runtime.Query{
 		StmtID:   stmtIDCohortMemberIDs,
 		Desc:     descCohortMemberIDs,
@@ -1012,7 +1016,11 @@ func AggregateCohortInvoicesQuery(memberQuery runtime.Query, invoiceStatus strin
 		Subs:     subsBuf[:],
 	}
 	orderKey := runtime.EncodeOrderKey(in.OrderSpec, in.HasSeek)
-	shapeTag := runtime.ComputeSubqueryShape(stmtIDAggregateCohortInvoices, colMask, flagMask, orderKey, true)
+	var shapeLens [1]int
+	for i, sub := range in.Subs {
+		shapeLens[0+i] = int(sub.ShapeTag)
+	}
+	shapeTag := runtime.ComputeSubqueryShape(stmtIDAggregateCohortInvoices, colMask, flagMask, orderKey, true, shapeLens[:]...)
 	return runtime.Query{
 		StmtID:   stmtIDAggregateCohortInvoices,
 		Desc:     descAggregateCohortInvoices,

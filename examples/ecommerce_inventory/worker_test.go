@@ -426,6 +426,7 @@ func TestDogfoodingCheckIdempotency(t *testing.T) {
 		{cfgPath: "../fintech_ledger/sqlgen.yaml", genPath: "../fintech_ledger/ledger_gen.go"},
 		{cfgPath: "../saas_multitenant/sqlgen.yaml", genPath: "../saas_multitenant/portal_gen.go"},
 		{cfgPath: "sqlgen.yaml", genPath: "inventory_gen.go"},
+		{cfgPath: "../clearing_exchange/sqlgen.yaml", genPath: "../clearing_exchange/exchange_gen.go"},
 	}
 	for _, tc := range configs {
 		yamlData, err := os.ReadFile(filepath.Clean(tc.cfgPath))

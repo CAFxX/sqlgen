@@ -3221,6 +3221,7 @@ func emitStatementCode(
 	fmt.Fprintf(b, "\tapproxArgs := %d\n", len(cs.Params)+4)
 
 	totalDims := cs.TotalSlices + cs.TotalTuples + cs.TotalSubs
+	canFailExpand := totalDims > 0 || cs.HasSeek
 	dimIdx := 0
 	var emitFastDims func(blk *parsedBlock, activeCond string)
 	emitFastDims = func(blk *parsedBlock, activeCond string) {
@@ -3377,15 +3378,18 @@ func emitStatementCode(
 		if cs.TotalSubs > 0 {
 			hasSubsLiteral = "true"
 		}
-		if cs.TotalSlices+cs.TotalTuples == 0 {
+		if totalDims == 0 {
 			fmt.Fprintf(b, "\tshapeTag := runtime.ComputeSubqueryShape(stmtID%s, colMask, flagMask, orderKey, %s)\n", cs.Name, hasSubsLiteral)
 		} else {
-			fmt.Fprintf(b, "\tvar shapeLens [%d]int\n", cs.TotalSlices+cs.TotalTuples)
+			fmt.Fprintf(b, "\tvar shapeLens [%d]int\n", totalDims)
 			if cs.TotalSlices > 0 {
 				b.WriteString("\tcopy(shapeLens[:], in.SliceLens)\n")
 			}
 			if cs.TotalTuples > 0 {
 				fmt.Fprintf(b, "\tcopy(shapeLens[%d:], in.TupleLens)\n", cs.TotalSlices)
+			}
+			if cs.TotalSubs > 0 {
+				fmt.Fprintf(b, "\tfor i, sub := range in.Subs {\n\t\tshapeLens[%d+i] = int(sub.ShapeTag)\n\t}\n", cs.TotalSlices+cs.TotalTuples)
 			}
 			fmt.Fprintf(b, "\tshapeTag := runtime.ComputeSubqueryShape(stmtID%s, colMask, flagMask, orderKey, %s, shapeLens[:]...)\n", cs.Name, hasSubsLiteral)
 		}
@@ -3434,9 +3438,13 @@ func emitStatementCode(
 		fmt.Fprintf(b, "\tvk, colMask, flagMask, approxArgs := compute%sKey(p)\n", cs.Name)
 		b.WriteString("\targBuf := runtime.AcquireArgsCap(approxArgs)\n")
 		b.WriteString("\tdefer runtime.ReleaseArgs(argBuf)\n")
-		fmt.Fprintf(b, "\tif err := expand%sParams(argBuf, sqlDialect, p); err != nil {\n", cs.Name)
-		b.WriteString("\t\treturn nil, err\n")
-		b.WriteString("\t}\n")
+		if !canFailExpand {
+			fmt.Fprintf(b, "\t_ = expand%sParams(argBuf, sqlDialect, p)\n", cs.Name)
+		} else {
+			fmt.Fprintf(b, "\tif err := expand%sParams(argBuf, sqlDialect, p); err != nil {\n", cs.Name)
+			b.WriteString("\t\treturn nil, err\n")
+			b.WriteString("\t}\n")
+		}
 		emitStackRenderInput("\t", "p")
 		fmt.Fprintf(b, "\treturn q.cache.Exec(ctx, q.db, q.txCache, q.usePrepared, vk, stmtID%s, runtime.ComputeBatchShapeTag(colMask, flagMask), 0, %s, sqlDialect, desc%s, &in, (*argBuf)...)\n", cs.Name, fastSlotExpr, cs.Name)
 		b.WriteString("}\n\n")
@@ -3519,9 +3527,13 @@ func emitStatementCode(
 		b.WriteString("\t_ = colMask\n")
 		b.WriteString("\targBuf := runtime.AcquireArgsCap(approxArgs)\n")
 		b.WriteString("\tdefer runtime.ReleaseArgs(argBuf)\n")
-		fmt.Fprintf(b, "\tif err := expand%sParams(argBuf, sqlDialect, p); err != nil {\n", cs.Name)
-		b.WriteString("\t\treturn zero, err\n")
-		b.WriteString("\t}\n")
+		if !canFailExpand {
+			fmt.Fprintf(b, "\t_ = expand%sParams(argBuf, sqlDialect, p)\n", cs.Name)
+		} else {
+			fmt.Fprintf(b, "\tif err := expand%sParams(argBuf, sqlDialect, p); err != nil {\n", cs.Name)
+			b.WriteString("\t\treturn zero, err\n")
+			b.WriteString("\t}\n")
+		}
 		emitStackRenderInput("\t", "p")
 		fmt.Fprintf(b, "\tsqlRow, ms, err := q.cache.QueryRow(ctx, q.db, q.txCache, q.usePrepared, vk, stmtID%s, runtime.ComputeBatchShapeTag(colMask, flagMask), 0, %s, sqlDialect, desc%s, &in, (*argBuf)...)\n", cs.Name, fastSlotExpr, cs.Name)
 		b.WriteString("\tif err != nil {\n")
@@ -3571,10 +3583,14 @@ func emitStatementCode(
 	b.WriteString("\t\t_ = colMask\n")
 	b.WriteString("\t\targBuf := runtime.AcquireArgsCap(approxArgs)\n")
 	b.WriteString("\t\tdefer runtime.ReleaseArgs(argBuf)\n")
-	fmt.Fprintf(b, "\t\tif err := expand%sParams(argBuf, sqlDialect, p); err != nil {\n", cs.Name)
-	b.WriteString("\t\t\tyield(zero, err)\n")
-	b.WriteString("\t\t\treturn\n")
-	b.WriteString("\t\t}\n")
+	if !canFailExpand {
+		fmt.Fprintf(b, "\t\t_ = expand%sParams(argBuf, sqlDialect, p)\n", cs.Name)
+	} else {
+		fmt.Fprintf(b, "\t\tif err := expand%sParams(argBuf, sqlDialect, p); err != nil {\n", cs.Name)
+		b.WriteString("\t\t\tyield(zero, err)\n")
+		b.WriteString("\t\t\treturn\n")
+		b.WriteString("\t\t}\n")
+	}
 	emitStackRenderInput("\t\t", "p")
 	fmt.Fprintf(b, "\t\tsqlRows, ms, err := q.cache.Query(ctx, q.db, q.txCache, q.usePrepared, vk, stmtID%s, runtime.ComputeBatchShapeTag(colMask, flagMask), 0, %s, sqlDialect, desc%s, &in, (*argBuf)...)\n", cs.Name, fastSlotExpr, cs.Name)
 	b.WriteString("\t\tif err != nil {\n")

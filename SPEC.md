@@ -832,14 +832,14 @@ Because the Clean-Room Dogfooding Protocol (Section 11) requires users/sub-agent
 
 ## 11. Multi-Persona Clean-Room Dogfooding Protocol (`examples/`)
 
-To validate ergonomics, documentation completeness, and end-to-end reliability under realistic production workloads, three complete applications MUST be built in `examples/` and tested end-to-end.
+To validate ergonomics, documentation completeness, and end-to-end reliability under realistic production workloads, four complete applications MUST be built in `examples/` and tested end-to-end.
 
 ### 11.1. The Clean-Room Information Barrier & Ergonomics Feedback Loop
 1. **Information Barrier**:
    - When building each dogfooding package under `examples/`, the developer/sub-agent acting as the "sqlgen user" MUST rely **exclusively on `DOCS.md` and the compiled `cmd/sqlgen` binary** (generating `*_gen.go` by invoking `cmd/sqlgen` on the example's `sqlgen.yaml`).
    - The dogfooding packages MUST NOT import internal generator symbols or rely on undocumented runtime internals.
 2. **Zero-Friction Ergonomics Loop**:
-   - Any ambiguity in `DOCS.md`, unintuitive generated method signature, confusing compile-time error message, or awkward call-site boilerplate discovered while writing the 3 dogfooding applications MUST be treated as a defect: fix `generator.go`, `runtime/`, and `DOCS.md`, regenerate `*_gen.go`, and re-verify.
+   - Any ambiguity in `DOCS.md`, unintuitive generated method signature, confusing compile-time error message, or awkward call-site boilerplate discovered while writing the 4 dogfooding applications MUST be treated as a defect: fix `generator.go`, `runtime/`, and `DOCS.md`, regenerate `*_gen.go`, and re-verify.
 
 ### 11.2. Dogfooding Persona 1: High-Concurrency Double-Entry Fintech Ledger (`examples/fintech_ledger`)
 - **Domain**: Multi-currency account ledger supporting atomic transfers, overdraft protection, idempotency keys, audit logging, and bulk settlement.
@@ -848,7 +848,7 @@ To validate ergonomics, documentation completeness, and end-to-end reliability u
   - Deadlock-free bulk settlement via `UpsertAccountBalancesBatch` using composite presorting (`OrgID:int64 ASC, AccountID:int64 ASC`).
   - Contending concurrent transfers under `WithTxRetry(runtime.DefaultRetryPolicy())`.
 - **Mandatory End-to-End Test (`examples/fintech_ledger/service_test.go`)**:
-  - Initialize 20 accounts with `$10,000` each (`$200,000` total supply).
+  - Initialize 20 accounts with `$200,000` total supply (`$10,000` each).
   - Spawn 16 goroutines concurrently executing random bidirectional transfers (`A -> B` and `B -> A`), bulk settlements, and frozen-account attempts.
   - Assert **strict conservation of money** ($\sum \text{balances} == \$200,000$), zero unhandled deadlock errors, and identical state transitions on both `WirePipeliner` and sequential `*sql.Tx`.
 
@@ -869,7 +869,25 @@ To validate ergonomics, documentation completeness, and end-to-end reliability u
   - Heavy-hitter batch promotion on `InsertOrderItemsBatch` (repeated `500`-row and `400`-row batches) followed by greedy decomposition of a `1400`-row spike (`500 + 500 + 400`).
   - Streaming ETL pipeline: `StreamFulfilledOrdersSeq` $\rightarrow$ `runtime.MapSeq2` $\rightarrow$ `InsertArchivedOrdersStreamSeq` $\rightarrow$ `DeleteFulfilledOrdersByIDsBatch` (with `IDs:[]int64 ASC`).
 - **Mandatory End-to-End Test (`examples/ecommerce_inventory/worker_test.go`)**:
-  - Ingest 3,000 order items across recurring batch sizes, verify `q.CacheStats().Promotions` and `PreparedHits`, stream-archive 2,000 fulfilled orders in $O(1)$ memory, and verify `cmd/sqlgen -check` passes on all 3 example directories.
+  - Ingest 3,000 order items across recurring batch sizes, verify `q.CacheStats().Promotions` and `PreparedHits`, stream-archive 2,000 fulfilled orders in $O(1)$ memory, and verify `cmd/sqlgen -check` passes on all 4 example directories.
+
+### 11.5. Dogfooding Persona 4: Multi-Asset Derivatives & Spot Clearing Exchange (`examples/clearing_exchange`)
+- **Domain**: Institutional multi-asset clearing house, real-time margin & risk surveillance engine, atomic bilateral trade settlement with maker/taker fee rebates and liquidation protection, and regulatory trade settlement archival.
+- **Features Road-Tested (Full Combinatorial Stress Test)**:
+  - **3-Level Nested Curried `sqlgen.Query` Composition + Coupled Conditional Projections/JOINs/WHEREs + Bitmask `SelectCols` + 4-Column Keyset Pagination**:
+    - Level 1 (`EligibleAccountsSubquery` with `{?FilterTiers: tier IN (Tiers:[]string ASC)}`, `{?FilterJurisdictions: jurisdiction IN (Jurisdictions:[]string DESC)}`, `{?ExcludeFrozen: status != 'FROZEN'}`, `{?RequireKYC: kyc_verified = 1}`) and Level 1 (`ActiveInstrumentsSubquery` with `{?FilterAssetClasses: asset_class IN (AssetClasses:[]string ASC)}` and `{?MaxInitialMarginBps: initial_margin_bps <= MaxMarginBps:int64}`).
+    - Level 2 (`FilteredPositionsSubquery` composing both Level 1 subqueries via `WITH eligible_accts AS (...), active_insts AS (...)` plus `{?OnlyNonZero: p.net_quantity != 0}` and `{?MinNotionalExposure: ABS(p.net_quantity * i.mark_price_cents) >= MinNotionalCents:int64}`).
+    - Level 3 (`QueryRiskPositionsPage` composing Level 2 with coupled `{?IncludeAccountMeta: ...}` and `{?IncludeMarginMetrics: ...}` across `SELECT`, `JOIN`, and `WHERE`, bitmask `SelectCols`, `After:sqlgen.Seek`, and 4-column `Sort:sqlgen.Order(maintenance_margin_cents, unrealized_pnl_cents, account_id, position_id)`).
+  - **3-Level Nested `PipelineTx` Control Flow (`If`/`Then`/`Else`, `RowFuture`, `SliceFuture.WhereCol`, `ExecFuture`, `Abort`, `UPDATE`/`DELETE`/`INSERT` Branch Guards)**:
+    - Validates active instrument (`RowFuture`), checks pre-trade risk flags on both counterparties (`SliceFuture.WhereCol` $\rightarrow$ `Abort(ErrKillSwitchActive)`), verifies both counterparties' margin sufficiency (`ExecFuture` $\rightarrow$ `If/Else` recording `REJECTED_SELLER_MARGIN` or `REJECTED_BUYER_MARGIN`), and in the 3rd-level `Then` branch atomically debits/credits collateral, upserts buyer/seller derivative positions, deletes consumed resting orders, and inserts the immutable trade fill and audit log.
+  - **Multi-Dimensional Presorted Batching & Streaming with Extra Scalar Parameters and `RETURNING`**:
+    - `UpsertInstrumentMarksBatch` (`Marks:[]InstrumentMarkInput(Symbol:string ASC, ...)` + scalar `UpdatedAt:int64` + `RETURNING` via `Batch`, `BatchInto`, `BatchSeq`, `BatchEach`, `Stream`, `StreamSeq`).
+    - `BatchAdjustCollateralBatch` (`Adjustments:[]CollateralAdjustment(DeskID:int64 ASC, AccountID:int64 DESC, DeltaCollateralCents:int64, DeltaLockedCents:int64)` + scalar `UpdatedAt:int64` + `RETURNING`).
+    - `LookupPositionsByKeysBatch` (`Keys:[]PositionKey(AccountID:int64 ASC, Symbol:string DESC)` + `{?ExcludeFlat: p.net_quantity != 0}`).
+    - `BulkCancelOrdersByIDsBatch` (`OrderIDs:[]int64 ASC` + scalar `CancelReason:string` + `RETURNING`).
+    - Streaming settlement archival (`StreamUnarchivedFills` / `Seq` / `Each` $\rightarrow$ `runtime.MapSeq2` $\rightarrow$ `ArchiveSettlementBatchStreamSeq` $\rightarrow$ `MarkFillsArchivedByIDsBatch`).
+- **Mandatory End-to-End Test (`examples/clearing_exchange/engine_test.go`)**:
+  - Runs identically against both `SequentialTx` and `WirePipeliner`, verifying 12goroutine concurrent bilateral clearing + mark-to-market shocks + collateral sweeps, strict **zero-sum net position conservation** ($\sum \text{net\_quantity} \equiv 0$ per symbol), **exact collateral & fee conservation** ($\sum \text{available\_collateral\_cents} == \text{Initial} + \sum \text{Adjustments} - \sum \text{NetFees}$), and 16-direction 4-column keyset pagination equivalence over the 3-level nested subquery hierarchy.
 
 ---
 
@@ -912,10 +930,11 @@ To validate ergonomics, documentation completeness, and end-to-end reliability u
 The implementation is NOT complete until all of the following commands execute cleanly with zero errors:
 
 ```bash
-# 1. Verify CLI codegen & -check idempotency across all 3 dogfooding projects
+# 1. Verify CLI codegen & -check idempotency across all 4 dogfooding projects
 go run ./cmd/sqlgen -config examples/fintech_ledger/sqlgen.yaml -check
 go run ./cmd/sqlgen -config examples/saas_multitenant/sqlgen.yaml -check
 go run ./cmd/sqlgen -config examples/ecommerce_inventory/sqlgen.yaml -check
+go run ./cmd/sqlgen -config examples/clearing_exchange/sqlgen.yaml -check
 
 # 2. Static analysis gate
 go vet ./...

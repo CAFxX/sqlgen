@@ -958,10 +958,7 @@ func (q *Queries) StreamFulfilledOrdersSeq(ctx context.Context, cutoffTs int64) 
 		_ = colMask
 		argBuf := runtime.AcquireArgsCap(approxArgs)
 		defer runtime.ReleaseArgs(argBuf)
-		if err := expandStreamFulfilledOrdersParams(argBuf, sqlDialect, p); err != nil {
-			yield(zero, err)
-			return
-		}
+		_ = expandStreamFulfilledOrdersParams(argBuf, sqlDialect, p)
 		in := runtime.RenderInput{
 			ColMask:  colMask,
 			FlagMask: flagMask,

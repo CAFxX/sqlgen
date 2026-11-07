@@ -308,9 +308,7 @@ func (q *Queries) GetAccount(ctx context.Context, orgID int64, accountID int64) 
 	_ = colMask
 	argBuf := runtime.AcquireArgsCap(approxArgs)
 	defer runtime.ReleaseArgs(argBuf)
-	if err := expandGetAccountParams(argBuf, sqlDialect, p); err != nil {
-		return zero, err
-	}
+	_ = expandGetAccountParams(argBuf, sqlDialect, p)
 	in := runtime.RenderInput{
 		ColMask:  colMask,
 		FlagMask: flagMask,
@@ -439,9 +437,7 @@ func (q *Queries) TotalSupplyByOrg(ctx context.Context, orgID int64) (int64, err
 	_ = colMask
 	argBuf := runtime.AcquireArgsCap(approxArgs)
 	defer runtime.ReleaseArgs(argBuf)
-	if err := expandTotalSupplyByOrgParams(argBuf, sqlDialect, p); err != nil {
-		return zero, err
-	}
+	_ = expandTotalSupplyByOrgParams(argBuf, sqlDialect, p)
 	in := runtime.RenderInput{
 		ColMask:  colMask,
 		FlagMask: flagMask,
@@ -528,9 +524,7 @@ func (q *Queries) SetAccountStatus(ctx context.Context, status string, orgID int
 	vk, colMask, flagMask, approxArgs := computeSetAccountStatusKey(p)
 	argBuf := runtime.AcquireArgsCap(approxArgs)
 	defer runtime.ReleaseArgs(argBuf)
-	if err := expandSetAccountStatusParams(argBuf, sqlDialect, p); err != nil {
-		return nil, err
-	}
+	_ = expandSetAccountStatusParams(argBuf, sqlDialect, p)
 	in := runtime.RenderInput{
 		ColMask:  colMask,
 		FlagMask: flagMask,
@@ -606,9 +600,7 @@ func (q *Queries) DebitAccount(ctx context.Context, amountCents int64, orgID int
 	vk, colMask, flagMask, approxArgs := computeDebitAccountKey(p)
 	argBuf := runtime.AcquireArgsCap(approxArgs)
 	defer runtime.ReleaseArgs(argBuf)
-	if err := expandDebitAccountParams(argBuf, sqlDialect, p); err != nil {
-		return nil, err
-	}
+	_ = expandDebitAccountParams(argBuf, sqlDialect, p)
 	in := runtime.RenderInput{
 		ColMask:  colMask,
 		FlagMask: flagMask,
@@ -684,9 +676,7 @@ func (q *Queries) CreditAccount(ctx context.Context, amountCents int64, orgID in
 	vk, colMask, flagMask, approxArgs := computeCreditAccountKey(p)
 	argBuf := runtime.AcquireArgsCap(approxArgs)
 	defer runtime.ReleaseArgs(argBuf)
-	if err := expandCreditAccountParams(argBuf, sqlDialect, p); err != nil {
-		return nil, err
-	}
+	_ = expandCreditAccountParams(argBuf, sqlDialect, p)
 	in := runtime.RenderInput{
 		ColMask:  colMask,
 		FlagMask: flagMask,
@@ -770,9 +760,7 @@ func (q *Queries) InsertTransferReceipt(ctx context.Context, idempotencyKey stri
 	vk, colMask, flagMask, approxArgs := computeInsertTransferReceiptKey(p)
 	argBuf := runtime.AcquireArgsCap(approxArgs)
 	defer runtime.ReleaseArgs(argBuf)
-	if err := expandInsertTransferReceiptParams(argBuf, sqlDialect, p); err != nil {
-		return nil, err
-	}
+	_ = expandInsertTransferReceiptParams(argBuf, sqlDialect, p)
 	in := runtime.RenderInput{
 		ColMask:  colMask,
 		FlagMask: flagMask,
@@ -854,9 +842,7 @@ func (q *Queries) InsertAuditEvent(ctx context.Context, orgID int64, accountID i
 	vk, colMask, flagMask, approxArgs := computeInsertAuditEventKey(p)
 	argBuf := runtime.AcquireArgsCap(approxArgs)
 	defer runtime.ReleaseArgs(argBuf)
-	if err := expandInsertAuditEventParams(argBuf, sqlDialect, p); err != nil {
-		return nil, err
-	}
+	_ = expandInsertAuditEventParams(argBuf, sqlDialect, p)
 	in := runtime.RenderInput{
 		ColMask:  colMask,
 		FlagMask: flagMask,
