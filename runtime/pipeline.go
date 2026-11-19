@@ -1225,29 +1225,33 @@ func IsRetryableTxError(err error, duringCommit bool) bool {
 		}
 	}
 
-	if st, ok := err.(interface{ SQLState() string }); ok {
+	// Structured codes first (errors.As walks wrapped errors, e.g. fmt.Errorf("...: %w", err)).
+	var st interface{ SQLState() string }
+	if errors.As(err, &st) {
 		switch st.SQLState() {
 		case "40001", "40P01", "55P03":
 			return true
 		}
 	}
-	if cd, ok := err.(interface{ Code() int }); ok {
+	var cd interface{ Code() int }
+	if errors.As(err, &cd) {
 		code := cd.Code()
 		if code == 1213 || code == 1205 {
 			return true
 		}
-		lowByte := code & 0xFF
-		if lowByte == 5 || lowByte == 6 {
+		if lowByte := code & 0xFF; lowByte == 5 || lowByte == 6 { // SQLITE_BUSY / SQLITE_LOCKED (+ extended codes)
 			return true
 		}
 	}
-	if num, ok := err.(interface{ Number() uint16 }); ok {
-		n := num.Number()
-		if n == 1213 || n == 1205 {
+	var num interface{ Number() uint16 }
+	if errors.As(err, &num) {
+		if n := num.Number(); n == 1213 || n == 1205 {
 			return true
 		}
 	}
 
+	// Drivers that expose codes as struct fields rather than methods (go-sql-driver/mysql's
+	// MySQLError.Number / .SQLState) are recognised by their stable message text.
 	msg := strings.ToLower(err.Error())
 	if strings.Contains(msg, "40001") ||
 		strings.Contains(msg, "40p01") ||

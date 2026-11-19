@@ -2924,3 +2924,42 @@ func TestEstimateOpBytesCoversEveryPipelineOpShape(t *testing.T) {
 		}
 	}
 }
+
+type codedErr struct {
+	state string
+	code  int
+	msg   string
+}
+
+func (e codedErr) Error() string    { return e.msg }
+func (e codedErr) SQLState() string { return e.state }
+func (e codedErr) Code() int        { return e.code }
+
+// Wrapped driver errors must be classified by their structured code, not only by message text.
+func TestIsRetryableTxErrorSeesThroughWrapping(t *testing.T) {
+	for name, tc := range map[string]struct {
+		err  error
+		want bool
+	}{
+		"pg deadlock":            {codedErr{state: "40P01", msg: "opaque"}, true},
+		"pg serialization":       {codedErr{state: "40001", msg: "opaque"}, true},
+		"pg lock not available":  {codedErr{state: "55P03", msg: "opaque"}, true},
+		"sqlite busy (extended)": {codedErr{code: 5 | 2<<8, msg: "opaque"}, true},
+		"mysql deadlock code":    {codedErr{code: 1213, msg: "opaque"}, true},
+		"unique violation":       {codedErr{state: "23505", msg: "opaque"}, false},
+		"syntax error":           {codedErr{state: "42601", code: 1064, msg: "opaque"}, false},
+	} {
+		for _, wrap := range []string{"bare", "wrapped", "double"} {
+			err := tc.err
+			switch wrap {
+			case "wrapped":
+				err = fmt.Errorf("exec failed: %w", err)
+			case "double":
+				err = fmt.Errorf("tx: %w", fmt.Errorf("exec failed: %w", err))
+			}
+			if got := IsRetryableTxError(err, false); got != tc.want {
+				t.Errorf("%s/%s: IsRetryableTxError = %v, want %v", name, wrap, got, tc.want)
+			}
+		}
+	}
+}
