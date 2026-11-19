@@ -5,7 +5,7 @@
 COMPOSE ?= $(shell docker info >/dev/null 2>&1 && echo "docker compose" || echo "docker.lima compose")
 ENGINES ?=
 
-.PHONY: all test check gen engines-up engines-down test-engines sync-adapters
+.PHONY: all test check gen engines-up engines-down test-engines bench-engines sync-adapters
 
 all: check test
 
@@ -33,6 +33,10 @@ engines-down:
 # make test-engines ENGINES=postgres18   -> only the named engines (comma separated)
 test-engines:
 	. scripts/engines-env.sh && cd integration && SQLGEN_REQUIRE_ENGINES=1 SQLGEN_ENGINES=$(ENGINES) go test -count=1 -timeout 15m ./...
+
+# Overhead of a generated call vs hand-written database/sql on real servers (ENGINES is required).
+bench-engines:
+	. scripts/engines-env.sh && cd integration && SQLGEN_ENGINES=$(ENGINES) go test -run '^$$' -bench . -benchtime=2s ./...
 
 # adapter_myq_test.go is adapter_pgq_test.go with the package name swapped.
 sync-adapters:
