@@ -502,6 +502,10 @@ err := q.InTx(ctx, nil, func(txQ *Queries) error {
 - On drivers implementing `runtime.WirePipeliner` (or wrapped via `runtime.WrapConnector`), the entire conditional workflow compiles into a single SQL batch / CTE chain executed in **one network roundtrip**.
 - On standard `*sql.DB` and `*sql.Tx` connections, `Pipeline` seamlessly falls back to sequential execution while preserving identical branching, assertion, and rollback semantics!
 
+**Engine support.** The CI matrix runs the full suite against PostgreSQL 15 and 18, CockroachDB, MySQL 8.4 and 9.7, MariaDB 10.11 and 12.3 and SQLite, with real drivers (`pgx`, `go-sql-driver/mysql`). The single-roundtrip batch SQL relies on PostgreSQL's `set_config` / `current_setting` and data-modifying CTEs, so it exists only for the `$N` dialect (PostgreSQL and CockroachDB); on MySQL, MariaDB and SQLite a pipeline always runs through the sequential fallback (same semantics, one round trip per statement). A `WirePipeliner` implementation must fill each op's `RowCount`, and for ops that `ProduceCond` read the recorded condition back with `current_setting('sqlgen.c<CondID>', true)`.
+
+**Typed placeholders in gated inserts (`$N` dialect).** An `INSERT` queued inside a `p.If` branch is sent as `INSERT ... SELECT ... WHERE <gates>`, and PostgreSQL does not infer placeholder types from the target columns there. `sqlgen` therefore casts each placeholder from its Go type (`int`/`int64` to `bigint`, `string` to `text`, `bool` to `boolean`, `float64` to `double precision`, `[]byte` to `bytea`, `time.Time` to `timestamptz`, and so on). For any other Go type (for example a `uuid` or `jsonb` column fed by a `string`), add an explicit cast in the SQL, such as `:id:string::uuid`.
+
 ```go
 err := q.PipelineTx(ctx, nil, func(p *Pipeline) error {
     // 1. Queue a read or update and attach assertions:
