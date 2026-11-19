@@ -549,6 +549,14 @@ type CacheStats struct {
 	ActivePrepared int
 	ActivePartial  int
 	PartialBytes   int
+
+	// WirePipelines counts pipeline flushes (one per Pipeline.Flush, and one per PipelineTx attempt) that
+	// ran through a WirePipeliner / WireTxPipeliner connection: every queued statement was sent to the
+	// server in a single network round-trip. SequentialPipelines counts the flushes that executed their
+	// operations one statement at a time (the portable fallback). A flush that fails while being built
+	// or that queued no operations counts as neither. Compare the two to verify which path ran.
+	WirePipelines       uint64
+	SequentialPipelines uint64
 }
 
 type batchShapeKey struct {
@@ -566,6 +574,8 @@ type batchShapeTracker struct {
 type StmtCache struct {
 	shards         [numCacheShards]cacheShard
 	fastHits       atomic.Uint64
+	wirePipelines  atomic.Uint64
+	seqPipelines   atomic.Uint64
 	totalPrepared  atomic.Int64
 	globalMaxPrep  int
 	promoteThresh  uint8
@@ -1268,13 +1278,27 @@ func (c *StmtCache) LookupState(key VariantKey, sqlStr string) EntryState {
 	return StatePartial
 }
 
+// notePipeline records one flushed pipeline (wire or sequential) for CacheStats. Safe on a nil cache.
+func (c *StmtCache) notePipeline(wire bool) {
+	if c == nil {
+		return
+	}
+	if wire {
+		c.wirePipelines.Add(1)
+	} else {
+		c.seqPipelines.Add(1)
+	}
+}
+
 // Stats returns aggregated telemetry across all 16 shards.
 func (c *StmtCache) Stats() CacheStats {
 	if c == nil {
 		return CacheStats{}
 	}
 	st := CacheStats{
-		PreparedHits: c.fastHits.Load(),
+		PreparedHits:        c.fastHits.Load(),
+		WirePipelines:       c.wirePipelines.Load(),
+		SequentialPipelines: c.seqPipelines.Load(),
 	}
 	for i := range c.shards {
 		sh := &c.shards[i]

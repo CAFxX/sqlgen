@@ -434,9 +434,44 @@ func (r *IfResult) Skipped() bool {
 
 // WirePipeliner is implemented by driver connections capable of executing a batch of
 // PipelineOp statements in a single network round-trip.
+//
+// ExecPipeline runs the operations in the transaction the connection is in (a user-managed
+// *sql.Tx; the caller commits or rolls back) or, on an idle connection, atomically in a transaction of
+// its own. The conditions recorded by set_config(..., true) need an explicit transaction block on
+// some engines (CockroachDB), so an implementation should open one itself rather than rely on the
+// implicit transaction of a Sync. Connections that can also fold BEGIN and COMMIT into the same
+// round-trip should implement WireTxPipeliner too.
 type WirePipeliner interface {
 	ExecPipeline(ctx context.Context, ops []PipelineOp) error
 }
+
+// WireTxPipeliner is implemented by driver connections that can run a complete transaction -- BEGIN
+// (with the isolation level and read-only mode of txOpts), every queued operation, COMMIT -- in a single
+// network round-trip. The runtime prefers it over WirePipeliner whenever it owns the transaction
+// (PipelineTx, and a standalone Pipeline.Flush), because with a WirePipeliner alone BEGIN and COMMIT are
+// two more round-trips.
+//
+// ExecTxPipeline must deliver op results exactly as WirePipeliner.ExecPipeline does. When it returns an
+// error the transaction must no longer be open on the connection (the implementation rolls it back, which
+// may cost one extra round-trip on this error path only) and the connection must be reusable or report
+// itself invalid so the pool discards it. An error raised by the COMMIT itself (for example a
+// serialization failure) must be wrapped in a *CommitError so that retry classification can tell that the
+// failure happened while committing.
+type WireTxPipeliner interface {
+	ExecTxPipeline(ctx context.Context, txOpts *sql.TxOptions, ops []PipelineOp) error
+}
+
+// CommitError wraps an error returned by the COMMIT of an ExecTxPipeline. It unwraps to the driver error,
+// so errors.As / errors.Is keep working; the runtime uses it to apply IsRetryableTxError's duringCommit
+// rule and removes the wrapper before returning an error to the caller.
+type CommitError struct{ Err error }
+
+func (e *CommitError) Error() string { return e.Err.Error() }
+func (e *CommitError) Unwrap() error { return e.Err }
+
+// ErrFlushInPipelineTx is returned by Pipeline.Flush / Exec when called from inside a PipelineTx
+// callback: the transaction flushes the pipeline itself once the callback returns.
+var ErrFlushInPipelineTx = errors.New("sqlgen: Flush must not be called inside PipelineTx; the transaction flushes the pipeline itself")
 
 type pipelineCtxKey struct{}
 
@@ -519,6 +554,23 @@ func wirePipelinerOf(driverConn any) WirePipeliner {
 	return wp
 }
 
+// wireTxPipelinerOf is wirePipelinerOf for WireTxPipeliner.
+func wireTxPipelinerOf(driverConn any) WireTxPipeliner {
+	if w, ok := driverConn.(*pipelineConnWrapper); ok {
+		tp, _ := w.Conn.(WireTxPipeliner)
+		return tp
+	}
+	tp, _ := driverConn.(WireTxPipeliner)
+	return tp
+}
+
+func (w *pipelineConnWrapper) ExecTxPipeline(ctx context.Context, txOpts *sql.TxOptions, ops []PipelineOp) error {
+	if tp, ok := w.Conn.(WireTxPipeliner); ok {
+		return tp.ExecTxPipeline(ctx, txOpts, ops)
+	}
+	return driver.ErrSkip
+}
+
 func (w *pipelineConnWrapper) ExecPipeline(ctx context.Context, ops []PipelineOp) error {
 	if wp, ok := w.Conn.(WirePipeliner); ok {
 		return wp.ExecPipeline(ctx, ops)
@@ -597,6 +649,41 @@ func (w *pipelineConnWrapper) CheckNamedValue(nv *driver.NamedValue) error {
 	return driver.ErrSkip
 }
 
+// WireResultKind tells a wire driver what the server answers for an operation whose SQL was rendered
+// by RenderPipelineBatch, and therefore how to read it.
+type WireResultKind uint8
+
+const (
+	// WireResultCommandTag: a plain statement without result columns; the command tag's row count is the
+	// number of affected rows (op.RowCount).
+	WireResultCommandTag WireResultKind = iota
+	// WireResultRows: the statement returns the operation's result columns; feed them to op.ScanWireRows,
+	// which returns the number of rows (op.RowCount).
+	WireResultRows
+	// WireResultGuarded: an exec carrying an assertion and/or a recorded condition. The statement returns
+	// one row whose first column is the number of affected rows (op.RowCount); the second column is the
+	// guard's value and carries no further information.
+	WireResultGuarded
+	// WireResultDiscard: an Abort bail-out. It returns one row that is ignored; its only effect is the
+	// integer-overflow error raised when the branch gates are open, which TranslateWireError maps to
+	// op.AbortErr.
+	WireResultDiscard
+)
+
+// WireResult reports how a wire driver must read the rows (if any) the server returns for op.
+func (op *PipelineOp) WireResult() WireResultKind {
+	switch {
+	case op.Decorators.IsAbort:
+		return WireResultDiscard
+	case op.HasResultCols:
+		return WireResultRows
+	case op.Decorators.AssertRows >= 0 || op.Decorators.ProduceCond != nil:
+		return WireResultGuarded
+	default:
+		return WireResultCommandTag
+	}
+}
+
 func (op *PipelineOp) stmtName() string {
 	if op.Desc == nil {
 		return ""
@@ -652,6 +739,8 @@ type Pipeline struct {
 	condSeq     int
 	buildErr    error
 	flushed     bool
+	ownsTx      bool // PipelineTx: the runtime begins, commits and (on error) rolls back the transaction
+	txOpts      *sql.TxOptions
 }
 
 // NewPipeline creates a new Pipeline.
@@ -1104,6 +1193,13 @@ func (p *Pipeline) executePipelineOps(ctx context.Context, wireMode bool) error 
 
 // Flush executes all queued operations in the pipeline.
 func (p *Pipeline) Flush() error {
+	if p.ownsTx {
+		return ErrFlushInPipelineTx
+	}
+	return p.run()
+}
+
+func (p *Pipeline) run() error {
 	if p.flushed {
 		return nil
 	}
@@ -1117,53 +1213,93 @@ func (p *Pipeline) Flush() error {
 	if len(p.ops) == 0 {
 		return nil
 	}
-
-	// Case 1: Already bound to an explicit transaction (*TxStmtCache).
-	if p.txCache != nil {
-		if p.db != nil {
-			if _, isWrapped := p.db.Driver().(*wrappedDriver); isWrapped {
-				payload := &pipelineCtxPayload{
-					dialect: p.dialect,
-					cache:   p.cache,
-					ops:     p.ops,
-				}
-				_, err := p.txCache.tx.ExecContext(withPipelinePayload(p.ctx, payload), "--sqlgen:pipeline")
-				if payload.handled {
-					if err != nil {
-						return err
-					}
-					return p.executePipelineOps(p.ctx, true)
-				}
-			}
-		}
-		return p.executePipelineOps(p.ctx, false)
+	switch {
+	case p.txCache != nil:
+		return p.flushInTx()
+	case p.ownsTx:
+		return p.flushOwnTx()
+	default:
+		return p.flushStandalone()
 	}
+}
 
-	// Case 2: Standalone Pipeline on *sql.DB.
-	// Try single-roundtrip WirePipeliner via conn.Raw first when MaxOpenConnections != 1.
-	if p.db != nil && p.db.Stats().MaxOpenConnections != 1 {
-		conn, err := p.db.Conn(p.ctx)
-		if err == nil {
-			var wireSupported bool
-			var wireErr error
-			rawErr := conn.Raw(func(driverConn any) error {
-				wp := wirePipelinerOf(driverConn)
-				if wp == nil {
-					return nil
-				}
-				wireSupported = true
-				RenderPipelineBatch(p.dialect, p.cache, p.ops)
-				wireErr = wp.ExecPipeline(p.ctx, p.ops)
-				return nil
-			})
-			_ = conn.Close()
-			if rawErr == nil && wireSupported {
-				if wireErr != nil {
-					return wireErr
+// flushInTx runs the pipeline inside a transaction somebody else began (a user-managed *sql.Tx, or the
+// portable PipelineTx path): ops only, in one round-trip when the connection is a WirePipeliner behind
+// WrapConnector, otherwise one statement at a time.
+func (p *Pipeline) flushInTx() error {
+	if p.db != nil {
+		if _, isWrapped := p.db.Driver().(*wrappedDriver); isWrapped {
+			payload := &pipelineCtxPayload{
+				dialect: p.dialect,
+				cache:   p.cache,
+				ops:     p.ops,
+			}
+			_, err := p.txCache.tx.ExecContext(withPipelinePayload(p.ctx, payload), "--sqlgen:pipeline")
+			if payload.handled {
+				p.cache.notePipeline(true)
+				if err != nil {
+					return err
 				}
 				return p.executePipelineOps(p.ctx, true)
 			}
 		}
+	}
+	p.cache.notePipeline(false)
+	return p.executePipelineOps(p.ctx, false)
+}
+
+// flushWireConn tries the single-round-trip paths on a pooled connection obtained through db.Conn and
+// conn.Raw. handled reports whether a wire pipeliner executed the batch (err is then its outcome, a
+// *CommitError when the COMMIT failed); when it is false nothing was sent and the caller falls back.
+// A WireTxPipeliner (BEGIN + ops + COMMIT) is always preferred; a plain WirePipeliner is used only when
+// allowPlain is set, because it cannot begin or commit a transaction by itself.
+func (p *Pipeline) flushWireConn(txOpts *sql.TxOptions, allowPlain bool) (handled bool, err error) {
+	if p.db == nil || p.db.Stats().MaxOpenConnections == 1 {
+		return false, nil
+	}
+	conn, cerr := p.db.Conn(p.ctx)
+	if cerr != nil {
+		return false, nil
+	}
+	var wireErr error
+	rawErr := conn.Raw(func(driverConn any) error {
+		if tp := wireTxPipelinerOf(driverConn); tp != nil {
+			handled = true
+			RenderPipelineBatch(p.dialect, p.cache, p.ops)
+			wireErr = tp.ExecTxPipeline(p.ctx, txOpts, p.ops)
+			return nil
+		}
+		if wp := wirePipelinerOf(driverConn); allowPlain && wp != nil {
+			handled = true
+			RenderPipelineBatch(p.dialect, p.cache, p.ops)
+			wireErr = wp.ExecPipeline(p.ctx, p.ops)
+		}
+		return nil
+	})
+	_ = conn.Close()
+	if rawErr != nil || !handled {
+		return false, nil
+	}
+	p.cache.notePipeline(true)
+	if wireErr != nil {
+		return true, wireErr
+	}
+	return true, p.executePipelineOps(p.ctx, true)
+}
+
+// unwrapCommitError removes the *CommitError marker so callers outside the retry loop see the driver error.
+func unwrapCommitError(err error) error {
+	if ce, ok := err.(*CommitError); ok {
+		return ce.Err
+	}
+	return err
+}
+
+// flushStandalone runs a Pipeline that is not bound to any transaction: atomically (all or nothing),
+// in one round-trip when the connection supports it.
+func (p *Pipeline) flushStandalone() error {
+	if handled, err := p.flushWireConn(nil, true); handled {
+		return unwrapCommitError(err)
 	}
 
 	// Sequential fallback inside an implicit transaction.
@@ -1174,11 +1310,41 @@ func (p *Pipeline) Flush() error {
 	tc := NewTxStmtCache(tx)
 	defer func() { _ = tc.Close() }()
 	p.txCache = tc
-	if err := p.executePipelineOps(p.ctx, false); err != nil {
+	if err := p.flushInTx(); err != nil {
 		_ = tx.Rollback()
 		return err
 	}
 	return tx.Commit()
+}
+
+// flushOwnTx runs a PipelineTx attempt: the runtime owns the transaction. With a WireTxPipeliner
+// connection BEGIN, every operation and COMMIT travel in one round-trip; otherwise it falls back to
+// BeginTx + flushInTx + Commit. Errors raised by COMMIT are wrapped in a *CommitError.
+func (p *Pipeline) flushOwnTx() error {
+	if handled, err := p.flushWireConn(p.txOpts, false); handled {
+		return err
+	}
+	tx, err := p.db.BeginTx(p.ctx, p.txOpts)
+	if err != nil {
+		return err
+	}
+	tc := NewTxStmtCache(tx)
+	defer func() {
+		_ = tc.Close()
+		if r := recover(); r != nil {
+			_ = tx.Rollback()
+			panic(r)
+		}
+	}()
+	p.txCache = tc
+	if err := p.flushInTx(); err != nil {
+		_ = tx.Rollback()
+		return err
+	}
+	if err := tx.Commit(); err != nil {
+		return &CommitError{Err: err}
+	}
+	return nil
 }
 
 // Exec is an alias for Flush.
@@ -1309,15 +1475,7 @@ func RunTxWithRetry(
 	if existingTxCache != nil {
 		return attemptFn(existingTxCache)
 	}
-	var cfg TxConfig
-	for _, opt := range opts {
-		if opt != nil {
-			opt(&cfg)
-		}
-	}
-	policy := cfg.RetryPolicy
-
-	for attempt := 0; ; attempt++ {
+	return retryTx(ctx, txConfig(opts).RetryPolicy, func() (bool, error) {
 		var duringCommit bool
 		err := func() (retErr error) {
 			tx, err := db.BeginTx(ctx, txOpts)
@@ -1339,10 +1497,71 @@ func RunTxWithRetry(
 			duringCommit = true
 			return tx.Commit()
 		}()
+		return duringCommit, err
+	})
+}
+
+// RunPipelineTx implements PipelineTx. build queues the operations on the pipeline it is given; the
+// runtime then executes them in one transaction, retrying the whole attempt (build included) under
+// WithTxRetry. When the pooled connection is a WireTxPipeliner the attempt costs a single network
+// round-trip, BEGIN and COMMIT included; otherwise it is BeginTx, the portable execution of the queued
+// operations, Commit. When existingTxCache is non-nil the transaction belongs to the caller and the
+// pipeline just runs inside it (no retry, no commit).
+func RunPipelineTx(
+	ctx context.Context,
+	db *sql.DB,
+	cache *StmtCache,
+	existingTxCache *TxStmtCache,
+	usePrepared bool,
+	dialect Dialect,
+	txOpts *sql.TxOptions,
+	opts []TxOption,
+	build func(p *Pipeline) error,
+) error {
+	if existingTxCache != nil {
+		p := NewPipeline(ctx, db, cache, existingTxCache, usePrepared, dialect)
+		if err := build(p); err != nil {
+			return err
+		}
+		return p.Flush()
+	}
+	return retryTx(ctx, txConfig(opts).RetryPolicy, func() (bool, error) {
+		p := NewPipeline(ctx, db, cache, nil, usePrepared, dialect)
+		p.ownsTx = true
+		p.txOpts = txOpts
+		if err := build(p); err != nil {
+			p.releaseArgBufs()
+			return false, err
+		}
+		err := p.run()
+		var ce *CommitError
+		if errors.As(err, &ce) {
+			return true, unwrapCommitError(err)
+		}
+		return false, err
+	})
+}
+
+func txConfig(opts []TxOption) TxConfig {
+	var cfg TxConfig
+	for _, opt := range opts {
+		if opt != nil {
+			opt(&cfg)
+		}
+	}
+	return cfg
+}
+
+// retryTx runs attempt until it succeeds, fails permanently, or policy.MaxRetries is exhausted, sleeping
+// an exponentially growing, fully jittered delay between attempts. attempt reports whether its error
+// happened while committing (IsRetryableTxError treats a dropped connection there as unsafe to retry).
+func retryTx(ctx context.Context, policy TxRetryPolicy, attempt func() (duringCommit bool, err error)) error {
+	for n := 0; ; n++ {
+		duringCommit, err := attempt()
 		if err == nil {
 			return nil
 		}
-		if attempt >= policy.MaxRetries || !IsRetryableTxError(err, duringCommit) {
+		if n >= policy.MaxRetries || !IsRetryableTxError(err, duringCommit) {
 			return err
 		}
 		base := policy.BaseDelay
@@ -1353,7 +1572,7 @@ func RunTxWithRetry(
 		if maxD <= 0 {
 			maxD = 100 * time.Millisecond
 		}
-		shift := attempt
+		shift := n
 		if shift > 20 {
 			shift = 20
 		}

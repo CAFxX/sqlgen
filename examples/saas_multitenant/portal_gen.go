@@ -115,14 +115,8 @@ func (q *Queries) Pipeline(ctx context.Context) *Pipeline {
 
 // PipelineTx executes a transactional pipeline batch with optional retry policy.
 func (q *Queries) PipelineTx(ctx context.Context, txOpts *sql.TxOptions, fn func(*Pipeline) error, opts ...runtime.TxOption) error {
-	return runtime.RunTxWithRetry(ctx, q.db, q.txCache, txOpts, opts, func(tc *runtime.TxStmtCache) error {
-		txQ := *q
-		txQ.txCache = tc
-		p := txQ.Pipeline(ctx)
-		if err := fn(p); err != nil {
-			return err
-		}
-		return p.Flush()
+	return runtime.RunPipelineTx(ctx, q.db, q.cache, q.txCache, q.usePrepared, sqlDialect, txOpts, opts, func(p *runtime.Pipeline) error {
+		return fn(&Pipeline{Pipeline: p, q: q})
 	})
 }
 

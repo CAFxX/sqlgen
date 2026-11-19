@@ -164,6 +164,9 @@ type mockDriverConfig struct {
 	failCommitOnce bool
 	enableWire     bool
 	wireHandler    func(ctx context.Context, ops []PipelineOp) error
+	enableWireTx   bool // connections also implement WireTxPipeliner
+	wireTxCalls    atomic.Int64
+	wireTxHandler  func(ctx context.Context, txOpts *sql.TxOptions, ops []PipelineOp) error
 	rowsData       [][]driver.Value
 	rowsCols       []string
 	lastSQL        string
@@ -174,6 +177,9 @@ type mockConnector struct {
 }
 
 func (c *mockConnector) Connect(ctx context.Context) (driver.Conn, error) {
+	if c.cfg.enableWireTx {
+		return &mockWireTxConn{mockWireConn: mockWireConn{mockConn: mockConn{cfg: c.cfg}}}, nil
+	}
 	if c.cfg.enableWire {
 		return &mockWireConn{mockConn: mockConn{cfg: c.cfg}}, nil
 	}
@@ -407,7 +413,7 @@ func (r *mockRows) Next(dest []driver.Value) error {
 func newMockDB(t testing.TB, cfg *mockDriverConfig) *sql.DB {
 	t.Helper()
 	var c driver.Connector = &mockConnector{cfg: cfg}
-	if cfg.enableWire {
+	if cfg.enableWire || cfg.enableWireTx {
 		c = WrapConnector(c)
 	}
 	db := sql.OpenDB(c)

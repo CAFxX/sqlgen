@@ -614,9 +614,12 @@ Inspect live cache telemetry at any time via `stats := q.CacheStats()`:
 - `stats.Promotions`: Number of variants promoted from Tier 1 to Tier 2 `*sql.Stmt`.
 - `stats.Demotions`: Number of Tier-2 `*sql.Stmt` handles demoted back to Tier 1.
 - `stats.Evictions`: Number of Tier-1 SQL strings evicted.
-- `stats.PreparedCount`: Current Tier-2 `*sql.Stmt` count.
-- `stats.PartialCount`: Current Tier-1 SQL string count.
+- `stats.RejectedAdmits`: Tier-1 admissions refused by the TinyLFU admission filter.
+- `stats.ActivePrepared`: Current Tier-2 `*sql.Stmt` count.
+- `stats.ActivePartial`: Current Tier-1 SQL string count.
 - `stats.PartialBytes`: Exact byte sum of all Tier-1 SQL strings currently in cache.
+- `stats.WirePipelines`: Pipeline flushes (one per `Pipeline.Flush`, one per `PipelineTx` attempt) that ran in a single network round-trip through a `WirePipeliner` / `WireTxPipeliner` connection (see section 3.4).
+- `stats.SequentialPipelines`: Pipeline flushes that executed one statement at a time (the portable fallback). A flush that fails while being built, or that queued nothing, counts as neither.
 
 ---
 

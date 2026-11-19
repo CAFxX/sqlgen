@@ -45,6 +45,8 @@ type (
 	ExecFuture      = runtime.ExecFuture
 	IfResult        = runtime.IfResult
 	WirePipeliner   = runtime.WirePipeliner
+	WireTxPipeliner = runtime.WireTxPipeliner
+	CommitError     = runtime.CommitError
 	TxRetryPolicy   = runtime.TxRetryPolicy
 	TxOption        = runtime.TxOption
 )
@@ -61,6 +63,7 @@ var (
 	ErrNilQuery           = runtime.ErrNilQuery
 	ErrAssertionFailed    = runtime.ErrAssertionFailed
 	ErrBranchNotTaken     = runtime.ErrBranchNotTaken
+	ErrFlushInPipelineTx  = runtime.ErrFlushInPipelineTx
 	ErrInvalidSeek        = runtime.ErrInvalidSeek
 	ErrInvalidOrder       = runtime.ErrInvalidOrder
 
@@ -3000,14 +3003,8 @@ func Generate(cfg Config) ([]byte, error) {
 
 	b.WriteString("// PipelineTx executes a transactional pipeline batch with optional retry policy.\n")
 	b.WriteString("func (q *Queries) PipelineTx(ctx context.Context, txOpts *sql.TxOptions, fn func(*Pipeline) error, opts ...runtime.TxOption) error {\n")
-	b.WriteString("\treturn runtime.RunTxWithRetry(ctx, q.db, q.txCache, txOpts, opts, func(tc *runtime.TxStmtCache) error {\n")
-	b.WriteString("\t\ttxQ := *q\n")
-	b.WriteString("\t\ttxQ.txCache = tc\n")
-	b.WriteString("\t\tp := txQ.Pipeline(ctx)\n")
-	b.WriteString("\t\tif err := fn(p); err != nil {\n")
-	b.WriteString("\t\t\treturn err\n")
-	b.WriteString("\t\t}\n")
-	b.WriteString("\t\treturn p.Flush()\n")
+	b.WriteString("\treturn runtime.RunPipelineTx(ctx, q.db, q.cache, q.txCache, q.usePrepared, sqlDialect, txOpts, opts, func(p *runtime.Pipeline) error {\n")
+	b.WriteString("\t\treturn fn(&Pipeline{Pipeline: p, q: q})\n")
 	b.WriteString("\t})\n")
 	b.WriteString("}\n\n")
 
