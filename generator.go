@@ -657,10 +657,51 @@ func toGoParamName(s string) string {
 		}
 	}
 	out := string(buf)
-	if token.Lookup(out).IsKeyword() || out == "ctx" || out == "q" || out == "p" || out == "dst" || out == "fn" || out == "seq" {
+	if token.Lookup(out).IsKeyword() || reservedParamNames[out] {
 		out += "Param"
 	}
 	return out
+}
+
+// reservedParamNames are identifiers a generated function declares or uses in its own scope: a SQL
+// parameter with one of these names becomes a Go parameter that would redeclare or shadow it (for
+// example `:in:string` vs the generated `in := runtime.RenderInput{}`). TestReservedNamesCoverGeneratedLocals
+// derives the locals from real generated code, so this list cannot silently go stale.
+var reservedParamNames = func() map[string]bool {
+	m := map[string]bool{}
+	for _, n := range strings.Fields(`
+		_ approxArgs argBuf autoTx batchRes bufPtr chunk chunkCap chunkP chunkRows chunkSize colMask cp d0 d1
+		dst eFn effMask err expandErr firstChunk flagMask flushChunk hasSeek i idx idxBuf in item j k maxRows ms
+		offset orderKey orderSpec out p r res row rs scanBuf scanCount scanDest scanSlice shapeLens shapeTag
+		sliceLensBuf sortedIdx sqlRow sqlRows sub subsBuf tFn targetQ tc totalRows tupleLensBuf txCache txQ v vk
+		yield zero
+		ctx q pl fn seq txOpts opts db cache rows
+		sql runtime context iter slices sync atomic time json big netip url driver errors strconv
+		append cap clear close complete copy delete imag len make max min new panic print println real recover
+		any bool byte comparable complex128 complex64 error float32 float64 int int16 int32 int64 int8 rune string
+		uint uint16 uint32 uint64 uint8 uintptr true false iota nil`) {
+		m[n] = true
+	}
+	return m
+}()
+
+// reservedTypeNames are package-level names every generated file declares; a result_type or tuple struct
+// with one of these names would redeclare it. reservedStatementNames are the methods generated on
+// *Queries and *Pipeline (including those promoted from runtime.Pipeline).
+// TestReservedNamesCoverGeneratedDeclarations checks both against real generated output.
+var (
+	reservedTypeNames = setOf("DefaultRetryPolicy", "ExecFuture", "IfResult", "New", "NewSeek", "NewWithCache", "Order",
+		"Pipeline", "PipelineCond", "Queries", "Query", "Seek", "TxOption", "TxRetryPolicy", "WhereCol", "WithTxRetry")
+	reservedStatementNames = setOf("Cache", "CacheStats", "Close", "If", "InTx", "InTxOpts", "Pipeline", "PipelineTx",
+		"WithPrepared", "WithTx", "SetBuildError", "QueueExec", "Abort", "Flush", "Exec")
+)
+
+func setOf(names ...string) map[string]bool {
+	m := make(map[string]bool, len(names))
+	for _, n := range names {
+		m[n] = true
+	}
+	return m
 }
 
 func lowerFirstIdent(s string) string {
@@ -747,6 +788,12 @@ type orderColRef struct {
 	ColIdx    int
 	FieldName string
 	GoType    string
+}
+
+// rowOrder records the sqlgen.Order column list first declared for a shared result type.
+type rowOrder struct {
+	stmt string
+	cols []string
 }
 
 type compiledStmt struct {
@@ -1199,6 +1246,9 @@ func parseTupleBody(structName, body string) (*tupleStructDef, error) {
 	if !isValidGoIdent(structName) {
 		return nil, fmt.Errorf("invalid tuple struct name %q", structName)
 	}
+	if reservedTypeNames[structName] {
+		return nil, fmt.Errorf("tuple struct name %q collides with a type or function declared in every generated file; rename it", structName)
+	}
 	td := &tupleStructDef{
 		Name: structName,
 	}
@@ -1273,6 +1323,42 @@ func parseTupleBody(structName, body string) (*tupleStructDef, error) {
 			seg = append(seg, body[start:i]...)
 			continue
 		}
+		if ch == '-' && i+1 < len(body) && body[i+1] == '-' {
+			// Line comment: copied verbatim (SPEC 4.1) and always terminated, so a comment at the very end
+			// of the body cannot swallow the ")" that closes each rendered row.
+			start := i
+			for i < len(body) && body[i] != '\n' {
+				i++
+			}
+			if i < len(body) {
+				i++
+			}
+			seg = append(seg, body[start:i]...)
+			if body[i-1] != '\n' {
+				seg = append(seg, '\n')
+			}
+			continue
+		}
+		if ch == '/' && i+1 < len(body) && body[i+1] == '*' {
+			end := strings.Index(body[i+2:], "*/")
+			if end < 0 {
+				return nil, errors.New("unclosed block comment in tuple body")
+			}
+			seg = append(seg, body[i:i+2+end+2]...)
+			i += 2 + end + 2
+			continue
+		}
+		if ch == '$' {
+			if tag, ok := matchDollarQuoteTag(body, i); ok {
+				end := strings.Index(body[i+len(tag):], tag)
+				if end < 0 {
+					return nil, errors.New("unclosed dollar-quoted string in tuple body")
+				}
+				seg = append(seg, body[i:i+len(tag)+end+len(tag)]...)
+				i += len(tag) + end + len(tag)
+				continue
+			}
+		}
 		if ch == ':' && i+1 < len(body) && (body[i+1] == ':' || body[i+1] == '=') {
 			seg = append(seg, body[i:i+2]...)
 			i += 2
@@ -1345,6 +1431,7 @@ func parseTupleBody(structName, body string) (*tupleStructDef, error) {
 
 type stmtParser struct {
 	spec          StatementSpec
+	prevWordLow   string // previous plain SQL word, lower-cased (for IS [NOT] DISTINCT FROM)
 	yamlParams    map[string]ParamSpec
 	paramsByCanon map[string]int
 	flagsByName   map[string]uint8
@@ -1459,6 +1546,12 @@ func (p *stmtParser) addColumn(rawName, goType, sqlExpr string) error {
 		UncondIdx: -1,
 	}
 	if p.currentFlag == "" {
+		if len(p.cs.CondCols) > 0 {
+			return fmt.Errorf("statement %s: unconditional output column %q follows a conditional {?...: ...} column; put every conditional column after all unconditional ones (the unconditional projection is spliced as one unit and scanned first)", p.spec.Name, rawName)
+		}
+		if len(p.cs.UncondCols) >= 64 {
+			return fmt.Errorf("statement %s: more than 64 unconditional output columns (the SelectCols projection mask is 64 bits wide); split the query or return a narrower row", p.spec.Name)
+		}
 		col.UncondIdx = len(p.cs.UncondCols)
 		p.cs.UncondCols = append(p.cs.UncondCols, col)
 	} else {
@@ -1871,6 +1964,25 @@ func (p *stmtParser) scanSpan(span string, blk *parsedBlock, isTopLevel bool) er
 								seg = append(seg, span[i])
 								i++
 							}
+							// PostgreSQL "DISTINCT ON (expr, ...)" is part of the projection prefix: without this
+							// the first output column's expression would become "ON (a) a" and a SelectCols mask
+							// that omits it would silently drop the DISTINCT ON.
+							if i+2 <= len(span) && strings.EqualFold(span[i:i+2], "on") && (i+2 == len(span) || !isIdentContByte(span[i+2])) {
+								j := i + 2
+								for j < len(span) && isSpaceByte(span[j]) {
+									j++
+								}
+								if j < len(span) && span[j] == '(' {
+									if closeParen, err := findMatchingParen(span, j); err == nil {
+										seg = append(seg, span[i:closeParen+1]...)
+										i = closeParen + 1
+										for i < len(span) && isSpaceByte(span[i]) {
+											seg = append(seg, span[i])
+											i++
+										}
+									}
+								}
+							}
 						}
 						if isTopLevel {
 							p.projActive = true
@@ -1970,11 +2082,14 @@ func (p *stmtParser) scanSpan(span string, blk *parsedBlock, isTopLevel bool) er
 								}
 							}
 						}
-					} else if p.inProjection && projectionTerminators[low] {
+					} else if p.inProjection && projectionTerminators[low] &&
+						!(low == "from" && p.prevWordLow == "distinct") && // IS [NOT] DISTINCT FROM
+						!(tokenStart > 0 && span[tokenStart-1] == '.') { // t.limit, t.offset, ...
 						p.inProjection = false
 					}
 				}
 
+				p.prevWordLow = strings.ToLower(ident)
 				seg = append(seg, span[tokenStart:identEnd]...)
 				i = identEnd
 				continue
@@ -2182,6 +2297,9 @@ func compileStatement(id uint32, spec StatementSpec) (*compiledStmt, error) {
 	if !isValidGoIdent(spec.Name) {
 		return nil, fmt.Errorf("sqlgen: invalid statement name %q", spec.Name)
 	}
+	if reservedStatementNames[spec.Name] {
+		return nil, fmt.Errorf("statement name %q collides with a method generated on *Queries / *Pipeline; rename it", spec.Name)
+	}
 	kind := spec.Kind
 	if kind == KindQuery {
 		kind = KindSubquery
@@ -2197,6 +2315,9 @@ func compileStatement(id uint32, spec StatementSpec) (*compiledStmt, error) {
 		}
 		if !isValidGoIdent(spec.ResultType) {
 			return nil, fmt.Errorf("statement %s: invalid result_type identifier %q", spec.Name, spec.ResultType)
+		}
+		if reservedTypeNames[spec.ResultType] {
+			return nil, fmt.Errorf("statement %s: result_type %q collides with a type or function declared in every generated file; rename it", spec.Name, spec.ResultType)
 		}
 	}
 	trimmedSQL := strings.TrimSpace(spec.SQL)
@@ -2286,6 +2407,25 @@ func compileStatement(id uint32, spec StatementSpec) (*compiledStmt, error) {
 	}
 
 	cs.UseParamsStruct = spec.ParamsStruct || len(cs.Flags) > 0
+
+	// Fields of the generated <Name>Params struct share one namespace: parameters, optional-block flags
+	// and the synthetic SelectCols mask. A collision would otherwise surface as a Go compile error in
+	// the generated file.
+	if cs.UseParamsStruct {
+		owners := map[string]string{"SelectCols": "the generated SelectCols projection mask"}
+		for _, prm := range cs.Params {
+			if prev, dup := owners[prm.FieldName]; dup {
+				return nil, fmt.Errorf("statement %s: parameter %q maps to Go field %q, which collides with %s; rename it", spec.Name, prm.RawName, prm.FieldName, prev)
+			}
+			owners[prm.FieldName] = fmt.Sprintf("parameter %q", prm.RawName)
+		}
+		for _, fl := range cs.Flags {
+			if prev, dup := owners[fl.FieldName]; dup {
+				return nil, fmt.Errorf("statement %s: conditional flag {?%s: ...} maps to Go field %q, which collides with %s; rename the flag or the parameter", spec.Name, fl.RawName, fl.FieldName, prev)
+			}
+			owners[fl.FieldName] = fmt.Sprintf("flag %q", fl.RawName)
+		}
+	}
 
 	// Section 4.4: Unconditional SlotSelectCols splicing whenever len(UncondCols) > 1 && len(spec.Columns) == 0
 	if len(cs.UncondCols) > 1 && len(spec.Columns) == 0 && parser.projActive && !parser.projHasParamSlot &&
@@ -2561,6 +2701,7 @@ func Generate(cfg Config) ([]byte, error) {
 	compiled := make([]*compiledStmt, 0, len(cfg.Statements))
 
 	rowStructs := make(map[string][]colDef)
+	rowOrders := make(map[string]rowOrder)
 	var rowStructOrder []string
 	tupleStructs := make(map[string]*tupleStructDef)
 	var tupleStructOrder []string
@@ -2600,6 +2741,23 @@ func Generate(cfg Config) ([]byte, error) {
 			} else {
 				rowStructs[cs.RowTypeName] = cs.Cols
 				rowStructOrder = append(rowStructOrder, cs.RowTypeName)
+			}
+			// The <Row>OrderBy* constants, Order<Row>() and Row.Seek() are emitted once per result type
+			// and index into the sqlgen.Order(...) column list, so every statement sharing the type
+			// must declare the identical list or its sort/seek columns would silently be the wrong ones.
+			if cs.HasOrder {
+				cur := make([]string, len(cs.OrderCols))
+				for i, oc := range cs.OrderCols {
+					cur[i] = strings.ToLower(oc.RawRef)
+				}
+				if prev, seen := rowOrders[cs.RowTypeName]; seen {
+					if !slices.Equal(prev.cols, cur) {
+						return nil, fmt.Errorf("statements %s and %s share result_type %q but declare different sqlgen.Order column lists (%s vs %s); use a distinct result_type or the same list",
+							prev.stmt, cs.Name, cs.RowTypeName, strings.Join(prev.cols, ", "), strings.Join(cur, ", "))
+					}
+				} else {
+					rowOrders[cs.RowTypeName] = rowOrder{stmt: cs.Name, cols: cur}
+				}
 			}
 		}
 

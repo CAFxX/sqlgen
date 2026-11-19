@@ -562,9 +562,9 @@ func computeApplyMarginSettlementsKey(p paramsApplyMarginSettlements) (runtime.V
 	return vk, colMask, flagMask, approxArgs
 }
 
-func (q *Queries) ApplyMarginSettlements(ctx context.Context, rows []MarginSettlement) (sql.Result, error) {
+func (q *Queries) ApplyMarginSettlements(ctx context.Context, rowsParam []MarginSettlement) (sql.Result, error) {
 	p := paramsApplyMarginSettlements{
-		Rows: rows,
+		Rows: rowsParam,
 	}
 	vk, colMask, flagMask, approxArgs := computeApplyMarginSettlementsKey(p)
 	argBuf := runtime.AcquireArgsCap(approxArgs)
@@ -582,9 +582,9 @@ func (q *Queries) ApplyMarginSettlements(ctx context.Context, rows []MarginSettl
 	return q.cache.Exec(ctx, q.db, q.txCache, q.usePrepared, vk, stmtIDApplyMarginSettlements, runtime.ComputeBatchShapeTag(colMask, flagMask), 0, nil, sqlDialect, descApplyMarginSettlements, &in, (*argBuf)...)
 }
 
-func (pl *Pipeline) ApplyMarginSettlements(rows []MarginSettlement) *runtime.ExecFuture {
+func (pl *Pipeline) ApplyMarginSettlements(rowsParam []MarginSettlement) *runtime.ExecFuture {
 	p := paramsApplyMarginSettlements{
-		Rows: rows,
+		Rows: rowsParam,
 	}
 	vk, colMask, flagMask, approxArgs := computeApplyMarginSettlementsKey(p)
 	argBuf := runtime.AcquireArgsCap(approxArgs)
@@ -599,19 +599,19 @@ func (pl *Pipeline) ApplyMarginSettlements(rows []MarginSettlement) *runtime.Exe
 	return pl.Pipeline.QueueExec(stmtIDApplyMarginSettlements, descApplyMarginSettlements, in, vk, nil, argBuf, expandErr)
 }
 
-func (q *Queries) ApplyMarginSettlementsBatch(ctx context.Context, rows []MarginSettlement) (sql.Result, error) {
-	totalRows := len(rows)
+func (q *Queries) ApplyMarginSettlementsBatch(ctx context.Context, rowsParam []MarginSettlement) (sql.Result, error) {
+	totalRows := len(rowsParam)
 	if totalRows == 0 {
 		return nil, runtime.ErrEmptySliceParam
 	}
 	p := paramsApplyMarginSettlements{
-		Rows: rows,
+		Rows: rowsParam,
 	}
 	var sortedIdx *[]int
-	if !isMarginSettlementSorted(rows) {
+	if !isMarginSettlementSorted(rowsParam) {
 		sortedIdx = runtime.AcquireIndices(totalRows)
 		defer runtime.ReleaseIndices(sortedIdx)
-		slices.SortFunc(*sortedIdx, func(i, j int) int { return compareMarginSettlement(rows[i], rows[j]) })
+		slices.SortFunc(*sortedIdx, func(i, j int) int { return compareMarginSettlement(rowsParam[i], rowsParam[j]) })
 	}
 	_, colMask, flagMask, _ := computeApplyMarginSettlementsKey(p)
 	shapeTag := runtime.ComputeBatchShapeTag(colMask, flagMask)
@@ -634,7 +634,7 @@ func (q *Queries) ApplyMarginSettlementsBatch(ctx context.Context, rows []Margin
 		if offset > 0 {
 			chunkSize = q.cache.PlanBatchChunk(stmtIDApplyMarginSettlements, colMask, flagMask, totalRows-offset, maxRows, false)
 		}
-		chunkRows := rows[offset : offset+chunkSize]
+		chunkRows := rowsParam[offset : offset+chunkSize]
 		chunkP := p
 		chunkP.Rows = chunkRows
 		vk, _, _, approxArgs := computeApplyMarginSettlementsKey(chunkP)
@@ -644,14 +644,14 @@ func (q *Queries) ApplyMarginSettlementsBatch(ctx context.Context, rows []Margin
 		} else {
 			idx := (*sortedIdx)[offset : offset+chunkSize]
 			for _, k := range idx {
-				*argBuf = append(*argBuf, rows[k].FirmID)
-				*argBuf = append(*argBuf, rows[k].AccountID)
-				*argBuf = append(*argBuf, rows[k].Status)
-				*argBuf = append(*argBuf, rows[k].CollateralCents)
-				*argBuf = append(*argBuf, rows[k].RealizedPnlCents)
-				*argBuf = append(*argBuf, rows[k].MarginRatioBps)
-				*argBuf = append(*argBuf, rows[k].KycVerified)
-				*argBuf = append(*argBuf, rows[k].UpdatedSeq)
+				*argBuf = append(*argBuf, rowsParam[k].FirmID)
+				*argBuf = append(*argBuf, rowsParam[k].AccountID)
+				*argBuf = append(*argBuf, rowsParam[k].Status)
+				*argBuf = append(*argBuf, rowsParam[k].CollateralCents)
+				*argBuf = append(*argBuf, rowsParam[k].RealizedPnlCents)
+				*argBuf = append(*argBuf, rowsParam[k].MarginRatioBps)
+				*argBuf = append(*argBuf, rowsParam[k].KycVerified)
+				*argBuf = append(*argBuf, rowsParam[k].UpdatedSeq)
 			}
 		}
 		var tupleLensBuf [1]int
@@ -1203,9 +1203,9 @@ func computeIngestOrdersKey(p paramsIngestOrders) (runtime.VariantKey, uint64, u
 }
 
 // IngestOrdersQuery constructs a composable runtime.Query without executing it.
-func IngestOrdersQuery(rows []OrderSubmission, epochSeq int64) runtime.Query {
+func IngestOrdersQuery(rowsParam []OrderSubmission, epochSeq int64) runtime.Query {
 	p := paramsIngestOrders{
-		Rows:     rows,
+		Rows:     rowsParam,
 		EpochSeq: epochSeq,
 	}
 	_, colMask, flagMask, _ := computeIngestOrdersKey(p)
@@ -1231,8 +1231,8 @@ func IngestOrdersQuery(rows []OrderSubmission, epochSeq int64) runtime.Query {
 }
 
 // IngestOrdersQuery constructs a composable runtime.Query without executing it.
-func (q *Queries) IngestOrdersQuery(rows []OrderSubmission, epochSeq int64) runtime.Query {
-	return IngestOrdersQuery(rows, epochSeq)
+func (q *Queries) IngestOrdersQuery(rowsParam []OrderSubmission, epochSeq int64) runtime.Query {
+	return IngestOrdersQuery(rowsParam, epochSeq)
 }
 
 func scanIngestOrdersRow(scanner interface{ Scan(...any) error }, dst *OrderAck, colMask uint64, p paramsIngestOrders) error {
@@ -1254,12 +1254,12 @@ func scanIngestOrdersRow(scanner interface{ Scan(...any) error }, dst *OrderAck,
 	return nil
 }
 
-func (q *Queries) IngestOrders(ctx context.Context, rows []OrderSubmission, epochSeq int64) ([]OrderAck, error) {
-	return q.IngestOrdersInto(ctx, nil, rows, epochSeq)
+func (q *Queries) IngestOrders(ctx context.Context, rowsParam []OrderSubmission, epochSeq int64) ([]OrderAck, error) {
+	return q.IngestOrdersInto(ctx, nil, rowsParam, epochSeq)
 }
 
-func (q *Queries) IngestOrdersInto(ctx context.Context, dst []OrderAck, rows []OrderSubmission, epochSeq int64) ([]OrderAck, error) {
-	for row, err := range q.IngestOrdersSeq(ctx, rows, epochSeq) {
+func (q *Queries) IngestOrdersInto(ctx context.Context, dst []OrderAck, rowsParam []OrderSubmission, epochSeq int64) ([]OrderAck, error) {
+	for row, err := range q.IngestOrdersSeq(ctx, rowsParam, epochSeq) {
 		if err != nil {
 			return nil, err
 		}
@@ -1268,11 +1268,11 @@ func (q *Queries) IngestOrdersInto(ctx context.Context, dst []OrderAck, rows []O
 	return dst, nil
 }
 
-func (q *Queries) IngestOrdersSeq(ctx context.Context, rows []OrderSubmission, epochSeq int64) iter.Seq2[OrderAck, error] {
+func (q *Queries) IngestOrdersSeq(ctx context.Context, rowsParam []OrderSubmission, epochSeq int64) iter.Seq2[OrderAck, error] {
 	return func(yield func(OrderAck, error) bool) {
 		var zero OrderAck
 		p := paramsIngestOrders{
-			Rows:     rows,
+			Rows:     rowsParam,
 			EpochSeq: epochSeq,
 		}
 		vk, colMask, flagMask, approxArgs := computeIngestOrdersKey(p)
@@ -1315,8 +1315,8 @@ func (q *Queries) IngestOrdersSeq(ctx context.Context, rows []OrderSubmission, e
 	}
 }
 
-func (q *Queries) IngestOrdersEach(ctx context.Context, rows []OrderSubmission, epochSeq int64, fn func(OrderAck) error) error {
-	for row, err := range q.IngestOrdersSeq(ctx, rows, epochSeq) {
+func (q *Queries) IngestOrdersEach(ctx context.Context, rowsParam []OrderSubmission, epochSeq int64, fn func(OrderAck) error) error {
+	for row, err := range q.IngestOrdersSeq(ctx, rowsParam, epochSeq) {
 		if err != nil {
 			return err
 		}
@@ -1327,9 +1327,9 @@ func (q *Queries) IngestOrdersEach(ctx context.Context, rows []OrderSubmission, 
 	return nil
 }
 
-func (pl *Pipeline) IngestOrders(rows []OrderSubmission, epochSeq int64) *runtime.SliceFuture[OrderAck] {
+func (pl *Pipeline) IngestOrders(rowsParam []OrderSubmission, epochSeq int64) *runtime.SliceFuture[OrderAck] {
 	p := paramsIngestOrders{
-		Rows:     rows,
+		Rows:     rowsParam,
 		EpochSeq: epochSeq,
 	}
 	vk, colMask, flagMask, approxArgs := computeIngestOrdersKey(p)
@@ -1347,17 +1347,17 @@ func (pl *Pipeline) IngestOrders(rows []OrderSubmission, epochSeq int64) *runtim
 	)
 }
 
-func (q *Queries) IngestOrdersBatch(ctx context.Context, rows []OrderSubmission, epochSeq int64) ([]OrderAck, error) {
-	return q.IngestOrdersBatchInto(ctx, nil, rows, epochSeq)
+func (q *Queries) IngestOrdersBatch(ctx context.Context, rowsParam []OrderSubmission, epochSeq int64) ([]OrderAck, error) {
+	return q.IngestOrdersBatchInto(ctx, nil, rowsParam, epochSeq)
 }
 
-func (q *Queries) IngestOrdersBatchInto(ctx context.Context, dst []OrderAck, rows []OrderSubmission, epochSeq int64) ([]OrderAck, error) {
-	totalRows := len(rows)
+func (q *Queries) IngestOrdersBatchInto(ctx context.Context, dst []OrderAck, rowsParam []OrderSubmission, epochSeq int64) ([]OrderAck, error) {
+	totalRows := len(rowsParam)
 	if totalRows == 0 {
 		return nil, runtime.ErrEmptySliceParam
 	}
 	p := paramsIngestOrders{
-		Rows:     rows,
+		Rows:     rowsParam,
 		EpochSeq: epochSeq,
 	}
 	_, colMask, flagMask, _ := computeIngestOrdersKey(p)
@@ -1374,7 +1374,7 @@ func (q *Queries) IngestOrdersBatchInto(ctx context.Context, dst []OrderAck, row
 		targetQ = q.WithTx(autoTx)
 		defer func() { _ = targetQ.Close() }()
 	}
-	for row, err := range targetQ.IngestOrdersBatchSeq(ctx, rows, epochSeq) {
+	for row, err := range targetQ.IngestOrdersBatchSeq(ctx, rowsParam, epochSeq) {
 		if err != nil {
 			if autoTx != nil {
 				_ = autoTx.Rollback()
@@ -1391,23 +1391,23 @@ func (q *Queries) IngestOrdersBatchInto(ctx context.Context, dst []OrderAck, row
 	return dst, nil
 }
 
-func (q *Queries) IngestOrdersBatchSeq(ctx context.Context, rows []OrderSubmission, epochSeq int64) iter.Seq2[OrderAck, error] {
+func (q *Queries) IngestOrdersBatchSeq(ctx context.Context, rowsParam []OrderSubmission, epochSeq int64) iter.Seq2[OrderAck, error] {
 	return func(yield func(OrderAck, error) bool) {
 		var zero OrderAck
-		totalRows := len(rows)
+		totalRows := len(rowsParam)
 		if totalRows == 0 {
 			yield(zero, runtime.ErrEmptySliceParam)
 			return
 		}
 		p := paramsIngestOrders{
-			Rows:     rows,
+			Rows:     rowsParam,
 			EpochSeq: epochSeq,
 		}
 		var sortedIdx *[]int
-		if !isOrderSubmissionSorted(rows) {
+		if !isOrderSubmissionSorted(rowsParam) {
 			sortedIdx = runtime.AcquireIndices(totalRows)
 			defer runtime.ReleaseIndices(sortedIdx)
-			slices.SortFunc(*sortedIdx, func(i, j int) int { return compareOrderSubmission(rows[i], rows[j]) })
+			slices.SortFunc(*sortedIdx, func(i, j int) int { return compareOrderSubmission(rowsParam[i], rowsParam[j]) })
 		}
 		_, colMask, flagMask, _ := computeIngestOrdersKey(p)
 		shapeTag := runtime.ComputeBatchShapeTag(colMask, flagMask)
@@ -1418,7 +1418,7 @@ func (q *Queries) IngestOrdersBatchSeq(ctx context.Context, rows []OrderSubmissi
 			if offset > 0 {
 				chunkSize = q.cache.PlanBatchChunk(stmtIDIngestOrders, colMask, flagMask, totalRows-offset, maxRows, false)
 			}
-			chunkRows := rows[offset : offset+chunkSize]
+			chunkRows := rowsParam[offset : offset+chunkSize]
 			chunkP := p
 			chunkP.Rows = chunkRows
 			vk, _, _, approxArgs := computeIngestOrdersKey(chunkP)
@@ -1428,15 +1428,15 @@ func (q *Queries) IngestOrdersBatchSeq(ctx context.Context, rows []OrderSubmissi
 			} else {
 				idx := (*sortedIdx)[offset : offset+chunkSize]
 				for _, k := range idx {
-					*argBuf = append(*argBuf, rows[k].FirmID)
-					*argBuf = append(*argBuf, rows[k].AccountID)
-					*argBuf = append(*argBuf, rows[k].Symbol)
-					*argBuf = append(*argBuf, rows[k].Side)
-					*argBuf = append(*argBuf, rows[k].LimitPriceCents)
-					*argBuf = append(*argBuf, rows[k].Quantity)
-					*argBuf = append(*argBuf, rows[k].Status)
-					*argBuf = append(*argBuf, rows[k].ClientOrderID)
-					*argBuf = append(*argBuf, rows[k].UpdatedSeq)
+					*argBuf = append(*argBuf, rowsParam[k].FirmID)
+					*argBuf = append(*argBuf, rowsParam[k].AccountID)
+					*argBuf = append(*argBuf, rowsParam[k].Symbol)
+					*argBuf = append(*argBuf, rowsParam[k].Side)
+					*argBuf = append(*argBuf, rowsParam[k].LimitPriceCents)
+					*argBuf = append(*argBuf, rowsParam[k].Quantity)
+					*argBuf = append(*argBuf, rowsParam[k].Status)
+					*argBuf = append(*argBuf, rowsParam[k].ClientOrderID)
+					*argBuf = append(*argBuf, rowsParam[k].UpdatedSeq)
 				}
 				*argBuf = append(*argBuf, chunkP.EpochSeq)
 			}
@@ -1476,8 +1476,8 @@ func (q *Queries) IngestOrdersBatchSeq(ctx context.Context, rows []OrderSubmissi
 	}
 }
 
-func (q *Queries) IngestOrdersBatchEach(ctx context.Context, rows []OrderSubmission, epochSeq int64, fn func(OrderAck) error) error {
-	for row, err := range q.IngestOrdersBatchSeq(ctx, rows, epochSeq) {
+func (q *Queries) IngestOrdersBatchEach(ctx context.Context, rowsParam []OrderSubmission, epochSeq int64, fn func(OrderAck) error) error {
+	for row, err := range q.IngestOrdersBatchSeq(ctx, rowsParam, epochSeq) {
 		if err != nil {
 			return err
 		}

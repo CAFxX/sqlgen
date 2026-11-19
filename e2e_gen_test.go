@@ -2127,9 +2127,9 @@ func computeInsertUsersBatchReturningKey(p paramsInsertUsersBatchReturning) (run
 }
 
 // InsertUsersBatchReturningQuery constructs a composable runtime.Query without executing it.
-func InsertUsersBatchReturningQuery(rows []BatchUserInput) runtime.Query {
+func InsertUsersBatchReturningQuery(rowsParam []BatchUserInput) runtime.Query {
 	p := paramsInsertUsersBatchReturning{
-		Rows: rows,
+		Rows: rowsParam,
 	}
 	_, colMask, flagMask, _ := computeInsertUsersBatchReturningKey(p)
 	var tupleLensBuf [1]int
@@ -2154,8 +2154,8 @@ func InsertUsersBatchReturningQuery(rows []BatchUserInput) runtime.Query {
 }
 
 // InsertUsersBatchReturningQuery constructs a composable runtime.Query without executing it.
-func (q *Queries) InsertUsersBatchReturningQuery(rows []BatchUserInput) runtime.Query {
-	return InsertUsersBatchReturningQuery(rows)
+func (q *Queries) InsertUsersBatchReturningQuery(rowsParam []BatchUserInput) runtime.Query {
+	return InsertUsersBatchReturningQuery(rowsParam)
 }
 
 func scanInsertUsersBatchReturningRow(scanner interface{ Scan(...any) error }, dst *InsertUsersBatchReturningRow, colMask uint64, p paramsInsertUsersBatchReturning) error {
@@ -2174,12 +2174,12 @@ func scanInsertUsersBatchReturningRow(scanner interface{ Scan(...any) error }, d
 	return nil
 }
 
-func (q *Queries) InsertUsersBatchReturning(ctx context.Context, rows []BatchUserInput) ([]InsertUsersBatchReturningRow, error) {
-	return q.InsertUsersBatchReturningInto(ctx, nil, rows)
+func (q *Queries) InsertUsersBatchReturning(ctx context.Context, rowsParam []BatchUserInput) ([]InsertUsersBatchReturningRow, error) {
+	return q.InsertUsersBatchReturningInto(ctx, nil, rowsParam)
 }
 
-func (q *Queries) InsertUsersBatchReturningInto(ctx context.Context, dst []InsertUsersBatchReturningRow, rows []BatchUserInput) ([]InsertUsersBatchReturningRow, error) {
-	for row, err := range q.InsertUsersBatchReturningSeq(ctx, rows) {
+func (q *Queries) InsertUsersBatchReturningInto(ctx context.Context, dst []InsertUsersBatchReturningRow, rowsParam []BatchUserInput) ([]InsertUsersBatchReturningRow, error) {
+	for row, err := range q.InsertUsersBatchReturningSeq(ctx, rowsParam) {
 		if err != nil {
 			return nil, err
 		}
@@ -2188,11 +2188,11 @@ func (q *Queries) InsertUsersBatchReturningInto(ctx context.Context, dst []Inser
 	return dst, nil
 }
 
-func (q *Queries) InsertUsersBatchReturningSeq(ctx context.Context, rows []BatchUserInput) iter.Seq2[InsertUsersBatchReturningRow, error] {
+func (q *Queries) InsertUsersBatchReturningSeq(ctx context.Context, rowsParam []BatchUserInput) iter.Seq2[InsertUsersBatchReturningRow, error] {
 	return func(yield func(InsertUsersBatchReturningRow, error) bool) {
 		var zero InsertUsersBatchReturningRow
 		p := paramsInsertUsersBatchReturning{
-			Rows: rows,
+			Rows: rowsParam,
 		}
 		vk, colMask, flagMask, approxArgs := computeInsertUsersBatchReturningKey(p)
 		_ = colMask
@@ -2234,8 +2234,8 @@ func (q *Queries) InsertUsersBatchReturningSeq(ctx context.Context, rows []Batch
 	}
 }
 
-func (q *Queries) InsertUsersBatchReturningEach(ctx context.Context, rows []BatchUserInput, fn func(InsertUsersBatchReturningRow) error) error {
-	for row, err := range q.InsertUsersBatchReturningSeq(ctx, rows) {
+func (q *Queries) InsertUsersBatchReturningEach(ctx context.Context, rowsParam []BatchUserInput, fn func(InsertUsersBatchReturningRow) error) error {
+	for row, err := range q.InsertUsersBatchReturningSeq(ctx, rowsParam) {
 		if err != nil {
 			return err
 		}
@@ -2246,9 +2246,9 @@ func (q *Queries) InsertUsersBatchReturningEach(ctx context.Context, rows []Batc
 	return nil
 }
 
-func (pl *Pipeline) InsertUsersBatchReturning(rows []BatchUserInput) *runtime.SliceFuture[InsertUsersBatchReturningRow] {
+func (pl *Pipeline) InsertUsersBatchReturning(rowsParam []BatchUserInput) *runtime.SliceFuture[InsertUsersBatchReturningRow] {
 	p := paramsInsertUsersBatchReturning{
-		Rows: rows,
+		Rows: rowsParam,
 	}
 	vk, colMask, flagMask, approxArgs := computeInsertUsersBatchReturningKey(p)
 	argBuf := runtime.AcquireArgsCap(approxArgs)
@@ -2267,17 +2267,17 @@ func (pl *Pipeline) InsertUsersBatchReturning(rows []BatchUserInput) *runtime.Sl
 	)
 }
 
-func (q *Queries) InsertUsersBatchReturningBatch(ctx context.Context, rows []BatchUserInput) ([]InsertUsersBatchReturningRow, error) {
-	return q.InsertUsersBatchReturningBatchInto(ctx, nil, rows)
+func (q *Queries) InsertUsersBatchReturningBatch(ctx context.Context, rowsParam []BatchUserInput) ([]InsertUsersBatchReturningRow, error) {
+	return q.InsertUsersBatchReturningBatchInto(ctx, nil, rowsParam)
 }
 
-func (q *Queries) InsertUsersBatchReturningBatchInto(ctx context.Context, dst []InsertUsersBatchReturningRow, rows []BatchUserInput) ([]InsertUsersBatchReturningRow, error) {
-	totalRows := len(rows)
+func (q *Queries) InsertUsersBatchReturningBatchInto(ctx context.Context, dst []InsertUsersBatchReturningRow, rowsParam []BatchUserInput) ([]InsertUsersBatchReturningRow, error) {
+	totalRows := len(rowsParam)
 	if totalRows == 0 {
 		return nil, runtime.ErrEmptySliceParam
 	}
 	p := paramsInsertUsersBatchReturning{
-		Rows: rows,
+		Rows: rowsParam,
 	}
 	_, colMask, flagMask, _ := computeInsertUsersBatchReturningKey(p)
 	maxRows := q.cache.MaxRowsPerBatch(sqlDialect, 0, 3)
@@ -2293,7 +2293,7 @@ func (q *Queries) InsertUsersBatchReturningBatchInto(ctx context.Context, dst []
 		targetQ = q.WithTx(autoTx)
 		defer func() { _ = targetQ.Close() }()
 	}
-	for row, err := range targetQ.InsertUsersBatchReturningBatchSeq(ctx, rows) {
+	for row, err := range targetQ.InsertUsersBatchReturningBatchSeq(ctx, rowsParam) {
 		if err != nil {
 			if autoTx != nil {
 				_ = autoTx.Rollback()
@@ -2310,22 +2310,22 @@ func (q *Queries) InsertUsersBatchReturningBatchInto(ctx context.Context, dst []
 	return dst, nil
 }
 
-func (q *Queries) InsertUsersBatchReturningBatchSeq(ctx context.Context, rows []BatchUserInput) iter.Seq2[InsertUsersBatchReturningRow, error] {
+func (q *Queries) InsertUsersBatchReturningBatchSeq(ctx context.Context, rowsParam []BatchUserInput) iter.Seq2[InsertUsersBatchReturningRow, error] {
 	return func(yield func(InsertUsersBatchReturningRow, error) bool) {
 		var zero InsertUsersBatchReturningRow
-		totalRows := len(rows)
+		totalRows := len(rowsParam)
 		if totalRows == 0 {
 			yield(zero, runtime.ErrEmptySliceParam)
 			return
 		}
 		p := paramsInsertUsersBatchReturning{
-			Rows: rows,
+			Rows: rowsParam,
 		}
 		var sortedIdx *[]int
-		if !isBatchUserInputSorted(rows) {
+		if !isBatchUserInputSorted(rowsParam) {
 			sortedIdx = runtime.AcquireIndices(totalRows)
 			defer runtime.ReleaseIndices(sortedIdx)
-			slices.SortFunc(*sortedIdx, func(i, j int) int { return compareBatchUserInput(rows[i], rows[j]) })
+			slices.SortFunc(*sortedIdx, func(i, j int) int { return compareBatchUserInput(rowsParam[i], rowsParam[j]) })
 		}
 		_, colMask, flagMask, _ := computeInsertUsersBatchReturningKey(p)
 		shapeTag := runtime.ComputeBatchShapeTag(colMask, flagMask)
@@ -2336,7 +2336,7 @@ func (q *Queries) InsertUsersBatchReturningBatchSeq(ctx context.Context, rows []
 			if offset > 0 {
 				chunkSize = q.cache.PlanBatchChunk(stmtIDInsertUsersBatchReturning, colMask, flagMask, totalRows-offset, maxRows, false)
 			}
-			chunkRows := rows[offset : offset+chunkSize]
+			chunkRows := rowsParam[offset : offset+chunkSize]
 			chunkP := p
 			chunkP.Rows = chunkRows
 			vk, _, _, approxArgs := computeInsertUsersBatchReturningKey(chunkP)
@@ -2346,9 +2346,9 @@ func (q *Queries) InsertUsersBatchReturningBatchSeq(ctx context.Context, rows []
 			} else {
 				idx := (*sortedIdx)[offset : offset+chunkSize]
 				for _, k := range idx {
-					*argBuf = append(*argBuf, rows[k].ID)
-					*argBuf = append(*argBuf, rows[k].Name)
-					*argBuf = append(*argBuf, rows[k].Points)
+					*argBuf = append(*argBuf, rowsParam[k].ID)
+					*argBuf = append(*argBuf, rowsParam[k].Name)
+					*argBuf = append(*argBuf, rowsParam[k].Points)
 				}
 			}
 			var tupleLensBuf [1]int
@@ -2387,8 +2387,8 @@ func (q *Queries) InsertUsersBatchReturningBatchSeq(ctx context.Context, rows []
 	}
 }
 
-func (q *Queries) InsertUsersBatchReturningBatchEach(ctx context.Context, rows []BatchUserInput, fn func(InsertUsersBatchReturningRow) error) error {
-	for row, err := range q.InsertUsersBatchReturningBatchSeq(ctx, rows) {
+func (q *Queries) InsertUsersBatchReturningBatchEach(ctx context.Context, rowsParam []BatchUserInput, fn func(InsertUsersBatchReturningRow) error) error {
+	for row, err := range q.InsertUsersBatchReturningBatchSeq(ctx, rowsParam) {
 		if err != nil {
 			return err
 		}
@@ -2510,9 +2510,9 @@ func computeUpdateUsersBatchFromValuesKey(p paramsUpdateUsersBatchFromValues) (r
 	return vk, colMask, flagMask, approxArgs
 }
 
-func (q *Queries) UpdateUsersBatchFromValues(ctx context.Context, rows []BatchBonusInput) (sql.Result, error) {
+func (q *Queries) UpdateUsersBatchFromValues(ctx context.Context, rowsParam []BatchBonusInput) (sql.Result, error) {
 	p := paramsUpdateUsersBatchFromValues{
-		Rows: rows,
+		Rows: rowsParam,
 	}
 	vk, colMask, flagMask, approxArgs := computeUpdateUsersBatchFromValuesKey(p)
 	argBuf := runtime.AcquireArgsCap(approxArgs)
@@ -2530,9 +2530,9 @@ func (q *Queries) UpdateUsersBatchFromValues(ctx context.Context, rows []BatchBo
 	return q.cache.Exec(ctx, q.db, q.txCache, q.usePrepared, vk, stmtIDUpdateUsersBatchFromValues, runtime.ComputeBatchShapeTag(colMask, flagMask), 0, nil, sqlDialect, descUpdateUsersBatchFromValues, &in, (*argBuf)...)
 }
 
-func (pl *Pipeline) UpdateUsersBatchFromValues(rows []BatchBonusInput) *runtime.ExecFuture {
+func (pl *Pipeline) UpdateUsersBatchFromValues(rowsParam []BatchBonusInput) *runtime.ExecFuture {
 	p := paramsUpdateUsersBatchFromValues{
-		Rows: rows,
+		Rows: rowsParam,
 	}
 	vk, colMask, flagMask, approxArgs := computeUpdateUsersBatchFromValuesKey(p)
 	argBuf := runtime.AcquireArgsCap(approxArgs)
@@ -2547,19 +2547,19 @@ func (pl *Pipeline) UpdateUsersBatchFromValues(rows []BatchBonusInput) *runtime.
 	return pl.Pipeline.QueueExec(stmtIDUpdateUsersBatchFromValues, descUpdateUsersBatchFromValues, in, vk, nil, argBuf, expandErr)
 }
 
-func (q *Queries) UpdateUsersBatchFromValuesBatch(ctx context.Context, rows []BatchBonusInput) (sql.Result, error) {
-	totalRows := len(rows)
+func (q *Queries) UpdateUsersBatchFromValuesBatch(ctx context.Context, rowsParam []BatchBonusInput) (sql.Result, error) {
+	totalRows := len(rowsParam)
 	if totalRows == 0 {
 		return nil, runtime.ErrEmptySliceParam
 	}
 	p := paramsUpdateUsersBatchFromValues{
-		Rows: rows,
+		Rows: rowsParam,
 	}
 	var sortedIdx *[]int
-	if !isBatchBonusInputSorted(rows) {
+	if !isBatchBonusInputSorted(rowsParam) {
 		sortedIdx = runtime.AcquireIndices(totalRows)
 		defer runtime.ReleaseIndices(sortedIdx)
-		slices.SortFunc(*sortedIdx, func(i, j int) int { return compareBatchBonusInput(rows[i], rows[j]) })
+		slices.SortFunc(*sortedIdx, func(i, j int) int { return compareBatchBonusInput(rowsParam[i], rowsParam[j]) })
 	}
 	_, colMask, flagMask, _ := computeUpdateUsersBatchFromValuesKey(p)
 	shapeTag := runtime.ComputeBatchShapeTag(colMask, flagMask)
@@ -2582,7 +2582,7 @@ func (q *Queries) UpdateUsersBatchFromValuesBatch(ctx context.Context, rows []Ba
 		if offset > 0 {
 			chunkSize = q.cache.PlanBatchChunk(stmtIDUpdateUsersBatchFromValues, colMask, flagMask, totalRows-offset, maxRows, false)
 		}
-		chunkRows := rows[offset : offset+chunkSize]
+		chunkRows := rowsParam[offset : offset+chunkSize]
 		chunkP := p
 		chunkP.Rows = chunkRows
 		vk, _, _, approxArgs := computeUpdateUsersBatchFromValuesKey(chunkP)
@@ -2592,8 +2592,8 @@ func (q *Queries) UpdateUsersBatchFromValuesBatch(ctx context.Context, rows []Ba
 		} else {
 			idx := (*sortedIdx)[offset : offset+chunkSize]
 			for _, k := range idx {
-				*argBuf = append(*argBuf, rows[k].ID)
-				*argBuf = append(*argBuf, rows[k].Bonus)
+				*argBuf = append(*argBuf, rowsParam[k].ID)
+				*argBuf = append(*argBuf, rowsParam[k].Bonus)
 			}
 		}
 		var tupleLensBuf [1]int
@@ -2726,9 +2726,9 @@ func computeInsertQuadBatchKey(p paramsInsertQuadBatch) (runtime.VariantKey, uin
 	return vk, colMask, flagMask, approxArgs
 }
 
-func (q *Queries) InsertQuadBatch(ctx context.Context, rows []QuadInput) (sql.Result, error) {
+func (q *Queries) InsertQuadBatch(ctx context.Context, rowsParam []QuadInput) (sql.Result, error) {
 	p := paramsInsertQuadBatch{
-		Rows: rows,
+		Rows: rowsParam,
 	}
 	vk, colMask, flagMask, approxArgs := computeInsertQuadBatchKey(p)
 	argBuf := runtime.AcquireArgsCap(approxArgs)
@@ -2746,9 +2746,9 @@ func (q *Queries) InsertQuadBatch(ctx context.Context, rows []QuadInput) (sql.Re
 	return q.cache.Exec(ctx, q.db, q.txCache, q.usePrepared, vk, stmtIDInsertQuadBatch, runtime.ComputeBatchShapeTag(colMask, flagMask), 0, nil, sqlDialect, descInsertQuadBatch, &in, (*argBuf)...)
 }
 
-func (pl *Pipeline) InsertQuadBatch(rows []QuadInput) *runtime.ExecFuture {
+func (pl *Pipeline) InsertQuadBatch(rowsParam []QuadInput) *runtime.ExecFuture {
 	p := paramsInsertQuadBatch{
-		Rows: rows,
+		Rows: rowsParam,
 	}
 	vk, colMask, flagMask, approxArgs := computeInsertQuadBatchKey(p)
 	argBuf := runtime.AcquireArgsCap(approxArgs)
@@ -2763,19 +2763,19 @@ func (pl *Pipeline) InsertQuadBatch(rows []QuadInput) *runtime.ExecFuture {
 	return pl.Pipeline.QueueExec(stmtIDInsertQuadBatch, descInsertQuadBatch, in, vk, nil, argBuf, expandErr)
 }
 
-func (q *Queries) InsertQuadBatchBatch(ctx context.Context, rows []QuadInput) (sql.Result, error) {
-	totalRows := len(rows)
+func (q *Queries) InsertQuadBatchBatch(ctx context.Context, rowsParam []QuadInput) (sql.Result, error) {
+	totalRows := len(rowsParam)
 	if totalRows == 0 {
 		return nil, runtime.ErrEmptySliceParam
 	}
 	p := paramsInsertQuadBatch{
-		Rows: rows,
+		Rows: rowsParam,
 	}
 	var sortedIdx *[]int
-	if !isQuadInputSorted(rows) {
+	if !isQuadInputSorted(rowsParam) {
 		sortedIdx = runtime.AcquireIndices(totalRows)
 		defer runtime.ReleaseIndices(sortedIdx)
-		slices.SortFunc(*sortedIdx, func(i, j int) int { return compareQuadInput(rows[i], rows[j]) })
+		slices.SortFunc(*sortedIdx, func(i, j int) int { return compareQuadInput(rowsParam[i], rowsParam[j]) })
 	}
 	_, colMask, flagMask, _ := computeInsertQuadBatchKey(p)
 	shapeTag := runtime.ComputeBatchShapeTag(colMask, flagMask)
@@ -2798,7 +2798,7 @@ func (q *Queries) InsertQuadBatchBatch(ctx context.Context, rows []QuadInput) (s
 		if offset > 0 {
 			chunkSize = q.cache.PlanBatchChunk(stmtIDInsertQuadBatch, colMask, flagMask, totalRows-offset, maxRows, false)
 		}
-		chunkRows := rows[offset : offset+chunkSize]
+		chunkRows := rowsParam[offset : offset+chunkSize]
 		chunkP := p
 		chunkP.Rows = chunkRows
 		vk, _, _, approxArgs := computeInsertQuadBatchKey(chunkP)
@@ -2808,10 +2808,10 @@ func (q *Queries) InsertQuadBatchBatch(ctx context.Context, rows []QuadInput) (s
 		} else {
 			idx := (*sortedIdx)[offset : offset+chunkSize]
 			for _, k := range idx {
-				*argBuf = append(*argBuf, rows[k].ID)
-				*argBuf = append(*argBuf, rows[k].GroupKey)
-				*argBuf = append(*argBuf, rows[k].Priority)
-				*argBuf = append(*argBuf, rows[k].CreatedTs)
+				*argBuf = append(*argBuf, rowsParam[k].ID)
+				*argBuf = append(*argBuf, rowsParam[k].GroupKey)
+				*argBuf = append(*argBuf, rowsParam[k].Priority)
+				*argBuf = append(*argBuf, rowsParam[k].CreatedTs)
 			}
 		}
 		var tupleLensBuf [1]int

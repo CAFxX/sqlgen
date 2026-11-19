@@ -287,6 +287,13 @@ To allow any statement inside a pipelined `p.If(...)` branch to be gated on the 
 2. **Presort Modifiers (`ASC` / `DESC`)**:
    - After a `SlotSlice` token (`IDs:[]int64`) or a tuple field (`ID:int64` or `ID:int64::bigint`), look ahead across horizontal whitespace (`' '`, `'\t'`). If the next word is `ASC`, `asc`, `DESC`, or `desc` (followed by whitespace, `,`, `)`, `\n`, or `EOF`), consume it and set `HasSort = true, Desc = (lower == "desc")`.
    - Validate that the element/field Go type is orderable (`int*`, `uint*`, `float*`, `uintptr`, `byte`, `rune`, `string`, `time.Time`, `[]byte`, `[]uint8`); otherwise return a compile-time error.
+4. **Generator input restrictions** (each is rejected at generation time rather than emitting code that does not compile or silently misbehaves):
+   - A conditional flag name, a parameter name and a `SelectCols` Go field of one statement MUST NOT collide.
+   - An unconditional output column MUST NOT follow a conditional one, and a statement MUST NOT have more than 64 unconditional output columns.
+   - Statements sharing a `result_type` MUST declare identical `sqlgen.Order` lists.
+   - Statement names, `result_type` names and tuple struct names MUST NOT equal a generated declaration (`reservedStatementNames`, `reservedTypeNames`).
+   - A parameter whose Go name equals a generated local (`reservedParamNames`) is renamed `<name>Param`.
+   - Tuple bodies accept `--` and `/* */` comments and `$tag$` strings. `DISTINCT ON (...)` stays in the projection prefix, and neither `IS [NOT] DISTINCT FROM` nor a qualified word such as `t.limit` ends the projection.
 3. **Exact `CanBatch` and `CanStream` Predicates**:
    - Let `collectionOccs := ps.SliceOccs + ps.TupleOccs`.
    - `CanBatch` is `true` if and only if:

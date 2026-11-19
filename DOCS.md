@@ -109,6 +109,9 @@ statements:
   - If an `AS alias:type` clause is present, the Go struct field name is `PascalCase(alias)` (with standard Go initialisms uppercased: `id` $\rightarrow$ `ID`, `url` $\rightarrow$ `URL`, `uuid` $\rightarrow$ `UUID`, `sku` $\rightarrow$ `SKU`, `api` $\rightarrow$ `API`, `http` $\rightarrow$ `HTTP`, `ip` $\rightarrow$ `IP`, `json` $\rightarrow$ `JSON`, `sql` $\rightarrow$ `SQL`, `cpu` $\rightarrow$ `CPU`, `ttl` $\rightarrow$ `TTL`, `uri` $\rightarrow$ `URI`, `uid` $\rightarrow$ `UID`, `acl` $\rightarrow$ `ACL`, `html` $\rightarrow$ `HTML`, `xml` $\rightarrow$ `XML`, `db` $\rightarrow$ `DB`, `io` $\rightarrow$ `IO`, `os` $\rightarrow$ `OS`, `ui` $\rightarrow$ `UI`).
   - Otherwise, if the expression is a table-qualified column `u.created_at:time.Time`, the `u.` prefix is stripped and the field name is `CreatedAt`.
   - Complex expressions without a trailing identifier (e.g., `COUNT(*):int64` without `AS alias`) MUST include `AS <alias>:type`.
+- **Column and parameter restrictions**:
+  - Conditional output columns must come after all unconditional ones, and a statement may have at most 64 unconditional output columns; `sqlgen` rejects anything else.
+  - A parameter whose Go name would shadow a generated local (e.g. `:in:string`) is renamed with a `Param` suffix (`inParam`).
 - **Single-Column vs. Struct Return Types**:
   - By default (`result_type: ""`), `sqlgen` generates a struct `<Name>Row` (or your custom `result_type: MyStruct` name, which can be shared across multiple statements that return the same columns).
   - When a `kind: one` or `kind: many` statement has **1 output column** and sets `result_type` to a predeclared Go scalar type (e.g., `result_type: int64` or `result_type: string`), the generated methods return the scalar type directly (`(int64, error)` or `([]int64, error)`).

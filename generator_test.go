@@ -13,6 +13,7 @@ import (
 	"math/rand/v2"
 	"os"
 	"path/filepath"
+	"regexp"
 	"slices"
 	"strconv"
 	"strings"
@@ -1096,6 +1097,7 @@ statements:
 			if err != nil {
 				t.Fatalf("GenerateFromYAML(%s) failed: %v", tc.name, err)
 			}
+			typeCheckGenerated(t, tc.name, src)
 			fset := token.NewFileSet()
 			file, err := parser.ParseFile(fset, tc.name+".go", src, parser.AllErrors)
 			if err != nil {
@@ -2000,5 +2002,95 @@ statements:
 	}
 	if my := gen("mysql"); strings.Contains(my, "Cast") {
 		t.Error("mysql (question) output must not contain PostgreSQL casts")
+	}
+}
+
+// ----------------------------------------------------------------------------------------------
+// Inputs found by independent review that used to generate uncompilable or silently wrong code.
+// ----------------------------------------------------------------------------------------------
+
+func genYAML(dialect, statements string) ([]byte, error) {
+	return sqlgen.GenerateFromYAML([]byte("version: \"1\"\npackage: p\nout: p_gen.go\ndialect: " + dialect + "\nstatements:\n" + statements))
+}
+
+func TestGeneratorRejectsInputsThatCannotGenerateCorrectCode(t *testing.T) {
+	var sixtyFive []string
+	for i := 0; i < 65; i++ {
+		sixtyFive = append(sixtyFive, fmt.Sprintf("c%d:int64", i))
+	}
+	for _, tc := range []struct{ name, stmts, want string }{
+		{"flag and param share a Go field", "  - name: Q\n    kind: many\n    sql: |\n      SELECT id:int64 FROM t WHERE 1=1 {?Name: AND name = :name:string}\n", `collides with parameter "name"`},
+		{"flag named SelectCols", "  - name: Q\n    kind: many\n    sql: |\n      SELECT id:int64 FROM t WHERE 1=1 {?SelectCols: AND x = 1}\n", "SelectCols projection mask"},
+		{"param named SelectCols in params struct", "  - name: Q\n    kind: many\n    params_struct: true\n    sql: |\n      SELECT id:int64 FROM t WHERE x = :select_cols:int64\n", "SelectCols projection mask"},
+		{"unconditional column after a conditional one", "  - name: Q\n    kind: many\n    sql: |\n      SELECT id:int64 {?WithName: , name:string}, created:time.Time FROM t\n", "follows a conditional"},
+		{"more than 64 columns", "  - name: Q\n    kind: many\n    sql: |\n      SELECT " + strings.Join(sixtyFive, ", ") + " FROM t\n", "more than 64 unconditional output columns"},
+		{"result_type collides with generated type", "  - name: Q\n    kind: many\n    result_type: Order\n    sql: |\n      SELECT id:int64 FROM t\n", `result_type "Order" collides`},
+		{"tuple struct collides with generated type", "  - name: Q\n    kind: exec\n    sql: |\n      INSERT INTO t(a) VALUES :rows:[]Query(A:int64)\n", `tuple struct name "Query" collides`},
+		{"statement named like a generated method", "  - name: Close\n    kind: exec\n    sql: DELETE FROM t\n", `statement name "Close" collides`},
+		{"shared result_type with different Order lists", "  - name: A\n    kind: many\n    result_type: M\n    sql: |\n      SELECT name:string, age:int64 FROM t ORDER BY :Sort:sqlgen.Order(name, age)\n  - name: B\n    kind: many\n    result_type: M\n    sql: |\n      SELECT name:string, age:int64 FROM u ORDER BY :Sort:sqlgen.Order(age, name)\n", "different sqlgen.Order column lists"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if _, err := genYAML("postgres", tc.stmts); err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("want error containing %q, got %v", tc.want, err)
+			}
+		})
+	}
+}
+
+func TestGeneratorHandlesTrickyButValidInputs(t *testing.T) {
+	for _, tc := range []struct {
+		name, stmts string
+		check       func(t *testing.T, src string)
+	}{
+		{"parameter named like a generated local", "  - name: Q\n    kind: exec\n    sql: |\n      UPDATE t SET a = :in:string, b = :item:int64, c = :err:int64, d = :len:int64 WHERE id = :zero:int64\n",
+			func(t *testing.T, src string) {
+				for _, want := range []string{"inParam string", "itemParam int64", "errParam int64", "lenParam int64", "zeroParam int64"} {
+					if !strings.Contains(src, want) {
+						t.Errorf("missing %q", want)
+					}
+				}
+			}},
+		{"line comment inside a tuple body", "  - name: Q\n    kind: exec\n    sql: |\n      INSERT INTO t(a,b) VALUES :Rows:[]R(A:int64, -- note: x\n        B:string)\n",
+			func(t *testing.T, src string) {
+				if !strings.Contains(src, "-- note: x\\n") {
+					t.Error("comment not preserved verbatim (with its newline)")
+				}
+				if strings.Contains(src, "type R struct") && strings.Contains(src, "\tNote ") {
+					t.Error("comment text was parsed as a tuple field")
+				}
+			}},
+		{"trailing line comment and block comment in a tuple body", "  - name: Q\n    kind: exec\n    sql: |\n      INSERT INTO t(a,b) VALUES :Rows:[]R(A:int64 /* a:int64 */, B:string -- trailing)\n      )\n", nil},
+		{"dollar quoted text in a tuple body", "  - name: Q\n    kind: exec\n    sql: |\n      INSERT INTO t(a,b) VALUES :Rows:[]R(A:int64, $q$B:string)$q$, B:string)\n", nil},
+		{"DISTINCT ON stays in the projection prefix", "  - name: Q\n    kind: many\n    sql: |\n      SELECT DISTINCT ON (a) a:int64, b:string FROM t\n",
+			func(t *testing.T, src string) {
+				if !strings.Contains(src, `"SELECT DISTINCT ON (a) "`) || !strings.Contains(src, `SelectColExprs: []string{"a", "b"}`) {
+					t.Errorf("DISTINCT ON leaked into the first column expression:\n%s", src)
+				}
+			}},
+		{"IS NOT DISTINCT FROM and qualified keywords in a projection", "  - name: Q\n    kind: many\n    sql: |\n      SELECT t.id:int64, t.limit:int64, a IS NOT DISTINCT FROM b AS same:bool FROM t WHERE t.offset > :o:int64\n",
+			func(t *testing.T, src string) {
+				if !regexp.MustCompile(`\bSame\s+bool\b`).MatchString(src) || !regexp.MustCompile(`\bLimit\s+int64\b`).MatchString(src) {
+					t.Error("projection ended early: output columns were lost")
+				}
+			}},
+		{"shared result_type, only one statement ordered", "  - name: A\n    kind: many\n    result_type: M\n    sql: |\n      SELECT name:string, age:int64 FROM t ORDER BY :Sort:sqlgen.Order(name, age)\n  - name: B\n    kind: many\n    result_type: M\n    sql: |\n      SELECT name:string, age:int64 FROM u\n", nil},
+		{"64 unconditional columns is allowed", "  - name: Q\n    kind: many\n    sql: |\n      SELECT " + func() string {
+			var c []string
+			for i := 0; i < 64; i++ {
+				c = append(c, fmt.Sprintf("c%d:int64", i))
+			}
+			return strings.Join(c, ", ")
+		}() + " FROM t\n", nil},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			src, err := genYAML("postgres", tc.stmts)
+			if err != nil {
+				t.Fatalf("generate: %v", err)
+			}
+			typeCheckGenerated(t, "tricky", src)
+			if tc.check != nil {
+				tc.check(t, string(src))
+			}
+		})
 	}
 }
