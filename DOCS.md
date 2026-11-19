@@ -264,7 +264,9 @@ rows, err := q.SearchMembers(ctx, SearchMembersParams{
 
 ### 2.6. Keyset Pagination (`sqlgen.Seek` & `sqlgen.Order`)
 
-Avoid slow `OFFSET` pagination on deep pages using `After:sqlgen.Seek` (in `WHERE`) and `Sort:sqlgen.Order(col1, col2, ...)` (in `ORDER BY`):
+Avoid slow `OFFSET` pagination on deep pages using `After:sqlgen.Seek` (in `WHERE`) and `Sort:sqlgen.Order(col1, col2, ...)` (in `ORDER BY`).
+
+**Requirements for correct pages.** The sort columns must be `NOT NULL`, and the last column listed must be unique (a primary key, say) so that it breaks every tie. `sqlgen` compares each column with `<` / `>` / `=`, and any comparison with `NULL` is unknown, so a row whose sort column is `NULL` is skipped by every page after the first; engines also disagree on where `NULL`s sort. If a column can be `NULL`, sort on `COALESCE(col, sentinel)` in a subquery or generated column instead. The pagination test suite (`integration/suite_test.go`) checks every ASC/DESC combination and page size against an in-memory oracle on every supported engine, on duplicate-heavy but non-null data.
 
 ```yaml
 statements:
