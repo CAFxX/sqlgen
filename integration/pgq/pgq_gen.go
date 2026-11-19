@@ -196,6 +196,25 @@ func isint64AscSorted(s []int64) bool {
 	return true
 }
 
+func compareint64Desc(a, b int64) int {
+	if b < a {
+		return -1
+	}
+	if b > a {
+		return 1
+	}
+	return 0
+}
+
+func isint64DescSorted(s []int64) bool {
+	for i := 1; i < len(s); i++ {
+		if compareint64Desc(s[i-1], s[i]) > 0 {
+			return false
+		}
+	}
+	return true
+}
+
 type Item struct {
 	ID     int64
 	OrgID  int64
@@ -216,6 +235,11 @@ type OrgStat struct {
 	OrgID int64
 	N     int64
 	Total int64
+}
+
+type Written struct {
+	ID    int64
+	Score int64
 }
 
 const stmtIDInsertItems uint32 = 1
@@ -2306,4 +2330,1093 @@ func (pl *Pipeline) SetAllStatus(status string) *runtime.ExecFuture {
 		FlagMask: flagMask,
 	}
 	return pl.Pipeline.QueueExec(stmtIDSetAllStatus, descSetAllStatus, in, vk, &pl.q.fastSlots[3], argBuf, expandErr)
+}
+
+const stmtIDUpsertItemsReturning uint32 = 13
+
+const (
+	WrittenColID    uint64 = 1 << 0
+	WrittenColScore uint64 = 1 << 1
+	WrittenColsAll  uint64 = (1 << 2) - 1
+)
+
+const (
+	UpsertItemsReturningColID    uint64 = 1 << 0
+	UpsertItemsReturningColScore uint64 = 1 << 1
+	UpsertItemsReturningColsAll  uint64 = (1 << 2) - 1
+)
+
+type paramsUpsertItemsReturning struct {
+	Rows []NewItem
+}
+
+var descUpsertItemsReturning = &runtime.QueryDescriptor{
+	StmtID:       13,
+	StmtVerb:     runtime.VerbInsert,
+	HasReturning: true,
+	Segments:     []string{"INSERT INTO sg_items (id, org_id, name, score, status)\n", "", "", "\nON CONFLICT (id) DO UPDATE SET score = sg_items.score + EXCLUDED.score\nRETURNING ", ""},
+	Slots: []runtime.Slot{
+		{Kind: runtime.SlotInsertTupleValuesOpen},
+		{Kind: runtime.SlotTupleSlice, Tuple: &runtime.TupleDescriptor{Segments: []string{"", "::bigint, ", "::bigint, ", "::text, ", "::bigint, ", "::text"}, NumFields: 5, Casts: []string{"bigint", "bigint", "text", "bigint", "text"}}},
+		{Kind: runtime.SlotInsertTupleValuesClose},
+		{Kind: runtime.SlotSelectCols},
+	},
+	SelectColExprs: []string{"id", "score"},
+	NumTuples:      1,
+}
+
+func expandUpsertItemsReturningParams(dst *[]any, dialect runtime.Dialect, p paramsUpsertItemsReturning) error {
+	_ = dialect
+	_ = p
+	if len(p.Rows) == 0 {
+		return runtime.ErrEmptySliceParam
+	}
+	if isNewItemSorted(p.Rows) {
+		for i := range p.Rows {
+			*dst = append(*dst, p.Rows[i].ID)
+			*dst = append(*dst, p.Rows[i].OrgID)
+			*dst = append(*dst, p.Rows[i].Name)
+			*dst = append(*dst, p.Rows[i].Score)
+			*dst = append(*dst, p.Rows[i].Status)
+		}
+	} else {
+		idxBuf := runtime.AcquireIndices(len(p.Rows))
+		idx := *idxBuf
+		slices.SortFunc(idx, func(i, j int) int { return compareNewItem(p.Rows[i], p.Rows[j]) })
+		for _, k := range idx {
+			*dst = append(*dst, p.Rows[k].ID)
+			*dst = append(*dst, p.Rows[k].OrgID)
+			*dst = append(*dst, p.Rows[k].Name)
+			*dst = append(*dst, p.Rows[k].Score)
+			*dst = append(*dst, p.Rows[k].Status)
+		}
+		runtime.ReleaseIndices(idxBuf)
+	}
+	return nil
+}
+
+func expandUpsertItemsReturningArgs(dst *[]any, dialect runtime.Dialect, q *runtime.Query) error {
+	return expandUpsertItemsReturningParams(dst, dialect, q.Params.(paramsUpsertItemsReturning))
+}
+
+func computeUpsertItemsReturningKey(p paramsUpsertItemsReturning) (runtime.VariantKey, uint64, uint64, int) {
+	_ = p
+	var colMask uint64
+	var flagMask uint64
+	var orderSpec runtime.Order
+	var hasSeek bool
+	orderKey := runtime.EncodeOrderKey(orderSpec, hasSeek)
+	approxArgs := 5
+	var d0 uint64
+	d0 = uint64(len(p.Rows))
+	approxArgs += len(p.Rows) * 5
+	vk := runtime.MakeVariantKey(stmtIDUpsertItemsReturning, colMask, flagMask, orderKey, d0)
+	return vk, colMask, flagMask, approxArgs
+}
+
+// UpsertItemsReturningQuery constructs a composable runtime.Query without executing it.
+func UpsertItemsReturningQuery(rows []NewItem) runtime.Query {
+	p := paramsUpsertItemsReturning{
+		Rows: rows,
+	}
+	_, colMask, flagMask, _ := computeUpsertItemsReturningKey(p)
+	var tupleLensBuf [1]int
+	tupleLensBuf[0] = len(p.Rows)
+	in := runtime.RenderInput{
+		ColMask:   colMask,
+		FlagMask:  flagMask,
+		TupleLens: tupleLensBuf[:],
+	}
+	orderKey := runtime.EncodeOrderKey(in.OrderSpec, in.HasSeek)
+	var shapeLens [1]int
+	copy(shapeLens[0:], in.TupleLens)
+	shapeTag := runtime.ComputeSubqueryShape(stmtIDUpsertItemsReturning, colMask, flagMask, orderKey, false, shapeLens[:]...)
+	return runtime.Query{
+		StmtID:   stmtIDUpsertItemsReturning,
+		Desc:     descUpsertItemsReturning,
+		Input:    in,
+		Params:   p,
+		Expand:   expandUpsertItemsReturningArgs,
+		ShapeTag: shapeTag,
+	}
+}
+
+// UpsertItemsReturningQuery constructs a composable runtime.Query without executing it.
+func (q *Queries) UpsertItemsReturningQuery(rows []NewItem) runtime.Query {
+	return UpsertItemsReturningQuery(rows)
+}
+
+func scanUpsertItemsReturningRow(scanner interface{ Scan(...any) error }, dst *Written, colMask uint64, p paramsUpsertItemsReturning) error {
+	_ = colMask
+	_ = p
+	var item Written
+	var scanBuf [2]any
+	scanBuf[0] = &item.ID
+	scanBuf[1] = &item.Score
+	scanSlice := scanBuf[:2]
+	if err := scanner.Scan(scanSlice...); err != nil {
+		return err
+	}
+	*dst = item
+	return nil
+}
+
+func (q *Queries) UpsertItemsReturning(ctx context.Context, rows []NewItem) ([]Written, error) {
+	return q.UpsertItemsReturningInto(ctx, nil, rows)
+}
+
+func (q *Queries) UpsertItemsReturningInto(ctx context.Context, dst []Written, rows []NewItem) ([]Written, error) {
+	for row, err := range q.UpsertItemsReturningSeq(ctx, rows) {
+		if err != nil {
+			return nil, err
+		}
+		dst = append(dst, row)
+	}
+	return dst, nil
+}
+
+func (q *Queries) UpsertItemsReturningSeq(ctx context.Context, rows []NewItem) iter.Seq2[Written, error] {
+	return func(yield func(Written, error) bool) {
+		var zero Written
+		p := paramsUpsertItemsReturning{
+			Rows: rows,
+		}
+		vk, colMask, flagMask, approxArgs := computeUpsertItemsReturningKey(p)
+		_ = colMask
+		argBuf := runtime.AcquireArgsCap(approxArgs)
+		defer runtime.ReleaseArgs(argBuf)
+		if err := expandUpsertItemsReturningParams(argBuf, sqlDialect, p); err != nil {
+			yield(zero, err)
+			return
+		}
+		var tupleLensBuf [1]int
+		tupleLensBuf[0] = len(p.Rows)
+		in := runtime.RenderInput{
+			ColMask:   colMask,
+			FlagMask:  flagMask,
+			TupleLens: tupleLensBuf[:],
+		}
+		sqlRows, ms, err := q.cache.Query(ctx, q.db, q.txCache, q.usePrepared, vk, stmtIDUpsertItemsReturning, runtime.ComputeBatchShapeTag(colMask, flagMask), 0, nil, sqlDialect, descUpsertItemsReturning, &in, (*argBuf)...)
+		if err != nil {
+			yield(zero, err)
+			return
+		}
+		var item Written
+		for sqlRows.Next() {
+			if err := scanUpsertItemsReturningRow(sqlRows, &item, colMask, p); err != nil {
+				runtime.CloseRows(sqlRows, ms)
+				yield(zero, err)
+				return
+			}
+			if !yield(item, nil) {
+				runtime.CloseRows(sqlRows, ms)
+				return
+			}
+		}
+		err = sqlRows.Err()
+		runtime.CloseRows(sqlRows, ms)
+		if err != nil {
+			yield(zero, err)
+		}
+	}
+}
+
+func (q *Queries) UpsertItemsReturningEach(ctx context.Context, rows []NewItem, fn func(Written) error) error {
+	for row, err := range q.UpsertItemsReturningSeq(ctx, rows) {
+		if err != nil {
+			return err
+		}
+		if err := fn(row); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (pl *Pipeline) UpsertItemsReturning(rows []NewItem) *runtime.SliceFuture[Written] {
+	p := paramsUpsertItemsReturning{
+		Rows: rows,
+	}
+	vk, colMask, flagMask, approxArgs := computeUpsertItemsReturningKey(p)
+	argBuf := runtime.AcquireArgsCap(approxArgs)
+	expandErr := expandUpsertItemsReturningParams(argBuf, sqlDialect, p)
+	var tupleLensBuf [1]int
+	tupleLensBuf[0] = len(p.Rows)
+	in := runtime.RenderInput{
+		ColMask:   colMask,
+		FlagMask:  flagMask,
+		TupleLens: tupleLensBuf[:],
+	}
+	return runtime.QueueSlice(pl.Pipeline, stmtIDUpsertItemsReturning, descUpsertItemsReturning, in, vk, nil, argBuf, expandErr,
+		func(rs *sql.Rows, dst *Written) error { return scanUpsertItemsReturningRow(rs, dst, colMask, p) },
+	)
+}
+
+func (q *Queries) UpsertItemsReturningBatch(ctx context.Context, rows []NewItem) ([]Written, error) {
+	return q.UpsertItemsReturningBatchInto(ctx, nil, rows)
+}
+
+func (q *Queries) UpsertItemsReturningBatchInto(ctx context.Context, dst []Written, rows []NewItem) ([]Written, error) {
+	totalRows := len(rows)
+	if totalRows == 0 {
+		return nil, runtime.ErrEmptySliceParam
+	}
+	p := paramsUpsertItemsReturning{
+		Rows: rows,
+	}
+	_, colMask, flagMask, _ := computeUpsertItemsReturningKey(p)
+	maxRows := q.cache.MaxRowsPerBatch(sqlDialect, 0, 5)
+	firstChunk := q.cache.PlanBatchChunk(stmtIDUpsertItemsReturning, colMask, flagMask, totalRows, maxRows, true)
+	targetQ := q
+	var autoTx *sql.Tx
+	if q.txCache == nil && firstChunk < totalRows {
+		var err error
+		autoTx, err = q.db.BeginTx(ctx, nil)
+		if err != nil {
+			return nil, err
+		}
+		targetQ = q.WithTx(autoTx)
+		defer func() { _ = targetQ.Close() }()
+	}
+	for row, err := range targetQ.UpsertItemsReturningBatchSeq(ctx, rows) {
+		if err != nil {
+			if autoTx != nil {
+				_ = autoTx.Rollback()
+			}
+			return nil, err
+		}
+		dst = append(dst, row)
+	}
+	if autoTx != nil {
+		if err := autoTx.Commit(); err != nil {
+			return nil, err
+		}
+	}
+	return dst, nil
+}
+
+func (q *Queries) UpsertItemsReturningBatchSeq(ctx context.Context, rows []NewItem) iter.Seq2[Written, error] {
+	return func(yield func(Written, error) bool) {
+		var zero Written
+		totalRows := len(rows)
+		if totalRows == 0 {
+			yield(zero, runtime.ErrEmptySliceParam)
+			return
+		}
+		p := paramsUpsertItemsReturning{
+			Rows: rows,
+		}
+		var sortedIdx *[]int
+		if !isNewItemSorted(rows) {
+			sortedIdx = runtime.AcquireIndices(totalRows)
+			defer runtime.ReleaseIndices(sortedIdx)
+			slices.SortFunc(*sortedIdx, func(i, j int) int { return compareNewItem(rows[i], rows[j]) })
+		}
+		_, colMask, flagMask, _ := computeUpsertItemsReturningKey(p)
+		shapeTag := runtime.ComputeBatchShapeTag(colMask, flagMask)
+		maxRows := q.cache.MaxRowsPerBatch(sqlDialect, 0, 5)
+		firstChunk := q.cache.PlanBatchChunk(stmtIDUpsertItemsReturning, colMask, flagMask, totalRows, maxRows, true)
+		for offset := 0; offset < totalRows; {
+			chunkSize := firstChunk
+			if offset > 0 {
+				chunkSize = q.cache.PlanBatchChunk(stmtIDUpsertItemsReturning, colMask, flagMask, totalRows-offset, maxRows, false)
+			}
+			chunkRows := rows[offset : offset+chunkSize]
+			chunkP := p
+			chunkP.Rows = chunkRows
+			vk, _, _, approxArgs := computeUpsertItemsReturningKey(chunkP)
+			argBuf := runtime.AcquireArgsCap(approxArgs)
+			if sortedIdx == nil {
+				_ = expandUpsertItemsReturningParams(argBuf, sqlDialect, chunkP)
+			} else {
+				idx := (*sortedIdx)[offset : offset+chunkSize]
+				for _, k := range idx {
+					*argBuf = append(*argBuf, rows[k].ID)
+					*argBuf = append(*argBuf, rows[k].OrgID)
+					*argBuf = append(*argBuf, rows[k].Name)
+					*argBuf = append(*argBuf, rows[k].Score)
+					*argBuf = append(*argBuf, rows[k].Status)
+				}
+			}
+			var tupleLensBuf [1]int
+			tupleLensBuf[0] = len(chunkP.Rows)
+			in := runtime.RenderInput{
+				ColMask:   colMask,
+				FlagMask:  flagMask,
+				TupleLens: tupleLensBuf[:],
+			}
+			sqlRows, ms, err := q.cache.Query(ctx, q.db, q.txCache, q.usePrepared, vk, stmtIDUpsertItemsReturning, shapeTag, chunkSize, nil, sqlDialect, descUpsertItemsReturning, &in, (*argBuf)...)
+			runtime.ReleaseArgs(argBuf)
+			if err != nil {
+				yield(zero, err)
+				return
+			}
+			var item Written
+			for sqlRows.Next() {
+				if err := scanUpsertItemsReturningRow(sqlRows, &item, colMask, chunkP); err != nil {
+					runtime.CloseRows(sqlRows, ms)
+					yield(zero, err)
+					return
+				}
+				if !yield(item, nil) {
+					runtime.CloseRows(sqlRows, ms)
+					return
+				}
+			}
+			err = sqlRows.Err()
+			runtime.CloseRows(sqlRows, ms)
+			if err != nil {
+				yield(zero, err)
+				return
+			}
+			offset += chunkSize
+		}
+	}
+}
+
+func (q *Queries) UpsertItemsReturningBatchEach(ctx context.Context, rows []NewItem, fn func(Written) error) error {
+	for row, err := range q.UpsertItemsReturningBatchSeq(ctx, rows) {
+		if err != nil {
+			return err
+		}
+		if err := fn(row); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (q *Queries) UpsertItemsReturningStreamSeq(ctx context.Context, seq iter.Seq2[NewItem, error]) iter.Seq2[Written, error] {
+	return func(yield func(Written, error) bool) {
+		var zero Written
+		chunkCap := min(256, q.cache.MaxRowsPerBatch(sqlDialect, 0, 5))
+		bufPtr := newItemChunkPool.Get().(*[]NewItem)
+		chunk := (*bufPtr)[:0]
+		defer func() {
+			clear(chunk)
+			*bufPtr = chunk[:0]
+			newItemChunkPool.Put(bufPtr)
+		}()
+		flushChunk := func() bool {
+			if len(chunk) == 0 {
+				return true
+			}
+			for r, err := range q.UpsertItemsReturningBatchSeq(ctx, chunk) {
+				if err != nil {
+					yield(zero, err)
+					return false
+				}
+				if !yield(r, nil) {
+					return false
+				}
+			}
+			chunk = chunk[:0]
+			return true
+		}
+		for item, err := range seq {
+			if err != nil {
+				yield(zero, err)
+				return
+			}
+			chunk = append(chunk, item)
+			if len(chunk) >= chunkCap {
+				if !flushChunk() {
+					return
+				}
+			}
+		}
+		_ = flushChunk()
+	}
+}
+
+func (q *Queries) UpsertItemsReturningStream(ctx context.Context, seq iter.Seq2[NewItem, error]) ([]Written, error) {
+	var out []Written
+	for r, err := range q.UpsertItemsReturningStreamSeq(ctx, seq) {
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, r)
+	}
+	return out, nil
+}
+
+const stmtIDBumpScoresReturning uint32 = 14
+
+const (
+	BumpScoresReturningColID    uint64 = 1 << 0
+	BumpScoresReturningColScore uint64 = 1 << 1
+	BumpScoresReturningColsAll  uint64 = (1 << 2) - 1
+)
+
+type paramsBumpScoresReturning struct {
+	Delta int64
+	IDs   []int64
+}
+
+var descBumpScoresReturning = &runtime.QueryDescriptor{
+	StmtID:       14,
+	StmtVerb:     runtime.VerbUpdate,
+	HasReturning: true,
+	Segments:     []string{"UPDATE sg_items SET score = score + ", "\nWHERE ", "id IN (", ")\n", "RETURNING ", ""},
+	Slots: []runtime.Slot{
+		{Kind: runtime.SlotScalar},
+		{Kind: runtime.SlotBranchGuardOpen},
+		{Kind: runtime.SlotSlice},
+		{Kind: runtime.SlotBranchGuardClose},
+		{Kind: runtime.SlotSelectCols},
+	},
+	SelectColExprs: []string{"id", "score"},
+	NumSlices:      1,
+}
+
+func expandBumpScoresReturningParams(dst *[]any, dialect runtime.Dialect, p paramsBumpScoresReturning) error {
+	_ = dialect
+	_ = p
+	*dst = append(*dst, p.Delta)
+	if len(p.IDs) == 0 {
+		return runtime.ErrEmptySliceParam
+	}
+	if isint64AscSorted(p.IDs) {
+		for _, v := range p.IDs {
+			*dst = append(*dst, v)
+		}
+	} else {
+		idxBuf := runtime.AcquireIndices(len(p.IDs))
+		idx := *idxBuf
+		slices.SortFunc(idx, func(i, j int) int { return compareint64Asc(p.IDs[i], p.IDs[j]) })
+		for _, k := range idx {
+			*dst = append(*dst, p.IDs[k])
+		}
+		runtime.ReleaseIndices(idxBuf)
+	}
+	return nil
+}
+
+func expandBumpScoresReturningArgs(dst *[]any, dialect runtime.Dialect, q *runtime.Query) error {
+	return expandBumpScoresReturningParams(dst, dialect, q.Params.(paramsBumpScoresReturning))
+}
+
+func computeBumpScoresReturningKey(p paramsBumpScoresReturning) (runtime.VariantKey, uint64, uint64, int) {
+	_ = p
+	var colMask uint64
+	var flagMask uint64
+	var orderSpec runtime.Order
+	var hasSeek bool
+	orderKey := runtime.EncodeOrderKey(orderSpec, hasSeek)
+	approxArgs := 6
+	var d0 uint64
+	d0 = uint64(len(p.IDs))
+	approxArgs += len(p.IDs)
+	vk := runtime.MakeVariantKey(stmtIDBumpScoresReturning, colMask, flagMask, orderKey, d0)
+	return vk, colMask, flagMask, approxArgs
+}
+
+// BumpScoresReturningQuery constructs a composable runtime.Query without executing it.
+func BumpScoresReturningQuery(delta int64, ids []int64) runtime.Query {
+	p := paramsBumpScoresReturning{
+		Delta: delta,
+		IDs:   ids,
+	}
+	_, colMask, flagMask, _ := computeBumpScoresReturningKey(p)
+	var sliceLensBuf [1]int
+	sliceLensBuf[0] = len(p.IDs)
+	in := runtime.RenderInput{
+		ColMask:   colMask,
+		FlagMask:  flagMask,
+		SliceLens: sliceLensBuf[:],
+	}
+	orderKey := runtime.EncodeOrderKey(in.OrderSpec, in.HasSeek)
+	var shapeLens [1]int
+	copy(shapeLens[:], in.SliceLens)
+	shapeTag := runtime.ComputeSubqueryShape(stmtIDBumpScoresReturning, colMask, flagMask, orderKey, false, shapeLens[:]...)
+	return runtime.Query{
+		StmtID:   stmtIDBumpScoresReturning,
+		Desc:     descBumpScoresReturning,
+		Input:    in,
+		Params:   p,
+		Expand:   expandBumpScoresReturningArgs,
+		ShapeTag: shapeTag,
+	}
+}
+
+// BumpScoresReturningQuery constructs a composable runtime.Query without executing it.
+func (q *Queries) BumpScoresReturningQuery(delta int64, ids []int64) runtime.Query {
+	return BumpScoresReturningQuery(delta, ids)
+}
+
+func scanBumpScoresReturningRow(scanner interface{ Scan(...any) error }, dst *Written, colMask uint64, p paramsBumpScoresReturning) error {
+	_ = colMask
+	_ = p
+	var item Written
+	var scanBuf [2]any
+	scanBuf[0] = &item.ID
+	scanBuf[1] = &item.Score
+	scanSlice := scanBuf[:2]
+	if err := scanner.Scan(scanSlice...); err != nil {
+		return err
+	}
+	*dst = item
+	return nil
+}
+
+func (q *Queries) BumpScoresReturning(ctx context.Context, delta int64, ids []int64) ([]Written, error) {
+	return q.BumpScoresReturningInto(ctx, nil, delta, ids)
+}
+
+func (q *Queries) BumpScoresReturningInto(ctx context.Context, dst []Written, delta int64, ids []int64) ([]Written, error) {
+	for row, err := range q.BumpScoresReturningSeq(ctx, delta, ids) {
+		if err != nil {
+			return nil, err
+		}
+		dst = append(dst, row)
+	}
+	return dst, nil
+}
+
+func (q *Queries) BumpScoresReturningSeq(ctx context.Context, delta int64, ids []int64) iter.Seq2[Written, error] {
+	return func(yield func(Written, error) bool) {
+		var zero Written
+		p := paramsBumpScoresReturning{
+			Delta: delta,
+			IDs:   ids,
+		}
+		vk, colMask, flagMask, approxArgs := computeBumpScoresReturningKey(p)
+		_ = colMask
+		argBuf := runtime.AcquireArgsCap(approxArgs)
+		defer runtime.ReleaseArgs(argBuf)
+		if err := expandBumpScoresReturningParams(argBuf, sqlDialect, p); err != nil {
+			yield(zero, err)
+			return
+		}
+		var sliceLensBuf [1]int
+		sliceLensBuf[0] = len(p.IDs)
+		in := runtime.RenderInput{
+			ColMask:   colMask,
+			FlagMask:  flagMask,
+			SliceLens: sliceLensBuf[:],
+		}
+		sqlRows, ms, err := q.cache.Query(ctx, q.db, q.txCache, q.usePrepared, vk, stmtIDBumpScoresReturning, runtime.ComputeBatchShapeTag(colMask, flagMask), 0, nil, sqlDialect, descBumpScoresReturning, &in, (*argBuf)...)
+		if err != nil {
+			yield(zero, err)
+			return
+		}
+		var item Written
+		for sqlRows.Next() {
+			if err := scanBumpScoresReturningRow(sqlRows, &item, colMask, p); err != nil {
+				runtime.CloseRows(sqlRows, ms)
+				yield(zero, err)
+				return
+			}
+			if !yield(item, nil) {
+				runtime.CloseRows(sqlRows, ms)
+				return
+			}
+		}
+		err = sqlRows.Err()
+		runtime.CloseRows(sqlRows, ms)
+		if err != nil {
+			yield(zero, err)
+		}
+	}
+}
+
+func (q *Queries) BumpScoresReturningEach(ctx context.Context, delta int64, ids []int64, fn func(Written) error) error {
+	for row, err := range q.BumpScoresReturningSeq(ctx, delta, ids) {
+		if err != nil {
+			return err
+		}
+		if err := fn(row); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (pl *Pipeline) BumpScoresReturning(delta int64, ids []int64) *runtime.SliceFuture[Written] {
+	p := paramsBumpScoresReturning{
+		Delta: delta,
+		IDs:   ids,
+	}
+	vk, colMask, flagMask, approxArgs := computeBumpScoresReturningKey(p)
+	argBuf := runtime.AcquireArgsCap(approxArgs)
+	expandErr := expandBumpScoresReturningParams(argBuf, sqlDialect, p)
+	var sliceLensBuf [1]int
+	sliceLensBuf[0] = len(p.IDs)
+	in := runtime.RenderInput{
+		ColMask:   colMask,
+		FlagMask:  flagMask,
+		SliceLens: sliceLensBuf[:],
+	}
+	return runtime.QueueSlice(pl.Pipeline, stmtIDBumpScoresReturning, descBumpScoresReturning, in, vk, nil, argBuf, expandErr,
+		func(rs *sql.Rows, dst *Written) error { return scanBumpScoresReturningRow(rs, dst, colMask, p) },
+	)
+}
+
+func (q *Queries) BumpScoresReturningBatch(ctx context.Context, delta int64, ids []int64) ([]Written, error) {
+	return q.BumpScoresReturningBatchInto(ctx, nil, delta, ids)
+}
+
+func (q *Queries) BumpScoresReturningBatchInto(ctx context.Context, dst []Written, delta int64, ids []int64) ([]Written, error) {
+	totalRows := len(ids)
+	if totalRows == 0 {
+		return nil, runtime.ErrEmptySliceParam
+	}
+	p := paramsBumpScoresReturning{
+		Delta: delta,
+		IDs:   ids,
+	}
+	_, colMask, flagMask, _ := computeBumpScoresReturningKey(p)
+	maxRows := q.cache.MaxRowsPerBatch(sqlDialect, 1, 1)
+	firstChunk := q.cache.PlanBatchChunk(stmtIDBumpScoresReturning, colMask, flagMask, totalRows, maxRows, true)
+	targetQ := q
+	var autoTx *sql.Tx
+	if q.txCache == nil && firstChunk < totalRows {
+		var err error
+		autoTx, err = q.db.BeginTx(ctx, nil)
+		if err != nil {
+			return nil, err
+		}
+		targetQ = q.WithTx(autoTx)
+		defer func() { _ = targetQ.Close() }()
+	}
+	for row, err := range targetQ.BumpScoresReturningBatchSeq(ctx, delta, ids) {
+		if err != nil {
+			if autoTx != nil {
+				_ = autoTx.Rollback()
+			}
+			return nil, err
+		}
+		dst = append(dst, row)
+	}
+	if autoTx != nil {
+		if err := autoTx.Commit(); err != nil {
+			return nil, err
+		}
+	}
+	return dst, nil
+}
+
+func (q *Queries) BumpScoresReturningBatchSeq(ctx context.Context, delta int64, ids []int64) iter.Seq2[Written, error] {
+	return func(yield func(Written, error) bool) {
+		var zero Written
+		totalRows := len(ids)
+		if totalRows == 0 {
+			yield(zero, runtime.ErrEmptySliceParam)
+			return
+		}
+		p := paramsBumpScoresReturning{
+			Delta: delta,
+			IDs:   ids,
+		}
+		var sortedIdx *[]int
+		if !isint64AscSorted(ids) {
+			sortedIdx = runtime.AcquireIndices(totalRows)
+			defer runtime.ReleaseIndices(sortedIdx)
+			slices.SortFunc(*sortedIdx, func(i, j int) int { return compareint64Asc(ids[i], ids[j]) })
+		}
+		_, colMask, flagMask, _ := computeBumpScoresReturningKey(p)
+		shapeTag := runtime.ComputeBatchShapeTag(colMask, flagMask)
+		maxRows := q.cache.MaxRowsPerBatch(sqlDialect, 1, 1)
+		firstChunk := q.cache.PlanBatchChunk(stmtIDBumpScoresReturning, colMask, flagMask, totalRows, maxRows, true)
+		for offset := 0; offset < totalRows; {
+			chunkSize := firstChunk
+			if offset > 0 {
+				chunkSize = q.cache.PlanBatchChunk(stmtIDBumpScoresReturning, colMask, flagMask, totalRows-offset, maxRows, false)
+			}
+			chunkRows := ids[offset : offset+chunkSize]
+			chunkP := p
+			chunkP.IDs = chunkRows
+			vk, _, _, approxArgs := computeBumpScoresReturningKey(chunkP)
+			argBuf := runtime.AcquireArgsCap(approxArgs)
+			if sortedIdx == nil {
+				_ = expandBumpScoresReturningParams(argBuf, sqlDialect, chunkP)
+			} else {
+				*argBuf = append(*argBuf, chunkP.Delta)
+				idx := (*sortedIdx)[offset : offset+chunkSize]
+				for _, k := range idx {
+					*argBuf = append(*argBuf, ids[k])
+				}
+			}
+			var sliceLensBuf [1]int
+			sliceLensBuf[0] = len(chunkP.IDs)
+			in := runtime.RenderInput{
+				ColMask:   colMask,
+				FlagMask:  flagMask,
+				SliceLens: sliceLensBuf[:],
+			}
+			sqlRows, ms, err := q.cache.Query(ctx, q.db, q.txCache, q.usePrepared, vk, stmtIDBumpScoresReturning, shapeTag, chunkSize, nil, sqlDialect, descBumpScoresReturning, &in, (*argBuf)...)
+			runtime.ReleaseArgs(argBuf)
+			if err != nil {
+				yield(zero, err)
+				return
+			}
+			var item Written
+			for sqlRows.Next() {
+				if err := scanBumpScoresReturningRow(sqlRows, &item, colMask, chunkP); err != nil {
+					runtime.CloseRows(sqlRows, ms)
+					yield(zero, err)
+					return
+				}
+				if !yield(item, nil) {
+					runtime.CloseRows(sqlRows, ms)
+					return
+				}
+			}
+			err = sqlRows.Err()
+			runtime.CloseRows(sqlRows, ms)
+			if err != nil {
+				yield(zero, err)
+				return
+			}
+			offset += chunkSize
+		}
+	}
+}
+
+func (q *Queries) BumpScoresReturningBatchEach(ctx context.Context, delta int64, ids []int64, fn func(Written) error) error {
+	for row, err := range q.BumpScoresReturningBatchSeq(ctx, delta, ids) {
+		if err != nil {
+			return err
+		}
+		if err := fn(row); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+const stmtIDDeleteReturning uint32 = 15
+
+const (
+	DeleteReturningColID    uint64 = 1 << 0
+	DeleteReturningColScore uint64 = 1 << 1
+	DeleteReturningColsAll  uint64 = (1 << 2) - 1
+)
+
+type paramsDeleteReturning struct {
+	IDs []int64
+}
+
+var descDeleteReturning = &runtime.QueryDescriptor{
+	StmtID:       15,
+	StmtVerb:     runtime.VerbDelete,
+	HasReturning: true,
+	Segments:     []string{"DELETE FROM sg_items WHERE ", "id IN (", ")\n", "RETURNING ", ""},
+	Slots: []runtime.Slot{
+		{Kind: runtime.SlotBranchGuardOpen},
+		{Kind: runtime.SlotSlice},
+		{Kind: runtime.SlotBranchGuardClose},
+		{Kind: runtime.SlotSelectCols},
+	},
+	SelectColExprs: []string{"id", "score"},
+	NumSlices:      1,
+}
+
+func expandDeleteReturningParams(dst *[]any, dialect runtime.Dialect, p paramsDeleteReturning) error {
+	_ = dialect
+	_ = p
+	if len(p.IDs) == 0 {
+		return runtime.ErrEmptySliceParam
+	}
+	if isint64DescSorted(p.IDs) {
+		for _, v := range p.IDs {
+			*dst = append(*dst, v)
+		}
+	} else {
+		idxBuf := runtime.AcquireIndices(len(p.IDs))
+		idx := *idxBuf
+		slices.SortFunc(idx, func(i, j int) int { return compareint64Desc(p.IDs[i], p.IDs[j]) })
+		for _, k := range idx {
+			*dst = append(*dst, p.IDs[k])
+		}
+		runtime.ReleaseIndices(idxBuf)
+	}
+	return nil
+}
+
+func expandDeleteReturningArgs(dst *[]any, dialect runtime.Dialect, q *runtime.Query) error {
+	return expandDeleteReturningParams(dst, dialect, q.Params.(paramsDeleteReturning))
+}
+
+func computeDeleteReturningKey(p paramsDeleteReturning) (runtime.VariantKey, uint64, uint64, int) {
+	_ = p
+	var colMask uint64
+	var flagMask uint64
+	var orderSpec runtime.Order
+	var hasSeek bool
+	orderKey := runtime.EncodeOrderKey(orderSpec, hasSeek)
+	approxArgs := 5
+	var d0 uint64
+	d0 = uint64(len(p.IDs))
+	approxArgs += len(p.IDs)
+	vk := runtime.MakeVariantKey(stmtIDDeleteReturning, colMask, flagMask, orderKey, d0)
+	return vk, colMask, flagMask, approxArgs
+}
+
+// DeleteReturningQuery constructs a composable runtime.Query without executing it.
+func DeleteReturningQuery(ids []int64) runtime.Query {
+	p := paramsDeleteReturning{
+		IDs: ids,
+	}
+	_, colMask, flagMask, _ := computeDeleteReturningKey(p)
+	var sliceLensBuf [1]int
+	sliceLensBuf[0] = len(p.IDs)
+	in := runtime.RenderInput{
+		ColMask:   colMask,
+		FlagMask:  flagMask,
+		SliceLens: sliceLensBuf[:],
+	}
+	orderKey := runtime.EncodeOrderKey(in.OrderSpec, in.HasSeek)
+	var shapeLens [1]int
+	copy(shapeLens[:], in.SliceLens)
+	shapeTag := runtime.ComputeSubqueryShape(stmtIDDeleteReturning, colMask, flagMask, orderKey, false, shapeLens[:]...)
+	return runtime.Query{
+		StmtID:   stmtIDDeleteReturning,
+		Desc:     descDeleteReturning,
+		Input:    in,
+		Params:   p,
+		Expand:   expandDeleteReturningArgs,
+		ShapeTag: shapeTag,
+	}
+}
+
+// DeleteReturningQuery constructs a composable runtime.Query without executing it.
+func (q *Queries) DeleteReturningQuery(ids []int64) runtime.Query {
+	return DeleteReturningQuery(ids)
+}
+
+func scanDeleteReturningRow(scanner interface{ Scan(...any) error }, dst *Written, colMask uint64, p paramsDeleteReturning) error {
+	_ = colMask
+	_ = p
+	var item Written
+	var scanBuf [2]any
+	scanBuf[0] = &item.ID
+	scanBuf[1] = &item.Score
+	scanSlice := scanBuf[:2]
+	if err := scanner.Scan(scanSlice...); err != nil {
+		return err
+	}
+	*dst = item
+	return nil
+}
+
+func (q *Queries) DeleteReturning(ctx context.Context, ids []int64) ([]Written, error) {
+	return q.DeleteReturningInto(ctx, nil, ids)
+}
+
+func (q *Queries) DeleteReturningInto(ctx context.Context, dst []Written, ids []int64) ([]Written, error) {
+	for row, err := range q.DeleteReturningSeq(ctx, ids) {
+		if err != nil {
+			return nil, err
+		}
+		dst = append(dst, row)
+	}
+	return dst, nil
+}
+
+func (q *Queries) DeleteReturningSeq(ctx context.Context, ids []int64) iter.Seq2[Written, error] {
+	return func(yield func(Written, error) bool) {
+		var zero Written
+		p := paramsDeleteReturning{
+			IDs: ids,
+		}
+		vk, colMask, flagMask, approxArgs := computeDeleteReturningKey(p)
+		_ = colMask
+		argBuf := runtime.AcquireArgsCap(approxArgs)
+		defer runtime.ReleaseArgs(argBuf)
+		if err := expandDeleteReturningParams(argBuf, sqlDialect, p); err != nil {
+			yield(zero, err)
+			return
+		}
+		var sliceLensBuf [1]int
+		sliceLensBuf[0] = len(p.IDs)
+		in := runtime.RenderInput{
+			ColMask:   colMask,
+			FlagMask:  flagMask,
+			SliceLens: sliceLensBuf[:],
+		}
+		sqlRows, ms, err := q.cache.Query(ctx, q.db, q.txCache, q.usePrepared, vk, stmtIDDeleteReturning, runtime.ComputeBatchShapeTag(colMask, flagMask), 0, nil, sqlDialect, descDeleteReturning, &in, (*argBuf)...)
+		if err != nil {
+			yield(zero, err)
+			return
+		}
+		var item Written
+		for sqlRows.Next() {
+			if err := scanDeleteReturningRow(sqlRows, &item, colMask, p); err != nil {
+				runtime.CloseRows(sqlRows, ms)
+				yield(zero, err)
+				return
+			}
+			if !yield(item, nil) {
+				runtime.CloseRows(sqlRows, ms)
+				return
+			}
+		}
+		err = sqlRows.Err()
+		runtime.CloseRows(sqlRows, ms)
+		if err != nil {
+			yield(zero, err)
+		}
+	}
+}
+
+func (q *Queries) DeleteReturningEach(ctx context.Context, ids []int64, fn func(Written) error) error {
+	for row, err := range q.DeleteReturningSeq(ctx, ids) {
+		if err != nil {
+			return err
+		}
+		if err := fn(row); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (pl *Pipeline) DeleteReturning(ids []int64) *runtime.SliceFuture[Written] {
+	p := paramsDeleteReturning{
+		IDs: ids,
+	}
+	vk, colMask, flagMask, approxArgs := computeDeleteReturningKey(p)
+	argBuf := runtime.AcquireArgsCap(approxArgs)
+	expandErr := expandDeleteReturningParams(argBuf, sqlDialect, p)
+	var sliceLensBuf [1]int
+	sliceLensBuf[0] = len(p.IDs)
+	in := runtime.RenderInput{
+		ColMask:   colMask,
+		FlagMask:  flagMask,
+		SliceLens: sliceLensBuf[:],
+	}
+	return runtime.QueueSlice(pl.Pipeline, stmtIDDeleteReturning, descDeleteReturning, in, vk, nil, argBuf, expandErr,
+		func(rs *sql.Rows, dst *Written) error { return scanDeleteReturningRow(rs, dst, colMask, p) },
+	)
+}
+
+func (q *Queries) DeleteReturningBatch(ctx context.Context, ids []int64) ([]Written, error) {
+	return q.DeleteReturningBatchInto(ctx, nil, ids)
+}
+
+func (q *Queries) DeleteReturningBatchInto(ctx context.Context, dst []Written, ids []int64) ([]Written, error) {
+	totalRows := len(ids)
+	if totalRows == 0 {
+		return nil, runtime.ErrEmptySliceParam
+	}
+	p := paramsDeleteReturning{
+		IDs: ids,
+	}
+	_, colMask, flagMask, _ := computeDeleteReturningKey(p)
+	maxRows := q.cache.MaxRowsPerBatch(sqlDialect, 0, 1)
+	firstChunk := q.cache.PlanBatchChunk(stmtIDDeleteReturning, colMask, flagMask, totalRows, maxRows, true)
+	targetQ := q
+	var autoTx *sql.Tx
+	if q.txCache == nil && firstChunk < totalRows {
+		var err error
+		autoTx, err = q.db.BeginTx(ctx, nil)
+		if err != nil {
+			return nil, err
+		}
+		targetQ = q.WithTx(autoTx)
+		defer func() { _ = targetQ.Close() }()
+	}
+	for row, err := range targetQ.DeleteReturningBatchSeq(ctx, ids) {
+		if err != nil {
+			if autoTx != nil {
+				_ = autoTx.Rollback()
+			}
+			return nil, err
+		}
+		dst = append(dst, row)
+	}
+	if autoTx != nil {
+		if err := autoTx.Commit(); err != nil {
+			return nil, err
+		}
+	}
+	return dst, nil
+}
+
+func (q *Queries) DeleteReturningBatchSeq(ctx context.Context, ids []int64) iter.Seq2[Written, error] {
+	return func(yield func(Written, error) bool) {
+		var zero Written
+		totalRows := len(ids)
+		if totalRows == 0 {
+			yield(zero, runtime.ErrEmptySliceParam)
+			return
+		}
+		p := paramsDeleteReturning{
+			IDs: ids,
+		}
+		var sortedIdx *[]int
+		if !isint64DescSorted(ids) {
+			sortedIdx = runtime.AcquireIndices(totalRows)
+			defer runtime.ReleaseIndices(sortedIdx)
+			slices.SortFunc(*sortedIdx, func(i, j int) int { return compareint64Desc(ids[i], ids[j]) })
+		}
+		_, colMask, flagMask, _ := computeDeleteReturningKey(p)
+		shapeTag := runtime.ComputeBatchShapeTag(colMask, flagMask)
+		maxRows := q.cache.MaxRowsPerBatch(sqlDialect, 0, 1)
+		firstChunk := q.cache.PlanBatchChunk(stmtIDDeleteReturning, colMask, flagMask, totalRows, maxRows, true)
+		for offset := 0; offset < totalRows; {
+			chunkSize := firstChunk
+			if offset > 0 {
+				chunkSize = q.cache.PlanBatchChunk(stmtIDDeleteReturning, colMask, flagMask, totalRows-offset, maxRows, false)
+			}
+			chunkRows := ids[offset : offset+chunkSize]
+			chunkP := p
+			chunkP.IDs = chunkRows
+			vk, _, _, approxArgs := computeDeleteReturningKey(chunkP)
+			argBuf := runtime.AcquireArgsCap(approxArgs)
+			if sortedIdx == nil {
+				_ = expandDeleteReturningParams(argBuf, sqlDialect, chunkP)
+			} else {
+				idx := (*sortedIdx)[offset : offset+chunkSize]
+				for _, k := range idx {
+					*argBuf = append(*argBuf, ids[k])
+				}
+			}
+			var sliceLensBuf [1]int
+			sliceLensBuf[0] = len(chunkP.IDs)
+			in := runtime.RenderInput{
+				ColMask:   colMask,
+				FlagMask:  flagMask,
+				SliceLens: sliceLensBuf[:],
+			}
+			sqlRows, ms, err := q.cache.Query(ctx, q.db, q.txCache, q.usePrepared, vk, stmtIDDeleteReturning, shapeTag, chunkSize, nil, sqlDialect, descDeleteReturning, &in, (*argBuf)...)
+			runtime.ReleaseArgs(argBuf)
+			if err != nil {
+				yield(zero, err)
+				return
+			}
+			var item Written
+			for sqlRows.Next() {
+				if err := scanDeleteReturningRow(sqlRows, &item, colMask, chunkP); err != nil {
+					runtime.CloseRows(sqlRows, ms)
+					yield(zero, err)
+					return
+				}
+				if !yield(item, nil) {
+					runtime.CloseRows(sqlRows, ms)
+					return
+				}
+			}
+			err = sqlRows.Err()
+			runtime.CloseRows(sqlRows, ms)
+			if err != nil {
+				yield(zero, err)
+				return
+			}
+			offset += chunkSize
+		}
+	}
+}
+
+func (q *Queries) DeleteReturningBatchEach(ctx context.Context, ids []int64, fn func(Written) error) error {
+	for row, err := range q.DeleteReturningBatchSeq(ctx, ids) {
+		if err != nil {
+			return err
+		}
+		if err := fn(row); err != nil {
+			return err
+		}
+	}
+	return nil
 }

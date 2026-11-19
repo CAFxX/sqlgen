@@ -206,7 +206,8 @@ VALUES :items:[]AccountPatch(ID:int64::bigint ASC, Delta:int64::bigint)
 **Important Presorting Guarantees**:
 1. **Caller Slice Immutability**: `sqlgen` never mutates the caller's input slice! It sorts a pooled index permutation (`[]int`) in $O(N \log N)$ (or $O(N)$ fast-path when already sorted).
 2. **Global Sort Before Batch Chunking**: In `<Name>Batch`, `sqlgen` sorts the entire $N$-item batch globally *before* splitting it into wire-safe chunks, guaranteeing globally monotonic lock acquisition across all chunks.
-3. **`RETURNING` Row Order**: When a presorted query includes a `RETURNING` clause (`kind: many`), the database executes and returns rows in the **presorted execution order**, while your input slice remains in its original order.
+3. **`RETURNING` Row Order**: For `INSERT ... VALUES` / upserts driven by a presorted tuple slice, the database processes and returns rows in the **presorted order** (verified on PostgreSQL and CockroachDB, including across batch chunks), while your input slice remains in its original order. For `UPDATE` / `DELETE ... WHERE col IN (:ids ASC|DESC) ... RETURNING` the presort fixes the order of the *bound parameters* only: the database visits, locks and returns rows in the order its query plan chooses (PostgreSQL turns an `IN` list into a sorted index scan, so a `DESC` list has no effect). Treat the returned order of such statements as unspecified; if you need one, wrap the statement in a CTE and `ORDER BY` the result.
+4. **What presorting does and does not buy you**: it makes lock acquisition monotonic where the engine processes keys in the order they are bound (multi-row `INSERT`/upsert `VALUES`). For `IN` lists the engine decides, so prefer `ASC` there (it matches the ascending index order engines use) and use `SELECT ... FOR UPDATE ... ORDER BY` first if you need a guaranteed lock order.
 
 ---
 
