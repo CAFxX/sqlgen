@@ -2963,3 +2963,101 @@ func TestIsRetryableTxErrorSeesThroughWrapping(t *testing.T) {
 		}
 	}
 }
+
+// A database opened through WrapConnector over a driver that is NOT a WirePipeliner must fall back to
+// the sequential path for a standalone Pipeline.Flush instead of surfacing driver.ErrSkip.
+func TestStandalonePipelineFlushOnWrappedNonWireDriverFallsBack(t *testing.T) {
+	cfg := &mockDriverConfig{}
+	db := sql.OpenDB(WrapConnector(&mockConnector{cfg: cfg}))
+	t.Cleanup(func() { _ = db.Close() })
+	cache := NewStmtCache()
+	defer func() { _ = cache.Close() }()
+
+	desc := &QueryDescriptor{
+		StmtID:   1,
+		StmtVerb: VerbUpdate,
+		Segments: []string{"UPDATE items SET score = ", ""},
+		Slots:    []Slot{{Kind: SlotScalar}},
+	}
+	p := NewPipeline(context.Background(), db, cache, nil, true, DialectQuestion)
+	ab := AcquireArgsCap(1)
+	*ab = append(*ab, int64(1))
+	fut := p.QueueExec(1, desc, RenderInput{}, MakeVariantKey(1, 0, 0, 0), nil, ab, nil)
+	if err := p.Flush(); err != nil {
+		t.Fatalf("Flush on a wrapped, non-wire driver must use the sequential fallback, got: %v", err)
+	}
+	if _, err := fut.Result(); err != nil {
+		t.Fatalf("future result: %v", err)
+	}
+	if cfg.execCalls.Load() == 0 {
+		t.Fatal("the operation never reached the database")
+	}
+}
+
+// The message-text fallback must not mistake data values or unrelated numbers for transient-error codes.
+func TestIsRetryableTxErrorTextFallbackIgnoresDataValues(t *testing.T) {
+	for _, msg := range []string{
+		"Error 1062 (23000): Duplicate entry '40001' for key 'PRIMARY'",
+		"ERROR: duplicate key value violates unique constraint \"t_pkey\" (SQLSTATE 23505): Key (id)=(140001) already exists",
+		"Error 1062 (23000): Duplicate entry 'order-55p03-x' for key 'uk_ref'",
+		"ERROR: value too long for type character varying(40) (SQLSTATE 22001): 40P01-ref",
+	} {
+		if IsRetryableTxError(errors.New(msg), false) {
+			t.Errorf("permanent error classified as retryable: %s", msg)
+		}
+	}
+	// ...while the real messages of the supported engines still are.
+	for _, msg := range []string{
+		"ERROR: deadlock detected (SQLSTATE 40P01)",
+		"ERROR: could not serialize access due to concurrent update (SQLSTATE 40001)",
+		"ERROR: restart transaction: TransactionRetryWithProtoRefreshError: WriteTooOldError (SQLSTATE 40001)",
+		"ERROR: could not obtain lock on row in relation \"t\" (SQLSTATE 55P03)",
+		"Error 1213 (40001): Deadlock found when trying to get lock; try restarting transaction",
+		"Error 1205 (HY000): Lock wait timeout exceeded; try restarting transaction",
+		"database is locked (5) (SQLITE_BUSY)",
+		"database table is locked (6) (SQLITE_LOCKED)",
+	} {
+		if !IsRetryableTxError(errors.New(msg), false) {
+			t.Errorf("transient error not classified as retryable: %s", msg)
+		}
+	}
+}
+
+type sqlStateErr struct{ state, msg string }
+
+func (e sqlStateErr) Error() string    { return e.msg }
+func (e sqlStateErr) SQLState() string { return e.state }
+
+// Only a genuine integer overflow (the assertion/abort guard) may be translated into the pipeline's
+// assertion/abort errors; unrelated "out of range" failures must surface unchanged.
+func TestTranslateWireErrorOnlyTranslatesIntegerOverflow(t *testing.T) {
+	assertOp := func() *PipelineOp { return &PipelineOp{Decorators: OpDecorators{AssertRows: 1}} }
+	abortErr := errors.New("custom abort")
+	abortOp := func() *PipelineOp {
+		return &PipelineOp{Decorators: OpDecorators{AssertRows: -1, IsAbort: true}, AbortErr: abortErr}
+	}
+	for _, e := range []error{
+		sqlStateErr{"22008", "ERROR: date/time field value out of range: \"2026-13-45\" (SQLSTATE 22008)"},
+		errors.New("ERROR: timestamp out of range (SQLSTATE 22008)"),
+	} {
+		if got := TranslateWireError(assertOp(), e); got != e {
+			t.Errorf("unrelated error %q translated to %v", e, got)
+		}
+		if got := TranslateWireError(abortOp(), e); got != e {
+			t.Errorf("unrelated error %q translated to %v on abort op", e, got)
+		}
+	}
+	for _, e := range []error{
+		sqlStateErr{"22003", "ERROR: bigint out of range"},
+		fmt.Errorf("exec: %w", sqlStateErr{"22003", "opaque"}),
+		errors.New("ERROR: bigint out of range (SQLSTATE 22003)"),
+		errors.New("integer overflow"),
+	} {
+		if got := TranslateWireError(assertOp(), e); !errors.Is(got, ErrAssertionFailed) {
+			t.Errorf("overflow %q not translated to ErrAssertionFailed: %v", e, got)
+		}
+		if got := TranslateWireError(abortOp(), e); !errors.Is(got, abortErr) {
+			t.Errorf("overflow %q not translated to the abort error: %v", e, got)
+		}
+	}
+}

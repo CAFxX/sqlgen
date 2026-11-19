@@ -507,6 +507,18 @@ type pipelineConnWrapper struct {
 	driver.Conn
 }
 
+// wirePipelinerOf returns the connection's WirePipeliner, or nil. A connection produced by
+// WrapConnector always has an ExecPipeline method (it must intercept the transactional sentinel), so
+// merely type-asserting it would claim wire support even when the wrapped driver has none.
+func wirePipelinerOf(driverConn any) WirePipeliner {
+	if w, ok := driverConn.(*pipelineConnWrapper); ok {
+		wp, _ := w.Conn.(WirePipeliner)
+		return wp
+	}
+	wp, _ := driverConn.(WirePipeliner)
+	return wp
+}
+
 func (w *pipelineConnWrapper) ExecPipeline(ctx context.Context, ops []PipelineOp) error {
 	if wp, ok := w.Conn.(WirePipeliner); ok {
 		return wp.ExecPipeline(ctx, ops)
@@ -591,13 +603,17 @@ func TranslateWireError(op *PipelineOp, err error) error {
 	if err == nil || op == nil {
 		return err
 	}
-	msg := strings.ToLower(err.Error())
-	isOverflow := strings.Contains(msg, "22003") ||
-		strings.Contains(msg, "integer overflow") ||
-		strings.Contains(msg, "bigint out of range") ||
-		strings.Contains(msg, "out of range")
-	if st, ok := err.(interface{ SQLState() string }); ok && st.SQLState() == "22003" {
+	// The assertion/abort guard raises an integer overflow (SQLSTATE 22003). Match that class only: a bare
+	// "out of range" would also swallow unrelated failures (date/time or timestamp out of range, 22008).
+	isOverflow := false
+	var st interface{ SQLState() string }
+	if errors.As(err, &st) && st.SQLState() == "22003" {
 		isOverflow = true
+	} else {
+		msg := strings.ToLower(err.Error())
+		isOverflow = strings.Contains(msg, "sqlstate 22003") ||
+			strings.Contains(msg, "integer overflow") ||
+			strings.Contains(msg, "bigint out of range")
 	}
 	if isOverflow {
 		if op.Decorators.IsAbort && op.AbortErr != nil {
@@ -1122,8 +1138,8 @@ func (p *Pipeline) Flush() error {
 			var wireSupported bool
 			var wireErr error
 			rawErr := conn.Raw(func(driverConn any) error {
-				wp, ok := driverConn.(WirePipeliner)
-				if !ok {
+				wp := wirePipelinerOf(driverConn)
+				if wp == nil {
 					return nil
 				}
 				wireSupported = true
@@ -1252,23 +1268,24 @@ func IsRetryableTxError(err error, duringCommit bool) bool {
 
 	// Drivers that expose codes as struct fields rather than methods (go-sql-driver/mysql's
 	// MySQLError.Number / .SQLState) are recognised by their stable message text.
+	// Only unambiguous driver phrasing: a bare "40001" or "deadlock" would also match data values in
+	// permanent errors (e.g. "Duplicate entry '40001' for key ...") and make RunTxWithRetry re-run a
+	// transaction that can never succeed.
 	msg := strings.ToLower(err.Error())
-	if strings.Contains(msg, "40001") ||
-		strings.Contains(msg, "40p01") ||
-		strings.Contains(msg, "55p03") ||
-		strings.Contains(msg, "deadlock") ||
-		strings.Contains(msg, "serialization failure") ||
-		strings.Contains(msg, "could not serialize") ||
-		strings.Contains(msg, "lock wait timeout") ||
-		strings.Contains(msg, "error 1213") ||
-		strings.Contains(msg, "error 1205") ||
-		strings.Contains(msg, "sqlite_busy") ||
-		strings.Contains(msg, "sqlite_locked") ||
-		strings.Contains(msg, "database is locked") ||
-		strings.Contains(msg, "database table is locked") {
-		return true
+	for _, marker := range transientErrorMarkers {
+		if strings.Contains(msg, marker) {
+			return true
+		}
 	}
 	return false
+}
+
+var transientErrorMarkers = []string{
+	"sqlstate 40001", "sqlstate 40p01", "sqlstate 55p03", // PostgreSQL / CockroachDB
+	"deadlock detected", "could not serialize access", "restart transaction", // PostgreSQL / CockroachDB
+	"error 1213 (", "error 1205 (", // MySQL / MariaDB: deadlock, lock wait timeout
+	"deadlock found when trying to get lock", "lock wait timeout exceeded",
+	"sqlite_busy", "sqlite_locked", "database is locked", "database table is locked", // SQLite
 }
 
 // RunTxWithRetry executes attemptFn inside a transaction managed by db, applying opts (such as WithTxRetry).
