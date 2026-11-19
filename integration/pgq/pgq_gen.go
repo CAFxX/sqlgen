@@ -41,7 +41,7 @@ type Queries struct {
 	cache       *runtime.StmtCache
 	txCache     *runtime.TxStmtCache
 	usePrepared bool
-	fastSlots   *[2]atomic.Pointer[runtime.ManagedStmt]
+	fastSlots   *[4]atomic.Pointer[runtime.ManagedStmt]
 }
 
 // New creates a new Queries instance with a dedicated StmtCache.
@@ -58,7 +58,7 @@ func NewWithCache(db *sql.DB, cache *runtime.StmtCache) *Queries {
 		db:          db,
 		cache:       cache,
 		usePrepared: true,
-		fastSlots:   new([2]atomic.Pointer[runtime.ManagedStmt]),
+		fastSlots:   new([4]atomic.Pointer[runtime.ManagedStmt]),
 	}
 }
 
@@ -230,7 +230,7 @@ var descInsertItems = &runtime.QueryDescriptor{
 	Segments: []string{"INSERT INTO sg_items (id, org_id, name, score, status)\n", "", "", ""},
 	Slots: []runtime.Slot{
 		{Kind: runtime.SlotInsertTupleValuesOpen},
-		{Kind: runtime.SlotTupleSlice, Tuple: &runtime.TupleDescriptor{Segments: []string{"", ", ", ", ", ", ", ", ", ""}, NumFields: 5}},
+		{Kind: runtime.SlotTupleSlice, Tuple: &runtime.TupleDescriptor{Segments: []string{"", ", ", ", ", ", ", ", ", ""}, NumFields: 5, Casts: []string{"bigint", "bigint", "text", "bigint", "text"}}},
 		{Kind: runtime.SlotInsertTupleValuesClose},
 	},
 	NumTuples: 1,
@@ -2155,4 +2155,155 @@ func (pl *Pipeline) OrgStats(orgs runtime.Query, status string) *runtime.SliceFu
 	return runtime.QueueSlice(pl.Pipeline, stmtIDOrgStats, descOrgStats, in, vk, nil, argBuf, expandErr,
 		func(rs *sql.Rows, dst *OrgStat) error { return scanOrgStatsRow(rs, dst, colMask, p) },
 	)
+}
+
+const stmtIDInsertItem uint32 = 11
+
+type paramsInsertItem struct {
+	ID     int64
+	OrgID  int64
+	Name   string
+	Score  int64
+	Status string
+}
+
+var descInsertItem = &runtime.QueryDescriptor{
+	StmtID:    11,
+	StmtVerb:  runtime.VerbInsert,
+	StaticSQL: "INSERT INTO sg_items (id, org_id, name, score, status)\nVALUES ($1, $2, $3, $4, $5)",
+	Segments:  []string{"INSERT INTO sg_items (id, org_id, name, score, status)\n", "", ", ", ", ", ", ", ", ", "", ""},
+	Slots: []runtime.Slot{
+		{Kind: runtime.SlotInsertValuesOpen},
+		{Kind: runtime.SlotScalar, Cast: "bigint"},
+		{Kind: runtime.SlotScalar, Cast: "bigint"},
+		{Kind: runtime.SlotScalar, Cast: "text"},
+		{Kind: runtime.SlotScalar, Cast: "bigint"},
+		{Kind: runtime.SlotScalar, Cast: "text"},
+		{Kind: runtime.SlotInsertValuesClose},
+	},
+}
+
+func expandInsertItemParams(dst *[]any, dialect runtime.Dialect, p paramsInsertItem) error {
+	_ = dialect
+	_ = p
+	*dst = append(*dst, p.ID)
+	*dst = append(*dst, p.OrgID)
+	*dst = append(*dst, p.Name)
+	*dst = append(*dst, p.Score)
+	*dst = append(*dst, p.Status)
+	return nil
+}
+
+func computeInsertItemKey(p paramsInsertItem) (runtime.VariantKey, uint64, uint64, int) {
+	_ = p
+	var colMask uint64
+	var flagMask uint64
+	var orderSpec runtime.Order
+	var hasSeek bool
+	orderKey := runtime.EncodeOrderKey(orderSpec, hasSeek)
+	approxArgs := 9
+	vk := runtime.MakeVariantKey(stmtIDInsertItem, colMask, flagMask, orderKey)
+	return vk, colMask, flagMask, approxArgs
+}
+
+func (q *Queries) InsertItem(ctx context.Context, id int64, orgID int64, name string, score int64, status string) (sql.Result, error) {
+	p := paramsInsertItem{
+		ID:     id,
+		OrgID:  orgID,
+		Name:   name,
+		Score:  score,
+		Status: status,
+	}
+	vk, colMask, flagMask, approxArgs := computeInsertItemKey(p)
+	argBuf := runtime.AcquireArgsCap(approxArgs)
+	defer runtime.ReleaseArgs(argBuf)
+	_ = expandInsertItemParams(argBuf, sqlDialect, p)
+	in := runtime.RenderInput{
+		ColMask:  colMask,
+		FlagMask: flagMask,
+	}
+	return q.cache.Exec(ctx, q.db, q.txCache, q.usePrepared, vk, stmtIDInsertItem, runtime.ComputeBatchShapeTag(colMask, flagMask), 0, &q.fastSlots[2], sqlDialect, descInsertItem, &in, (*argBuf)...)
+}
+
+func (pl *Pipeline) InsertItem(id int64, orgID int64, name string, score int64, status string) *runtime.ExecFuture {
+	p := paramsInsertItem{
+		ID:     id,
+		OrgID:  orgID,
+		Name:   name,
+		Score:  score,
+		Status: status,
+	}
+	vk, colMask, flagMask, approxArgs := computeInsertItemKey(p)
+	argBuf := runtime.AcquireArgsCap(approxArgs)
+	expandErr := expandInsertItemParams(argBuf, sqlDialect, p)
+	in := runtime.RenderInput{
+		ColMask:  colMask,
+		FlagMask: flagMask,
+	}
+	return pl.Pipeline.QueueExec(stmtIDInsertItem, descInsertItem, in, vk, &pl.q.fastSlots[2], argBuf, expandErr)
+}
+
+const stmtIDSetAllStatus uint32 = 12
+
+type paramsSetAllStatus struct {
+	Status string
+}
+
+var descSetAllStatus = &runtime.QueryDescriptor{
+	StmtID:    12,
+	StmtVerb:  runtime.VerbUpdate,
+	StaticSQL: "UPDATE sg_items SET status = $1",
+	Segments:  []string{"UPDATE sg_items SET status = ", "", ""},
+	Slots: []runtime.Slot{
+		{Kind: runtime.SlotScalar},
+		{Kind: runtime.SlotBranchGuardWhere},
+	},
+}
+
+func expandSetAllStatusParams(dst *[]any, dialect runtime.Dialect, p paramsSetAllStatus) error {
+	_ = dialect
+	_ = p
+	*dst = append(*dst, p.Status)
+	return nil
+}
+
+func computeSetAllStatusKey(p paramsSetAllStatus) (runtime.VariantKey, uint64, uint64, int) {
+	_ = p
+	var colMask uint64
+	var flagMask uint64
+	var orderSpec runtime.Order
+	var hasSeek bool
+	orderKey := runtime.EncodeOrderKey(orderSpec, hasSeek)
+	approxArgs := 5
+	vk := runtime.MakeVariantKey(stmtIDSetAllStatus, colMask, flagMask, orderKey)
+	return vk, colMask, flagMask, approxArgs
+}
+
+func (q *Queries) SetAllStatus(ctx context.Context, status string) (sql.Result, error) {
+	p := paramsSetAllStatus{
+		Status: status,
+	}
+	vk, colMask, flagMask, approxArgs := computeSetAllStatusKey(p)
+	argBuf := runtime.AcquireArgsCap(approxArgs)
+	defer runtime.ReleaseArgs(argBuf)
+	_ = expandSetAllStatusParams(argBuf, sqlDialect, p)
+	in := runtime.RenderInput{
+		ColMask:  colMask,
+		FlagMask: flagMask,
+	}
+	return q.cache.Exec(ctx, q.db, q.txCache, q.usePrepared, vk, stmtIDSetAllStatus, runtime.ComputeBatchShapeTag(colMask, flagMask), 0, &q.fastSlots[3], sqlDialect, descSetAllStatus, &in, (*argBuf)...)
+}
+
+func (pl *Pipeline) SetAllStatus(status string) *runtime.ExecFuture {
+	p := paramsSetAllStatus{
+		Status: status,
+	}
+	vk, colMask, flagMask, approxArgs := computeSetAllStatusKey(p)
+	argBuf := runtime.AcquireArgsCap(approxArgs)
+	expandErr := expandSetAllStatusParams(argBuf, sqlDialect, p)
+	in := runtime.RenderInput{
+		ColMask:  colMask,
+		FlagMask: flagMask,
+	}
+	return pl.Pipeline.QueueExec(stmtIDSetAllStatus, descSetAllStatus, in, vk, &pl.q.fastSlots[3], argBuf, expandErr)
 }
