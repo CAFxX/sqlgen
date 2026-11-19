@@ -43,7 +43,7 @@ Note: the spec comes from the spec workshop on https://share.gemini.google/Nm8OX
 
 ## 2. Repository Structure & Module Layout
 
-Target Go version: **Go 1.24+**
+Target Go version: **Go 1.27+** (matches `go.mod`)
 
 ```text
 .
@@ -72,11 +72,16 @@ Target Go version: **Go 1.24+**
     │   ├── portal_gen.go
     │   ├── portal.go
     │   └── portal_test.go
-    └── ecommerce_inventory/
+    ├── ecommerce_inventory/
+    │   ├── sqlgen.yaml
+    │   ├── inventory_gen.go
+    │   ├── worker.go
+    │   └── worker_test.go
+    └── clearing_exchange/
         ├── sqlgen.yaml
-        ├── inventory_gen.go
-        ├── worker.go
-        └── worker_test.go
+        ├── exchange_gen.go
+        ├── engine.go
+        └── engine_test.go
 ```
 
 External dependencies in `go.mod`:
@@ -104,6 +109,11 @@ const (
 	DialectQuestion Dialect = "question" // ? (SQLite, MySQL, MariaDB)
 	DialectDollar   Dialect = "dollar"   // $1, $2, ... (PostgreSQL, CockroachDB)
 )
+
+// The `dialect` YAML key is case-insensitive and also accepts aliases (parseDialect):
+//   dollar:   "", "postgres", "postgresql", "pgx", "cockroach", "cockroachdb", "$"  (default)
+//   question: "sqlite", "sqlite3", "mysql", "mariadb", "?"
+// Any other value fails with `sqlgen: unsupported dialect "<v>"`.
 
 type ColumnSpec struct {
 	Name     string `yaml:"name"`
