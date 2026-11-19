@@ -23,11 +23,13 @@ jobs:
           if [ -n "$out" ]; then echo "needs gofmt:"; echo "$out"; exit 1; fi
 
       - name: go vet
-        run: go vet ./...
+        run: |
+          go vet ./...
+          (cd integration && go vet ./...)
 
       - name: generated code is up to date (SPEC §13.1)
         run: |
-          for cfg in examples/*/sqlgen.yaml; do
+          for cfg in examples/*/sqlgen.yaml integration/*/sqlgen.yaml; do
             go run ./cmd/sqlgen -config "$cfg" -check
           done
 
@@ -48,3 +50,32 @@ jobs:
 
       - name: benchmarks (smoke)
         run: go test -run '^$' -bench=. -benchmem -benchtime=100ms ./runtime
+
+  # Real engines: the same docker-compose.yml used locally (`make engines-up`), one engine per job so a
+  # failure names the engine/version. SQLGEN_REQUIRE_ENGINES=1 turns a missing DSN into a failure,
+  # so this job can never go green by skipping.
+  engines:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        engine: [postgres15, postgres18, cockroach, mysql84, mysql97, mariadb1011, mariadb123]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache-dependency-path: |
+            go.sum
+            integration/go.sum
+      - name: start ${{ matrix.engine }}
+        run: docker compose up -d --wait ${{ matrix.engine }}
+      - name: integration tests against ${{ matrix.engine }}
+        run: |
+          . scripts/engines-env.sh
+          cd integration
+          SQLGEN_REQUIRE_ENGINES=1 SQLGEN_ENGINES=${{ matrix.engine }} go test -race -count=1 -timeout 15m -v ./...
+      - name: engine logs on failure
+        if: failure()
+        run: docker compose logs --no-color ${{ matrix.engine }} | tail -200

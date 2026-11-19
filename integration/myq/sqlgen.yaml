@@ -1,0 +1,85 @@
+version: "1"
+package: myq
+out: myq_gen.go
+dialect: mysql
+
+statements:
+  - name: InsertItems
+    kind: exec
+    sql: |
+      INSERT INTO sg_items (id, org_id, name, score, status)
+      VALUES :rows:[]NewItem(ID:int64 ASC, OrgID:int64, Name:string, Score:int64, Status:string)
+
+  - name: GetItem
+    kind: one
+    result_type: Item
+    sql: |
+      SELECT id:int64, org_id:int64, name:string, score:int64, status:string
+      FROM sg_items
+      WHERE id = :id:int64
+
+  - name: ItemsByIDs
+    kind: many
+    result_type: Item
+    sql: |
+      SELECT id:int64, org_id:int64, name:string, score:int64, status:string
+      FROM sg_items
+      WHERE id IN (:ids:[]int64 ASC)
+      ORDER BY id
+
+  - name: SearchItems
+    kind: many
+    result_type: Item
+    params_struct: true
+    sql: |
+      SELECT id:int64, org_id:int64, name:string, score:int64, status:string
+      FROM sg_items
+      WHERE score >= :min_score:int64
+        {?FilterOrg: AND org_id = :org_id:int64}
+        {?FilterStatuses: AND status IN (:statuses:[]string)}
+        {?FilterNamePrefix: AND name LIKE :name_like:string}
+      ORDER BY id
+
+  - name: PageItems
+    kind: many
+    result_type: PagedItem
+    params_struct: true
+    sql: |
+      SELECT id:int64, org_id:int64, name:string, score:int64, status:string
+      FROM sg_items
+      WHERE org_id = :org_id:int64
+        AND :After:sqlgen.Seek
+      ORDER BY :Sort:sqlgen.Order(score, id)
+      LIMIT :limit:int64
+
+  - name: AddScore
+    kind: exec
+    sql: |
+      UPDATE sg_items SET score = score + :delta:int64
+      WHERE id IN (:ids:[]int64 ASC) AND org_id = :org_id:int64
+
+  - name: AddScoreOne
+    kind: exec
+    sql: |
+      UPDATE sg_items SET score = score + :delta:int64 WHERE id = :id:int64
+
+  - name: DeleteItems
+    kind: exec
+    sql: |
+      DELETE FROM sg_items WHERE id IN (:ids:[]int64 ASC)
+
+  - name: TopOrgs
+    kind: subquery
+    sql: |
+      SELECT org_id FROM sg_items GROUP BY org_id HAVING COUNT(*) >= :min_items:int64
+
+  - name: OrgStats
+    kind: many
+    result_type: OrgStat
+    sql: |
+      WITH picked AS (:orgs:sqlgen.Query)
+      SELECT i.org_id:int64, COUNT(*) AS n:int64, COALESCE(SUM(i.score), 0) AS total:int64
+      FROM sg_items i
+      WHERE i.org_id IN (SELECT org_id FROM picked) AND i.status = :status:string
+      GROUP BY i.org_id
+      ORDER BY i.org_id
