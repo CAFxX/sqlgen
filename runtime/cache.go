@@ -334,11 +334,20 @@ func (s *cacheShard) removeMapLocked(e *cacheEntry) {
 	e.inMap = false
 }
 
+// partialVictim returns the least-recently-used Tier-1 entry that may be evicted, or nil if there is none.
+//
+// Entries with preparing == true are skipped: tryPromoteLocked drops the shard lock while
+// PrepareContext runs and keeps using the *cacheEntry afterwards, so that entry must neither be
+// unlinked nor recycled in place for another variant in the meantime.
 func (s *cacheShard) partialVictim() *cacheEntry {
-	if s.partialProb.tail != nil {
-		return s.partialProb.tail
+	for _, l := range [2]*entryList{&s.partialProb, &s.partialProt} {
+		for e := l.tail; e != nil; e = e.prev {
+			if !e.preparing {
+				return e
+			}
+		}
 	}
-	return s.partialProt.tail
+	return nil
 }
 
 func (s *cacheShard) preparedVictim() *cacheEntry {
@@ -863,6 +872,11 @@ func (s *cacheShard) admitToTier1Locked(
 	atCap := s.partialProb.len+s.partialProt.len >= s.maxPartial || s.partialBytes+sqlLen > s.maxPartialBytes
 	if atCap {
 		victim := s.partialVictim()
+		if victim == nil {
+			// Every resident entry is mid-Prepare; nothing can be evicted to make room.
+			s.rejectedAdmits++
+			return nil
+		}
 		if !forceAdmit {
 			victimFreq := s.sketch.estimate(victim.hash)
 			if freq < victimFreq {
@@ -933,6 +947,8 @@ func (c *StmtCache) tryPromoteLocked(
 		return nil, "", errors.New("sqlgen: statement cache is closed")
 	}
 	if !entry.inMap {
+		// Unreachable while partialVictim skips preparing entries; kept as a defensive guard so a
+		// future eviction path cannot attach this statement to an entry that was recycled.
 		newMS := newManagedStmt(prepared, 1)
 		sh.mu.Unlock()
 		return newMS, "", nil

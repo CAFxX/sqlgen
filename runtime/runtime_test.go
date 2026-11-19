@@ -149,6 +149,8 @@ type mockDriverConfig struct {
 	queryCalls     atomic.Int64
 	wireCalls      atomic.Int64
 	prepareDelay   time.Duration
+	prepareHook    func(query string) // optional; runs inside PrepareContext before fault injection
+	stmtExecSQL    []string           // SQL of every statement-level ExecContext, in order (guarded by mu)
 	failPrepare    error
 	failBegin      error
 	failExec       error
@@ -202,6 +204,9 @@ func (c *mockConn) PrepareContext(ctx context.Context, query string) (driver.Stm
 		time.Sleep(c.cfg.prepareDelay)
 	}
 	c.cfg.prepareCalls.Add(1)
+	if hook := c.cfg.prepareHook; hook != nil {
+		hook(query)
+	}
 	c.cfg.mu.Lock()
 	err := c.cfg.failPrepare
 	c.cfg.lastSQL = query
@@ -308,6 +313,7 @@ func (s *mockStmt) ExecContext(ctx context.Context, args []driver.NamedValue) (d
 	s.cfg.execCalls.Add(1)
 	s.cfg.mu.Lock()
 	err := s.cfg.failExec
+	s.cfg.stmtExecSQL = append(s.cfg.stmtExecSQL, s.query)
 	s.cfg.mu.Unlock()
 	if err != nil {
 		return nil, err
@@ -2552,4 +2558,178 @@ func BenchmarkZeroAllocHotPath(b *testing.B) {
 		*ib = append(*ib, 0, 1)
 		ReleaseIndices(ib)
 	}
+}
+
+// Deterministic races around Tier-2 promotion. tryPromoteLocked releases the shard lock while
+// PrepareContext runs, so the entry it is promoting can be evicted/recycled, or the whole cache
+// closed, before it re-acquires the lock.
+
+// sameShardKeys returns two exact VariantKeys that land on the same cache shard.
+func sameShardKeys(t *testing.T) (a, b VariantKey) {
+	t.Helper()
+	a = MakeVariantKey(1, 0, 0, 0, 1)
+	for cand := uint64(2); cand < 10_000; cand++ {
+		b = MakeVariantKey(2, 0, 0, 0, cand)
+		if b.hash()&(numCacheShards-1) == a.hash()&(numCacheShards-1) {
+			return a, b
+		}
+	}
+	t.Fatal("no same-shard key found")
+	return
+}
+
+func staticExecDesc(id uint32, table string) *QueryDescriptor {
+	return &QueryDescriptor{
+		StmtID:   id,
+		StmtVerb: VerbUpdate,
+		Segments: []string{"UPDATE " + table + " SET x = ", ""},
+		Slots:    []Slot{{Kind: SlotScalar}},
+	}
+}
+
+// blockingPrepareHook blocks PrepareContext for any query containing match until release is closed,
+// signalling entered (once) when the first such Prepare is in flight.
+func blockingPrepareHook(match string) (hook func(string), entered <-chan struct{}, release func()) {
+	in := make(chan struct{})
+	rel := make(chan struct{})
+	var once sync.Once
+	var relOnce sync.Once
+	hook = func(q string) {
+		if strings.Contains(q, match) {
+			once.Do(func() { close(in) })
+			<-rel
+		}
+	}
+	return hook, in, func() { relOnce.Do(func() { close(rel) }) }
+}
+
+func TestPromotionEntryRecycledDuringPrepare(t *testing.T) {
+	cfg := &mockDriverConfig{}
+	hook, entered, release := blockingPrepareHook("UPDATE a ")
+	cfg.prepareHook = hook
+	defer release()
+	db := newMockDB(t, cfg)
+	cache := NewStmtCache(WithMaxPreparedStmts(64), WithMaxSQLVariants(16), WithPromoteThreshold(1))
+	defer cache.Close()
+	ctx := context.Background()
+	vkA, vkB := sameShardKeys(t)
+	descA, descB := staticExecDesc(1, "a"), staticExecDesc(2, "b")
+	in := RenderInput{}
+
+	done := make(chan error, 1)
+	go func() {
+		_, err := cache.Exec(ctx, db, nil, true, vkA, 1, 0, 0, nil, DialectQuestion, descA, &in, 1)
+		done <- err
+	}()
+	<-entered // A is mid-Prepare, its entry still sits in the shard's single Tier-1 slot
+
+	// B lands on the same shard: with one Tier-1 slot per shard it evicts/recycles A's entry.
+	if _, err := cache.Exec(ctx, db, nil, true, vkB, 2, 0, 0, nil, DialectQuestion, descB, &in, 1); err != nil {
+		t.Fatalf("Exec B: %v", err)
+	}
+	release()
+	if err := <-done; err != nil {
+		t.Fatalf("Exec A: %v", err)
+	}
+	verifyCacheInvariants(t, cache)
+
+	// Every cached statement must still execute the SQL of the variant it is keyed under: whenever a
+	// call is served by a prepared statement (recorded at the stmt level), it must be its own SQL.
+	stmtExecs := func() int {
+		cfg.mu.Lock()
+		defer cfg.mu.Unlock()
+		return len(cfg.stmtExecSQL)
+	}
+	lastStmtSQL := func() string {
+		cfg.mu.Lock()
+		defer cfg.mu.Unlock()
+		return cfg.stmtExecSQL[len(cfg.stmtExecSQL)-1]
+	}
+	for i := 0; i < 3; i++ {
+		for _, c := range []struct {
+			vk   VariantKey
+			desc *QueryDescriptor
+			want string
+		}{{vkB, descB, "UPDATE b SET x = ?"}, {vkA, descA, "UPDATE a SET x = ?"}} {
+			before := stmtExecs()
+			if _, err := cache.Exec(ctx, db, nil, true, c.vk, c.desc.StmtID, 0, 0, nil, DialectQuestion, c.desc, &in, 1); err != nil {
+				t.Fatalf("Exec %q: %v", c.want, err)
+			}
+			if stmtExecs() > before {
+				if got := lastStmtSQL(); got != c.want {
+					t.Fatalf("variant keyed for %q executed prepared SQL %q (statement cross-talk)", c.want, got)
+				}
+			}
+		}
+	}
+	verifyCacheInvariants(t, cache)
+
+	if err := cache.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+	if open := cfg.openStmts.Load(); open != 0 {
+		t.Fatalf("leaked %d prepared statements after Close", open)
+	}
+}
+
+func TestPromotionCacheClosedDuringPrepare(t *testing.T) {
+	cfg := &mockDriverConfig{}
+	hook, entered, release := blockingPrepareHook("UPDATE a ")
+	cfg.prepareHook = hook
+	defer release()
+	db := newMockDB(t, cfg)
+	cache := NewStmtCache(WithMaxPreparedStmts(64), WithMaxSQLVariants(16), WithPromoteThreshold(1))
+	ctx := context.Background()
+	vkA, _ := sameShardKeys(t)
+	in := RenderInput{}
+
+	done := make(chan error, 1)
+	go func() {
+		_, err := cache.Exec(ctx, db, nil, true, vkA, 1, 0, 0, nil, DialectQuestion, staticExecDesc(1, "a"), &in, 1)
+		done <- err
+	}()
+	<-entered
+	if err := cache.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+	release()
+	if err := <-done; err == nil || !strings.Contains(err.Error(), "closed") {
+		t.Fatalf("expected closed-cache error, got %v", err)
+	}
+	if open := cfg.openStmts.Load(); open != 0 {
+		t.Fatalf("leaked %d prepared statements", open)
+	}
+}
+
+func TestPromotionPrepareFailureDoesNotWedgeEntry(t *testing.T) {
+	cfg := &mockDriverConfig{}
+	db := newMockDB(t, cfg)
+	cache := NewStmtCache(WithMaxPreparedStmts(64), WithMaxSQLVariants(16), WithPromoteThreshold(1))
+	defer cache.Close()
+	ctx := context.Background()
+	vkA, _ := sameShardKeys(t)
+	descA := staticExecDesc(1, "a")
+	in := RenderInput{}
+
+	cfg.mu.Lock()
+	cfg.failPrepare = errors.New("boom")
+	cfg.mu.Unlock()
+	for i := 0; i < 3; i++ {
+		if _, err := cache.Exec(ctx, db, nil, true, vkA, 1, 0, 0, nil, DialectQuestion, descA, &in, 1); err == nil {
+			t.Fatal("expected prepare failure")
+		}
+	}
+	verifyCacheInvariants(t, cache)
+
+	// Once the server recovers, the same variant must promote normally (no stuck `preparing` flag).
+	cfg.mu.Lock()
+	cfg.failPrepare = nil
+	cfg.mu.Unlock()
+	if _, err := cache.Exec(ctx, db, nil, true, vkA, 1, 0, 0, nil, DialectQuestion, descA, &in, 1); err != nil {
+		t.Fatalf("Exec after recovery: %v", err)
+	}
+	if st := cache.LookupState(vkA, ""); st != StatePrepared {
+		t.Fatalf("variant not promoted after recovery, state=%v", st)
+	}
+	verifyCacheInvariants(t, cache)
 }
