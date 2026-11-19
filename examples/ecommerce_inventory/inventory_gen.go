@@ -1067,9 +1067,9 @@ func computeInsertArchivedOrdersKey(p paramsInsertArchivedOrders) (runtime.Varia
 	return vk, colMask, flagMask, approxArgs
 }
 
-func (q *Queries) InsertArchivedOrders(ctx context.Context, rowsParam []ArchivedOrderRow) (sql.Result, error) {
+func (q *Queries) InsertArchivedOrders(ctx context.Context, rows []ArchivedOrderRow) (sql.Result, error) {
 	p := paramsInsertArchivedOrders{
-		Rows: rowsParam,
+		Rows: rows,
 	}
 	vk, colMask, flagMask, approxArgs := computeInsertArchivedOrdersKey(p)
 	argBuf := runtime.AcquireArgsCap(approxArgs)
@@ -1087,9 +1087,9 @@ func (q *Queries) InsertArchivedOrders(ctx context.Context, rowsParam []Archived
 	return q.cache.Exec(ctx, q.db, q.txCache, q.usePrepared, vk, stmtIDInsertArchivedOrders, runtime.ComputeBatchShapeTag(colMask, flagMask), 0, nil, sqlDialect, descInsertArchivedOrders, &in, (*argBuf)...)
 }
 
-func (pl *Pipeline) InsertArchivedOrders(rowsParam []ArchivedOrderRow) *runtime.ExecFuture {
+func (pl *Pipeline) InsertArchivedOrders(rows []ArchivedOrderRow) *runtime.ExecFuture {
 	p := paramsInsertArchivedOrders{
-		Rows: rowsParam,
+		Rows: rows,
 	}
 	vk, colMask, flagMask, approxArgs := computeInsertArchivedOrdersKey(p)
 	argBuf := runtime.AcquireArgsCap(approxArgs)
@@ -1104,13 +1104,13 @@ func (pl *Pipeline) InsertArchivedOrders(rowsParam []ArchivedOrderRow) *runtime.
 	return pl.Pipeline.QueueExec(stmtIDInsertArchivedOrders, descInsertArchivedOrders, in, vk, nil, argBuf, expandErr)
 }
 
-func (q *Queries) InsertArchivedOrdersBatch(ctx context.Context, rowsParam []ArchivedOrderRow) (sql.Result, error) {
-	totalRows := len(rowsParam)
+func (q *Queries) InsertArchivedOrdersBatch(ctx context.Context, rows []ArchivedOrderRow) (sql.Result, error) {
+	totalRows := len(rows)
 	if totalRows == 0 {
 		return nil, runtime.ErrEmptySliceParam
 	}
 	p := paramsInsertArchivedOrders{
-		Rows: rowsParam,
+		Rows: rows,
 	}
 	_, colMask, flagMask, _ := computeInsertArchivedOrdersKey(p)
 	shapeTag := runtime.ComputeBatchShapeTag(colMask, flagMask)
@@ -1133,7 +1133,7 @@ func (q *Queries) InsertArchivedOrdersBatch(ctx context.Context, rowsParam []Arc
 		if offset > 0 {
 			chunkSize = q.cache.PlanBatchChunk(stmtIDInsertArchivedOrders, colMask, flagMask, totalRows-offset, maxRows, false)
 		}
-		chunkRows := rowsParam[offset : offset+chunkSize]
+		chunkRows := rows[offset : offset+chunkSize]
 		chunkP := p
 		chunkP.Rows = chunkRows
 		vk, _, _, approxArgs := computeInsertArchivedOrdersKey(chunkP)

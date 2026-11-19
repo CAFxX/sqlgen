@@ -281,9 +281,9 @@ func computeInsertItemsKey(p paramsInsertItems) (runtime.VariantKey, uint64, uin
 	return vk, colMask, flagMask, approxArgs
 }
 
-func (q *Queries) InsertItems(ctx context.Context, rowsParam []NewItem) (sql.Result, error) {
+func (q *Queries) InsertItems(ctx context.Context, rows []NewItem) (sql.Result, error) {
 	p := paramsInsertItems{
-		Rows: rowsParam,
+		Rows: rows,
 	}
 	vk, colMask, flagMask, approxArgs := computeInsertItemsKey(p)
 	argBuf := runtime.AcquireArgsCap(approxArgs)
@@ -301,9 +301,9 @@ func (q *Queries) InsertItems(ctx context.Context, rowsParam []NewItem) (sql.Res
 	return q.cache.Exec(ctx, q.db, q.txCache, q.usePrepared, vk, stmtIDInsertItems, runtime.ComputeBatchShapeTag(colMask, flagMask), 0, nil, sqlDialect, descInsertItems, &in, (*argBuf)...)
 }
 
-func (pl *Pipeline) InsertItems(rowsParam []NewItem) *runtime.ExecFuture {
+func (pl *Pipeline) InsertItems(rows []NewItem) *runtime.ExecFuture {
 	p := paramsInsertItems{
-		Rows: rowsParam,
+		Rows: rows,
 	}
 	vk, colMask, flagMask, approxArgs := computeInsertItemsKey(p)
 	argBuf := runtime.AcquireArgsCap(approxArgs)
@@ -318,19 +318,19 @@ func (pl *Pipeline) InsertItems(rowsParam []NewItem) *runtime.ExecFuture {
 	return pl.Pipeline.QueueExec(stmtIDInsertItems, descInsertItems, in, vk, nil, argBuf, expandErr)
 }
 
-func (q *Queries) InsertItemsBatch(ctx context.Context, rowsParam []NewItem) (sql.Result, error) {
-	totalRows := len(rowsParam)
+func (q *Queries) InsertItemsBatch(ctx context.Context, rows []NewItem) (sql.Result, error) {
+	totalRows := len(rows)
 	if totalRows == 0 {
 		return nil, runtime.ErrEmptySliceParam
 	}
 	p := paramsInsertItems{
-		Rows: rowsParam,
+		Rows: rows,
 	}
 	var sortedIdx *[]int
-	if !isNewItemSorted(rowsParam) {
+	if !isNewItemSorted(rows) {
 		sortedIdx = runtime.AcquireIndices(totalRows)
 		defer runtime.ReleaseIndices(sortedIdx)
-		slices.SortFunc(*sortedIdx, func(i, j int) int { return compareNewItem(rowsParam[i], rowsParam[j]) })
+		slices.SortFunc(*sortedIdx, func(i, j int) int { return compareNewItem(rows[i], rows[j]) })
 	}
 	_, colMask, flagMask, _ := computeInsertItemsKey(p)
 	shapeTag := runtime.ComputeBatchShapeTag(colMask, flagMask)
@@ -353,7 +353,7 @@ func (q *Queries) InsertItemsBatch(ctx context.Context, rowsParam []NewItem) (sq
 		if offset > 0 {
 			chunkSize = q.cache.PlanBatchChunk(stmtIDInsertItems, colMask, flagMask, totalRows-offset, maxRows, false)
 		}
-		chunkRows := rowsParam[offset : offset+chunkSize]
+		chunkRows := rows[offset : offset+chunkSize]
 		chunkP := p
 		chunkP.Rows = chunkRows
 		vk, _, _, approxArgs := computeInsertItemsKey(chunkP)
@@ -363,11 +363,11 @@ func (q *Queries) InsertItemsBatch(ctx context.Context, rowsParam []NewItem) (sq
 		} else {
 			idx := (*sortedIdx)[offset : offset+chunkSize]
 			for _, k := range idx {
-				*argBuf = append(*argBuf, rowsParam[k].ID)
-				*argBuf = append(*argBuf, rowsParam[k].OrgID)
-				*argBuf = append(*argBuf, rowsParam[k].Name)
-				*argBuf = append(*argBuf, rowsParam[k].Score)
-				*argBuf = append(*argBuf, rowsParam[k].Status)
+				*argBuf = append(*argBuf, rows[k].ID)
+				*argBuf = append(*argBuf, rows[k].OrgID)
+				*argBuf = append(*argBuf, rows[k].Name)
+				*argBuf = append(*argBuf, rows[k].Score)
+				*argBuf = append(*argBuf, rows[k].Status)
 			}
 		}
 		var tupleLensBuf [1]int

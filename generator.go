@@ -675,7 +675,7 @@ var reservedParamNames = func() map[string]bool {
 		offset orderKey orderSpec out p r res row rs scanBuf scanCount scanDest scanSlice shapeLens shapeTag
 		sliceLensBuf sortedIdx sqlRow sqlRows sub subsBuf tFn targetQ tc totalRows tupleLensBuf txCache txQ v vk
 		yield zero
-		ctx q pl fn seq txOpts opts db cache rows
+		ctx q pl fn seq
 		sql runtime context iter slices sync atomic time json big netip url driver errors strconv
 		append cap clear close complete copy delete imag len make max min new panic print println real recover
 		any bool byte comparable complex128 complex64 error float32 float64 int int16 int32 int64 int8 rune string

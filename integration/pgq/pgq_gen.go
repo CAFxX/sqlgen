@@ -305,9 +305,9 @@ func computeInsertItemsKey(p paramsInsertItems) (runtime.VariantKey, uint64, uin
 	return vk, colMask, flagMask, approxArgs
 }
 
-func (q *Queries) InsertItems(ctx context.Context, rowsParam []NewItem) (sql.Result, error) {
+func (q *Queries) InsertItems(ctx context.Context, rows []NewItem) (sql.Result, error) {
 	p := paramsInsertItems{
-		Rows: rowsParam,
+		Rows: rows,
 	}
 	vk, colMask, flagMask, approxArgs := computeInsertItemsKey(p)
 	argBuf := runtime.AcquireArgsCap(approxArgs)
@@ -325,9 +325,9 @@ func (q *Queries) InsertItems(ctx context.Context, rowsParam []NewItem) (sql.Res
 	return q.cache.Exec(ctx, q.db, q.txCache, q.usePrepared, vk, stmtIDInsertItems, runtime.ComputeBatchShapeTag(colMask, flagMask), 0, nil, sqlDialect, descInsertItems, &in, (*argBuf)...)
 }
 
-func (pl *Pipeline) InsertItems(rowsParam []NewItem) *runtime.ExecFuture {
+func (pl *Pipeline) InsertItems(rows []NewItem) *runtime.ExecFuture {
 	p := paramsInsertItems{
-		Rows: rowsParam,
+		Rows: rows,
 	}
 	vk, colMask, flagMask, approxArgs := computeInsertItemsKey(p)
 	argBuf := runtime.AcquireArgsCap(approxArgs)
@@ -342,19 +342,19 @@ func (pl *Pipeline) InsertItems(rowsParam []NewItem) *runtime.ExecFuture {
 	return pl.Pipeline.QueueExec(stmtIDInsertItems, descInsertItems, in, vk, nil, argBuf, expandErr)
 }
 
-func (q *Queries) InsertItemsBatch(ctx context.Context, rowsParam []NewItem) (sql.Result, error) {
-	totalRows := len(rowsParam)
+func (q *Queries) InsertItemsBatch(ctx context.Context, rows []NewItem) (sql.Result, error) {
+	totalRows := len(rows)
 	if totalRows == 0 {
 		return nil, runtime.ErrEmptySliceParam
 	}
 	p := paramsInsertItems{
-		Rows: rowsParam,
+		Rows: rows,
 	}
 	var sortedIdx *[]int
-	if !isNewItemSorted(rowsParam) {
+	if !isNewItemSorted(rows) {
 		sortedIdx = runtime.AcquireIndices(totalRows)
 		defer runtime.ReleaseIndices(sortedIdx)
-		slices.SortFunc(*sortedIdx, func(i, j int) int { return compareNewItem(rowsParam[i], rowsParam[j]) })
+		slices.SortFunc(*sortedIdx, func(i, j int) int { return compareNewItem(rows[i], rows[j]) })
 	}
 	_, colMask, flagMask, _ := computeInsertItemsKey(p)
 	shapeTag := runtime.ComputeBatchShapeTag(colMask, flagMask)
@@ -377,7 +377,7 @@ func (q *Queries) InsertItemsBatch(ctx context.Context, rowsParam []NewItem) (sq
 		if offset > 0 {
 			chunkSize = q.cache.PlanBatchChunk(stmtIDInsertItems, colMask, flagMask, totalRows-offset, maxRows, false)
 		}
-		chunkRows := rowsParam[offset : offset+chunkSize]
+		chunkRows := rows[offset : offset+chunkSize]
 		chunkP := p
 		chunkP.Rows = chunkRows
 		vk, _, _, approxArgs := computeInsertItemsKey(chunkP)
@@ -387,11 +387,11 @@ func (q *Queries) InsertItemsBatch(ctx context.Context, rowsParam []NewItem) (sq
 		} else {
 			idx := (*sortedIdx)[offset : offset+chunkSize]
 			for _, k := range idx {
-				*argBuf = append(*argBuf, rowsParam[k].ID)
-				*argBuf = append(*argBuf, rowsParam[k].OrgID)
-				*argBuf = append(*argBuf, rowsParam[k].Name)
-				*argBuf = append(*argBuf, rowsParam[k].Score)
-				*argBuf = append(*argBuf, rowsParam[k].Status)
+				*argBuf = append(*argBuf, rows[k].ID)
+				*argBuf = append(*argBuf, rows[k].OrgID)
+				*argBuf = append(*argBuf, rows[k].Name)
+				*argBuf = append(*argBuf, rows[k].Score)
+				*argBuf = append(*argBuf, rows[k].Status)
 			}
 		}
 		var tupleLensBuf [1]int
@@ -2415,9 +2415,9 @@ func computeUpsertItemsReturningKey(p paramsUpsertItemsReturning) (runtime.Varia
 }
 
 // UpsertItemsReturningQuery constructs a composable runtime.Query without executing it.
-func UpsertItemsReturningQuery(rowsParam []NewItem) runtime.Query {
+func UpsertItemsReturningQuery(rows []NewItem) runtime.Query {
 	p := paramsUpsertItemsReturning{
-		Rows: rowsParam,
+		Rows: rows,
 	}
 	_, colMask, flagMask, _ := computeUpsertItemsReturningKey(p)
 	var tupleLensBuf [1]int
@@ -2442,8 +2442,8 @@ func UpsertItemsReturningQuery(rowsParam []NewItem) runtime.Query {
 }
 
 // UpsertItemsReturningQuery constructs a composable runtime.Query without executing it.
-func (q *Queries) UpsertItemsReturningQuery(rowsParam []NewItem) runtime.Query {
-	return UpsertItemsReturningQuery(rowsParam)
+func (q *Queries) UpsertItemsReturningQuery(rows []NewItem) runtime.Query {
+	return UpsertItemsReturningQuery(rows)
 }
 
 func scanUpsertItemsReturningRow(scanner interface{ Scan(...any) error }, dst *Written, colMask uint64, p paramsUpsertItemsReturning) error {
@@ -2461,12 +2461,12 @@ func scanUpsertItemsReturningRow(scanner interface{ Scan(...any) error }, dst *W
 	return nil
 }
 
-func (q *Queries) UpsertItemsReturning(ctx context.Context, rowsParam []NewItem) ([]Written, error) {
-	return q.UpsertItemsReturningInto(ctx, nil, rowsParam)
+func (q *Queries) UpsertItemsReturning(ctx context.Context, rows []NewItem) ([]Written, error) {
+	return q.UpsertItemsReturningInto(ctx, nil, rows)
 }
 
-func (q *Queries) UpsertItemsReturningInto(ctx context.Context, dst []Written, rowsParam []NewItem) ([]Written, error) {
-	for row, err := range q.UpsertItemsReturningSeq(ctx, rowsParam) {
+func (q *Queries) UpsertItemsReturningInto(ctx context.Context, dst []Written, rows []NewItem) ([]Written, error) {
+	for row, err := range q.UpsertItemsReturningSeq(ctx, rows) {
 		if err != nil {
 			return nil, err
 		}
@@ -2475,11 +2475,11 @@ func (q *Queries) UpsertItemsReturningInto(ctx context.Context, dst []Written, r
 	return dst, nil
 }
 
-func (q *Queries) UpsertItemsReturningSeq(ctx context.Context, rowsParam []NewItem) iter.Seq2[Written, error] {
+func (q *Queries) UpsertItemsReturningSeq(ctx context.Context, rows []NewItem) iter.Seq2[Written, error] {
 	return func(yield func(Written, error) bool) {
 		var zero Written
 		p := paramsUpsertItemsReturning{
-			Rows: rowsParam,
+			Rows: rows,
 		}
 		vk, colMask, flagMask, approxArgs := computeUpsertItemsReturningKey(p)
 		_ = colMask
@@ -2521,8 +2521,8 @@ func (q *Queries) UpsertItemsReturningSeq(ctx context.Context, rowsParam []NewIt
 	}
 }
 
-func (q *Queries) UpsertItemsReturningEach(ctx context.Context, rowsParam []NewItem, fn func(Written) error) error {
-	for row, err := range q.UpsertItemsReturningSeq(ctx, rowsParam) {
+func (q *Queries) UpsertItemsReturningEach(ctx context.Context, rows []NewItem, fn func(Written) error) error {
+	for row, err := range q.UpsertItemsReturningSeq(ctx, rows) {
 		if err != nil {
 			return err
 		}
@@ -2533,9 +2533,9 @@ func (q *Queries) UpsertItemsReturningEach(ctx context.Context, rowsParam []NewI
 	return nil
 }
 
-func (pl *Pipeline) UpsertItemsReturning(rowsParam []NewItem) *runtime.SliceFuture[Written] {
+func (pl *Pipeline) UpsertItemsReturning(rows []NewItem) *runtime.SliceFuture[Written] {
 	p := paramsUpsertItemsReturning{
-		Rows: rowsParam,
+		Rows: rows,
 	}
 	vk, colMask, flagMask, approxArgs := computeUpsertItemsReturningKey(p)
 	argBuf := runtime.AcquireArgsCap(approxArgs)
@@ -2552,17 +2552,17 @@ func (pl *Pipeline) UpsertItemsReturning(rowsParam []NewItem) *runtime.SliceFutu
 	)
 }
 
-func (q *Queries) UpsertItemsReturningBatch(ctx context.Context, rowsParam []NewItem) ([]Written, error) {
-	return q.UpsertItemsReturningBatchInto(ctx, nil, rowsParam)
+func (q *Queries) UpsertItemsReturningBatch(ctx context.Context, rows []NewItem) ([]Written, error) {
+	return q.UpsertItemsReturningBatchInto(ctx, nil, rows)
 }
 
-func (q *Queries) UpsertItemsReturningBatchInto(ctx context.Context, dst []Written, rowsParam []NewItem) ([]Written, error) {
-	totalRows := len(rowsParam)
+func (q *Queries) UpsertItemsReturningBatchInto(ctx context.Context, dst []Written, rows []NewItem) ([]Written, error) {
+	totalRows := len(rows)
 	if totalRows == 0 {
 		return nil, runtime.ErrEmptySliceParam
 	}
 	p := paramsUpsertItemsReturning{
-		Rows: rowsParam,
+		Rows: rows,
 	}
 	_, colMask, flagMask, _ := computeUpsertItemsReturningKey(p)
 	maxRows := q.cache.MaxRowsPerBatch(sqlDialect, 0, 5)
@@ -2578,7 +2578,7 @@ func (q *Queries) UpsertItemsReturningBatchInto(ctx context.Context, dst []Writt
 		targetQ = q.WithTx(autoTx)
 		defer func() { _ = targetQ.Close() }()
 	}
-	for row, err := range targetQ.UpsertItemsReturningBatchSeq(ctx, rowsParam) {
+	for row, err := range targetQ.UpsertItemsReturningBatchSeq(ctx, rows) {
 		if err != nil {
 			if autoTx != nil {
 				_ = autoTx.Rollback()
@@ -2595,22 +2595,22 @@ func (q *Queries) UpsertItemsReturningBatchInto(ctx context.Context, dst []Writt
 	return dst, nil
 }
 
-func (q *Queries) UpsertItemsReturningBatchSeq(ctx context.Context, rowsParam []NewItem) iter.Seq2[Written, error] {
+func (q *Queries) UpsertItemsReturningBatchSeq(ctx context.Context, rows []NewItem) iter.Seq2[Written, error] {
 	return func(yield func(Written, error) bool) {
 		var zero Written
-		totalRows := len(rowsParam)
+		totalRows := len(rows)
 		if totalRows == 0 {
 			yield(zero, runtime.ErrEmptySliceParam)
 			return
 		}
 		p := paramsUpsertItemsReturning{
-			Rows: rowsParam,
+			Rows: rows,
 		}
 		var sortedIdx *[]int
-		if !isNewItemSorted(rowsParam) {
+		if !isNewItemSorted(rows) {
 			sortedIdx = runtime.AcquireIndices(totalRows)
 			defer runtime.ReleaseIndices(sortedIdx)
-			slices.SortFunc(*sortedIdx, func(i, j int) int { return compareNewItem(rowsParam[i], rowsParam[j]) })
+			slices.SortFunc(*sortedIdx, func(i, j int) int { return compareNewItem(rows[i], rows[j]) })
 		}
 		_, colMask, flagMask, _ := computeUpsertItemsReturningKey(p)
 		shapeTag := runtime.ComputeBatchShapeTag(colMask, flagMask)
@@ -2621,7 +2621,7 @@ func (q *Queries) UpsertItemsReturningBatchSeq(ctx context.Context, rowsParam []
 			if offset > 0 {
 				chunkSize = q.cache.PlanBatchChunk(stmtIDUpsertItemsReturning, colMask, flagMask, totalRows-offset, maxRows, false)
 			}
-			chunkRows := rowsParam[offset : offset+chunkSize]
+			chunkRows := rows[offset : offset+chunkSize]
 			chunkP := p
 			chunkP.Rows = chunkRows
 			vk, _, _, approxArgs := computeUpsertItemsReturningKey(chunkP)
@@ -2631,11 +2631,11 @@ func (q *Queries) UpsertItemsReturningBatchSeq(ctx context.Context, rowsParam []
 			} else {
 				idx := (*sortedIdx)[offset : offset+chunkSize]
 				for _, k := range idx {
-					*argBuf = append(*argBuf, rowsParam[k].ID)
-					*argBuf = append(*argBuf, rowsParam[k].OrgID)
-					*argBuf = append(*argBuf, rowsParam[k].Name)
-					*argBuf = append(*argBuf, rowsParam[k].Score)
-					*argBuf = append(*argBuf, rowsParam[k].Status)
+					*argBuf = append(*argBuf, rows[k].ID)
+					*argBuf = append(*argBuf, rows[k].OrgID)
+					*argBuf = append(*argBuf, rows[k].Name)
+					*argBuf = append(*argBuf, rows[k].Score)
+					*argBuf = append(*argBuf, rows[k].Status)
 				}
 			}
 			var tupleLensBuf [1]int
@@ -2674,8 +2674,8 @@ func (q *Queries) UpsertItemsReturningBatchSeq(ctx context.Context, rowsParam []
 	}
 }
 
-func (q *Queries) UpsertItemsReturningBatchEach(ctx context.Context, rowsParam []NewItem, fn func(Written) error) error {
-	for row, err := range q.UpsertItemsReturningBatchSeq(ctx, rowsParam) {
+func (q *Queries) UpsertItemsReturningBatchEach(ctx context.Context, rows []NewItem, fn func(Written) error) error {
+	for row, err := range q.UpsertItemsReturningBatchSeq(ctx, rows) {
 		if err != nil {
 			return err
 		}
