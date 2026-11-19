@@ -920,6 +920,11 @@ func (c *StmtCache) tryPromoteLocked(
 	if sh.preparedProb.len+sh.preparedProt.len >= sh.maxPrepared {
 		if victim := sh.preparedVictim(); victim != nil && freq <= sh.sketch.estimate(victim.hash) {
 			s := entry.sqlStr
+			if entry.tier == tierNone {
+				// Standalone entry (Tier-1 admission was refused): it is on no list, so nothing
+				// else would ever remove it from the map and the map would grow without bound.
+				sh.removeMapLocked(entry)
+			}
 			sh.partialHits++
 			sh.mu.Unlock()
 			return nil, s, nil

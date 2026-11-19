@@ -149,8 +149,9 @@ type mockDriverConfig struct {
 	queryCalls     atomic.Int64
 	wireCalls      atomic.Int64
 	prepareDelay   time.Duration
-	prepareHook    func(query string) // optional; runs inside PrepareContext before fault injection
-	stmtExecSQL    []string           // SQL of every statement-level ExecContext, in order (guarded by mu)
+	prepareHook    func(query string)                           // optional; runs inside PrepareContext before fault injection
+	stmtExecHook   func(query string, args []driver.NamedValue) // optional; runs on every statement-level ExecContext
+	stmtExecSQL    []string                                     // SQL of every statement-level ExecContext, in order (guarded by mu)
 	failPrepare    error
 	failBegin      error
 	failExec       error
@@ -314,7 +315,11 @@ func (s *mockStmt) ExecContext(ctx context.Context, args []driver.NamedValue) (d
 	s.cfg.mu.Lock()
 	err := s.cfg.failExec
 	s.cfg.stmtExecSQL = append(s.cfg.stmtExecSQL, s.query)
+	hook := s.cfg.stmtExecHook
 	s.cfg.mu.Unlock()
+	if hook != nil {
+		hook(s.query, args)
+	}
 	if err != nil {
 		return nil, err
 	}
@@ -2732,4 +2737,75 @@ func TestPromotionPrepareFailureDoesNotWedgeEntry(t *testing.T) {
 		t.Fatalf("variant not promoted after recovery, state=%v", st)
 	}
 	verifyCacheInvariants(t, cache)
+}
+
+// TestStmtCacheConcurrentAdversarialStress hammers a deliberately tiny cache from many goroutines
+// (constant eviction, promotion and demotion, slow Prepare to widen race windows) and checks that
+// a prepared statement never runs another variant's SQL, no handle leaks, and the shard lists stay
+// consistent. Run with -race.
+func TestStmtCacheConcurrentAdversarialStress(t *testing.T) {
+	const variants = 96
+	for _, tc := range []struct {
+		name      string
+		threshold uint8
+		prepared  int
+		variants  int
+	}{
+		{"threshold1/tiny", 1, 16, 16},
+		{"threshold2/tiny", 2, 16, 16},
+		{"threshold1/roomy", 1, 64, 256},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := &mockDriverConfig{prepareDelay: 200 * time.Microsecond}
+			var crossTalk atomic.Int64
+			cfg.stmtExecHook = func(query string, args []driver.NamedValue) {
+				if len(args) != 1 || query != fmt.Sprintf("UPDATE t%d SET x = ?", args[0].Value) {
+					crossTalk.Add(1)
+				}
+			}
+			db := newMockDB(t, cfg)
+			db.SetMaxOpenConns(32)
+			cache := NewStmtCache(WithMaxPreparedStmts(tc.prepared), WithMaxSQLVariants(tc.variants), WithPromoteThreshold(tc.threshold))
+
+			keys := make([]VariantKey, variants)
+			descs := make([]*QueryDescriptor, variants)
+			for i := range keys {
+				keys[i] = MakeVariantKey(uint32(i+1), 0, 0, 0, uint64(i))
+				descs[i] = staticExecDesc(uint32(i+1), fmt.Sprintf("t%d", i))
+			}
+
+			ctx := context.Background()
+			var wg sync.WaitGroup
+			for g := 0; g < 24; g++ {
+				wg.Add(1)
+				go func(seed uint64) {
+					defer wg.Done()
+					r := rand.New(rand.NewPCG(seed, seed^0x9e3779b97f4a7c15))
+					in := RenderInput{}
+					for n := 0; n < 600; n++ {
+						i := int(r.Uint64N(variants))
+						if r.Uint64N(3) == 0 { // skew towards a hot set so promotions happen
+							i = int(r.Uint64N(8))
+						}
+						if _, err := cache.Exec(ctx, db, nil, true, keys[i], uint32(i+1), 0, 0, nil, DialectQuestion, descs[i], &in, i); err != nil {
+							t.Errorf("Exec variant %d: %v", i, err)
+							return
+						}
+					}
+				}(uint64(g + 1))
+			}
+			wg.Wait()
+
+			if n := crossTalk.Load(); n != 0 {
+				t.Fatalf("%d statement executions ran the wrong variant's SQL", n)
+			}
+			verifyCacheInvariants(t, cache)
+			if err := cache.Close(); err != nil {
+				t.Fatalf("Close: %v", err)
+			}
+			if open := cfg.openStmts.Load(); open != 0 {
+				t.Fatalf("leaked %d prepared statements after Close", open)
+			}
+		})
+	}
 }
