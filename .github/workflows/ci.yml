@@ -1,0 +1,50 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - name: gofmt
+        run: |
+          out=$(gofmt -l .)
+          if [ -n "$out" ]; then echo "needs gofmt:"; echo "$out"; exit 1; fi
+
+      - name: go vet
+        run: go vet ./...
+
+      - name: generated code is up to date (SPEC §13.1)
+        run: |
+          for cfg in examples/*/sqlgen.yaml; do
+            go run ./cmd/sqlgen -config "$cfg" -check
+          done
+
+      - name: tests (race) + coverage gate >= 95%
+        run: |
+          go test -race -count=1 -coverprofile=coverage.out ./...
+          total=$(go tool cover -func=coverage.out | awk '/^total:/ {gsub("%","",$3); print $3}')
+          echo "total coverage: ${total}%"
+          awk -v t="$total" 'BEGIN { exit !(t+0 >= 95.0) }' || { echo "coverage below 95%"; exit 1; }
+
+      - name: fuzz (short)
+        run: |
+          go test -run '^$' -fuzz=FuzzParseSQL -fuzztime=10s .
+          go test -run '^$' -fuzz=FuzzParseYAML -fuzztime=10s .
+          go test -run '^$' -fuzz=FuzzEstimateOpBytesUpperBound -fuzztime=10s ./runtime
+          go test -run '^$' -fuzz=FuzzVariantKeyAndSubqueryShapeBijectivity -fuzztime=10s ./runtime
+          go test -run '^$' -fuzz=FuzzStmtCacheAdversarialStateTransitions -fuzztime=10s ./runtime
+
+      - name: benchmarks (smoke)
+        run: go test -run '^$' -bench=. -benchmem -benchtime=100ms ./runtime
