@@ -44,6 +44,7 @@ type api interface {
 	ByIDsBatch(ctx context.Context, ids []int64) ([]item, error)
 	EachByIDs(ctx context.Context, ids []int64, fn func(item) bool) error
 	Search(ctx context.Context, s searchArgs) ([]item, error)
+	ReadInTx(ctx context.Context, s searchArgs, ids []int64) (found, byID []item, err error)
 	Page(ctx context.Context, orgID int64, scoreDesc, idDesc bool, limit int64) ([]item, error)
 	AddScore(ctx context.Context, orgID, delta int64, ids []int64) (int64, error)
 	Delete(ctx context.Context, ids []int64) (int64, error)
@@ -499,4 +500,124 @@ func TestRealEnginePreparedStatementPromotion(t *testing.T) {
 			t.Fatalf("Close: %v", err)
 		}
 	})
+}
+
+// With a prepared-statement cache far smaller than the working set, statements are promoted, demoted
+// and closed continuously while concurrent callers (autocommit and transactions, which pin statements
+// for their whole lifetime) use them. Any premature close surfaces as "statement is closed", a wrong
+// row set, or a leaked server-side handle; every result is checked against a Go oracle.
+func TestRealEnginePreparedStatementChurnUnderConcurrency(t *testing.T) {
+	forEachEngine(t, func(t *testing.T, e engine, db *sql.DB) {
+		setupItems(t, db)
+		db.SetMaxOpenConns(24)
+		ctx := ctxT(t)
+		baseline := serverPreparedStmts(t, e, db)
+		a := newAPI(e, db, runtime.WithPromoteThreshold(1), runtime.WithMaxPreparedStmts(16), runtime.WithMaxSQLVariants(32))
+		all := genItems(1, 400)
+		if err := a.Insert(ctx, all); err != nil {
+			t.Fatal(err)
+		}
+		prefix := "item-0000"
+		search := func(r *rand.Rand) (searchArgs, []item) {
+			s := searchArgs{MinScore: int64(r.IntN(3) * 40)}
+			if r.IntN(2) == 0 {
+				org := int64(r.IntN(7) + 1)
+				s.OrgID = &org
+			}
+			if r.IntN(2) == 0 {
+				s.Statuses = slices.Clone(statuses[:1+r.IntN(3)])
+			}
+			if r.IntN(2) == 0 {
+				s.NamePrefix = &prefix
+			}
+			var want []item
+			for _, it := range all {
+				if it.Score < s.MinScore || (s.OrgID != nil && it.OrgID != *s.OrgID) ||
+					(s.Statuses != nil && !slices.Contains(s.Statuses, it.Status)) ||
+					(s.NamePrefix != nil && !strings.HasPrefix(it.Name, *s.NamePrefix)) {
+					continue
+				}
+				want = append(want, it)
+			}
+			return s, want
+		}
+		var wg sync.WaitGroup
+		for g := 0; g < 16; g++ {
+			wg.Add(1)
+			go func(seed uint64) {
+				defer wg.Done()
+				r := rand.New(rand.NewPCG(seed, seed+99))
+				for i := 0; i < 150; i++ {
+					s, want := search(r)
+					n := 1 + r.IntN(40) // 40 distinct slice shapes
+					idl := make([]int64, n)
+					for j := range idl {
+						idl[j] = int64(r.IntN(400) + 1)
+					}
+					slices.Sort(idl)
+					idl = slices.Compact(idl)
+					var got, byID []item
+					var err error
+					if i%2 == 0 {
+						got, byID, err = a.ReadInTx(ctx, s, idl)
+					} else {
+						if got, err = a.Search(ctx, s); err == nil {
+							byID, err = a.ByIDs(ctx, idl)
+						}
+					}
+					if err != nil {
+						t.Errorf("read failed: %v", err)
+						return
+					}
+					if !slices.Equal(got, want) {
+						t.Errorf("search result mismatch: got %d rows, want %d (%+v)", len(got), len(want), s)
+						return
+					}
+					if len(byID) != len(idl) {
+						t.Errorf("ByIDs returned %d rows for %d ids", len(byID), len(idl))
+						return
+					}
+				}
+			}(uint64(g + 1))
+		}
+		wg.Wait()
+		st := a.CacheStats()
+		if st.Promotions == 0 || st.Demotions == 0 {
+			t.Fatalf("cache did not churn (promotions=%d demotions=%d); the test is not exercising demotion", st.Promotions, st.Demotions)
+		}
+		if err := a.Close(); err != nil {
+			t.Fatalf("Close: %v", err)
+		}
+		// After the cache is closed no handle may remain: the pool must be able to shut down cleanly and
+		// every connection must be returned.
+		if in := db.Stats().InUse; in != 0 {
+			t.Fatalf("%d connections still in use after Close", in)
+		}
+		// database/sql closes driver statements lazily (when each pooled connection is next released),
+		// so allow the count to settle; a genuine leak never converges.
+		var after int64
+		for deadline := time.Now().Add(5 * time.Second); ; time.Sleep(50 * time.Millisecond) {
+			if after = serverPreparedStmts(t, e, db); after == baseline || time.Now().After(deadline) {
+				break
+			}
+		}
+		if after != baseline {
+			t.Fatalf("server-side prepared statements leaked: %d before, %d still open 5s after Close", baseline, after)
+		}
+	})
+}
+
+// serverPreparedStmts returns the server-wide count of open prepared statements where the engine
+// exposes one (MySQL/MariaDB); -1 elsewhere (PostgreSQL/CockroachDB prepared statements are per session).
+func serverPreparedStmts(t *testing.T, e engine, db *sql.DB) int64 {
+	t.Helper()
+	if !e.isMySQL() {
+		return -1
+	}
+	var name string
+	var n int64
+	if err := db.QueryRow("SHOW GLOBAL STATUS LIKE 'Prepared_stmt_count'").Scan(&name, &n); err != nil {
+		t.Fatal(err)
+	}
+	return n
 }

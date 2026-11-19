@@ -62,7 +62,7 @@ func (a *myqAPI) ByIDsBatch(ctx context.Context, ids []int64) ([]item, error) {
 	r, err := a.q.ItemsByIDsBatch(ctx, ids)
 	return fromItemsMyq(r), err
 }
-func (a *myqAPI) Search(ctx context.Context, s searchArgs) ([]item, error) {
+func toSearchParamsMyq(s searchArgs) myq.SearchItemsParams {
 	p := myq.SearchItemsParams{MinScore: s.MinScore}
 	if s.OrgID != nil {
 		p.FilterOrg, p.OrgID = true, *s.OrgID
@@ -73,8 +73,30 @@ func (a *myqAPI) Search(ctx context.Context, s searchArgs) ([]item, error) {
 	if s.NamePrefix != nil {
 		p.FilterNamePrefix, p.NameLike = true, *s.NamePrefix+"%"
 	}
-	r, err := a.q.SearchItems(ctx, p)
+	return p
+}
+
+func (a *myqAPI) Search(ctx context.Context, s searchArgs) ([]item, error) {
+	r, err := a.q.SearchItems(ctx, toSearchParamsMyq(s))
 	return fromItemsMyq(r), err
+}
+
+// ReadInTx runs a search and a bulk lookup inside one transaction (so both go through the
+// transaction-scoped statement cache).
+func (a *myqAPI) ReadInTx(ctx context.Context, s searchArgs, idl []int64) (found, byID []item, err error) {
+	err = a.q.InTx(ctx, nil, func(q *myq.Queries) error {
+		r1, err := q.SearchItems(ctx, toSearchParamsMyq(s))
+		if err != nil {
+			return err
+		}
+		r2, err := q.ItemsByIDs(ctx, idl)
+		if err != nil {
+			return err
+		}
+		found, byID = fromItemsMyq(r1), fromItemsMyq(r2)
+		return nil
+	})
+	return
 }
 func (a *myqAPI) Page(ctx context.Context, orgID int64, scoreDesc, idDesc bool, limit int64) ([]item, error) {
 	sc, id := myq.PageItemsOrderByScore.Asc(), myq.PageItemsOrderByID.Asc()
