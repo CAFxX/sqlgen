@@ -28,7 +28,7 @@ Or add a `//go:generate` directive to any Go file in your package:
 | `-out <path>` | Overrides the `out` path configured in `sqlgen.yaml`. |
 | `-stdout` | Writes generated Go code to `stdout` instead of disk. |
 | `-check` | CI verification mode. Generates the Go code in memory and compares it byte-for-byte against the existing output file on disk without modifying any files. Exits with code `2` if the file is missing or out of date. |
-| `-version` | Prints `"sqlgen v1.0.0\n"` to `stdout` and exits with code `0`. |
+| `-version` | Prints `sqlgen <version>` to `stdout` (the module version recorded in the binary's build information, for example `sqlgen v0.3.1`; `sqlgen (devel)` for a local build) and exits with code `0`. |
 
 **Exit Codes**:
 - `0`: Success.
@@ -292,9 +292,11 @@ statements:
 
 **Important Rules for `Seek` & `Order`**:
 1. Every column listed in `sqlgen.Order(col1, col2, ...)` must match an unconditional selected column name (or alias) in the `SELECT` list, and at most 15 columns may be listed.
-2. `sqlgen` generates strongly-typed sort column tokens (`<RowType>OrderBy<Field>.Asc()` and `.Desc()`), a type-safe constructor `Order<RowType>(...)`, and cursor helpers on `<RowType>`:
-   - `row.Seek()` (or `Seek<RowType>(row)`) $\rightarrow$ returns a `runtime.Seek` cursor populated from `row` for the next page!
-   - `Order<RowType>(MemberItemOrderByScore.Desc(), MemberItemOrderByID.Asc())` $\rightarrow$ builds the `runtime.Order` value.
+2. `sqlgen` generates strongly-typed sort column tokens (`<Stmt>OrderBy<Field>.Asc()` and `.Desc()`), a type-safe constructor `Order<Stmt>(...)`, and cursor helpers:
+   - `row.Seek()` (a method on `<RowType>`), `Seek<Stmt>(row)` or `Seek<RowType>(row)` $\rightarrow$ returns a `runtime.Seek` cursor populated from `row` for the next page.
+   - `Order<Stmt>(ListMembersPaginatedOrderByScore.Desc(), ListMembersPaginatedOrderByID.Asc())` $\rightarrow$ builds the `runtime.Order` value.
+
+   **Which names to use.** Every statement gets its own set (`Order<Stmt>`, `<Stmt>OrderBy<Col>`, `Seek<Stmt>`) and, in addition, a set keyed by its row type (`Order<RowType>`, `<RowType>OrderBy<Col>`, `Seek<RowType>`). Prefer the per-statement names: they are always unambiguous. The row-type names exist for statements that share one `result_type` (they then share one set, which is why such statements must list identical `sqlgen.Order` columns). With the default `result_type` (`<Stmt>Row`) the row-type names carry an extra `Row` (`Order<Stmt>Row`, `<Stmt>RowOrderBy<Col>`). Besides the typed tokens there are raw `uint8` constants for each column and direction (`Order<Stmt><Col>Asc`, `Order<Stmt><Col>Desc`, and the equivalent `<Stmt>Order<Col>Asc` / `<Stmt>Order<Col>Desc`) that can be passed to `Order<Stmt>(...)` directly; the typed tokens are the recommended spelling.
 3. **First Page vs. Subsequent Pages**:
    - On Page 1, pass a zero `runtime.Seek{}` (`After: runtime.Seek{}`). `sqlgen` renders `1=1` and binds `0` cursor parameters.
    - On Page 2+, pass `After: lastRow.Seek()`.
@@ -302,12 +304,15 @@ statements:
    - If sort directions are **mixed** (e.g. `score DESC, id ASC`), `sqlgen` automatically renders a B-tree index-friendly bounding-box prefix (`col1 <= ?`) combined with exact lexicographical tie-breaking `OR` branches!
 
 ```go
-sortSpec := OrderMemberItem(
-    MemberItemOrderByRole.Asc(),
-    MemberItemOrderByScore.Desc(),
-    MemberItemOrderByCreatedAt.Asc(),
-    MemberItemOrderByID.Asc(),
+// Per-statement names (preferred): the statement is ListMembersPaginated.
+sortSpec := OrderListMembersPaginated(
+    ListMembersPaginatedOrderByRole.Asc(),
+    ListMembersPaginatedOrderByScore.Desc(),
+    ListMembersPaginatedOrderByCreatedAt.Asc(),
+    ListMembersPaginatedOrderByID.Asc(),
 )
+// The same value through the row-type names (result_type: MemberItem), useful when several
+// statements share MemberItem: OrderMemberItem(MemberItemOrderByRole.Asc(), ...).
 
 // Page 1:
 page1, err := q.ListMembersPaginated(ctx, ListMembersPaginatedParams{
@@ -410,12 +415,15 @@ defer q.Close()
 
 ### 3.1. Reading Modes (`kind: one` & `kind: many`)
 
+For a `kind: exec` statement `<Name>`:
+- `q.<Name>(ctx, ...) (sql.Result, error)`
+
 For a `kind: one` statement `<Name>`:
 - `q.<Name>(ctx, ...) (<RowType>, error)` — returns `sql.ErrNoRows` if no row matches.
 
 For a `kind: many` statement `<Name>`:
 - `q.<Name>(ctx, ...) ([]<RowType>, error)` — returns all matching rows as a slice.
-- `q.<Name>Into(ctx, dst *[]<RowType>, ...) error` — appends matching rows into a caller-provided slice buffer (`*dst`), reusing its backing array capacity.
+- `q.<Name>Into(ctx, dst []<RowType>, ...) ([]<RowType>, error)` — appends matching rows to the caller-provided slice `dst` (like `append`: use the returned slice, which reuses `dst`'s backing array while its capacity suffices). Pass `buf[:0]` to reuse a buffer across calls.
 - `q.<Name>Seq(ctx, ...) iter.Seq2[<RowType>, error]` — Go 1.23+ range-over-func iterator that streams rows in $O(1)$ memory and automatically closes `*sql.Rows` (and releases the cached `*ManagedStmt`) even if the caller exits the `for range` loop early with `break` or `return`.
 - `q.<Name>Each(ctx, ..., fn func(<RowType>) error) error` — invokes `fn` for each row.
 
@@ -425,13 +433,13 @@ For a `kind: many` statement `<Name>`:
 
 #### Automatic Wire-Safe Batching (`*Batch`)
 
-Database drivers enforce hard limits on parameters per statement (e.g., 65,535 in PostgreSQL, 32,766 in SQLite). When a statement has a tuple slice (`[]Tuple`) or 1D slice (`[]T`), `sqlgen` generates `*Batch` methods:
+Database drivers enforce hard limits on parameters per statement (e.g., 65,535 in PostgreSQL, 32,766 in SQLite). When a `kind: exec` or `kind: many` statement has exactly one collection parameter (a tuple slice `[]Tuple` or a 1D slice `[]T`) and no `sqlgen.Order`, `sqlgen.Seek` or composed `sqlgen.Query` parameter, `sqlgen` generates `*Batch` methods:
 
 - `kind: exec`:
-  - `q.<Name>Batch(ctx, ...) (runtime.BatchExecResult, error)` (`BatchExecResult.RowsAffected() (int64, error)`)
+  - `q.<Name>Batch(ctx, ...) (sql.Result, error)` — the result sums `RowsAffected()` over all chunks (its concrete type is `runtime.BatchExecResult`; `LastInsertId()` is the one of the final chunk).
 - `kind: many`:
   - `q.<Name>Batch(ctx, ...) ([]<RowType>, error)`
-  - `q.<Name>BatchInto(ctx, dst *[]<RowType>, ...) error`
+  - `q.<Name>BatchInto(ctx, dst []<RowType>, ...) ([]<RowType>, error)`
   - `q.<Name>BatchSeq(ctx, ...) iter.Seq2[<RowType>, error]`
   - `q.<Name>BatchEach(ctx, ..., fn func(<RowType>) error) error`
 
@@ -441,19 +449,27 @@ Database drivers enforce hard limits on parameters per statement (e.g., 65,535 i
 
 #### $O(1)$-Memory Streaming Ingestion (`*Stream` & `*StreamSeq`)
 
-When ingesting an arbitrarily large or lazy stream of tuple items (`runtime.Seq2[TupleType, error]`), use `<Name>Stream` or `<Name>StreamSeq`:
+When a statement qualifies for `*Batch` **and** its collection parameter is a tuple slice (`[]Tuple`; 1D slices get `*Batch` only), `sqlgen` also generates `<Name>Stream` and `<Name>StreamSeq`. They take the lazy `iter.Seq2[<TupleType>, error]` **in place of** the tuple-slice parameter (same position in the argument list), so an arbitrarily large or lazy source is ingested in $O(1)$ memory:
 
 - `kind: exec`:
-  - `q.<Name>Stream(ctx, ..., seq runtime.Seq2[<TupleType>, error]) (int64, error)` — pulls items from `seq` into a pooled chunk buffer (`512` items or `MaxRowsPerBatch`), flushes each chunk via `<Name>Batch`, and returns total rows affected.
+  - `q.<Name>Stream(ctx, ..., seq iter.Seq2[<TupleType>, error], ...) (sql.Result, error)` — pulls items from `seq` into a pooled chunk buffer (`256` items or `MaxRowsPerBatch`, whichever is smaller), flushes each chunk via `<Name>Batch`, and returns the summed result (`res.RowsAffected()` is the total).
+  - `q.<Name>StreamSeq(...)` — same signature and behaviour as `<Name>Stream` (an alias kept so exec and many statements expose the same names).
 - `kind: many`:
-  - `q.<Name>Stream(ctx, ..., seq runtime.Seq2[<TupleType>, error]) ([]<RowType>, error)`
-  - `q.<Name>StreamSeq(ctx, ..., seq runtime.Seq2[<TupleType>, error]) iter.Seq2[<RowType>, error]`
+  - `q.<Name>Stream(ctx, ..., seq iter.Seq2[<TupleType>, error], ...) ([]<RowType>, error)`
+  - `q.<Name>StreamSeq(ctx, ..., seq iter.Seq2[<TupleType>, error], ...) iter.Seq2[<RowType>, error]`
 
-**Iterator Adapters in `runtime`**:
-- `runtime.FromSlice(items []T) runtime.Seq2[T, error]` — wraps an in-memory slice as a `Seq2`.
-- `runtime.FromSeq(seq iter.Seq[T]) runtime.Seq2[T, error]` — wraps a non-error `iter.Seq[T]` as a `Seq2[T, error]`.
-- `runtime.MapSeq2(seq iter.Seq2[In, error], fn func(In) (Out, error)) runtime.Seq2[Out, error]` — transforms a streaming query (`q.StreamOrdersSeq(...)`) directly into the input stream of `<Name>Stream` or `<Name>StreamSeq` in $O(1)$ memory!
-- `runtime.MapSeq(seq iter.Seq2[In, error], fn func(In) Out) runtime.Seq2[Out, error]` — infallible mapping helper.
+An error yielded by `seq` stops the stream and is returned (or yielded) as-is. `runtime.Seq2[T]` is a convenience alias for `iter.Seq2[T, error]`, so values of either spelling are accepted.
+
+**Iterator Adapters in `runtime`** (all return plain `iter.Seq2[T, error]`):
+- `runtime.FromSlice(items []T) iter.Seq2[T, error]` — wraps an in-memory slice.
+- `runtime.FromSeq(seq iter.Seq[T]) iter.Seq2[T, error]` — wraps a non-error `iter.Seq[T]`.
+- `runtime.MapSeq2(seq iter.Seq2[In, error], fn func(In) (Out, error)) iter.Seq2[Out, error]` — transforms a streaming query (`q.StreamOrdersSeq(...)`) directly into the input stream of `<Name>Stream` or `<Name>StreamSeq` in $O(1)$ memory; the first error from `seq` or `fn` ends the stream.
+- `runtime.MapSeq(seq iter.Seq2[In, error], fn func(In) Out) iter.Seq2[Out, error]` — infallible mapping helper.
+
+```go
+// Insert a slice through the streaming path:
+res, err := q.InsertArchivedOrdersStream(ctx, runtime.FromSlice(orders))
+```
 
 ```go
 // Example: Stream fulfilled orders, transform them via MapSeq2, and stream-insert into archive!
@@ -466,7 +482,8 @@ archiveStream := runtime.MapSeq2(orderStream, func(o FulfilledOrderRow) (NewArch
         ArchivedAt: nowUnix,
     }, nil
 })
-insertedCount, err := q.InsertArchivedOrdersStream(ctx, archiveStream)
+res, err := q.InsertArchivedOrdersStream(ctx, archiveStream)
+insertedCount, _ := res.RowsAffected()
 ```
 
 ---
@@ -553,24 +570,28 @@ err := q.PipelineTx(ctx, nil, func(p *Pipeline) error {
 
 1. **Future Types**:
    - `*runtime.ExecFuture`: returned by `kind: exec` pipeline methods.
-     - `.AssertRowsAffected(n int64) *ExecFuture`: rolls back with `runtime.ErrAssertionFailed` if rows affected $\ne n$.
-     - `.AssertFound() *ExecFuture`: rolls back with `runtime.ErrAssertionFailed` if rows affected $\ne 1$.
+     - `.AssertRowsAffected(n int64) *ExecFuture`: fails the pipeline with an error matching `runtime.ErrAssertionFailed` if rows affected $\ne n$.
+     - `.AssertFound() *ExecFuture`: fails the pipeline with an error matching `runtime.ErrAssertionFailed` if rows affected $\ne 1$.
      - `.RowsAffectedEq(n)`, `.RowsAffectedGt(n)`, `.RowsAffectedGe(n)`, `.RowsAffectedLt(n)`, `.RowsAffectedLe(n)`, `.Found()`, `.NotFound()`: returns a `PipelineCond` for `p.If(...)`.
      - `.Result() (sql.Result, error)`, `.RowsAffected() (int64, error)`, and `.Skipped() bool` (valid after `Flush` / `PipelineTx` completes).
    - `*runtime.RowFuture[T]`: returned by `kind: one` pipeline methods.
-     - `.AssertFound() *RowFuture[T]`: rolls back with `runtime.ErrAssertionFailed` if 0 rows found.
-     - `.AssertRowsAffected(n int64) *RowFuture[T]`: rolls back with `runtime.ErrAssertionFailed` if row count $\ne n$.
-     - `.Found()`, `.NotFound()`, `.RowsAffectedEq(n)`, `.RowsAffectedGt(n)`, `.RowsAffectedGe(n)`: returns a `PipelineCond`.
+     - `.AssertFound() *RowFuture[T]`: fails the pipeline with an error matching `runtime.ErrAssertionFailed` if the row count is not 1.
+     - `.AssertRowsAffected(n int64) *RowFuture[T]`: fails the pipeline with an error matching `runtime.ErrAssertionFailed` if row count $\ne n$.
+     - `.Found()`, `.NotFound()`, `.RowsAffectedEq(n)`, `.RowsAffectedGt(n)`, `.RowsAffectedGe(n)`, `.RowsAffectedLt(n)`, `.RowsAffectedLe(n)`: returns a `PipelineCond`.
      - `.WhereCol(sqlPred string, goPred func(T) bool) PipelineCond` (or package helper `WhereCol(fut, sqlPred, goPred)`): evaluates `sqlPred` on the wire in `WirePipeliner` mode and `goPred(row)` in Go fallback mode.
      - `.Get() (T, error)` (or `.Value() (T, error)`) and `.Skipped() bool` (valid after flush).
    - `*runtime.SliceFuture[T]`: returned by `kind: many` pipeline methods.
      - `.AssertRowsAffected(n int64) *SliceFuture[T]`, `.AssertFound() *SliceFuture[T]`
-     - `.Found()`, `.NotFound()`, `.RowsAffectedEq(n)`, `.RowsAffectedGt(n)`, `.RowsAffectedGe(n)`
-     - `.Get() ([]T, error)` (or `.Value() ([]T, error)`) and `.Skipped() bool` (valid after flush).
+     - `.Found()`, `.NotFound()`, `.RowsAffectedEq(n)`, `.RowsAffectedGt(n)`, `.RowsAffectedGe(n)`, `.RowsAffectedLt(n)`, `.RowsAffectedLe(n)`, `.WhereCol(sqlPred, goPred func(T) bool)`
+     - `.Get() ([]T, error)` (or `.Values() ([]T, error)`) and `.Skipped() bool` (valid after flush).
 2. **Boolean Combinators & Control Flow**:
    - `condA.And(condB)`, `condA.Or(condB)`, `condA.Not()` combine `PipelineCond` values.
    - `ifRes := p.If(cond, thenFn, elseFn)`: `ifRes.Taken()` and `ifRes.Skipped()` report whether the `then` branch was taken after flush.
-   - `p.Abort(err)`: when reached inside an active branch, aborts the pipeline and rolls back the transaction, returning `err` from `PipelineTx` / `Flush`.
+   - `p.Abort(err)`: when reached inside an active branch, aborts the pipeline, returning `err` from `PipelineTx` / `Flush` (the transaction is rolled back only inside `PipelineTx` or a standalone `Pipeline`; see below).
+3. **Assertion errors**: a failed assertion returns a `*runtime.AssertionError` (`errors.Is(err, runtime.ErrAssertionFailed)` is true; use `errors.As` to read the fields `Statement`, `Want`, `Got`, `GotKnown`). The message names the statement and the expected count, for example `sqlgen: pipeline assertion failed on statement "InsertAudit": expected 5 rows affected, got 3`. On the single-roundtrip wire path the server only signals that the assertion was violated, so the actual count is unknown (`GotKnown` is false) and the message ends after the expected count.
+4. **Who rolls back**:
+   - `PipelineTx(ctx, opts, fn)` and a standalone `q.Pipeline(ctx)` (which runs in its own implicit transaction): a failed assertion, `Abort`, or any other error rolls the transaction back automatically; nothing the pipeline wrote is committed.
+   - A pipeline on a **user-managed transaction** (`q.WithTx(tx).Pipeline(ctx).Flush()`): the pipeline never rolls back. A failed assertion makes `Flush` return the error, but earlier writes of the pipeline (and everything else done on `tx`) stay in the still-open transaction, and the transaction remains usable. The caller must call `tx.Rollback()` (or deliberately `tx.Commit()`) itself.
 
 ---
 
@@ -596,3 +617,29 @@ Inspect live cache telemetry at any time via `stats := q.CacheStats()`:
 - `stats.PreparedCount`: Current Tier-2 `*sql.Stmt` count.
 - `stats.PartialCount`: Current Tier-1 SQL string count.
 - `stats.PartialBytes`: Exact byte sum of all Tier-1 SQL strings currently in cache.
+
+---
+
+### 3.6. Reserved Identifiers
+
+Every generated file declares the same fixed set of top-level names in your package, so no statement, `result_type` or tuple struct may use them.
+
+**Package-level names declared in every generated file** (`reservedTypeNames` in `generator.go`):
+
+| Kind | Names |
+| :--- | :--- |
+| Type aliases | `Query`, `Order`, `Seek`, `PipelineCond`, `ExecFuture`, `IfResult`, `TxOption`, `TxRetryPolicy` |
+| Function values | `NewSeek`, `WithTxRetry`, `DefaultRetryPolicy` |
+| Functions | `WhereCol`, `New`, `NewWithCache` |
+| Types | `Queries`, `Pipeline` |
+
+**Why the unqualified aliases exist.** The aliases (`Query = runtime.Query`, `WithTxRetry = runtime.WithTxRetry`, and so on) re-export the runtime types and options that appear in generated signatures, so application code that only calls the generated API never has to import the `runtime` package. For example `q.InTx(ctx, nil, fn, WithTxRetry(DefaultRetryPolicy()))` and `After: NewSeek(...)` compile with just the generated package. They are aliases, not new types: a `Query` and a `runtime.Query` are identical and interchangeable.
+
+**Method names generated on `*Queries` and `*Pipeline`** that a statement name must avoid (`reservedStatementNames`): `Cache`, `CacheStats`, `Close`, `If`, `InTx`, `InTxOpts`, `Pipeline`, `PipelineTx`, `WithPrepared`, `WithTx`, plus `SetBuildError`, `QueueExec`, `Abort`, `Flush` and `Exec`, which the generated `Pipeline` inherits from `runtime.Pipeline`. A statement becomes a method with its own name on both `*Queries` and `*Pipeline`, so it must not shadow any of them.
+
+**What happens on a clash.** Generation fails with a clear error instead of emitting code that does not compile:
+
+- a statement named like one of the methods above: `statement name "Close" collides with a method generated on *Queries / *Pipeline; rename it`;
+- a `result_type` (or a tuple struct name such as `[]Query(...)`) equal to a package-level name above: `statement Q: result_type "Order" collides with a type or function declared in every generated file; rename it`.
+
+Rename the statement or `result_type` (for example `Order` to `OrderRecord`).

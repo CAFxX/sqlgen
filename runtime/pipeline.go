@@ -597,6 +597,13 @@ func (w *pipelineConnWrapper) CheckNamedValue(nv *driver.NamedValue) error {
 	return driver.ErrSkip
 }
 
+func (op *PipelineOp) stmtName() string {
+	if op.Desc == nil {
+		return ""
+	}
+	return op.Desc.Name
+}
+
 // TranslateWireError maps server-side integer-overflow sentinel errors (SQLSTATE 22003)
 // back to op.AbortErr (for IsAbort operations) or ErrAssertionFailed (for AssertRows operations).
 func TranslateWireError(op *PipelineOp, err error) error {
@@ -621,8 +628,9 @@ func TranslateWireError(op *PipelineOp, err error) error {
 			return op.AbortErr
 		}
 		if op.Decorators.AssertRows >= 0 {
-			op.Err = ErrAssertionFailed
-			return ErrAssertionFailed
+			// The server only signals the violation: the actual count is unknown on this path.
+			op.Err = &AssertionError{Statement: op.stmtName(), Want: op.Decorators.AssertRows}
+			return op.Err
 		}
 	}
 	op.Err = err
@@ -1053,12 +1061,13 @@ func (p *Pipeline) executePipelineOps(ctx context.Context, wireMode bool) error 
 		}
 		*p.opPtrs[i] = *op
 		if op.Decorators.AssertRows >= 0 && op.RowCount != op.Decorators.AssertRows {
-			op.Err = ErrAssertionFailed
+			aerr := &AssertionError{Statement: op.stmtName(), Want: op.Decorators.AssertRows, Got: op.RowCount, GotKnown: true}
+			op.Err = aerr
 			*p.opPtrs[i] = *op
 			if op.OnDone != nil {
-				op.OnDone(op.RowCount, ErrAssertionFailed)
+				op.OnDone(op.RowCount, aerr)
 			}
-			return ErrAssertionFailed
+			return aerr
 		}
 		if op.Decorators.ProduceCond != nil {
 			if wireMode && op.CondSet {

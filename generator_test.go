@@ -2094,3 +2094,50 @@ func TestGeneratorHandlesTrickyButValidInputs(t *testing.T) {
 		})
 	}
 }
+
+// Descriptors carry the statement name so runtime diagnostics (failed assertions) can name it.
+func TestGeneratedDescriptorsCarryStatementName(t *testing.T) {
+	src, err := genYAML("postgres", "  - name: InsertAudit\n    kind: exec\n    sql: INSERT INTO t(a) VALUES (:a:int64)\n  - name: Pick\n    kind: many\n    sql: SELECT id:int64 FROM t WHERE x = :x:int64\n")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{"InsertAudit", "Pick"} {
+		if !regexp.MustCompile(`\bName:\s+"` + name + `",`).Match(src) {
+			t.Errorf("generated descriptor for %s carries no Name", name)
+		}
+	}
+}
+
+// Diagnostics found by a clean-room user: each used to produce a misleading error or uncompilable output.
+func TestGeneratorDiagnosticsAreActionable(t *testing.T) {
+	for _, tc := range []struct{ name, stmts, want string }{
+		{"expression annotation without alias", "  - name: Q\n    kind: one\n    sql: SELECT COUNT(*):int64 FROM t\n",
+			`output column expression "COUNT(*)" needs an alias: write COUNT(*) AS name:int64`},
+		{"expression annotation without alias, later column", "  - name: Q\n    kind: one\n    sql: SELECT id:int64, SUM(a + b):float64 FROM t\n",
+			`output column expression "SUM(a + b)" needs an alias: write SUM(a + b) AS name:float64`},
+		{"untyped parameter hint", "  - name: Q\n    kind: many\n    sql: SELECT id:int64 FROM t WHERE x = :x\n",
+			`declare its type inline (:x:int64) or list it under params:`},
+		{"package not imported", "  - name: Q\n    kind: many\n    sql: SELECT id:uuid.UUID FROM t\n",
+			`type "uuid.UUID" uses package "uuid" which is not imported; add its import path to extra_imports`},
+		{"package not imported in a param", "  - name: Q\n    kind: many\n    sql: SELECT id:int64 FROM t WHERE x = :x:[]decimal.Decimal\n",
+			`uses package "decimal" which is not imported`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if _, err := genYAML("postgres", tc.stmts); err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("want error containing %q, got %v", tc.want, err)
+			}
+		})
+	}
+	// With the import declared (any version/major-suffix spelling) the same statement generates and type-checks.
+	for _, imp := range []string{"github.com/google/uuid", "github.com/gofrs/uuid/v5", "gopkg.in/x/uuid.v1", "github.com/x/go-uuid"} {
+		src, err := sqlgen.GenerateFromYAML([]byte("version: \"1\"\npackage: p\nout: p_gen.go\ndialect: postgres\nextra_imports:\n  - " + imp +
+			"\nstatements:\n  - name: Q\n    kind: many\n    sql: SELECT id:uuid.UUID FROM t\n"))
+		if err != nil {
+			t.Errorf("%s: %v", imp, err)
+			continue
+		}
+		if !strings.Contains(string(src), `"`+imp+`"`) {
+			t.Errorf("%s: import not emitted", imp)
+		}
+	}
+}

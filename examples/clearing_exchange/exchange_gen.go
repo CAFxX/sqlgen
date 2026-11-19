@@ -337,6 +337,7 @@ type paramsUpsertInstrument struct {
 }
 
 var descUpsertInstrument = &runtime.QueryDescriptor{
+	Name:      "UpsertInstrument",
 	StmtID:    1,
 	StmtVerb:  runtime.VerbInsert,
 	StaticSQL: "INSERT INTO instruments (symbol, asset_class, is_marginable, haircut_bps, tick_size_cents)\nVALUES (?, ?, ?, ?, ?)\nON CONFLICT (symbol) DO UPDATE SET\n  asset_class = excluded.asset_class,\n  is_marginable = excluded.is_marginable,\n  haircut_bps = excluded.haircut_bps,\n  tick_size_cents = excluded.tick_size_cents",
@@ -422,6 +423,7 @@ type paramsUpsertFirm struct {
 }
 
 var descUpsertFirm = &runtime.QueryDescriptor{
+	Name:      "UpsertFirm",
 	StmtID:    2,
 	StmtVerb:  runtime.VerbInsert,
 	StaticSQL: "INSERT INTO firms (firm_id, firm_name, regulator_code, max_leverage_bps)\nVALUES (?, ?, ?, ?)\nON CONFLICT (firm_id) DO UPDATE SET\n  firm_name = excluded.firm_name,\n  regulator_code = excluded.regulator_code,\n  max_leverage_bps = excluded.max_leverage_bps",
@@ -500,6 +502,7 @@ type paramsApplyMarginSettlements struct {
 }
 
 var descApplyMarginSettlements = &runtime.QueryDescriptor{
+	Name:     "ApplyMarginSettlements",
 	StmtID:   3,
 	StmtVerb: runtime.VerbInsert,
 	Segments: []string{"INSERT INTO margin_accounts (\n  firm_id, account_id, status, collateral_cents, realized_pnl_cents, margin_ratio_bps, kyc_verified, updated_seq\n)\n", "", "", "\nON CONFLICT (firm_id, account_id) DO UPDATE SET\n  collateral_cents = margin_accounts.collateral_cents + excluded.collateral_cents,\n  realized_pnl_cents = margin_accounts.realized_pnl_cents + excluded.realized_pnl_cents,\n  margin_ratio_bps = excluded.margin_ratio_bps,\n  kyc_verified = excluded.kyc_verified,\n  updated_seq = excluded.updated_seq"},
@@ -755,6 +758,7 @@ type paramsGetMarginAccount struct {
 }
 
 var descGetMarginAccount = &runtime.QueryDescriptor{
+	Name:      "GetMarginAccount",
 	StmtID:    4,
 	StmtVerb:  runtime.VerbSelect,
 	StaticSQL: "SELECT\n  firm_id, account_id, status, collateral_cents, realized_pnl_cents, margin_ratio_bps, kyc_verified, updated_seq\nFROM margin_accounts\nWHERE firm_id = ? AND account_id = ?",
@@ -899,6 +903,7 @@ type paramsGetAccountCollateralCents struct {
 }
 
 var descGetAccountCollateralCents = &runtime.QueryDescriptor{
+	Name:      "GetAccountCollateralCents",
 	StmtID:    5,
 	StmtVerb:  runtime.VerbSelect,
 	StaticSQL: "SELECT collateral_cents\nFROM margin_accounts\nWHERE firm_id = ? AND account_id = ?",
@@ -1030,6 +1035,7 @@ type paramsSetAccountStatus struct {
 }
 
 var descSetAccountStatus = &runtime.QueryDescriptor{
+	Name:      "SetAccountStatus",
 	StmtID:    6,
 	StmtVerb:  runtime.VerbUpdate,
 	StaticSQL: "UPDATE margin_accounts\nSET status = ?, updated_seq = ?\nWHERE firm_id = ? AND account_id = ?",
@@ -1129,6 +1135,7 @@ type paramsIngestOrders struct {
 }
 
 var descIngestOrders = &runtime.QueryDescriptor{
+	Name:         "IngestOrders",
 	StmtID:       7,
 	StmtVerb:     runtime.VerbInsert,
 	HasReturning: true,
@@ -1561,6 +1568,7 @@ type paramsCancelOrdersByIDs struct {
 }
 
 var descCancelOrdersByIDs = &runtime.QueryDescriptor{
+	Name:         "CancelOrdersByIDs",
 	StmtID:       8,
 	StmtVerb:     runtime.VerbUpdate,
 	HasReturning: true,
@@ -1937,6 +1945,7 @@ type paramsListOpenOrdersForSymbol struct {
 }
 
 var descListOpenOrdersForSymbol = &runtime.QueryDescriptor{
+	Name:      "ListOpenOrdersForSymbol",
 	StmtID:    9,
 	StmtVerb:  runtime.VerbSelect,
 	StaticSQL: "SELECT\n  order_id, firm_id, account_id, symbol, side, limit_price_cents, quantity, status\nFROM orders\nWHERE symbol = ?\n  AND side = ?\n  AND status = 'open'\nORDER BY limit_price_cents DESC, order_id ASC\nLIMIT ?",
@@ -2124,6 +2133,7 @@ type paramsAdjustAccountMarginAndPnl struct {
 }
 
 var descAdjustAccountMarginAndPnl = &runtime.QueryDescriptor{
+	Name:      "AdjustAccountMarginAndPnl",
 	StmtID:    10,
 	StmtVerb:  runtime.VerbUpdate,
 	StaticSQL: "UPDATE margin_accounts\nSET collateral_cents = collateral_cents + ?,\n    realized_pnl_cents = realized_pnl_cents + ?,\n    updated_seq = ?\nWHERE firm_id = ?\n  AND account_id = ?\n  AND status = 'active'",
@@ -2209,6 +2219,7 @@ type paramsMarkOrderFilled struct {
 }
 
 var descMarkOrderFilled = &runtime.QueryDescriptor{
+	Name:      "MarkOrderFilled",
 	StmtID:    11,
 	StmtVerb:  runtime.VerbUpdate,
 	StaticSQL: "UPDATE orders\nSET status = ?,\n    quantity = ?,\n    updated_seq = ?\nWHERE order_id = ?\n  AND status = 'open'",
@@ -2297,6 +2308,7 @@ type paramsUpsertPositionSnapshot struct {
 }
 
 var descUpsertPositionSnapshot = &runtime.QueryDescriptor{
+	Name:      "UpsertPositionSnapshot",
 	StmtID:    12,
 	StmtVerb:  runtime.VerbInsert,
 	StaticSQL: "INSERT INTO positions (\n  position_id, firm_id, account_id, symbol, net_quantity, avg_entry_cents,\n  notional_cents, unrealized_pnl_cents, delta_bps, gamma_bps, updated_seq\n)\nVALUES (\n  ?, ?, ?, ?, ?, ?,\n  ?, ?, ?, ?, ?\n)\nON CONFLICT (position_id) DO UPDATE SET\n  net_quantity = positions.net_quantity + excluded.net_quantity,\n  avg_entry_cents = excluded.avg_entry_cents,\n  notional_cents = excluded.notional_cents,\n  unrealized_pnl_cents = positions.unrealized_pnl_cents + excluded.unrealized_pnl_cents,\n  delta_bps = excluded.delta_bps,\n  gamma_bps = excluded.gamma_bps,\n  updated_seq = excluded.updated_seq",
@@ -2412,6 +2424,7 @@ type paramsInsertClearingFill struct {
 }
 
 var descInsertClearingFill = &runtime.QueryDescriptor{
+	Name:      "InsertClearingFill",
 	StmtID:    13,
 	StmtVerb:  runtime.VerbInsert,
 	StaticSQL: "INSERT INTO clearing_fills (\n  fill_id, buy_order_id, sell_order_id, buyer_account_id, seller_account_id,\n  symbol, price_cents, quantity, notional_cents, seq\n)\nVALUES (\n  ?, ?, ?, ?, ?,\n  ?, ?, ?, ?, ?\n)",
@@ -2519,6 +2532,7 @@ type paramsInsertComplianceNotice struct {
 }
 
 var descInsertComplianceNotice = &runtime.QueryDescriptor{
+	Name:      "InsertComplianceNotice",
 	StmtID:    14,
 	StmtVerb:  runtime.VerbInsert,
 	StaticSQL: "INSERT INTO compliance_notices (\n  fill_id, firm_id, account_id, notice_kind, notional_cents, seq\n)\nVALUES (\n  ?, ?, ?, ?, ?, ?\n)",
@@ -2605,6 +2619,7 @@ type paramsTouchExchangeHeartbeat struct {
 }
 
 var descTouchExchangeHeartbeat = &runtime.QueryDescriptor{
+	Name:      "TouchExchangeHeartbeat",
 	StmtID:    15,
 	StmtVerb:  runtime.VerbUpdate,
 	StaticSQL: "UPDATE exchange_heartbeat\nSET last_seq = ?,\n    total_events = total_events + 1",
@@ -2669,6 +2684,7 @@ type paramsPurgeExpiredLocks struct {
 }
 
 var descPurgeExpiredLocks = &runtime.QueryDescriptor{
+	Name:      "PurgeExpiredLocks",
 	StmtID:    16,
 	StmtVerb:  runtime.VerbDelete,
 	StaticSQL: "DELETE FROM temp_locks",
@@ -2732,6 +2748,7 @@ type EligibleAccountsSubqueryParams struct {
 }
 
 var descEligibleAccountsSubquery = &runtime.QueryDescriptor{
+	Name:     "EligibleAccountsSubquery",
 	StmtID:   17,
 	StmtVerb: runtime.VerbSelect,
 	Segments: []string{"-- Level-1 subquery filtering margin accounts by presorted FirmIDs and optional KYC / margin gates\nSELECT account_id\nFROM margin_accounts\nWHERE firm_id IN (", ")\n  AND status = ", "\n  ", "\n  ", ""},
@@ -2843,6 +2860,7 @@ type ActiveInstrumentsSubqueryParams struct {
 }
 
 var descActiveInstrumentsSubquery = &runtime.QueryDescriptor{
+	Name:     "ActiveInstrumentsSubquery",
 	StmtID:   18,
 	StmtVerb: runtime.VerbSelect,
 	Segments: []string{"/* Level-1 subquery filtering tradeable instruments */\nSELECT symbol\nFROM instruments\nWHERE asset_class IN (", ")\n  ", "\n  ", ""},
@@ -2952,6 +2970,7 @@ type FilteredPositionsSubqueryParams struct {
 }
 
 var descFilteredPositionsSubquery = &runtime.QueryDescriptor{
+	Name:     "FilteredPositionsSubquery",
 	StmtID:   19,
 	StmtVerb: runtime.VerbSelect,
 	Segments: []string{"-- Level-2 subquery composing EligibleAccountsSubquery and ActiveInstrumentsSubquery\nSELECT position_id\nFROM positions\nWHERE account_id IN (", ")\n  AND symbol IN (", ")\n  ", ""},
@@ -3155,6 +3174,7 @@ type QueryRiskPositionsPageParams struct {
 }
 
 var descQueryRiskPositionsPage = &runtime.QueryDescriptor{
+	Name:     "QueryRiskPositionsPage",
 	StmtID:   20,
 	StmtVerb: runtime.VerbSelect,
 	Segments: []string{"SELECT\n  ", "\n  ", "\n  ", "\nFROM positions p\n", "\nWHERE p.position_id IN (", ")\n  ", "\n  ", "\n  AND ", "\nORDER BY ", "\nLIMIT ", ""},
@@ -3491,6 +3511,7 @@ type paramsTotalExchangeEquityCents struct {
 }
 
 var descTotalExchangeEquityCents = &runtime.QueryDescriptor{
+	Name:      "TotalExchangeEquityCents",
 	StmtID:    21,
 	StmtVerb:  runtime.VerbSelect,
 	StaticSQL: "SELECT COALESCE(SUM(collateral_cents + realized_pnl_cents), 0) AS total_equity\nFROM margin_accounts",
@@ -3609,6 +3630,7 @@ type paramsTotalNetPositionBySymbol struct {
 }
 
 var descTotalNetPositionBySymbol = &runtime.QueryDescriptor{
+	Name:      "TotalNetPositionBySymbol",
 	StmtID:    22,
 	StmtVerb:  runtime.VerbSelect,
 	StaticSQL: "SELECT COALESCE(SUM(net_quantity), 0) AS net_qty\nFROM positions\nWHERE symbol = ?",
@@ -3736,6 +3758,7 @@ type paramsCountClearingFills struct {
 }
 
 var descCountClearingFills = &runtime.QueryDescriptor{
+	Name:      "CountClearingFills",
 	StmtID:    23,
 	StmtVerb:  runtime.VerbSelect,
 	StaticSQL: "SELECT COUNT(*) AS cnt\nFROM clearing_fills",
@@ -3854,6 +3877,7 @@ type paramsCountComplianceNotices struct {
 }
 
 var descCountComplianceNotices = &runtime.QueryDescriptor{
+	Name:      "CountComplianceNotices",
 	StmtID:    24,
 	StmtVerb:  runtime.VerbSelect,
 	StaticSQL: "SELECT COUNT(*) AS cnt\nFROM compliance_notices\nWHERE notice_kind = ?",

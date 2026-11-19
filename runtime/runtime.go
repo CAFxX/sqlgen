@@ -4,6 +4,7 @@ import (
 	"database/sql"
 	"errors"
 	"iter"
+	"strconv"
 	"sync"
 )
 
@@ -68,7 +69,8 @@ var (
 	ErrUninitializedQuery = errors.New("sqlgen: curried Query argument is uninitialized")
 	// ErrNilQuery is an alias for ErrUninitializedQuery.
 	ErrNilQuery = ErrUninitializedQuery
-	// ErrAssertionFailed is returned when a pipeline row-count assertion fails.
+	// ErrAssertionFailed is matched (errors.Is) by every pipeline row-count assertion failure. The returned
+	// error is an *AssertionError naming the statement and the expected count.
 	ErrAssertionFailed = errors.New("sqlgen: pipeline row-count assertion failed")
 	// ErrBranchNotTaken is returned when reading a future from an untaken If/Else branch.
 	ErrBranchNotTaken = errors.New("sqlgen: pipeline if/else branch was not taken")
@@ -469,6 +471,7 @@ type Slot struct {
 
 // QueryDescriptor holds the pre-parsed static SQL segments and dynamic slots for a statement.
 type QueryDescriptor struct {
+	Name           string // statement name, used in diagnostics
 	StmtID         uint32
 	StmtVerb       StmtVerb
 	StaticSQL      string
@@ -481,6 +484,30 @@ type QueryDescriptor struct {
 	NumTuples      int
 	NumSubs        int
 }
+
+// AssertionError is the error returned when AssertRowsAffected/AssertFound fails. errors.Is(err,
+// ErrAssertionFailed) is true for it. GotKnown is false when the server only signalled the violation (the
+// single-roundtrip wire path) and the actual row count is therefore unavailable.
+type AssertionError struct {
+	Statement string // statement name; empty when unknown
+	Want, Got int64
+	GotKnown  bool
+}
+
+func (e *AssertionError) Error() string {
+	msg := "sqlgen: pipeline assertion failed"
+	if e.Statement != "" {
+		msg += " on statement " + strconv.Quote(e.Statement)
+	}
+	msg += ": expected " + strconv.FormatInt(e.Want, 10) + " rows affected"
+	if e.GotKnown {
+		msg += ", got " + strconv.FormatInt(e.Got, 10)
+	}
+	return msg
+}
+
+// Unwrap makes errors.Is(err, ErrAssertionFailed) true.
+func (e *AssertionError) Unwrap() error { return ErrAssertionFailed }
 
 // BranchGate represents an enclosing Pipeline.If condition gate on a PipelineOp.
 type BranchGate struct {

@@ -203,6 +203,7 @@ type SearchMembersParams struct {
 }
 
 var descSearchMembers = &runtime.QueryDescriptor{
+	Name:     "SearchMembers",
 	StmtID:   1,
 	StmtVerb: runtime.VerbSelect,
 	Segments: []string{"SELECT\n  ", "\n  ", "\nFROM members m\n", "\nWHERE m.org_id = ", "\n  ", "\n  ", "\n  ", "\nORDER BY m.id ASC"},
@@ -579,6 +580,7 @@ type ListMembersPaginatedParams struct {
 }
 
 var descListMembersPaginated = &runtime.QueryDescriptor{
+	Name:     "ListMembersPaginated",
 	StmtID:   2,
 	StmtVerb: runtime.VerbSelect,
 	Segments: []string{"SELECT\n  ", "\nFROM members m\nWHERE m.org_id = ", "\n  AND ", "\nORDER BY ", "\nLIMIT ", ""},
@@ -784,6 +786,7 @@ type paramsActiveOrgs struct {
 }
 
 var descActiveOrgs = &runtime.QueryDescriptor{
+	Name:     "ActiveOrgs",
 	StmtID:   3,
 	StmtVerb: runtime.VerbSelect,
 	Segments: []string{"SELECT id\nFROM orgs\nWHERE status = 'active'\n  AND plan IN (", ")"},
@@ -864,6 +867,7 @@ type paramsCohortMemberIDs struct {
 }
 
 var descCohortMemberIDs = &runtime.QueryDescriptor{
+	Name:     "CohortMemberIDs",
 	StmtID:   4,
 	StmtVerb: runtime.VerbSelect,
 	Segments: []string{"SELECT id, org_id, role\nFROM members\nWHERE org_id IN (", ")\n  AND score >= ", ""},
@@ -961,6 +965,7 @@ type paramsAggregateCohortInvoices struct {
 }
 
 var descAggregateCohortInvoices = &runtime.QueryDescriptor{
+	Name:     "AggregateCohortInvoices",
 	StmtID:   5,
 	StmtVerb: runtime.VerbSelect,
 	Segments: []string{"WITH target_members AS (", ")\nSELECT\n  ", "\nFROM target_members tm\nLEFT JOIN invoices i ON i.member_id = tm.id AND i.status = ", "\nGROUP BY tm.org_id, tm.role\nORDER BY tm.org_id ASC, tm.role ASC"},

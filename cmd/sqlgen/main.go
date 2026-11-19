@@ -7,6 +7,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"runtime/debug"
 
 	"github.com/CAFxX/sqlgen"
 )
@@ -15,6 +16,15 @@ var exitFunc = os.Exit
 
 func main() {
 	exitFunc(run(os.Args[1:], os.Stdout, os.Stderr))
+}
+
+// versionString reports the module version the binary was built from ("go install ...@v0.3.1"), or
+// "(devel)" for local builds and when no build information is available.
+func versionString(info *debug.BuildInfo) string {
+	if info == nil || info.Main.Version == "" {
+		return "sqlgen (devel)"
+	}
+	return "sqlgen " + info.Main.Version
 }
 
 func run(args []string, stdout, stderr io.Writer) int {
@@ -45,7 +55,8 @@ func run(args []string, stdout, stderr io.Writer) int {
 	}
 
 	if showVersion {
-		_, _ = fmt.Fprint(stdout, "sqlgen v1.0.0\n")
+		info, _ := debug.ReadBuildInfo()
+		_, _ = fmt.Fprintln(stdout, versionString(info))
 		return 0
 	}
 

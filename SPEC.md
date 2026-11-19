@@ -174,7 +174,7 @@ type Config struct {
   - `-out <path>`: Overrides the `out` path in `sqlgen.yaml`.
   - `-stdout`: Writes generated Go code to `stdout` instead of disk.
   - `-check`: CI verification mode. Generates the Go code in memory and compares it byte-for-byte against the existing output file on disk without modifying disk files. If the file is missing or differs, prints an actionable diff/drift message to `stderr` and exits with code `2`.
-  - `-version`: Prints `"sqlgen v1.0.0\n"` to `stdout` and exits with code `0`.
+  - `-version`: Prints `sqlgen <version>\n` to `stdout` and exits with code `0`, where `<version>` is the main module version from `runtime/debug.ReadBuildInfo` (for example `v0.3.1`), or `(devel)` when it is empty or no build information is available.
 - **Exit Codes**:
   - `0`: Success.
   - `1`: Configuration, file I/O, SQL parsing, or validation error.
@@ -373,7 +373,19 @@ var (
 	ErrAssertionFailed    = errors.New("sqlgen: pipeline row-count assertion failed")
 	ErrBranchNotTaken     = errors.New("sqlgen: pipeline if/else branch was not taken")
 )
+
+// AssertionError is what a failed AssertRowsAffected / AssertFound returns. It matches
+// errors.Is(err, ErrAssertionFailed) via Unwrap. GotKnown is false on the wire path, where the
+// server only signals the violation and the actual count is unavailable.
+type AssertionError struct {
+	Statement string // QueryDescriptor.Name; empty when unknown
+	Want, Got int64
+	GotKnown  bool
+}
+// Error(): `sqlgen: pipeline assertion failed on statement "S": expected N rows affected[, got M]`
 ```
+
+`ErrAssertionFailed` is the sentinel; assertion failures are always returned as `*AssertionError` wrapping it. The generator emits the statement name into `QueryDescriptor.Name` for every statement so the runtime can report it.
 
 ### 5.1. 256-Bit `VariantKey` & Bijective `ComputeSubqueryShape`
 ```go
@@ -801,12 +813,12 @@ func (s *tinyLFUSketch) estimate(h uint64) uint8 {
 1. **Wire-Pipelined Mode (`WirePipeliner`)**:
    - Detected via `conn.Raw` (when `txCache == nil`) or via `WrapConnector` sentinel execution `tx.ExecContext(withPipelineOps(ctx, ops), "--sqlgen:pipeline")` (when `txCache != nil`).
    - Calls `RenderPipelineBatch(dialect, cache, ops)` to populate `ops[i].SQL` using at most 1 `strings.Builder`.
-   - Translates any integer-overflow error (`SQLSTATE 22003` or `"integer overflow"` / `"bigint out of range"`) on an operation with `Decorators.IsAbort == true` into `op.AbortErr`, and on an operation with `Decorators.AssertRows >= 0` into `runtime.ErrAssertionFailed`.
+   - Translates any integer-overflow error (`SQLSTATE 22003` or `"integer overflow"` / `"bigint out of range"`) on an operation with `Decorators.IsAbort == true` into `op.AbortErr`, and on an operation with `Decorators.AssertRows >= 0` into a `*runtime.AssertionError` (matching `runtime.ErrAssertionFailed`) carrying the statement name (`op.Desc.Name`) and the expected count, with `GotKnown == false`.
 2. **Sequential Fallback Mode (`*sql.DB` / `*sql.Tx`)**:
    - Executes operations sequentially through `StmtCache` (using Tier-2 prepared statements).
    - Evaluates `BranchGates` in Go via `cond.EvalGoFn()`: if any gate is false, calls `op.OnSkipped()` (`future.skipped = true`) and skips database execution for that operation.
    - If an active `IsAbort` operation is reached, returns `op.AbortErr` (triggering `tx.Rollback()`).
-   - If an operation has `Decorators.AssertRows >= 0` and the actual affected/returned row count does not equal `AssertRows`, sets `op.Err = runtime.ErrAssertionFailed` and returns `runtime.ErrAssertionFailed` (triggering `tx.Rollback()`).
+   - If an operation has `Decorators.AssertRows >= 0` and the actual affected/returned row count does not equal `AssertRows`, sets `op.Err` to a `*runtime.AssertionError{Statement, Want: AssertRows, Got: RowCount, GotKnown: true}` (matching `runtime.ErrAssertionFailed`) and returns it. The implicit transaction of a standalone `Pipeline`, and `PipelineTx`, roll back; a pipeline bound to a user-managed `*sql.Tx` (`WithTx(tx).Pipeline(ctx)`) does not: the error is returned and the caller owns the rollback.
 3. **`IsRetryableTxError(err error, duringCommit bool) bool`**:
    - Returns `false` if `err == nil`, `errors.Is(err, context.Canceled)`, `errors.Is(err, context.DeadlineExceeded)`, or `errors.Is(err, ErrAssertionFailed)`.
    - If `duringCommit == true` and `err` is a transport/connection drop (`errors.Is(err, driver.ErrBadConn)`, `errors.Is(err, io.EOF)`, `errors.Is(err, io.ErrUnexpectedEOF)`, or `net.Error`), returns `false`.

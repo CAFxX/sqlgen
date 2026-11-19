@@ -265,6 +265,7 @@ type paramsGetInventoryBySKUs struct {
 }
 
 var descGetInventoryBySKUs = &runtime.QueryDescriptor{
+	Name:     "GetInventoryBySKUs",
 	StmtID:   1,
 	StmtVerb: runtime.VerbSelect,
 	Segments: []string{"SELECT\n  ", "\nFROM inventory\nWHERE (warehouse_id, sku) IN (", ")\nORDER BY warehouse_id ASC, sku ASC"},
@@ -651,6 +652,7 @@ type paramsInsertOrderItems struct {
 }
 
 var descInsertOrderItems = &runtime.QueryDescriptor{
+	Name:     "InsertOrderItems",
 	StmtID:   2,
 	StmtVerb: runtime.VerbInsert,
 	Segments: []string{"INSERT INTO order_items (order_id, sku, quantity, unit_price_cents)\n", "", "", ""},
@@ -856,6 +858,7 @@ type paramsStreamFulfilledOrders struct {
 }
 
 var descStreamFulfilledOrders = &runtime.QueryDescriptor{
+	Name:      "StreamFulfilledOrders",
 	StmtID:    3,
 	StmtVerb:  runtime.VerbSelect,
 	StaticSQL: "SELECT\n  id, customer_id, total_cents, fulfilled_at\nFROM orders\nWHERE status = 'fulfilled' AND fulfilled_at <= ?\nORDER BY id ASC",
@@ -1025,6 +1028,7 @@ type paramsInsertArchivedOrders struct {
 }
 
 var descInsertArchivedOrders = &runtime.QueryDescriptor{
+	Name:     "InsertArchivedOrders",
 	StmtID:   4,
 	StmtVerb: runtime.VerbInsert,
 	Segments: []string{"INSERT INTO archived_orders (id, customer_id, total_cents, fulfilled_at, archived_at)\n", "", "", ""},
@@ -1215,6 +1219,7 @@ type paramsDeleteFulfilledOrdersByIDs struct {
 }
 
 var descDeleteFulfilledOrdersByIDs = &runtime.QueryDescriptor{
+	Name:     "DeleteFulfilledOrdersByIDs",
 	StmtID:   5,
 	StmtVerb: runtime.VerbDelete,
 	Segments: []string{"DELETE FROM orders\nWHERE ", "id IN (", ")", ""},

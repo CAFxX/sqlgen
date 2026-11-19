@@ -5,6 +5,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"runtime/debug"
 	"strings"
 	"testing"
 )
@@ -53,7 +54,8 @@ statements:
 	if code := run([]string{"-version"}, &stdout, &stderr); code != 0 {
 		t.Fatalf("-version code = %d, stderr = %s", code, stderr.String())
 	}
-	if stdout.String() != "sqlgen v1.0.0\n" {
+	// Test binaries carry no module version, so the fallback is printed.
+	if stdout.String() != "sqlgen (devel)\n" {
 		t.Fatalf("unexpected version output: %q", stdout.String())
 	}
 
@@ -224,5 +226,23 @@ statements:
 	stderr.Reset()
 	if code := run([]string{"-check"}, &stdout, &stderr); code != 0 {
 		t.Fatalf("expected code 0 for -check with default sqlgen_gen.go, got %d: %s", code, stderr.String())
+	}
+}
+
+func TestVersionString(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		info *debug.BuildInfo
+		want string
+	}{
+		{"no build info", nil, "sqlgen (devel)"},
+		{"empty version", &debug.BuildInfo{}, "sqlgen (devel)"},
+		{"devel version", &debug.BuildInfo{Main: debug.Module{Version: "(devel)"}}, "sqlgen (devel)"},
+		{"tagged module version", &debug.BuildInfo{Main: debug.Module{Version: "v0.3.1"}}, "sqlgen v0.3.1"},
+		{"pseudo version", &debug.BuildInfo{Main: debug.Module{Version: "v0.0.0-20260101000000-abcdef123456"}}, "sqlgen v0.0.0-20260101000000-abcdef123456"},
+	} {
+		if got := versionString(tc.info); got != tc.want {
+			t.Errorf("%s: got %q want %q", tc.name, got, tc.want)
+		}
 	}
 }

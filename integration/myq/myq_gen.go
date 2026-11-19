@@ -225,6 +225,7 @@ type paramsInsertItems struct {
 }
 
 var descInsertItems = &runtime.QueryDescriptor{
+	Name:     "InsertItems",
 	StmtID:   1,
 	StmtVerb: runtime.VerbInsert,
 	Segments: []string{"INSERT INTO sg_items (id, org_id, name, score, status)\n", "", "", ""},
@@ -464,6 +465,7 @@ type paramsGetItem struct {
 }
 
 var descGetItem = &runtime.QueryDescriptor{
+	Name:      "GetItem",
 	StmtID:    2,
 	StmtVerb:  runtime.VerbSelect,
 	StaticSQL: "SELECT id, org_id, name, score, status\nFROM sg_items\nWHERE id = ?",
@@ -603,6 +605,7 @@ type paramsItemsByIDs struct {
 }
 
 var descItemsByIDs = &runtime.QueryDescriptor{
+	Name:     "ItemsByIDs",
 	StmtID:   3,
 	StmtVerb: runtime.VerbSelect,
 	Segments: []string{"SELECT ", "\nFROM sg_items\nWHERE id IN (", ")\nORDER BY id"},
@@ -949,6 +952,7 @@ type SearchItemsParams struct {
 }
 
 var descSearchItems = &runtime.QueryDescriptor{
+	Name:     "SearchItems",
 	StmtID:   4,
 	StmtVerb: runtime.VerbSelect,
 	Segments: []string{"SELECT ", "\nFROM sg_items\nWHERE score >= ", "\n  ", "\n  ", "\n  ", "\nORDER BY id"},
@@ -1274,6 +1278,7 @@ type PageItemsParams struct {
 }
 
 var descPageItems = &runtime.QueryDescriptor{
+	Name:     "PageItems",
 	StmtID:   5,
 	StmtVerb: runtime.VerbSelect,
 	Segments: []string{"SELECT ", "\nFROM sg_items\nWHERE org_id = ", "\n  AND ", "\nORDER BY ", "\nLIMIT ", ""},
@@ -1477,6 +1482,7 @@ type paramsAddScore struct {
 }
 
 var descAddScore = &runtime.QueryDescriptor{
+	Name:     "AddScore",
 	StmtID:   6,
 	StmtVerb: runtime.VerbUpdate,
 	Segments: []string{"UPDATE sg_items SET score = score + ", "\nWHERE ", "id IN (", ") AND org_id = ", "", ""},
@@ -1656,6 +1662,7 @@ type paramsAddScoreOne struct {
 }
 
 var descAddScoreOne = &runtime.QueryDescriptor{
+	Name:      "AddScoreOne",
 	StmtID:    7,
 	StmtVerb:  runtime.VerbUpdate,
 	StaticSQL: "UPDATE sg_items SET score = score + ? WHERE id = ?",
@@ -1726,6 +1733,7 @@ type paramsDeleteItems struct {
 }
 
 var descDeleteItems = &runtime.QueryDescriptor{
+	Name:     "DeleteItems",
 	StmtID:   8,
 	StmtVerb: runtime.VerbDelete,
 	Segments: []string{"DELETE FROM sg_items WHERE ", "id IN (", ")", ""},
@@ -1892,6 +1900,7 @@ type paramsTopOrgs struct {
 }
 
 var descTopOrgs = &runtime.QueryDescriptor{
+	Name:      "TopOrgs",
 	StmtID:    9,
 	StmtVerb:  runtime.VerbSelect,
 	StaticSQL: "SELECT org_id FROM sg_items GROUP BY org_id HAVING COUNT(*) >= ?",
@@ -1973,6 +1982,7 @@ type paramsOrgStats struct {
 }
 
 var descOrgStats = &runtime.QueryDescriptor{
+	Name:     "OrgStats",
 	StmtID:   10,
 	StmtVerb: runtime.VerbSelect,
 	Segments: []string{"WITH picked AS (", ")\nSELECT ", "\nFROM sg_items i\nWHERE i.org_id IN (SELECT org_id FROM picked) AND i.status = ", "\nGROUP BY i.org_id\nORDER BY i.org_id"},
@@ -2168,6 +2178,7 @@ type paramsInsertItem struct {
 }
 
 var descInsertItem = &runtime.QueryDescriptor{
+	Name:      "InsertItem",
 	StmtID:    11,
 	StmtVerb:  runtime.VerbInsert,
 	StaticSQL: "INSERT INTO sg_items (id, org_id, name, score, status)\nVALUES (?, ?, ?, ?, ?)",
@@ -2250,6 +2261,7 @@ type paramsSetAllStatus struct {
 }
 
 var descSetAllStatus = &runtime.QueryDescriptor{
+	Name:      "SetAllStatus",
 	StmtID:    12,
 	StmtVerb:  runtime.VerbUpdate,
 	StaticSQL: "UPDATE sg_items SET status = ?",

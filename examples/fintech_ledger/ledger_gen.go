@@ -216,6 +216,7 @@ type paramsGetAccount struct {
 }
 
 var descGetAccount = &runtime.QueryDescriptor{
+	Name:      "GetAccount",
 	StmtID:    1,
 	StmtVerb:  runtime.VerbSelect,
 	StaticSQL: "SELECT\n  org_id, id, currency, balance_cents, status\nFROM accounts\nWHERE org_id = ? AND id = ?",
@@ -356,6 +357,7 @@ type paramsTotalSupplyByOrg struct {
 }
 
 var descTotalSupplyByOrg = &runtime.QueryDescriptor{
+	Name:      "TotalSupplyByOrg",
 	StmtID:    2,
 	StmtVerb:  runtime.VerbSelect,
 	StaticSQL: "SELECT COALESCE(SUM(balance_cents), 0) AS total_cents\nFROM accounts\nWHERE org_id = ?",
@@ -481,6 +483,7 @@ type paramsSetAccountStatus struct {
 }
 
 var descSetAccountStatus = &runtime.QueryDescriptor{
+	Name:      "SetAccountStatus",
 	StmtID:    3,
 	StmtVerb:  runtime.VerbUpdate,
 	StaticSQL: "UPDATE accounts\nSET status = ?\nWHERE org_id = ? AND id = ?",
@@ -557,6 +560,7 @@ type paramsDebitAccount struct {
 }
 
 var descDebitAccount = &runtime.QueryDescriptor{
+	Name:      "DebitAccount",
 	StmtID:    4,
 	StmtVerb:  runtime.VerbUpdate,
 	StaticSQL: "UPDATE accounts\nSET balance_cents = balance_cents - ?\nWHERE org_id = ? AND id = ?",
@@ -633,6 +637,7 @@ type paramsCreditAccount struct {
 }
 
 var descCreditAccount = &runtime.QueryDescriptor{
+	Name:      "CreditAccount",
 	StmtID:    5,
 	StmtVerb:  runtime.VerbUpdate,
 	StaticSQL: "UPDATE accounts\nSET balance_cents = balance_cents + ?\nWHERE org_id = ? AND id = ?",
@@ -711,6 +716,7 @@ type paramsInsertTransferReceipt struct {
 }
 
 var descInsertTransferReceipt = &runtime.QueryDescriptor{
+	Name:      "InsertTransferReceipt",
 	StmtID:    6,
 	StmtVerb:  runtime.VerbInsert,
 	StaticSQL: "INSERT INTO transfer_receipts (idempotency_key, org_id, sender_id, receiver_id, amount_cents)\nVALUES (?, ?, ?, ?, ?)",
@@ -796,6 +802,7 @@ type paramsInsertAuditEvent struct {
 }
 
 var descInsertAuditEvent = &runtime.QueryDescriptor{
+	Name:      "InsertAuditEvent",
 	StmtID:    7,
 	StmtVerb:  runtime.VerbInsert,
 	StaticSQL: "INSERT INTO audit_events (org_id, account_id, event_type, amount_cents)\nVALUES (?, ?, ?, ?)",
@@ -874,6 +881,7 @@ type paramsUpsertAccountBalances struct {
 }
 
 var descUpsertAccountBalances = &runtime.QueryDescriptor{
+	Name:     "UpsertAccountBalances",
 	StmtID:   8,
 	StmtVerb: runtime.VerbInsert,
 	Segments: []string{"INSERT INTO accounts (org_id, id, currency, balance_cents, status)\n", "", "", "\nON CONFLICT (org_id, id)\nDO UPDATE SET balance_cents = accounts.balance_cents + EXCLUDED.balance_cents"},

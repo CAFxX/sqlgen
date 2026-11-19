@@ -318,6 +318,7 @@ type paramsCreateUser struct {
 }
 
 var descCreateUser = &runtime.QueryDescriptor{
+	Name:      "CreateUser",
 	StmtID:    1,
 	StmtVerb:  runtime.VerbInsert,
 	StaticSQL: "INSERT INTO users (id, org_id, email, role, score, bio)\nVALUES (?, ?, ?, ?, ?, ?)",
@@ -424,6 +425,7 @@ type paramsGetUserByID struct {
 }
 
 var descGetUserByID = &runtime.QueryDescriptor{
+	Name:      "GetUserByID",
 	StmtID:    2,
 	StmtVerb:  runtime.VerbSelect,
 	StaticSQL: "SELECT id, org_id, email, role, score, bio\nFROM users\nWHERE id = ?",
@@ -565,6 +567,7 @@ type paramsListUsersByIDs struct {
 }
 
 var descListUsersByIDs = &runtime.QueryDescriptor{
+	Name:     "ListUsersByIDs",
 	StmtID:   3,
 	StmtVerb: runtime.VerbSelect,
 	Segments: []string{"SELECT ", "\nFROM users\nWHERE id IN (", ")\nORDER BY id ASC"},
@@ -914,6 +917,7 @@ type SelectUserProfileSubsetParams struct {
 }
 
 var descSelectUserProfileSubset = &runtime.QueryDescriptor{
+	Name:     "SelectUserProfileSubset",
 	StmtID:   4,
 	StmtVerb: runtime.VerbSelect,
 	Segments: []string{"SELECT ", "\n", "\nFROM users u\nWHERE u.org_id = ", "\nORDER BY u.id ASC"},
@@ -1120,6 +1124,7 @@ type SearchUsersCoupledParams struct {
 }
 
 var descSearchUsersCoupled = &runtime.QueryDescriptor{
+	Name:     "SearchUsersCoupled",
 	StmtID:   5,
 	StmtVerb: runtime.VerbSelect,
 	Segments: []string{"SELECT ", "\n", "\nFROM users u\n", "\nWHERE 1=1\n", "\n", "\nORDER BY u.id ASC"},
@@ -1407,6 +1412,7 @@ type SubOrgsByMinIDParams struct {
 }
 
 var descSubOrgsByMinID = &runtime.QueryDescriptor{
+	Name:     "SubOrgsByMinID",
 	StmtID:   6,
 	StmtVerb: runtime.VerbSelect,
 	Segments: []string{"SELECT id FROM orgs WHERE id >= ", " ", ""},
@@ -1568,6 +1574,7 @@ type PageUsersParams struct {
 }
 
 var descPageUsers = &runtime.QueryDescriptor{
+	Name:     "PageUsers",
 	StmtID:   7,
 	StmtVerb: runtime.VerbSelect,
 	Segments: []string{"SELECT ", "\nFROM users\nWHERE ", "\n", "\nORDER BY ", "\nLIMIT ", ""},
@@ -1788,6 +1795,7 @@ type paramsUsersFromCTEAndInSubquery struct {
 }
 
 var descUsersFromCTEAndInSubquery = &runtime.QueryDescriptor{
+	Name:     "UsersFromCTEAndInSubquery",
 	StmtID:   8,
 	StmtVerb: runtime.VerbSelect,
 	Segments: []string{"WITH filtered AS (", ")\nSELECT ", "\nFROM filtered f\nWHERE f.id IN (", ")\nORDER BY f.id ASC"},
@@ -1987,6 +1995,7 @@ type paramsSubUserIDsByScore struct {
 }
 
 var descSubUserIDsByScore = &runtime.QueryDescriptor{
+	Name:      "SubUserIDsByScore",
 	StmtID:    9,
 	StmtVerb:  runtime.VerbSelect,
 	StaticSQL: "SELECT id FROM users WHERE score >= ?",
@@ -2067,6 +2076,7 @@ type paramsInsertUsersBatchReturning struct {
 }
 
 var descInsertUsersBatchReturning = &runtime.QueryDescriptor{
+	Name:         "InsertUsersBatchReturning",
 	StmtID:       10,
 	StmtVerb:     runtime.VerbInsert,
 	HasReturning: true,
@@ -2460,6 +2470,7 @@ type paramsUpdateUsersBatchFromValues struct {
 }
 
 var descUpdateUsersBatchFromValues = &runtime.QueryDescriptor{
+	Name:     "UpdateUsersBatchFromValues",
 	StmtID:   11,
 	StmtVerb: runtime.VerbUpdate,
 	Segments: []string{"WITH updates(id, bonus) AS (\n  VALUES ", "\n)\nUPDATE batch_users\nSET points = batch_users.points + (SELECT u.bonus FROM updates u WHERE u.id = batch_users.id)\nWHERE ", "batch_users.id IN (SELECT u.id FROM updates u)", ""},
@@ -2672,6 +2683,7 @@ type paramsInsertQuadBatch struct {
 }
 
 var descInsertQuadBatch = &runtime.QueryDescriptor{
+	Name:     "InsertQuadBatch",
 	StmtID:   12,
 	StmtVerb: runtime.VerbInsert,
 	Segments: []string{"INSERT INTO quad_items (id, group_key, priority, created_ts)\n", "", "", ""},
@@ -2985,6 +2997,7 @@ type PageQuadParams struct {
 }
 
 var descPageQuad = &runtime.QueryDescriptor{
+	Name:     "PageQuad",
 	StmtID:   13,
 	StmtVerb: runtime.VerbSelect,
 	Segments: []string{"SELECT ", "\nFROM quad_items\nWHERE ", "\nORDER BY ", "\nLIMIT ", ""},
