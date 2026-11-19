@@ -1958,3 +1958,47 @@ func FuzzParseYAML(f *testing.F) {
 		}
 	})
 }
+
+// Branch-gated INSERTs are rewritten to INSERT ... SELECT, where PostgreSQL does not infer placeholder
+// types from the target columns, so the dollar dialect must carry per-placeholder casts. Other
+// dialects and statement kinds must not.
+func TestGeneratedDescriptorsCarryPlaceholderCastsOnlyForDollarInserts(t *testing.T) {
+	const stmts = `
+statements:
+  - name: InsertOne
+    kind: exec
+    sql: INSERT INTO t (id, name, ok, at, n) VALUES (:id:int64, :name:string, :ok:bool, :at:time.Time, :n:uint64)
+  - name: InsertMany
+    kind: exec
+    sql: INSERT INTO t (id, name, blob) VALUES :rows:[]Row(ID:int64, Name:string, Blob:[]byte, Odd:uint64)
+  - name: UpdateOne
+    kind: exec
+    sql: UPDATE t SET name = :name:string WHERE id = :id:int64
+`
+	gen := func(dialect string) string {
+		out, err := sqlgen.GenerateFromYAML([]byte("version: \"1\"\npackage: p\nout: p_gen.go\ndialect: " + dialect + "\n" + stmts))
+		if err != nil {
+			t.Fatalf("%s: %v", dialect, err)
+		}
+		return string(out)
+	}
+	pg := gen("postgres")
+	for _, want := range []string{
+		`{Kind: runtime.SlotScalar, Cast: "bigint"}`,
+		`{Kind: runtime.SlotScalar, Cast: "text"}`,
+		`{Kind: runtime.SlotScalar, Cast: "boolean"}`,
+		`{Kind: runtime.SlotScalar, Cast: "timestamptz"}`,
+		`Casts: []string{"bigint", "text", "bytea", ""}`,
+	} {
+		if !strings.Contains(pg, want) {
+			t.Errorf("postgres output missing %s", want)
+		}
+	}
+	// uint64 has no safe mapping: its slot stays untyped; and UPDATE statements never get casts.
+	if strings.Count(pg, "Cast:") != 4 || strings.Count(pg, "Casts:") != 1 {
+		t.Errorf("unexpected number of casts in postgres output:\n%s", pg)
+	}
+	if my := gen("mysql"); strings.Contains(my, "Cast") {
+		t.Error("mysql (question) output must not contain PostgreSQL casts")
+	}
+}

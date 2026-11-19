@@ -7,6 +7,7 @@ import (
 
 type streamCursor struct {
 	dialect  Dialect
+	castVals bool // inside a branch-gated INSERT's value list under DialectDollar: write Slot.Cast
 	paramIdx int
 	numBuf   [20]byte
 	sliceIdx int
@@ -148,9 +149,17 @@ func (cur *streamCursor) writeBranchGates(b *strings.Builder, gates []BranchGate
 	}
 }
 
+// writeOverflowExpr writes an expression that raises an integer-overflow error (SQLSTATE 22003 /
+// "bigint out of range") when, and only when, it is evaluated.
+//
+// DialectDollar must not use a constant expression: PostgreSQL constant-folds it at plan time, even
+// inside the unreached branch of a CASE, which made every guarded statement fail unconditionally
+// (and "-9223372036854775808::bigint" parses as -(9223372036854775808::bigint), whose inner cast
+// already overflows). The aggregate in the scalar subquery keeps the planner from folding it, so it
+// is only evaluated when the CASE branch is actually taken.
 func writeOverflowExpr(b *strings.Builder, dialect Dialect) {
 	if dialect == DialectDollar {
-		b.WriteString("ABS(-9223372036854775808::bigint)")
+		b.WriteString("(9223372036854775807::bigint + (SELECT COUNT(*) + 1))")
 	} else {
 		b.WriteString("ABS(-9223372036854775808)")
 	}
@@ -241,6 +250,9 @@ func estimateDescriptorBytes(rootDesc, desc *QueryDescriptor, in *RenderInput, c
 		switch slot.Kind {
 		case SlotScalar:
 			total += 12
+			if len(in.BranchGates) > 0 {
+				total += len(slot.Cast) + 2
+			}
 		case SlotSlice:
 			n := 0
 			if cur.sliceIdx < len(in.SliceLens) {
@@ -260,6 +272,11 @@ func estimateDescriptorBytes(rootDesc, desc *QueryDescriptor, in *RenderInput, c
 				rowBytes := 4
 				for _, seg := range slot.Tuple.Segments {
 					rowBytes += len(seg) + 12
+				}
+				if len(in.BranchGates) > 0 {
+					for _, c := range slot.Tuple.Casts {
+						rowBytes += len(c) + 2
+					}
 				}
 				total += numRows * rowBytes
 			}
@@ -326,7 +343,7 @@ func EstimateOpBytes(desc *QueryDescriptor, in *RenderInput, dec *OpDecorators) 
 	}
 	numGates := len(in.BranchGates)
 	if dec != nil && dec.IsAbort {
-		return 112 + 56*numGates
+		return 144 + 56*numGates
 	}
 	cur := estCursor{}
 	total := estimateDescriptorBytes(desc, desc, in, &cur)
@@ -335,10 +352,10 @@ func EstimateOpBytes(desc *QueryDescriptor, in *RenderInput, dec *OpDecorators) 
 	}
 	if dec != nil {
 		if dec.AssertRows >= 0 {
-			total += 220 + 56*numGates
+			total += 400 + 56*numGates
 		}
 		if dec.ProduceCond != nil {
-			total += 260 + dec.ProduceCond.estimateBytes()
+			total += 480 + dec.ProduceCond.estimateBytes()
 		}
 	}
 	if total < 8 {
@@ -376,6 +393,10 @@ func streamDescriptorSQL(b *strings.Builder, rootDesc, desc *QueryDescriptor, in
 
 		case SlotScalar:
 			cur.writePlaceholder(b)
+			if cur.castVals && slot.Cast != "" {
+				b.WriteString("::")
+				b.WriteString(slot.Cast)
+			}
 
 		case SlotSlice:
 			n := 0
@@ -406,6 +427,10 @@ func streamDescriptorSQL(b *strings.Builder, rootDesc, desc *QueryDescriptor, in
 					for f := 0; f < td.NumFields; f++ {
 						b.WriteString(td.Segments[f])
 						cur.writePlaceholder(b)
+						if cur.castVals && f < len(td.Casts) && td.Casts[f] != "" {
+							b.WriteString("::")
+							b.WriteString(td.Casts[f])
+						}
 					}
 					b.WriteString(td.Segments[td.NumFields])
 					b.WriteByte(')')
@@ -445,12 +470,14 @@ func streamDescriptorSQL(b *strings.Builder, rootDesc, desc *QueryDescriptor, in
 
 		case SlotInsertValuesOpen:
 			if len(in.BranchGates) > 0 {
+				cur.castVals = cur.dialect == DialectDollar
 				b.WriteString("SELECT ")
 			} else {
 				b.WriteString("VALUES (")
 			}
 
 		case SlotInsertValuesClose:
+			cur.castVals = false
 			if len(in.BranchGates) > 0 {
 				b.WriteString(" FROM (SELECT 1) AS _sqlgen_dual WHERE ")
 				cur.writeBranchGates(b, in.BranchGates)
@@ -460,12 +487,14 @@ func streamDescriptorSQL(b *strings.Builder, rootDesc, desc *QueryDescriptor, in
 
 		case SlotInsertTupleValuesOpen:
 			if len(in.BranchGates) > 0 {
+				cur.castVals = cur.dialect == DialectDollar
 				b.WriteString("WITH _sqlgen_v AS (VALUES ")
 			} else {
 				b.WriteString("VALUES ")
 			}
 
 		case SlotInsertTupleValuesClose:
+			cur.castVals = false
 			if len(in.BranchGates) > 0 {
 				b.WriteString(") SELECT * FROM _sqlgen_v WHERE ")
 				cur.writeBranchGates(b, in.BranchGates)
@@ -572,14 +601,26 @@ func streamOpSQL(b *strings.Builder, dialect Dialect, desc *QueryDescriptor, in 
 
 	hasResultCols := desc != nil && (desc.StmtVerb == VerbSelect || desc.HasReturning)
 	if hasResultCols {
-		b.WriteString(" SELECT _sqlgen_op.* FROM (SELECT 1")
+		// _f carries the assertion / condition CTEs; they have side effects (an error, set_config) that
+		// MUST run exactly when the batch runs, even if _sqlgen_op yields no rows. A plain join against
+		// _f let PostgreSQL prune its unused columns and never evaluate the CTEs. Making _f the outer
+		// side of a LATERAL join whose inner side references every _f column forces it to be evaluated
+		// first, whatever the planner decides about join order or column pruning.
+		b.WriteString(" SELECT _r.* FROM (SELECT 1 AS _o")
 		if hasAssert {
-			b.WriteString(", (SELECT _ok FROM _sqlgen_chk)")
+			b.WriteString(", (SELECT _ok FROM _sqlgen_chk) AS _a")
 		}
 		if hasCond {
-			b.WriteString(", (SELECT _ok FROM _sqlgen_cond)")
+			b.WriteString(", (SELECT _ok FROM _sqlgen_cond) AS _c")
 		}
-		b.WriteString(") AS _f JOIN _sqlgen_op ON TRUE")
+		b.WriteString(") AS _f CROSS JOIN LATERAL (SELECT * FROM _sqlgen_op WHERE _f._o IS NOT NULL")
+		if hasAssert {
+			b.WriteString(" AND _f._a IS NOT NULL")
+		}
+		if hasCond {
+			b.WriteString(" AND _f._c IS NOT NULL")
+		}
+		b.WriteString(") AS _r")
 	} else if hasCond && hasAssert {
 		b.WriteString(" SELECT _sqlgen_cond._cnt, _sqlgen_cond._ok FROM _sqlgen_cond CROSS JOIN _sqlgen_chk")
 	} else if hasCond {

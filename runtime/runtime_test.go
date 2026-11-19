@@ -2809,3 +2809,118 @@ func TestStmtCacheConcurrentAdversarialStress(t *testing.T) {
 		})
 	}
 }
+
+// Regression tests for defects found by executing the rendered pipeline SQL on real PostgreSQL and
+// CockroachDB (integration/wire_pg_test.go). They pin the SQL shape so a regression fails without a
+// database.
+
+func renderPipelineOp(t *testing.T, dialect Dialect, desc *QueryDescriptor, in RenderInput, dec OpDecorators) string {
+	t.Helper()
+	ops := []PipelineOp{{Desc: desc, Input: in, Decorators: dec}}
+	RenderPipelineBatch(dialect, nil, ops)
+	if est := EstimateOpBytes(desc, &in, &dec); len(ops[0].SQL) > est {
+		t.Fatalf("EstimateOpBytes %d < rendered length %d:\n%s", est, len(ops[0].SQL), ops[0].SQL)
+	}
+	return ops[0].SQL
+}
+
+func TestPipelineSQLOverflowGuardIsNotConstantFoldable(t *testing.T) {
+	upd := &QueryDescriptor{StmtVerb: VerbUpdate, Segments: []string{"UPDATE t SET v = ", " WHERE id = ", ""}, Slots: []Slot{{Kind: SlotScalar}, {Kind: SlotScalar}}}
+	gates := []BranchGate{{CondID: 1, WantTrue: true}}
+	for name, got := range map[string]string{
+		"assert":      renderPipelineOp(t, DialectDollar, upd, RenderInput{}, OpDecorators{AssertRows: 1}),
+		"assert+gate": renderPipelineOp(t, DialectDollar, upd, RenderInput{BranchGates: gates}, OpDecorators{AssertRows: 1}),
+		"abort":       renderPipelineOp(t, DialectDollar, nil, RenderInput{}, OpDecorators{AssertRows: -1, IsAbort: true}),
+		"abort+gate":  renderPipelineOp(t, DialectDollar, nil, RenderInput{BranchGates: gates}, OpDecorators{AssertRows: -1, IsAbort: true}),
+	} {
+		// PostgreSQL folds constant expressions at plan time even in an unreached CASE branch, and
+		// -9223372036854775808::bigint overflows on its own: the guard must depend on a runtime value.
+		if strings.Contains(got, "-9223372036854775808::bigint") || !strings.Contains(got, "(SELECT COUNT(*) + 1)") {
+			t.Errorf("%s: overflow guard may be constant-folded by PostgreSQL:\n%s", name, got)
+		}
+	}
+	// SQLite keeps its constant form (it evaluates lazily and has no plan-time folding of errors).
+	if got := renderPipelineOp(t, DialectQuestion, upd, RenderInput{}, OpDecorators{AssertRows: 1}); !strings.Contains(got, "ABS(-9223372036854775808)") {
+		t.Errorf("question dialect overflow guard changed:\n%s", got)
+	}
+}
+
+func TestPipelineSQLSideEffectCTEsCannotBePruned(t *testing.T) {
+	sel := &QueryDescriptor{StmtVerb: VerbSelect, Segments: []string{"SELECT id FROM t WHERE id = ", ""}, Slots: []Slot{{Kind: SlotScalar}}}
+	cond := &PipelineCond{Kind: CondRowsGt, Threshold: 0}
+	got := renderPipelineOp(t, DialectDollar, sel, RenderInput{}, OpDecorators{AssertRows: 1, ProduceCond: cond, CondID: 3})
+	// The assertion/condition CTEs have side effects (an error, set_config) and must run even when the
+	// op returns no rows. PostgreSQL pruned them when they were unused columns of a plain join; the
+	// outer side of a LATERAL join whose inner side references every column cannot be pruned.
+	for _, want := range []string{"CROSS JOIN LATERAL", "_f._o IS NOT NULL", "_f._a IS NOT NULL", "_f._c IS NOT NULL", "AS _r"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("missing %q in:\n%s", want, got)
+		}
+	}
+	if strings.Contains(got, "JOIN _sqlgen_op ON TRUE") {
+		t.Errorf("prunable join shape is back:\n%s", got)
+	}
+}
+
+func TestGatedInsertPlaceholdersAreTypedOnlyForDollar(t *testing.T) {
+	single := &QueryDescriptor{
+		StmtVerb: VerbInsert,
+		Segments: []string{"INSERT INTO t (id, name) ", "", ", ", "", ""},
+		Slots:    []Slot{{Kind: SlotInsertValuesOpen}, {Kind: SlotScalar, Cast: "bigint"}, {Kind: SlotScalar, Cast: "text"}, {Kind: SlotInsertValuesClose}},
+	}
+	tuple := &QueryDescriptor{
+		StmtVerb:  VerbInsert,
+		Segments:  []string{"INSERT INTO t (id, name) ", "", "", ""},
+		Slots:     []Slot{{Kind: SlotInsertTupleValuesOpen}, {Kind: SlotTupleSlice, Tuple: &TupleDescriptor{Segments: []string{"", ", ", ""}, NumFields: 2, Casts: []string{"bigint", "text"}}}, {Kind: SlotInsertTupleValuesClose}},
+		NumTuples: 1,
+	}
+	gates := []BranchGate{{CondID: 1, WantTrue: true}}
+	in := RenderInput{BranchGates: gates, TupleLens: []int{2}}
+
+	if got := renderPipelineOp(t, DialectDollar, single, RenderInput{BranchGates: gates}, OpDecorators{AssertRows: -1}); !strings.Contains(got, "SELECT $1::bigint, $2::text FROM (SELECT 1)") {
+		t.Errorf("gated single-row insert placeholders untyped:\n%s", got)
+	}
+	if got := renderPipelineOp(t, DialectDollar, tuple, in, OpDecorators{AssertRows: -1}); !strings.Contains(got, "VALUES ($1::bigint, $2::text), ($3::bigint, $4::text)") {
+		t.Errorf("gated tuple insert placeholders untyped:\n%s", got)
+	}
+	// Ungated inserts keep plain VALUES, where PostgreSQL infers types from the target columns.
+	if got := renderPipelineOp(t, DialectDollar, single, RenderInput{}, OpDecorators{AssertRows: -1}); strings.Contains(got, "::") {
+		t.Errorf("ungated insert must not carry casts:\n%s", got)
+	}
+	if got := renderPipelineOp(t, DialectQuestion, single, RenderInput{BranchGates: gates}, OpDecorators{AssertRows: -1}); strings.Contains(got, "::") {
+		t.Errorf("question dialect must not carry PostgreSQL casts:\n%s", got)
+	}
+}
+
+// EstimateOpBytes must be a strict upper bound for every decorated pipeline-op shape, or the renderer
+// would reallocate its single strings.Builder mid-render (a spec violation).
+func TestEstimateOpBytesCoversEveryPipelineOpShape(t *testing.T) {
+	sel := &QueryDescriptor{StmtVerb: VerbSelect, Segments: []string{"SELECT id FROM t WHERE id = ", ""}, Slots: []Slot{{Kind: SlotScalar}}}
+	upd := &QueryDescriptor{StmtVerb: VerbUpdate, Segments: []string{"UPDATE t SET v = ", ""}, Slots: []Slot{{Kind: SlotScalar}}}
+	updRet := &QueryDescriptor{StmtVerb: VerbUpdate, HasReturning: true, Segments: []string{"UPDATE t SET v = ", " RETURNING id"}, Slots: []Slot{{Kind: SlotScalar}}}
+	conds := map[string]*PipelineCond{
+		"none": nil,
+		"rows": {Kind: CondRowsGt, Threshold: -9223372036854775807},
+		"col":  {Kind: CondColPred, SQLPred: "score >= 100 AND status = 'active'"},
+		"and":  {Kind: CondAnd, Left: &PipelineCond{Kind: CondRowsLe, Threshold: 99}, Right: &PipelineCond{Kind: CondNot, Left: &PipelineCond{Kind: CondRowsEq, Threshold: 1}}},
+	}
+	for dname, dialect := range map[string]Dialect{"dollar": DialectDollar, "question": DialectQuestion} {
+		for dn, desc := range map[string]*QueryDescriptor{"select": sel, "update": upd, "update-returning": updRet} {
+			for cn, cond := range conds {
+				for _, assert := range []int64{-1, 0, 1, 9223372036854775807} {
+					for _, nGates := range []int{0, 1, 4} {
+						var gates []BranchGate
+						for g := 0; g < nGates; g++ {
+							gates = append(gates, BranchGate{CondID: 1000000 + g, WantTrue: g%2 == 0})
+						}
+						dec := OpDecorators{AssertRows: assert, ProduceCond: cond, CondID: 9223372036854775807 & 0x7fffffff}
+						in := RenderInput{BranchGates: gates}
+						sql := renderPipelineOp(t, dialect, desc, in, dec) // fails on estimate < len
+						_ = sql
+						_ = dname + dn + cn
+					}
+				}
+			}
+		}
+	}
+}

@@ -265,7 +265,7 @@ To allow any statement inside a pipelined `p.If(...)` branch to be gated on the 
      - Replace `VALUES (` (including the opening parenthesis) with `SlotInsertValuesOpen`, and replace the matching closing `)` of the `VALUES (...)` tuple with `SlotInsertValuesClose`.
      - When `len(in.BranchGates) == 0`: `SlotInsertValuesOpen` writes `"VALUES ("` and `SlotInsertValuesClose` writes `")"`.
      - When `len(in.BranchGates) > 0`: `SlotInsertValuesOpen` writes `"SELECT "` and `SlotInsertValuesClose` writes `" FROM (SELECT 1) AS _sqlgen_dual WHERE "` + `<branch_gates>`.
-     - *(Emitting `INSERT INTO tbl (c1, c2) SELECT $1, $2 FROM (SELECT 1) AS _sqlgen_dual WHERE <gates> [ON CONFLICT ...] [RETURNING ...]` is 100% valid syntax in both PostgreSQL and SQLite and preserves PostgreSQL's target-column type inference for `$1, $2`.)*
+     - *(Emitting `INSERT INTO tbl (c1, c2) SELECT $1, $2 FROM (SELECT 1) AS _sqlgen_dual WHERE <gates> [ON CONFLICT ...] [RETURNING ...]` is valid syntax in PostgreSQL, CockroachDB and SQLite, but it does NOT preserve PostgreSQL's target-column type inference: a placeholder in a SELECT list is not typed from the target column (PostgreSQL resolves it to `text` and fails with `column "id" is of type bigint but expression is of type text`; CockroachDB fails with `could not determine data type of placeholder $1`). Therefore, under `DialectDollar`, every placeholder rendered inside a branch-gated INSERT's value list is typed explicitly: `Slot.Cast` / `TupleDescriptor.Casts[i]` (emitted by the generator for `INSERT` statements from the parameter's Go type: `int`/`int64`/`uint32`→`bigint`, `int32`/`rune`/`uint16`→`integer`, `int16`/`int8`/`uint8`/`byte`→`smallint`, `string`→`text`, `bool`→`boolean`, `float64`→`double precision`, `float32`→`real`, `[]byte`→`bytea`, `time.Time`→`timestamptz`; no cast for other types, where the user adds an explicit `::type`) renders as `$1::bigint`. Un-gated INSERTs keep plain `VALUES (...)`, where inference works, and carry no casts.)*
    - **Subcase 2B: Multi-Row Tuple Slice `INSERT INTO tbl (c1, c2) VALUES Rows:[]Tuple(...)`** (where `VALUES` is followed by a `SlotTupleSlice` token):
      - Replace the `VALUES` keyword with `SlotInsertTupleValuesOpen`, and place `SlotInsertTupleValuesClose` immediately after the `SlotTupleSlice` occurrence (before `ON CONFLICT`, `RETURNING`, `;`, or `EOF`).
      - When `len(in.BranchGates) == 0`: `SlotInsertTupleValuesOpen` writes `"VALUES "` and `SlotInsertTupleValuesClose` writes `""`.
@@ -687,11 +687,12 @@ func formatSeekSQL(b *strings.Builder, dialect Dialect, paramIndex *int, numBuf 
 ### 6.1. Dialect-Agnostic Condition & Assertion SQL Generation
 1. **`CondColPred` (`WhereCol`)**:
    Stream `"COUNT(*) > 0 AND MIN(CASE WHEN ("` + `c.SQLPred` + `") THEN 1 ELSE 0 END) = 1"`. (Valid ANSI SQL across PostgreSQL, CockroachDB, SQLite, and MySQL without requiring `BOOL_AND`).
-2. **`_sqlgen_cond` CTE**:
+2. **`_sqlgen_cond` CTE** (and the `_sqlgen_chk` assertion CTE):
+   *Evaluation guarantee:* both CTEs have side effects (an overflow error, `set_config`) and MUST run whenever the batch runs, even when `_sqlgen_op` yields zero rows. For operations with result columns the final statement is therefore `SELECT _r.* FROM (SELECT 1 AS _o[, (SELECT _ok FROM _sqlgen_chk) AS _a][, (SELECT _ok FROM _sqlgen_cond) AS _c]) AS _f CROSS JOIN LATERAL (SELECT * FROM _sqlgen_op WHERE _f._o IS NOT NULL[ AND _f._a IS NOT NULL][ AND _f._c IS NOT NULL]) AS _r`. A plain `FROM (SELECT 1, (SELECT _ok FROM ...)) AS _f JOIN _sqlgen_op ON TRUE` is forbidden: PostgreSQL prunes the unused `_f` columns and never evaluates the CTEs, so conditions are never recorded and assertions never fire. Verified on PostgreSQL 15/18 and CockroachDB by `integration/wire_pg_test.go`.
    Stream `", _sqlgen_cond AS (SELECT COUNT(*) AS _cnt, set_config('sqlgen.c"` + `condID` + `"', CASE WHEN ("` + `cond` + `") THEN 'true' ELSE 'false' END, true) = 'true' AS _ok FROM _sqlgen_op)"`.
 3. **`_sqlgen_chk` CTE & `IsAbort` Overflow Expression**:
-   - In `DialectDollar`: `"ABS(-9223372036854775808::bigint)"`
-   - In `DialectQuestion`: `"ABS(-9223372036854775808)"`
+   - In `DialectDollar`: `"(9223372036854775807::bigint + (SELECT COUNT(*) + 1))"`. This MUST NOT be a constant expression: PostgreSQL constant-folds constants at plan time even inside an unreached `CASE` branch (and `-9223372036854775808::bigint` parses as `-(9223372036854775808::bigint)`, whose cast already overflows), which would make every guarded statement fail unconditionally. The aggregate subquery defers evaluation to the moment the branch is taken. Verified against real PostgreSQL 15/18 and CockroachDB (`integration/wire_pg_test.go`).
+   - In `DialectQuestion`: `"ABS(-9223372036854775808)"` (SQLite; this single-round-trip pipeline SQL also relies on PostgreSQL-only `set_config`/`current_setting` and is not valid for MySQL/MariaDB).
 
 ### 6.2. Provable Upper-Bound Byte Estimator (`EstimateOpBytes`)
 `EstimateOpBytes(desc *QueryDescriptor, in *RenderInput, dec *OpDecorators) int` MUST compute a strict upper bound (`EstimateOpBytes >= len(renderedSQL)`):
@@ -705,8 +706,11 @@ func formatSeekSQL(b *strings.Builder, dialect Dialect, paramIndex *int, numBuf 
 - Per `SlotInsertValuesOpen` / `Close` and `SlotInsertTupleValuesOpen` / `Close`: when `len(in.BranchGates) > 0`, `96 + 56 * len(in.BranchGates)` bytes; when `len(in.BranchGates) == 0`, `16` bytes.
 - Per `SlotBranchGuardOpen` / `Close` / `Where` when `len(in.BranchGates) > 0`: `16 + 56 * len(in.BranchGates)` bytes.
 - For `VerbSelect` wrapper when `len(in.BranchGates) > 0`: `48 + 56 * len(in.BranchGates)` bytes.
-- For `dec.AssertRows >= 0`: `220` bytes.
-- For `dec.ProduceCond != nil`: `260 + dec.ProduceCond.estimateBytes()` bytes.
+- For `dec.IsAbort`: `144 + 56 * len(in.BranchGates)` bytes (the whole statement).
+- For `dec.AssertRows >= 0`: `400 + 56 * len(in.BranchGates)` bytes.
+- For `dec.ProduceCond != nil`: `480 + dec.ProduceCond.estimateBytes()` bytes.
+- Per `SlotScalar` / tuple field when `len(in.BranchGates) > 0`: `len(Cast) + 2` extra bytes (see §4.5).
+- These constants are verified by `TestEstimateOpBytesCoversEveryPipelineOpShape`, which renders every verb × assertion × condition × gate-count × dialect shape and requires `EstimateOpBytes >= len(rendered)`.
 
 ---
 

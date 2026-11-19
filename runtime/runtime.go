@@ -447,6 +447,10 @@ func AppendSeekArgs(dst *[]any, dialect Dialect, orderSpec uint64, numCols int, 
 type TupleDescriptor struct {
 	Segments  []string // len(Segments) == NumFields + 1
 	NumFields int
+	// Casts optionally holds, per field, a PostgreSQL type name (e.g. "bigint") applied to the field's
+	// placeholder when the tuple is rendered inside a branch-gated INSERT (see Slot.Cast). nil or
+	// len(Casts) == NumFields.
+	Casts []string
 }
 
 // Slot represents a single dynamic expansion site in a QueryDescriptor.
@@ -455,6 +459,12 @@ type Slot struct {
 	FlagBit uint8
 	Tuple   *TupleDescriptor
 	Inner   *QueryDescriptor
+	// Cast, for a SlotScalar, is a PostgreSQL type name (e.g. "bigint") appended to the placeholder
+	// ("$1::bigint") only when it is rendered inside a branch-gated INSERT under DialectDollar. A
+	// gated INSERT is rewritten from VALUES (...) to SELECT ... WHERE <gates>, and in a SELECT list an
+	// untyped placeholder is not inferred from the target column (it resolves to text, or fails with
+	// "could not determine data type"), unlike in VALUES.
+	Cast string
 }
 
 // QueryDescriptor holds the pre-parsed static SQL segments and dynamic slots for a statement.

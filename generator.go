@@ -767,6 +767,9 @@ type compiledStmt struct {
 	MaxRowsPerStmt  int
 	IsStatic        bool
 	StaticSQL       string
+	// PGCasts is set for INSERT statements under the dollar dialect: their value placeholders get a
+	// type cast in the descriptor so that branch-gated INSERTs (rewritten to INSERT ... SELECT) type-check.
+	PGCasts bool
 
 	Root           parsedBlock
 	SelectColExprs []string
@@ -2464,6 +2467,33 @@ func resolveImports(cfg *Config, stmts []*compiledStmt, runtimePkg string) []str
 	return out
 }
 
+// pgCastForGoType maps a scalar Go parameter type to the PostgreSQL type used to type its placeholder
+// inside branch-gated INSERTs. It returns "" when no safe mapping exists (the placeholder is then left
+// untyped and the user can add an explicit ::type in the SQL).
+func pgCastForGoType(goType string) string {
+	switch strings.TrimPrefix(strings.TrimSpace(goType), "*") {
+	case "int", "int64", "uint32":
+		return "bigint"
+	case "int32", "rune", "uint16":
+		return "integer"
+	case "int16", "int8", "uint8", "byte":
+		return "smallint"
+	case "string":
+		return "text"
+	case "bool":
+		return "boolean"
+	case "float64":
+		return "double precision"
+	case "float32":
+		return "real"
+	case "[]byte", "[]uint8":
+		return "bytea"
+	case "time.Time":
+		return "timestamptz"
+	}
+	return ""
+}
+
 func buildRuntimeDescriptor(cs *compiledStmt, blk *parsedBlock) *runtime.QueryDescriptor {
 	d := &runtime.QueryDescriptor{
 		StmtID:         cs.ID,
@@ -2546,6 +2576,7 @@ func Generate(cfg Config) ([]byte, error) {
 		if err != nil {
 			return nil, err
 		}
+		cs.PGCasts = dialect == runtime.DialectDollar && cs.StmtVerb == runtime.VerbInsert
 		if cs.IsStatic {
 			rtDesc := buildRuntimeDescriptor(cs, &cs.Root)
 			cs.StaticSQL = runtime.BuildComposedSQL(rtDesc, &runtime.RenderInput{}, dialect)
@@ -2890,6 +2921,11 @@ func emitBlockLiteral(b *bytes.Buffer, cs *compiledStmt, blk *parsedBlock, isRoo
 			switch sl.Kind {
 			case runtime.SlotScalar:
 				b.WriteString("runtime.SlotScalar")
+				if cs.PGCasts && sl.ParamIdx >= 0 && sl.ParamIdx < len(cs.Params) {
+					if c := pgCastForGoType(cs.Params[sl.ParamIdx].GoType); c != "" {
+						fmt.Fprintf(b, ", Cast: %s", strconv.Quote(c))
+					}
+				}
 			case runtime.SlotSlice:
 				b.WriteString("runtime.SlotSlice")
 			case runtime.SlotTupleSlice:
@@ -2900,7 +2936,20 @@ func emitBlockLiteral(b *bytes.Buffer, cs *compiledStmt, blk *parsedBlock, isRoo
 					}
 					b.WriteString(strconv.Quote(ts))
 				}
-				fmt.Fprintf(b, "}, NumFields: %d}", len(sl.Tuple.Fields))
+				fmt.Fprintf(b, "}, NumFields: %d", len(sl.Tuple.Fields))
+				if cs.PGCasts {
+					var casts []string
+					hasCast := false
+					for _, f := range sl.Tuple.Fields {
+						c := pgCastForGoType(f.GoType)
+						hasCast = hasCast || c != ""
+						casts = append(casts, strconv.Quote(c))
+					}
+					if hasCast {
+						b.WriteString(", Casts: []string{" + strings.Join(casts, ", ") + "}")
+					}
+				}
+				b.WriteString("}")
 			case runtime.SlotOptBlock:
 				fmt.Fprintf(b, "runtime.SlotOptBlock, FlagBit: %d, Inner: ", sl.FlagBit)
 				emitBlockLiteral(b, cs, sl.Inner, false)
