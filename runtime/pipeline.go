@@ -1372,4 +1372,3 @@ var wireRowsDB = sql.OpenDB(wireRowsConnector{})
 func RowsFromDriverRows(ctx context.Context, dRows driver.Rows) (*sql.Rows, error) {
 	return wireRowsDB.QueryContext(context.WithValue(ctx, wireRowsCtxKey{}, dRows), "wire")
 }
-

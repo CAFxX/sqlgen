@@ -300,7 +300,7 @@ func estimateDescriptorBytes(rootDesc, desc *QueryDescriptor, in *RenderInput, c
 						maxColLen = len(col)
 					}
 				}
-				total += (1 + (k*(k+1))/2) * (maxColLen + 24) + 32
+				total += (1+(k*(k+1))/2)*(maxColLen+24) + 32
 			}
 		case SlotInsertValuesOpen, SlotInsertValuesClose, SlotInsertTupleValuesOpen, SlotInsertTupleValuesClose:
 			if numGates > 0 {

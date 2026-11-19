@@ -755,9 +755,9 @@ func TestPropertyEstimateOpBytesStrictUpperBound(t *testing.T) {
 		}
 
 		desc := &QueryDescriptor{
-			StmtID:         uint32(iter%100 + 1),
-			StmtVerb:       verb,
-			Segments:       []string{"SELECT ", " FROM tbl t WHERE ", "t.id = ", " AND t.s IN (", ") AND t.tup IN (", ")", " AND t.sub IN (", ") AND ", " ORDER BY ", ""},
+			StmtID:   uint32(iter%100 + 1),
+			StmtVerb: verb,
+			Segments: []string{"SELECT ", " FROM tbl t WHERE ", "t.id = ", " AND t.s IN (", ") AND t.tup IN (", ")", " AND t.sub IN (", ") AND ", " ORDER BY ", ""},
 			Slots: []Slot{
 				{Kind: SlotSelectCols},
 				{Kind: SlotBranchGuardOpen},
@@ -950,9 +950,9 @@ func FuzzEstimateOpBytesUpperBound(f *testing.F) {
 		tLen := int(tupleLenRaw%16) + 1
 
 		desc := &QueryDescriptor{
-			StmtID:         1,
-			StmtVerb:       verb,
-			Segments:       []string{"SELECT ", " FROM tbl WHERE ", "id IN (", ") AND tup IN (", ") AND ", " ORDER BY ", ""},
+			StmtID:   1,
+			StmtVerb: verb,
+			Segments: []string{"SELECT ", " FROM tbl WHERE ", "id IN (", ") AND tup IN (", ") AND ", " ORDER BY ", ""},
 			Slots: []Slot{
 				{Kind: SlotSelectCols},
 				{Kind: SlotBranchGuardOpen},
@@ -1589,9 +1589,9 @@ func TestPipelineWirePipelinerAndSequentialCoverage(t *testing.T) {
 		},
 	}
 	insTupleDesc := &QueryDescriptor{
-		StmtID:    4,
-		StmtVerb:  VerbInsert,
-		Segments:  []string{"INSERT INTO items (id, score) ", "", "", ""},
+		StmtID:   4,
+		StmtVerb: VerbInsert,
+		Segments: []string{"INSERT INTO items (id, score) ", "", "", ""},
 		Slots: []Slot{
 			{Kind: SlotInsertTupleValuesOpen},
 			{Kind: SlotTupleSlice, Tuple: &TupleDescriptor{Segments: []string{"", ", ", ""}, NumFields: 2}},
@@ -2553,4 +2553,3 @@ func BenchmarkZeroAllocHotPath(b *testing.B) {
 		ReleaseIndices(ib)
 	}
 }
-

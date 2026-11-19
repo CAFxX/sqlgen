@@ -64,24 +64,24 @@ var (
 	ErrInvalidSeek        = runtime.ErrInvalidSeek
 	ErrInvalidOrder       = runtime.ErrInvalidOrder
 
-	NewStmtCache           = runtime.NewStmtCache
-	NewTxStmtCache         = runtime.NewTxStmtCache
-	WithMaxSQLVariants     = runtime.WithMaxSQLVariants
-	WithMaxPartialBytes    = runtime.WithMaxPartialBytes
-	WithMaxPreparedStmts   = runtime.WithMaxPreparedStmts
-	WithPromoteThreshold   = runtime.WithPromoteThreshold
-	WithMaxBatchParams     = runtime.WithMaxBatchParams
-	NewSeek                = runtime.NewSeek
-	PackOrder              = runtime.PackOrder
-	ExpandOrder            = runtime.ExpandOrder
-	Asc                    = runtime.Asc
-	Desc                   = runtime.Desc
-	MakeVariantKey         = runtime.MakeVariantKey
-	ComputeSubqueryShape   = runtime.ComputeSubqueryShape
-	DefaultRetryPolicy     = runtime.DefaultRetryPolicy
-	WithTxRetry            = runtime.WithTxRetry
-	WrapConnector          = runtime.WrapConnector
-	IsRetryableTxError     = runtime.IsRetryableTxError
+	NewStmtCache         = runtime.NewStmtCache
+	NewTxStmtCache       = runtime.NewTxStmtCache
+	WithMaxSQLVariants   = runtime.WithMaxSQLVariants
+	WithMaxPartialBytes  = runtime.WithMaxPartialBytes
+	WithMaxPreparedStmts = runtime.WithMaxPreparedStmts
+	WithPromoteThreshold = runtime.WithPromoteThreshold
+	WithMaxBatchParams   = runtime.WithMaxBatchParams
+	NewSeek              = runtime.NewSeek
+	PackOrder            = runtime.PackOrder
+	ExpandOrder          = runtime.ExpandOrder
+	Asc                  = runtime.Asc
+	Desc                 = runtime.Desc
+	MakeVariantKey       = runtime.MakeVariantKey
+	ComputeSubqueryShape = runtime.ComputeSubqueryShape
+	DefaultRetryPolicy   = runtime.DefaultRetryPolicy
+	WithTxRetry          = runtime.WithTxRetry
+	WrapConnector        = runtime.WrapConnector
+	IsRetryableTxError   = runtime.IsRetryableTxError
 )
 
 // QueryKind specifies the execution and return cardinality of a SQL statement.
@@ -1341,13 +1341,13 @@ func parseTupleBody(structName, body string) (*tupleStructDef, error) {
 }
 
 type stmtParser struct {
-	spec         StatementSpec
-	yamlParams   map[string]ParamSpec
+	spec          StatementSpec
+	yamlParams    map[string]ParamSpec
 	paramsByCanon map[string]int
-	flagsByName  map[string]uint8
-	rawOrderCols []string
-	inOptBlock   bool
-	currentFlag  string
+	flagsByName   map[string]uint8
+	rawOrderCols  []string
+	inOptBlock    bool
+	currentFlag   string
 
 	parenDepth   int
 	bracketDepth int
