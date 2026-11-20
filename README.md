@@ -77,4 +77,4 @@ the main module depends only on `yaml` and (for its tests) `sqlite`.
 
 ## License
 
-No license has been chosen yet; all rights reserved until one is added.
+[MIT](LICENSE).
