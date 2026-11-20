@@ -539,7 +539,7 @@ import (
 
 db, err := pgxwire.OpenDB("postgres://user:pass@host:5432/app?sslmode=require")
 if err != nil { ... }
-db.SetMaxOpenConns(16) // must not be 1: the wire path borrows a pooled connection (see the conditions below)
+db.SetMaxOpenConns(16) // 1 also works, but loses the one-turn transaction (see the conditions below)
 q := store.New(db)
 
 err = q.PipelineTx(ctx, nil, func(p *store.Pipeline) error {
@@ -561,7 +561,8 @@ Use `pgxwire.Connector(cfg *pgx.ConnConfig, opts ...stdlib.OptionOpenDB)` with `
 | `q.Pipeline(ctx)` ... `p.Flush()` (no transaction) | **1**: `BEGIN` + operations + `COMMIT` + `Sync`, atomic: all or nothing | |
 | `q.WithTx(tx).Pipeline(ctx)` ... `p.Flush()` (a `*sql.Tx` you began) | **1** for the operations only | `BEGIN` and `COMMIT`/`ROLLBACK` are yours (`db.BeginTx`, `tx.Commit`): 2 more round-trips you chose to make. A failed assertion or `Abort` leaves the transaction usable, exactly as on the sequential path (see "Who rolls back" below); a database error of one of your statements aborts it, as PostgreSQL does on every path: roll it back. |
 | `q.InTx(...)`, plain query methods | unchanged (pgx's usual behaviour) | Only pipelines are batched. |
-| any other driver, `db.SetMaxOpenConns(1)`, or a `*sql.DB` not opened through pgxwire | sequential fallback (`BEGIN`, one per statement, `COMMIT`) | `CacheStats().SequentialPipelines` counts these. With one open connection the runtime cannot park a connection for the batch without risking a self-deadlock, so it runs sequentially. |
+| `db.SetMaxOpenConns(1)` (pgxwire) | **3**: `BEGIN`, the operations in one batch, `COMMIT` | With one open connection the runtime never borrows a second one for the batch (that would deadlock against itself): it begins an ordinary transaction on the only connection and sends the operations through that connection's pipeliner. No deadlock, same results and errors, but `BEGIN` and `COMMIT` are separate turns. Counted in `WirePipelines`, not `SequentialPipelines`. |
+| any other driver, or a `*sql.DB` not opened through pgxwire | sequential fallback (`BEGIN`, one per statement, `COMMIT`) | `CacheStats().SequentialPipelines` counts these. |
 
 An empty pipeline, or one whose `fn` returned an error, sends nothing. Calling `Flush()`/`Exec()` inside a `PipelineTx` callback returns `runtime.ErrFlushInPipelineTx`; the transaction flushes the pipeline itself.
 
@@ -580,7 +581,7 @@ An empty pipeline, or one whose `fn` returned an error, sends nothing. Calling `
 - `WirePipelines`: the flush went out in a single round-trip through a `WirePipeliner` / `WireTxPipeliner` connection.
 - `SequentialPipelines`: the flush executed statement by statement.
 
-A flush that fails while being built or that queued nothing counts as neither; a flush that fails on the server still counts on the path it ran. A test asserting `WirePipelines > 0 && SequentialPipelines == 0` fails loudly when a misconfigured pool (for example `SetMaxOpenConns(1)`, or a `*sql.DB` opened with plain `sql.Open("pgx", ...)`) silently loses the fast path.
+A flush that fails while being built or that queued nothing counts as neither; a flush that fails on the server still counts on the path it ran. A test asserting `WirePipelines > 0 && SequentialPipelines == 0` fails loudly when a `*sql.DB` opened with plain `sql.Open("pgx", ...)` silently loses the fast path. To assert the one-turn transaction itself (not just the batched operations), count network turns as below: `SetMaxOpenConns(1)` keeps `WirePipelines` counting but costs `BEGIN` and `COMMIT` as extra turns.
 
 To count real network turns instead of trusting a counter, wrap the dialer: a *turn* is a `Read` that follows a `Write`.
 

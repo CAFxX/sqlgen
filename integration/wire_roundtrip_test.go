@@ -251,3 +251,47 @@ func TestRealEngineWireFlushVariantsRoundTrips(t *testing.T) {
 		}
 	})
 }
+
+// With a single-connection pool the runtime never borrows a second connection (that would deadlock), so a
+// PipelineTx or a standalone Flush begins an ordinary transaction on the only connection and sends the
+// operations through the wire pipeliner of that very connection: BEGIN, one turn for the operations,
+// COMMIT. It completes (no deadlock) and is counted as a wire pipeline.
+func TestRealEngineWireSingleConnectionPool(t *testing.T) {
+	forEachEngine(t, func(t *testing.T, e engine, db *sql.DB) {
+		if !e.isPG() {
+			t.Skip("PostgreSQL protocol only")
+		}
+		seedItems(t, db)
+		ctx, cancel := context.WithTimeout(ctxT(t), 20*time.Second)
+		defer cancel()
+		wdb, turns, _ := countingDB(t, os.Getenv(e.env), true)
+		wdb.SetMaxOpenConns(1)
+		q := pgq.New(wdb)
+		defer q.Close()
+
+		ptx := measure(t, wdb, turns, func() {
+			if err := transferN(3).fn(ctx, q); err != nil {
+				t.Fatal(err)
+			}
+		})
+		flush := measure(t, wdb, turns, func() {
+			p := q.Pipeline(ctx)
+			p.AddScoreOne(1, 1).AssertRowsAffected(1)
+			p.AddScoreOne(1, 2).AssertRowsAffected(1)
+			if err := p.Flush(); err != nil {
+				t.Fatal(err)
+			}
+		})
+		t.Logf("%s: SetMaxOpenConns(1): PipelineTx = %d turn(s), standalone Flush = %d turn(s)", e.name, ptx, flush)
+		if ptx != 3 || flush != 3 {
+			t.Errorf("single-connection pool: PipelineTx=%d Flush=%d turns, want 3 (BEGIN, operations, COMMIT)", ptx, flush)
+		}
+		if st := q.CacheStats(); st.WirePipelines != 2 || st.SequentialPipelines != 0 {
+			t.Errorf("stats = %+v, want 2 wire / 0 sequential pipelines", st)
+		}
+		var score int64
+		if err := wdb.QueryRow("SELECT score FROM sg_items WHERE id = 1").Scan(&score); err != nil || score != 10+1+1 {
+			t.Errorf("score of item 1 = %d (%v), want 12", score, err)
+		}
+	})
+}
