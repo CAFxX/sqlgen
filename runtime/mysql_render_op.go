@@ -13,16 +13,13 @@ func opLabel(op *PipelineOp) string {
 	return "pipeline statement"
 }
 
-// cursor returns a fresh placeholder cursor for one statement of an operation.
+// cursor returns the (reused) placeholder cursor, reset for one statement of operation i. At most one
+// statement is being written at a time, so one cursor serves the whole batch.
 func (r *mysqlBatchRender) cursor(i int, failGate bool) *streamCursor {
-	return &streamCursor{
-		dialect:  DialectQuestion,
-		paramIdx: 1,
-		my: &mysqlCursor{
-			st:       &mysqlArgs{fl: r.o.Flavor, args: r.args[i]},
-			failGate: failGate,
-		},
-	}
+	r.st = mysqlArgs{fl: r.o.Flavor, args: r.args[i]}
+	r.my = mysqlCursor{st: &r.st, failGate: failGate}
+	r.cur = streamCursor{dialect: DialectQuestion, paramIdx: 1, my: &r.my}
+	return &r.cur
 }
 
 // writeOwnGates writes the gates of an operation's enclosing If branches alone (1 when it has none).
@@ -84,11 +81,11 @@ func (r *mysqlBatchRender) renderOp(i int, op *PipelineOp, failGate bool) error 
 		r.b.WriteString("SAVEPOINT ")
 		r.b.WriteString(mysqlSavepointName(i))
 		r.b.WriteByte(';')
-		r.batch.sps[i] = true
+		r.batch.flags[i] |= opSavepoint
 	}
 	if counter {
 		r.b.WriteString("SET @sqlgen_k=0;")
-		r.batch.trim[i] = true
+		r.batch.flags[i] |= opTrim
 	}
 	if hasRes {
 		r.batch.sets = append(r.batch.sets, i)

@@ -384,11 +384,15 @@ type MySQLBatch struct {
 	nOps     int
 	own      bool // the batch begins and ends its own transaction
 	sets     []int
-	trim     []bool
-	sps      []bool
+	flags    []uint8 // per operation: opTrim, opSavepoint
 	prepared bool
 	sum      []sumCol
 }
+
+const (
+	opTrim      uint8 = 1 << iota // the result set has the RETURNING counter as an extra last column
+	opSavepoint                   // a savepoint is taken right before the operation
+)
 
 // ResultSetOps returns the indices of the operations whose rows the server returns, in the order of the
 // result sets that carry them. The summary row (if HasSummary) is the result set after the last of them.
@@ -396,7 +400,7 @@ func (m *MySQLBatch) ResultSetOps() []int { return m.sets }
 
 // TrimsLastColumn reports whether the result set of operation i has one more column than the
 // operation's own: the counter that tells how many rows a statement returned. It is the last column.
-func (m *MySQLBatch) TrimsLastColumn(i int) bool { return m.trim[i] }
+func (m *MySQLBatch) TrimsLastColumn(i int) bool { return m.flags[i]&opTrim != 0 }
 
 // HasSummary reports whether the batch ends with the summary row.
 func (m *MySQLBatch) HasSummary() bool { return len(m.sum) > 0 }
@@ -413,7 +417,7 @@ func (m *MySQLBatch) OwnsTx() bool { return m.own }
 
 // Savepoint returns the name of the savepoint taken before operation i, if there is one.
 func (m *MySQLBatch) Savepoint(i int) (string, bool) {
-	if i < 0 || i >= len(m.sps) || !m.sps[i] {
+	if i < 0 || i >= len(m.flags) || m.flags[i]&opSavepoint == 0 {
 		return "", false
 	}
 	return mysqlSavepointName(i), true
@@ -434,7 +438,6 @@ func (m *MySQLBatch) Apply(ops []PipelineOp, row []any) (failed int, err error) 
 		return -1, fmt.Errorf("sqlgen: summary row has %d columns, want %d", len(row), len(m.sum))
 	}
 	failed = -1
-	counts := make(map[int]int64, 4)
 	for i, c := range m.sum {
 		v, ok := summaryInt(row[i])
 		if !ok {
@@ -444,7 +447,6 @@ func (m *MySQLBatch) Apply(ops []PipelineOp, row []any) (failed int, err error) 
 		case sumFail:
 			failed = int(v)
 		case sumCount:
-			counts[c.op] = v
 			if op := &ops[c.op]; !op.HasResultCols {
 				op.RowCount = v
 			}
@@ -467,8 +469,12 @@ func (m *MySQLBatch) Apply(ops []PipelineOp, row []any) (failed int, err error) 
 		return failed, op.AbortErr
 	}
 	aerr := &AssertionError{Statement: op.stmtName(), Want: op.Decorators.AssertRows}
-	if n, ok := counts[failed]; ok {
-		aerr.Got, aerr.GotKnown = n, true
+	for i, c := range m.sum {
+		if c.kind == sumCount && c.op == failed {
+			if n, ok := summaryInt(row[i]); ok {
+				aerr.Got, aerr.GotKnown = n, true
+			}
+		}
 	}
 	op.Err = aerr
 	return failed, aerr
@@ -530,8 +536,10 @@ type mysqlBatchRender struct {
 	args   [][]any
 	batch  *MySQLBatch
 	numBuf [24]byte
-	starts []int
-	ends   []int
+	spans  []int // start, end of every operation's SQL in the final text
+	cur    streamCursor
+	my     mysqlCursor
+	st     mysqlArgs
 }
 
 func (r *mysqlBatchRender) num(n int) { r.b.Write(strconv.AppendInt(r.numBuf[:0], int64(n), 10)) }
@@ -548,17 +556,15 @@ func RenderMySQLBatch(ops []PipelineOp, o MySQLRenderOptions) (*MySQLBatch, erro
 		o:   &o,
 		ops: ops,
 		batch: &MySQLBatch{
-			nOps: len(ops),
-			own:  !o.InTx,
-			trim: make([]bool, len(ops)),
-			sps:  make([]bool, len(ops)),
+			nOps:  len(ops),
+			own:   !o.InTx,
+			flags: make([]uint8, len(ops)),
 		},
 	}
 	// Reduce the arguments first: it validates them (nothing is rendered for a batch that cannot be
 	// sent) and lets the estimate know the literal sizes.
 	r.args = make([][]any, len(ops))
-	r.starts = make([]int, len(ops))
-	r.ends = make([]int, len(ops))
+	r.spans = make([]int, 2*len(ops))
 	est := 1024
 	for i := range ops {
 		a, err := o.Flavor.normalize(ops[i].Args)
@@ -589,11 +595,11 @@ func RenderMySQLBatch(ops []PipelineOp, o MySQLRenderOptions) (*MySQLBatch, erro
 
 	failGate := false
 	for i := range ops {
-		r.starts[i] = r.b.Len()
+		r.spans[2*i] = r.b.Len()
 		if err := r.renderOp(i, &ops[i], failGate); err != nil {
 			return nil, fmt.Errorf("%s: %w", opLabel(&ops[i]), err)
 		}
-		r.ends[i] = r.b.Len()
+		r.spans[2*i+1] = r.b.Len()
 		if ops[i].Decorators.IsAbort || ops[i].Decorators.AssertRows >= 0 {
 			failGate = true
 		}
@@ -634,7 +640,7 @@ func RenderMySQLBatch(ops []PipelineOp, o MySQLRenderOptions) (*MySQLBatch, erro
 	}
 	r.batch.SQL = r.b.String()
 	for i := range ops {
-		ops[i].SQL = r.batch.SQL[r.starts[i]:r.ends[i]]
+		ops[i].SQL = r.batch.SQL[r.spans[2*i]:r.spans[2*i+1]]
 	}
 	return r.batch, nil
 }

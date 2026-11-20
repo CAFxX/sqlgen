@@ -801,3 +801,40 @@ func FuzzEstimateMySQLOpBytesUpperBound(f *testing.F) {
 		}
 	})
 }
+
+// Rendering a batch must stay allocation-lean: the text is built in one pre-sized builder, the cursor is
+// reused, and plain arguments are inlined without copying.
+func TestMySQLRenderAllocations(t *testing.T) {
+	sds := shapeDescs()
+	fl := &MySQLFlavor{}
+	ops := make([]PipelineOp, 0, 8)
+	for i := 0; i < 8; i++ {
+		ops = append(ops, mkOp(sds[1+i%2], nil, OpDecorators{AssertRows: -1}))
+		ops[i].Args = shapeArgs(sds[1+i%2].args)
+	}
+	allocs := testing.AllocsPerRun(50, func() {
+		if _, err := RenderMySQLBatch(ops, MySQLRenderOptions{Flavor: fl}); err != nil {
+			t.Fatal(err)
+		}
+	})
+	// batch struct, flags, args table, spans, the builder, its string, the summary slice growth
+	if allocs > 16 {
+		t.Fatalf("RenderMySQLBatch of 8 operations allocates %v times", allocs)
+	}
+	t.Logf("allocations for 8 operations: %v", allocs)
+}
+
+func BenchmarkRenderMySQLBatch(b *testing.B) {
+	sds := shapeDescs()
+	fl := &MySQLFlavor{}
+	ops := make([]PipelineOp, 0, 8)
+	for i := 0; i < 8; i++ {
+		ops = append(ops, mkOp(sds[1+i%2], nil, OpDecorators{AssertRows: 1}))
+	}
+	b.ReportAllocs()
+	for i := 0; i < b.N; i++ {
+		if _, err := RenderMySQLBatch(ops, MySQLRenderOptions{Flavor: fl}); err != nil {
+			b.Fatal(err)
+		}
+	}
+}
