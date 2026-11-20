@@ -1640,6 +1640,7 @@ var transientErrorMarkers = []string{
 	"deadlock detected", "could not serialize access", "restart transaction", // PostgreSQL / CockroachDB
 	"error 1213 (", "error 1205 (", // MySQL / MariaDB: deadlock, lock wait timeout
 	"deadlock found when trying to get lock", "lock wait timeout exceeded",
+	"record has changed since last read",                                             // MariaDB 11.6+ (innodb_snapshot_isolation): error 1020, "try restarting transaction"
 	"sqlite_busy", "sqlite_locked", "database is locked", "database table is locked", // SQLite
 }
 

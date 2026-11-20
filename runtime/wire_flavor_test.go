@@ -114,3 +114,11 @@ func TestWireExecResultHasNoLastInsertID(t *testing.T) {
 		t.Fatalf("LastInsertId error = %v", err)
 	}
 }
+
+// MariaDB 12.3 (innodb_snapshot_isolation) reports a write-after-read conflict as error 1020: retry it.
+func TestMariaDBSnapshotConflictIsRetryable(t *testing.T) {
+	err := errors.New("Error 1020 (HY000): Record has changed since last read in table 't'")
+	if !IsRetryableTxError(err, false) {
+		t.Fatal("error 1020 must be retryable")
+	}
+}
