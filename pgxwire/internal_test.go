@@ -207,6 +207,9 @@ func TestFailClosesAConnectionThatCannotBeRolledBack(t *testing.T) {
 	defer done()
 	pg := c.Conn.Conn().PgConn()
 	ctx := context.Background()
+	if v, err := pg.Exec(ctx, "SELECT version()").ReadAll(); err != nil || strings.Contains(string(v[0].Rows[0][0]), "CockroachDB") {
+		t.Skip("needs pg_terminate_backend (PostgreSQL)")
+	}
 	if _, err := pg.Exec(ctx, "BEGIN").ReadAll(); err != nil || pg.TxStatus() != 'T' {
 		t.Fatalf("BEGIN: %v, status %c", err, pg.TxStatus())
 	}
