@@ -92,6 +92,9 @@ func (q *Queries) WithTx(tx *sql.Tx) *Queries {
 
 // InTx executes fn inside a database transaction with optional retry policy.
 func (q *Queries) InTx(ctx context.Context, txOpts *sql.TxOptions, fn func(*Queries) error, opts ...runtime.TxOption) error {
+	if fn == nil {
+		return runtime.ErrNilArgument
+	}
 	return runtime.RunTxWithRetry(ctx, q.db, q.txCache, txOpts, opts, func(tc *runtime.TxStmtCache) error {
 		txQ := *q
 		txQ.txCache = tc
@@ -120,21 +123,24 @@ func (q *Queries) Pipeline(ctx context.Context) *Pipeline {
 
 // PipelineTx executes a transactional pipeline batch with optional retry policy.
 func (q *Queries) PipelineTx(ctx context.Context, txOpts *sql.TxOptions, fn func(*Pipeline) error, opts ...runtime.TxOption) error {
+	if fn == nil {
+		return runtime.ErrNilArgument
+	}
 	return runtime.RunPipelineTx(ctx, q.db, q.cache, q.txCache, q.usePrepared, sqlDialect, txOpts, opts, func(p *runtime.Pipeline) error {
 		return fn(&Pipeline{Pipeline: p, q: q})
 	})
 }
 
 // If queues conditional thenFn and optional elseFn branches gated on cond.
-func (p *Pipeline) If(cond runtime.PipelineCond, thenFn func(*Pipeline), elseFn func(*Pipeline)) *runtime.IfResult {
+func (pl *Pipeline) If(cond runtime.PipelineCond, thenFn func(*Pipeline), elseFn func(*Pipeline)) *runtime.IfResult {
 	var tFn, eFn func()
 	if thenFn != nil {
-		tFn = func() { thenFn(p) }
+		tFn = func() { thenFn(pl) }
 	}
 	if elseFn != nil {
-		eFn = func() { elseFn(p) }
+		eFn = func() { elseFn(pl) }
 	}
-	return p.Pipeline.If(cond, tFn, eFn)
+	return pl.Pipeline.If(cond, tFn, eFn)
 }
 
 type MarginSettlement struct {
@@ -678,6 +684,9 @@ func (q *Queries) ApplyMarginSettlementsBatch(ctx context.Context, rows []Margin
 }
 
 func (q *Queries) ApplyMarginSettlementsStream(ctx context.Context, seq iter.Seq2[MarginSettlement, error]) (sql.Result, error) {
+	if seq == nil {
+		return nil, runtime.ErrNilArgument
+	}
 	chunkCap := min(256, q.cache.MaxRowsPerBatch(sqlDialect, 0, 8))
 	bufPtr := marginSettlementChunkPool.Get().(*[]MarginSettlement)
 	chunk := (*bufPtr)[:0]
@@ -1317,6 +1326,9 @@ func (q *Queries) IngestOrdersSeq(ctx context.Context, rows []OrderSubmission, e
 }
 
 func (q *Queries) IngestOrdersEach(ctx context.Context, rows []OrderSubmission, epochSeq int64, fn func(OrderAck) error) error {
+	if fn == nil {
+		return runtime.ErrNilArgument
+	}
 	for row, err := range q.IngestOrdersSeq(ctx, rows, epochSeq) {
 		if err != nil {
 			return err
@@ -1478,6 +1490,9 @@ func (q *Queries) IngestOrdersBatchSeq(ctx context.Context, rows []OrderSubmissi
 }
 
 func (q *Queries) IngestOrdersBatchEach(ctx context.Context, rows []OrderSubmission, epochSeq int64, fn func(OrderAck) error) error {
+	if fn == nil {
+		return runtime.ErrNilArgument
+	}
 	for row, err := range q.IngestOrdersBatchSeq(ctx, rows, epochSeq) {
 		if err != nil {
 			return err
@@ -1492,6 +1507,10 @@ func (q *Queries) IngestOrdersBatchEach(ctx context.Context, rows []OrderSubmiss
 func (q *Queries) IngestOrdersStreamSeq(ctx context.Context, seq iter.Seq2[OrderSubmission, error], epochSeq int64) iter.Seq2[OrderAck, error] {
 	return func(yield func(OrderAck, error) bool) {
 		var zero OrderAck
+		if seq == nil {
+			yield(zero, runtime.ErrNilArgument)
+			return
+		}
 		chunkCap := min(256, q.cache.MaxRowsPerBatch(sqlDialect, 1, 9))
 		bufPtr := orderSubmissionChunkPool.Get().(*[]OrderSubmission)
 		chunk := (*bufPtr)[:0]
@@ -1738,6 +1757,9 @@ func (q *Queries) CancelOrdersByIDsSeq(ctx context.Context, cancelSeq int64, fir
 }
 
 func (q *Queries) CancelOrdersByIDsEach(ctx context.Context, cancelSeq int64, firmID int64, orderIDs []int64, fn func(OrderAck) error) error {
+	if fn == nil {
+		return runtime.ErrNilArgument
+	}
 	for row, err := range q.CancelOrdersByIDsSeq(ctx, cancelSeq, firmID, orderIDs) {
 		if err != nil {
 			return err
@@ -1895,6 +1917,9 @@ func (q *Queries) CancelOrdersByIDsBatchSeq(ctx context.Context, cancelSeq int64
 }
 
 func (q *Queries) CancelOrdersByIDsBatchEach(ctx context.Context, cancelSeq int64, firmID int64, orderIDs []int64, fn func(OrderAck) error) error {
+	if fn == nil {
+		return runtime.ErrNilArgument
+	}
 	for row, err := range q.CancelOrdersByIDsBatchSeq(ctx, cancelSeq, firmID, orderIDs) {
 		if err != nil {
 			return err
@@ -2085,6 +2110,9 @@ func (q *Queries) ListOpenOrdersForSymbolSeq(ctx context.Context, symbol string,
 }
 
 func (q *Queries) ListOpenOrdersForSymbolEach(ctx context.Context, symbol string, side string, limit int64, fn func(OpenOrderRow) error) error {
+	if fn == nil {
+		return runtime.ErrNilArgument
+	}
 	for row, err := range q.ListOpenOrdersForSymbolSeq(ctx, symbol, side, limit) {
 		if err != nil {
 			return err
@@ -3458,6 +3486,9 @@ func (q *Queries) QueryRiskPositionsPageSeq(ctx context.Context, p QueryRiskPosi
 }
 
 func (q *Queries) QueryRiskPositionsPageEach(ctx context.Context, p QueryRiskPositionsPageParams, fn func(RiskPositionView) error) error {
+	if fn == nil {
+		return runtime.ErrNilArgument
+	}
 	for row, err := range q.QueryRiskPositionsPageSeq(ctx, p) {
 		if err != nil {
 			return err

@@ -1746,7 +1746,7 @@ func TestGeneratorValidatorAndParserBranches(t *testing.T) {
 	advYAML := `version: "1"
 package: adv
 runtime_import: example.com/custom/sqlgenrt
-dialect: mysql
+dialect: mariadb
 statements:
   - name: ListScoresDesc
     kind: many
@@ -1852,8 +1852,12 @@ statements:
 	if err := sqlgen.WriteFileAtomic(tmpDir, []byte("x")); err == nil {
 		t.Fatalf("expected WriteFileAtomic error when target is a directory")
 	}
-	if err := sqlgen.WriteFileAtomic(filepath.Join(tmpDir, "no_such_dir", "x.go"), []byte("x")); err == nil {
-		t.Fatalf("expected WriteFileAtomic error on missing directory")
+	// A missing directory is created; a parent that is a regular file cannot be.
+	if err := sqlgen.WriteFileAtomic(filepath.Join(tmpDir, "no_such_dir", "x.go"), []byte("x")); err != nil {
+		t.Fatalf("WriteFileAtomic must create a missing directory: %v", err)
+	}
+	if err := sqlgen.WriteFileAtomic(filepath.Join(tmpDir, "no_such_dir", "x.go", "y.go"), []byte("x")); err == nil {
+		t.Fatalf("expected WriteFileAtomic error when a parent is a regular file")
 	}
 
 	// Test YAML error paths in ParseYAML, ParamSpec.UnmarshalYAML, and ColumnSpec.UnmarshalYAML
@@ -2159,5 +2163,75 @@ func TestOrderDirectiveColumnLimitMatchesRuntime(t *testing.T) {
 	want := fmt.Sprintf("supports at most %d columns (got %d)", runtime.MaxOrderCols, runtime.MaxOrderCols+1)
 	if err == nil || !strings.Contains(err.Error(), want) {
 		t.Fatalf("want error containing %q, got %v", want, err)
+	}
+}
+
+// Diagnostics found by the second clean-room round: each of these generated misleading, uncompilable or
+// silently wrong output instead of an error at generate time.
+func TestGeneratorRejectsMisuseAtGenerateTime(t *testing.T) {
+	one := func(sql string) string {
+		return "  - name: Q\n    kind: many\n    sql: |\n      " + sql + "\n"
+	}
+	for _, tc := range []struct{ name, dialect, stmts, want string }{
+		{"lowercase statement name", "postgres", "  - name: lower\n    kind: exec\n    sql: DELETE FROM t\n",
+			`statement name "lower" must be an exported Go identifier (start with an upper-case letter), e.g. "Lower"`},
+		{"tuple slice compared with =", "postgres", one("SELECT id:int64 FROM t WHERE x = :a:[]T(A:int64)"),
+			"tuple slice parameter :a:[]T"},
+		{"tuple slice outside VALUES or IN", "mysql", one("SELECT id:int64 FROM t WHERE x > :a:[]T(A:int64)"),
+			"only valid after VALUES or inside IN (...)"},
+		{"literal $1 placeholder (postgres)", "postgres", one("SELECT id:int64 FROM t WHERE x = $1"),
+			`literal placeholder "$1"`},
+		{"literal $2 placeholder (cockroachdb)", "cockroachdb", one("SELECT id:int64 FROM t WHERE x = :x:int64 AND y = $2"),
+			`literal placeholder "$2"`},
+		{"literal ? placeholder (mysql)", "mysql", one("SELECT id:int64 FROM t WHERE x = ?"),
+			`literal placeholder "?"`},
+		{"literal ? placeholder (sqlite)", "sqlite", one("SELECT id:int64 FROM t WHERE x = :x:int64 AND y = ?"),
+			`literal placeholder "?"`},
+		{"RETURNING on mysql", "mysql", "  - name: Q\n    kind: many\n    sql: |\n      INSERT INTO t (a) VALUES (:a:int64) RETURNING id:int64\n",
+			"MySQL has no RETURNING"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if _, err := genYAML(tc.dialect, tc.stmts); err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("want error containing %q, got %v", tc.want, err)
+			}
+		})
+	}
+
+	// The same shapes that are legitimate must keep generating.
+	for _, tc := range []struct{ name, dialect, stmts string }{
+		{"placeholder-looking text in literals and comments", "postgres", one("SELECT id:int64 FROM t WHERE a = '$1' AND b = \"$2\" -- $3\n      AND c = $$ $4 $$ /* $5 */")},
+		{"? in literals and comments", "mysql", one("SELECT id:int64 FROM t WHERE a = '?' AND b = `?` -- ?\n      AND c = :c:int64 /* ? */")},
+		{"jsonb ? operator on postgres", "postgres", one("SELECT id:int64 FROM t WHERE data ? 'k' AND data ?| array['a']")},
+		{"$1 text on mysql is not a placeholder", "mysql", one("SELECT id:int64 FROM t WHERE cost = '$1'")},
+		{"conditional block marker", "mysql", one("SELECT id:int64 FROM t WHERE 1=1 {?F: AND x = :x:int64}")},
+		{"tuple slice after VALUES", "mysql", "  - name: Q\n    kind: exec\n    sql: INSERT INTO t (a) VALUES :r:[]T(A:int64)\n"},
+		{"tuple slice inside IN", "postgres", one("SELECT id:int64 FROM t WHERE (a, b) IN (:r:[]T(A:int64, B:int64))")},
+		{"tuple slice inside NOT IN", "postgres", one("SELECT id:int64 FROM t WHERE (a, b) NOT IN (:r:[]T(A:int64, B:int64))")},
+		{"tuple slice in FROM (VALUES", "postgres", one("SELECT v.a:int64 FROM (VALUES :r:[]T(A:int64)) AS v(a)")},
+		{"RETURNING on mariadb", "mariadb", "  - name: Q\n    kind: many\n    sql: |\n      INSERT INTO t (a) VALUES (:a:int64) RETURNING id:int64\n"},
+		{"RETURNING on sqlite", "sqlite", "  - name: Q\n    kind: many\n    sql: |\n      INSERT INTO t (a) VALUES (:a:int64) RETURNING id:int64\n"},
+		{"RETURNING on cockroachdb", "cockroachdb", "  - name: Q\n    kind: many\n    sql: |\n      DELETE FROM t WHERE a = :a:int64 RETURNING id:int64\n"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if _, err := genYAML(tc.dialect, tc.stmts); err != nil {
+				t.Fatalf("must generate: %v", err)
+			}
+		})
+	}
+}
+
+// An out: path whose directory does not exist yet is created instead of failing on a temp file.
+func TestGenerateFromYAMLFileCreatesOutputDirectory(t *testing.T) {
+	dir := t.TempDir()
+	cfg := filepath.Join(dir, "sqlgen.yaml")
+	body := "package: p\nout: gen/deep/p_gen.go\ndialect: postgres\nstatements:\n  - name: Q\n    kind: exec\n    sql: DELETE FROM t\n"
+	if err := os.WriteFile(cfg, []byte(body), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := sqlgen.GenerateFromYAMLFile(cfg, ""); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "gen", "deep", "p_gen.go")); err != nil {
+		t.Fatal(err)
 	}
 }

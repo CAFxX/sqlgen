@@ -92,6 +92,9 @@ func (q *Queries) WithTx(tx *sql.Tx) *Queries {
 
 // InTx executes fn inside a database transaction with optional retry policy.
 func (q *Queries) InTx(ctx context.Context, txOpts *sql.TxOptions, fn func(*Queries) error, opts ...runtime.TxOption) error {
+	if fn == nil {
+		return runtime.ErrNilArgument
+	}
 	return runtime.RunTxWithRetry(ctx, q.db, q.txCache, txOpts, opts, func(tc *runtime.TxStmtCache) error {
 		txQ := *q
 		txQ.txCache = tc
@@ -120,21 +123,24 @@ func (q *Queries) Pipeline(ctx context.Context) *Pipeline {
 
 // PipelineTx executes a transactional pipeline batch with optional retry policy.
 func (q *Queries) PipelineTx(ctx context.Context, txOpts *sql.TxOptions, fn func(*Pipeline) error, opts ...runtime.TxOption) error {
+	if fn == nil {
+		return runtime.ErrNilArgument
+	}
 	return runtime.RunPipelineTx(ctx, q.db, q.cache, q.txCache, q.usePrepared, sqlDialect, txOpts, opts, func(p *runtime.Pipeline) error {
 		return fn(&Pipeline{Pipeline: p, q: q})
 	})
 }
 
 // If queues conditional thenFn and optional elseFn branches gated on cond.
-func (p *Pipeline) If(cond runtime.PipelineCond, thenFn func(*Pipeline), elseFn func(*Pipeline)) *runtime.IfResult {
+func (pl *Pipeline) If(cond runtime.PipelineCond, thenFn func(*Pipeline), elseFn func(*Pipeline)) *runtime.IfResult {
 	var tFn, eFn func()
 	if thenFn != nil {
-		tFn = func() { thenFn(p) }
+		tFn = func() { thenFn(pl) }
 	}
 	if elseFn != nil {
-		eFn = func() { elseFn(p) }
+		eFn = func() { elseFn(pl) }
 	}
-	return p.Pipeline.If(cond, tFn, eFn)
+	return pl.Pipeline.If(cond, tFn, eFn)
 }
 
 type BatchUserInput struct {
@@ -726,6 +732,9 @@ func (q *Queries) ListUsersByIDsSeq(ctx context.Context, ids []int64) iter.Seq2[
 }
 
 func (q *Queries) ListUsersByIDsEach(ctx context.Context, ids []int64, fn func(User) error) error {
+	if fn == nil {
+		return runtime.ErrNilArgument
+	}
 	for row, err := range q.ListUsersByIDsSeq(ctx, ids) {
 		if err != nil {
 			return err
@@ -875,6 +884,9 @@ func (q *Queries) ListUsersByIDsBatchSeq(ctx context.Context, ids []int64) iter.
 }
 
 func (q *Queries) ListUsersByIDsBatchEach(ctx context.Context, ids []int64, fn func(User) error) error {
+	if fn == nil {
+		return runtime.ErrNilArgument
+	}
 	for row, err := range q.ListUsersByIDsBatchSeq(ctx, ids) {
 		if err != nil {
 			return err
@@ -1068,6 +1080,9 @@ func (q *Queries) SelectUserProfileSubsetSeq(ctx context.Context, p SelectUserPr
 }
 
 func (q *Queries) SelectUserProfileSubsetEach(ctx context.Context, p SelectUserProfileSubsetParams, fn func(SelectUserProfileSubsetRow) error) error {
+	if fn == nil {
+		return runtime.ErrNilArgument
+	}
 	for row, err := range q.SelectUserProfileSubsetSeq(ctx, p) {
 		if err != nil {
 			return err
@@ -1358,6 +1373,9 @@ func (q *Queries) SearchUsersCoupledSeq(ctx context.Context, p SearchUsersCouple
 }
 
 func (q *Queries) SearchUsersCoupledEach(ctx context.Context, p SearchUsersCoupledParams, fn func(SearchUsersCoupledRow) error) error {
+	if fn == nil {
+		return runtime.ErrNilArgument
+	}
 	for row, err := range q.SearchUsersCoupledSeq(ctx, p) {
 		if err != nil {
 			return err
@@ -1743,6 +1761,9 @@ func (q *Queries) PageUsersSeq(ctx context.Context, p PageUsersParams) iter.Seq2
 }
 
 func (q *Queries) PageUsersEach(ctx context.Context, p PageUsersParams, fn func(PageUsersRow) error) error {
+	if fn == nil {
+		return runtime.ErrNilArgument
+	}
 	for row, err := range q.PageUsersSeq(ctx, p) {
 		if err != nil {
 			return err
@@ -1948,6 +1969,9 @@ func (q *Queries) UsersFromCTEAndInSubquerySeq(ctx context.Context, ctesub runti
 }
 
 func (q *Queries) UsersFromCTEAndInSubqueryEach(ctx context.Context, ctesub runtime.Query, idsub runtime.Query, fn func(UsersFromCTEAndInSubqueryRow) error) error {
+	if fn == nil {
+		return runtime.ErrNilArgument
+	}
 	for row, err := range q.UsersFromCTEAndInSubquerySeq(ctx, ctesub, idsub) {
 		if err != nil {
 			return err
@@ -2239,6 +2263,9 @@ func (q *Queries) InsertUsersBatchReturningSeq(ctx context.Context, rows []Batch
 }
 
 func (q *Queries) InsertUsersBatchReturningEach(ctx context.Context, rows []BatchUserInput, fn func(InsertUsersBatchReturningRow) error) error {
+	if fn == nil {
+		return runtime.ErrNilArgument
+	}
 	for row, err := range q.InsertUsersBatchReturningSeq(ctx, rows) {
 		if err != nil {
 			return err
@@ -2392,6 +2419,9 @@ func (q *Queries) InsertUsersBatchReturningBatchSeq(ctx context.Context, rows []
 }
 
 func (q *Queries) InsertUsersBatchReturningBatchEach(ctx context.Context, rows []BatchUserInput, fn func(InsertUsersBatchReturningRow) error) error {
+	if fn == nil {
+		return runtime.ErrNilArgument
+	}
 	for row, err := range q.InsertUsersBatchReturningBatchSeq(ctx, rows) {
 		if err != nil {
 			return err
@@ -2406,6 +2436,10 @@ func (q *Queries) InsertUsersBatchReturningBatchEach(ctx context.Context, rows [
 func (q *Queries) InsertUsersBatchReturningStreamSeq(ctx context.Context, seq iter.Seq2[BatchUserInput, error]) iter.Seq2[InsertUsersBatchReturningRow, error] {
 	return func(yield func(InsertUsersBatchReturningRow, error) bool) {
 		var zero InsertUsersBatchReturningRow
+		if seq == nil {
+			yield(zero, runtime.ErrNilArgument)
+			return
+		}
 		chunkCap := min(256, q.cache.MaxRowsPerBatch(sqlDialect, 0, 3))
 		bufPtr := batchUserInputChunkPool.Get().(*[]BatchUserInput)
 		chunk := (*bufPtr)[:0]
@@ -2628,6 +2662,9 @@ func (q *Queries) UpdateUsersBatchFromValuesBatch(ctx context.Context, rows []Ba
 }
 
 func (q *Queries) UpdateUsersBatchFromValuesStream(ctx context.Context, seq iter.Seq2[BatchBonusInput, error]) (sql.Result, error) {
+	if seq == nil {
+		return nil, runtime.ErrNilArgument
+	}
 	chunkCap := min(256, q.cache.MaxRowsPerBatch(sqlDialect, 0, 2))
 	bufPtr := batchBonusInputChunkPool.Get().(*[]BatchBonusInput)
 	chunk := (*bufPtr)[:0]
@@ -2847,6 +2884,9 @@ func (q *Queries) InsertQuadBatchBatch(ctx context.Context, rows []QuadInput) (s
 }
 
 func (q *Queries) InsertQuadBatchStream(ctx context.Context, seq iter.Seq2[QuadInput, error]) (sql.Result, error) {
+	if seq == nil {
+		return nil, runtime.ErrNilArgument
+	}
 	chunkCap := min(256, q.cache.MaxRowsPerBatch(sqlDialect, 0, 4))
 	bufPtr := quadInputChunkPool.Get().(*[]QuadInput)
 	chunk := (*bufPtr)[:0]
@@ -3154,6 +3194,9 @@ func (q *Queries) PageQuadSeq(ctx context.Context, p PageQuadParams) iter.Seq2[Q
 }
 
 func (q *Queries) PageQuadEach(ctx context.Context, p PageQuadParams, fn func(QuadItem) error) error {
+	if fn == nil {
+		return runtime.ErrNilArgument
+	}
 	for row, err := range q.PageQuadSeq(ctx, p) {
 		if err != nil {
 			return err

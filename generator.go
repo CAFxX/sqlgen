@@ -9,10 +9,12 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"regexp"
 	"slices"
 	"strconv"
 	"strings"
 	"unicode"
+	"unicode/utf8"
 
 	"github.com/CAFxX/sqlgen/runtime"
 	"go.yaml.in/yaml/v3"
@@ -372,6 +374,9 @@ func GenerateFromYAML(data []byte) ([]byte, error) {
 // WriteFileAtomic writes data to targetPath atomically using a temporary file in the same directory.
 func WriteFileAtomic(targetPath string, data []byte) error {
 	dir := filepath.Dir(targetPath)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return fmt.Errorf("sqlgen: create output directory: %w", err)
+	}
 	tmp, err := os.CreateTemp(dir, ".sqlgen-*.tmp")
 	if err != nil {
 		return fmt.Errorf("sqlgen: create temp file: %w", err)
@@ -848,7 +853,7 @@ func ParseSQL(sqlStr string) (*ParsedSQL, error) {
 		Name: "FuzzStmt",
 		Kind: KindSubquery,
 		SQL:  sqlStr,
-	})
+	}, stmtDialect{})
 	if err != nil {
 		return nil, err
 	}
@@ -858,6 +863,33 @@ func ParseSQL(sqlStr string) (*ParsedSQL, error) {
 	}, nil
 }
 
+// dialectFamily returns the canonical engine name of a dialect spelling ("postgres", "cockroachdb", "sqlite",
+// "mysql", "mariadb") or "" for the engine-neutral spellings ("dollar", "question", "$", "?", empty), for
+// which engine-specific diagnostics are skipped.
+func dialectFamily(raw Dialect) string {
+	switch strings.ToLower(strings.TrimSpace(string(raw))) {
+	case "postgres", "postgresql", "pgx":
+		return "postgres"
+	case "cockroach", "cockroachdb":
+		return "cockroachdb"
+	case "sqlite", "sqlite3":
+		return "sqlite"
+	case "mysql":
+		return "mysql"
+	case "mariadb":
+		return "mariadb"
+	}
+	return ""
+}
+
+// stmtDialect tells the statement compiler which placeholder style and engine it is generating for. The
+// zero value (used by ParseSQL) disables every dialect-dependent diagnostic.
+type stmtDialect struct {
+	known  bool
+	style  runtime.Dialect
+	family string
+}
+
 func parseDialect(raw Dialect) (runtime.Dialect, error) {
 	switch strings.ToLower(strings.TrimSpace(string(raw))) {
 	case "", "dollar", "postgres", "postgresql", "pgx", "cockroach", "cockroachdb", "$":
@@ -865,8 +897,20 @@ func parseDialect(raw Dialect) (runtime.Dialect, error) {
 	case "question", "sqlite", "sqlite3", "mysql", "mariadb", "?":
 		return runtime.DialectQuestion, nil
 	default:
-		return runtime.DialectDollar, fmt.Errorf("sqlgen: unsupported dialect %q", raw)
+		return runtime.DialectDollar, fmt.Errorf("sqlgen: unsupported dialect %q (valid dialects: postgres, cockroachdb, sqlite, mysql, mariadb; aliases: postgresql, pgx, cockroach, sqlite3, dollar, question, $, ?)", raw)
 	}
+}
+
+var tupleSliceContextRE = regexp.MustCompile(`(?is)(\bin\s*\(|\bvalues)\s*$`)
+
+// tupleSliceContextOK reports whether a tuple slice parameter may follow the SQL text seg: it expands to a
+// comma-separated list of parenthesised rows, which only VALUES and IN (...) accept. An empty seg (the
+// previous token was another parameter or block) cannot be judged and is accepted.
+func tupleSliceContextOK(seg []byte) bool {
+	if len(bytes.TrimSpace(seg)) == 0 {
+		return true
+	}
+	return tupleSliceContextRE.Match(seg)
 }
 
 func isIdentStartByte(b byte) bool {
@@ -1462,6 +1506,7 @@ type stmtParser struct {
 	projHasOptBlock   bool
 
 	cs *compiledStmt
+	sd stmtDialect
 }
 
 func (p *stmtParser) addOrGetParam(rawName string, kind paramKind, goType, elemGoType string, tuple *tupleStructDef, hasSort, desc bool) (int, error) {
@@ -1711,6 +1756,22 @@ func (p *stmtParser) scanSpan(span string, blk *parsedBlock, isTopLevel bool) er
 				seg = append(seg, span[i:end]...)
 				i = end
 				continue
+			}
+		}
+
+		// A hand-written placeholder would collide with the numbering/arguments sqlgen generates.
+		if p.sd.known {
+			if ch == '$' && p.sd.style == runtime.DialectDollar && i+1 < len(span) && span[i+1] >= '0' && span[i+1] <= '9' {
+				j := i + 1
+				for j < len(span) && span[j] >= '0' && span[j] <= '9' {
+					j++
+				}
+				return fmt.Errorf("statement %s: literal placeholder %q in SQL; sqlgen numbers the placeholders itself, bind a value with :name:type instead", p.spec.Name, span[i:j])
+			}
+			// MySQL, MariaDB and SQLite have no ? operator, so outside literals, comments and quoted identifiers a
+			// ? can only be a hand-written placeholder. (PostgreSQL's jsonb ? operators are left alone.)
+			if ch == '?' && p.sd.style == runtime.DialectQuestion {
+				return fmt.Errorf("statement %s: literal placeholder %q in SQL; sqlgen generates the placeholders itself, bind a value with :name:type instead", p.spec.Name, "?")
 			}
 		}
 
@@ -2008,6 +2069,9 @@ func (p *stmtParser) scanSpan(span string, blk *parsedBlock, isTopLevel bool) er
 						}
 						continue
 					} else if low == "returning" {
+						if p.sd.family == "mysql" {
+							return fmt.Errorf("statement %s: MySQL has no RETURNING clause (MariaDB 10.5+, PostgreSQL, CockroachDB and SQLite do); use dialect: mariadb for MariaDB, or read the rows back with a SELECT", p.spec.Name)
+						}
 						if isTopLevel && !p.inOptBlock {
 							flushBranchGuardBeforeEnd()
 						}
@@ -2132,6 +2196,9 @@ func (p *stmtParser) scanSpan(span string, blk *parsedBlock, isTopLevel bool) er
 						td, err := parseTupleBody(structName, tupleBody)
 						if err != nil {
 							return fmt.Errorf("statement %s: %w", p.spec.Name, err)
+						}
+						if !tupleSliceContextOK(seg) {
+							return fmt.Errorf("statement %s: tuple slice parameter :%s:[]%s(...) is only valid after VALUES or inside IN (...): it expands to a comma-separated list of parenthesised rows", p.spec.Name, ident, structName)
 						}
 						pIdx, err := p.addOrGetParam(ident, paramTupleSlice, "[]"+structName, structName, td, td.HasSort, false)
 						if err != nil {
@@ -2308,9 +2375,12 @@ func (p *stmtParser) scanSpan(span string, blk *parsedBlock, isTopLevel bool) er
 	return nil
 }
 
-func compileStatement(id uint32, spec StatementSpec) (*compiledStmt, error) {
+func compileStatement(id uint32, spec StatementSpec, sd stmtDialect) (*compiledStmt, error) {
 	if !isValidGoIdent(spec.Name) {
 		return nil, fmt.Errorf("sqlgen: invalid statement name %q", spec.Name)
+	}
+	if first, _ := utf8.DecodeRuneInString(spec.Name); !unicode.IsUpper(first) {
+		return nil, fmt.Errorf("sqlgen: statement name %q must be an exported Go identifier (start with an upper-case letter), e.g. %q", spec.Name, strings.ToUpper(spec.Name[:1])+spec.Name[1:])
 	}
 	if reservedStatementNames[spec.Name] {
 		return nil, fmt.Errorf("statement name %q collides with a method generated on *Queries / *Pipeline; rename it", spec.Name)
@@ -2365,6 +2435,7 @@ func compileStatement(id uint32, spec StatementSpec) (*compiledStmt, error) {
 		paramsByCanon: make(map[string]int),
 		flagsByName:   make(map[string]uint8),
 		cs:            cs,
+		sd:            sd,
 	}
 
 	if err := parser.scanSpan(trimmedSQL, &cs.Root, true); err != nil {
@@ -2780,7 +2851,7 @@ func Generate(cfg Config) ([]byte, error) {
 		}
 		seenStmts[spec.Name] = true
 
-		cs, err := compileStatement(uint32(i+1), spec)
+		cs, err := compileStatement(uint32(i+1), spec, stmtDialect{known: true, style: dialect, family: dialectFamily(cfg.Dialect)})
 		if err != nil {
 			return nil, err
 		}
@@ -2974,6 +3045,7 @@ func Generate(cfg Config) ([]byte, error) {
 
 	b.WriteString("// InTx executes fn inside a database transaction with optional retry policy.\n")
 	b.WriteString("func (q *Queries) InTx(ctx context.Context, txOpts *sql.TxOptions, fn func(*Queries) error, opts ...runtime.TxOption) error {\n")
+	b.WriteString("\tif fn == nil {\n\t\treturn runtime.ErrNilArgument\n\t}\n")
 	b.WriteString("\treturn runtime.RunTxWithRetry(ctx, q.db, q.txCache, txOpts, opts, func(tc *runtime.TxStmtCache) error {\n")
 	b.WriteString("\t\ttxQ := *q\n")
 	b.WriteString("\t\ttxQ.txCache = tc\n")
@@ -3003,21 +3075,22 @@ func Generate(cfg Config) ([]byte, error) {
 
 	b.WriteString("// PipelineTx executes a transactional pipeline batch with optional retry policy.\n")
 	b.WriteString("func (q *Queries) PipelineTx(ctx context.Context, txOpts *sql.TxOptions, fn func(*Pipeline) error, opts ...runtime.TxOption) error {\n")
+	b.WriteString("\tif fn == nil {\n\t\treturn runtime.ErrNilArgument\n\t}\n")
 	b.WriteString("\treturn runtime.RunPipelineTx(ctx, q.db, q.cache, q.txCache, q.usePrepared, sqlDialect, txOpts, opts, func(p *runtime.Pipeline) error {\n")
 	b.WriteString("\t\treturn fn(&Pipeline{Pipeline: p, q: q})\n")
 	b.WriteString("\t})\n")
 	b.WriteString("}\n\n")
 
 	b.WriteString("// If queues conditional thenFn and optional elseFn branches gated on cond.\n")
-	b.WriteString("func (p *Pipeline) If(cond runtime.PipelineCond, thenFn func(*Pipeline), elseFn func(*Pipeline)) *runtime.IfResult {\n")
+	b.WriteString("func (pl *Pipeline) If(cond runtime.PipelineCond, thenFn func(*Pipeline), elseFn func(*Pipeline)) *runtime.IfResult {\n")
 	b.WriteString("\tvar tFn, eFn func()\n")
 	b.WriteString("\tif thenFn != nil {\n")
-	b.WriteString("\t\ttFn = func() { thenFn(p) }\n")
+	b.WriteString("\t\ttFn = func() { thenFn(pl) }\n")
 	b.WriteString("\t}\n")
 	b.WriteString("\tif elseFn != nil {\n")
-	b.WriteString("\t\teFn = func() { elseFn(p) }\n")
+	b.WriteString("\t\teFn = func() { elseFn(pl) }\n")
 	b.WriteString("\t}\n")
-	b.WriteString("\treturn p.Pipeline.If(cond, tFn, eFn)\n")
+	b.WriteString("\treturn pl.Pipeline.If(cond, tFn, eFn)\n")
 	b.WriteString("}\n\n")
 
 	// Emit tuple struct definitions, chunk pools, and presort comparators
@@ -3890,6 +3963,7 @@ func emitStatementCode(
 	b.WriteString("}\n\n")
 
 	fmt.Fprintf(b, "func (q *Queries) %sEach(ctx context.Context%s, fn func(%s) error) error {\n", cs.Name, sigWithLeadingComma, cs.RowTypeName)
+	b.WriteString("\tif fn == nil {\n\t\treturn runtime.ErrNilArgument\n\t}\n")
 	fmt.Fprintf(b, "\tfor row, err := range q.%sSeq(ctx%s) {\n", cs.Name, callWithLeadingComma)
 	b.WriteString("\t\tif err != nil {\n\t\t\treturn err\n\t\t}\n")
 	b.WriteString("\t\tif err := fn(row); err != nil {\n\t\t\treturn err\n\t\t}\n")
@@ -4073,6 +4147,7 @@ func emitExecBatchAndStreamMethods(
 		poolName := lowerFirstIdent(batchParam.ElemGoType) + "ChunkPool"
 
 		fmt.Fprintf(b, "func (q *Queries) %sStream(ctx context.Context%s) (sql.Result, error) {\n", cs.Name, sigStream)
+		b.WriteString("\tif seq == nil {\n\t\treturn nil, runtime.ErrNilArgument\n\t}\n")
 		fmt.Fprintf(b, "\tchunkCap := min(256, q.cache.MaxRowsPerBatch(sqlDialect, %d, %d))\n", cs.ScalarParamCnt, cs.BatchArity)
 		fmt.Fprintf(b, "\tbufPtr := %s.Get().(*[]%s)\n", poolName, batchParam.ElemGoType)
 		b.WriteString("\tchunk := (*bufPtr)[:0]\n")
@@ -4232,6 +4307,7 @@ func emitManyBatchAndStreamMethods(
 
 	// <Name>BatchEach
 	fmt.Fprintf(b, "func (q *Queries) %sBatchEach(ctx context.Context%s, fn func(%s) error) error {\n", cs.Name, sigWithLeadingComma, cs.RowTypeName)
+	b.WriteString("\tif fn == nil {\n\t\treturn runtime.ErrNilArgument\n\t}\n")
 	fmt.Fprintf(b, "\tfor row, err := range q.%sBatchSeq(ctx%s) {\n", cs.Name, callWithLeadingComma)
 	b.WriteString("\t\tif err != nil {\n\t\t\treturn err\n\t\t}\n")
 	b.WriteString("\t\tif err := fn(row); err != nil {\n\t\t\treturn err\n\t\t}\n")
@@ -4247,6 +4323,7 @@ func emitManyBatchAndStreamMethods(
 		fmt.Fprintf(b, "func (q *Queries) %sStreamSeq(ctx context.Context%s) iter.Seq2[%s, error] {\n", cs.Name, sigStream, cs.RowTypeName)
 		b.WriteString("\treturn func(yield func(" + cs.RowTypeName + ", error) bool) {\n")
 		fmt.Fprintf(b, "\t\tvar zero %s\n", cs.RowTypeName)
+		b.WriteString("\t\tif seq == nil {\n\t\t\tyield(zero, runtime.ErrNilArgument)\n\t\t\treturn\n\t\t}\n")
 		fmt.Fprintf(b, "\t\tchunkCap := min(256, q.cache.MaxRowsPerBatch(sqlDialect, %d, %d))\n", cs.ScalarParamCnt, cs.BatchArity)
 		fmt.Fprintf(b, "\t\tbufPtr := %s.Get().(*[]%s)\n", poolName, batchParam.ElemGoType)
 		b.WriteString("\t\tchunk := (*bufPtr)[:0]\n")

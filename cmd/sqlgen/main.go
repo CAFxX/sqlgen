@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime/debug"
+	"strings"
 
 	"github.com/CAFxX/sqlgen"
 )
@@ -82,7 +83,7 @@ func run(args []string, stdout, stderr io.Writer) int {
 
 	if !toStdout && !checkMode {
 		if err := sqlgen.GenerateFromYAMLFile(cfgPath, outPath); err != nil {
-			_, _ = fmt.Fprintf(stderr, "sqlgen: %v\n", err)
+			reportErr(stderr, err)
 			return 1
 		}
 		return 0
@@ -95,7 +96,7 @@ func run(args []string, stdout, stderr io.Writer) int {
 	}
 	cfg, err := sqlgen.ParseYAML(data)
 	if err != nil {
-		_, _ = fmt.Fprintf(stderr, "sqlgen: %v\n", err)
+		reportErr(stderr, err)
 		return 1
 	}
 
@@ -112,7 +113,7 @@ func run(args []string, stdout, stderr io.Writer) int {
 
 	src, err := sqlgen.Generate(cfg)
 	if err != nil {
-		_, _ = fmt.Fprintf(stderr, "sqlgen: %v\n", err)
+		reportErr(stderr, err)
 		return 1
 	}
 
@@ -134,4 +135,13 @@ func run(args []string, stdout, stderr io.Writer) int {
 		return 2
 	}
 	return 0
+}
+
+// reportErr prints err prefixed with "sqlgen: ", unless the library already did.
+func reportErr(w io.Writer, err error) {
+	msg := err.Error()
+	if !strings.HasPrefix(msg, "sqlgen:") {
+		msg = "sqlgen: " + msg
+	}
+	_, _ = fmt.Fprintln(w, msg)
 }

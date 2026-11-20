@@ -92,6 +92,9 @@ func (q *Queries) WithTx(tx *sql.Tx) *Queries {
 
 // InTx executes fn inside a database transaction with optional retry policy.
 func (q *Queries) InTx(ctx context.Context, txOpts *sql.TxOptions, fn func(*Queries) error, opts ...runtime.TxOption) error {
+	if fn == nil {
+		return runtime.ErrNilArgument
+	}
 	return runtime.RunTxWithRetry(ctx, q.db, q.txCache, txOpts, opts, func(tc *runtime.TxStmtCache) error {
 		txQ := *q
 		txQ.txCache = tc
@@ -120,21 +123,24 @@ func (q *Queries) Pipeline(ctx context.Context) *Pipeline {
 
 // PipelineTx executes a transactional pipeline batch with optional retry policy.
 func (q *Queries) PipelineTx(ctx context.Context, txOpts *sql.TxOptions, fn func(*Pipeline) error, opts ...runtime.TxOption) error {
+	if fn == nil {
+		return runtime.ErrNilArgument
+	}
 	return runtime.RunPipelineTx(ctx, q.db, q.cache, q.txCache, q.usePrepared, sqlDialect, txOpts, opts, func(p *runtime.Pipeline) error {
 		return fn(&Pipeline{Pipeline: p, q: q})
 	})
 }
 
 // If queues conditional thenFn and optional elseFn branches gated on cond.
-func (p *Pipeline) If(cond runtime.PipelineCond, thenFn func(*Pipeline), elseFn func(*Pipeline)) *runtime.IfResult {
+func (pl *Pipeline) If(cond runtime.PipelineCond, thenFn func(*Pipeline), elseFn func(*Pipeline)) *runtime.IfResult {
 	var tFn, eFn func()
 	if thenFn != nil {
-		tFn = func() { thenFn(p) }
+		tFn = func() { thenFn(pl) }
 	}
 	if elseFn != nil {
-		eFn = func() { elseFn(p) }
+		eFn = func() { elseFn(pl) }
 	}
-	return p.Pipeline.If(cond, tFn, eFn)
+	return pl.Pipeline.If(cond, tFn, eFn)
 }
 
 type SKUKey struct {
@@ -424,6 +430,9 @@ func (q *Queries) GetInventoryBySKUsSeq(ctx context.Context, keys []SKUKey) iter
 }
 
 func (q *Queries) GetInventoryBySKUsEach(ctx context.Context, keys []SKUKey, fn func(InventoryItem) error) error {
+	if fn == nil {
+		return runtime.ErrNilArgument
+	}
 	for row, err := range q.GetInventoryBySKUsSeq(ctx, keys) {
 		if err != nil {
 			return err
@@ -574,6 +583,9 @@ func (q *Queries) GetInventoryBySKUsBatchSeq(ctx context.Context, keys []SKUKey)
 }
 
 func (q *Queries) GetInventoryBySKUsBatchEach(ctx context.Context, keys []SKUKey, fn func(InventoryItem) error) error {
+	if fn == nil {
+		return runtime.ErrNilArgument
+	}
 	for row, err := range q.GetInventoryBySKUsBatchSeq(ctx, keys) {
 		if err != nil {
 			return err
@@ -588,6 +600,10 @@ func (q *Queries) GetInventoryBySKUsBatchEach(ctx context.Context, keys []SKUKey
 func (q *Queries) GetInventoryBySKUsStreamSeq(ctx context.Context, seq iter.Seq2[SKUKey, error]) iter.Seq2[InventoryItem, error] {
 	return func(yield func(InventoryItem, error) bool) {
 		var zero InventoryItem
+		if seq == nil {
+			yield(zero, runtime.ErrNilArgument)
+			return
+		}
 		chunkCap := min(256, q.cache.MaxRowsPerBatch(sqlDialect, 0, 2))
 		bufPtr := sKUKeyChunkPool.Get().(*[]SKUKey)
 		chunk := (*bufPtr)[:0]
@@ -787,6 +803,9 @@ func (q *Queries) InsertOrderItemsBatch(ctx context.Context, items []NewOrderIte
 }
 
 func (q *Queries) InsertOrderItemsStream(ctx context.Context, seq iter.Seq2[NewOrderItem, error]) (sql.Result, error) {
+	if seq == nil {
+		return nil, runtime.ErrNilArgument
+	}
 	chunkCap := min(256, q.cache.MaxRowsPerBatch(sqlDialect, 0, 4))
 	bufPtr := newOrderItemChunkPool.Get().(*[]NewOrderItem)
 	chunk := (*bufPtr)[:0]
@@ -986,6 +1005,9 @@ func (q *Queries) StreamFulfilledOrdersSeq(ctx context.Context, cutoffTs int64) 
 }
 
 func (q *Queries) StreamFulfilledOrdersEach(ctx context.Context, cutoffTs int64, fn func(FulfilledOrder) error) error {
+	if fn == nil {
+		return runtime.ErrNilArgument
+	}
 	for row, err := range q.StreamFulfilledOrdersSeq(ctx, cutoffTs) {
 		if err != nil {
 			return err
@@ -1164,6 +1186,9 @@ func (q *Queries) InsertArchivedOrdersBatch(ctx context.Context, rows []Archived
 }
 
 func (q *Queries) InsertArchivedOrdersStream(ctx context.Context, seq iter.Seq2[ArchivedOrderRow, error]) (sql.Result, error) {
+	if seq == nil {
+		return nil, runtime.ErrNilArgument
+	}
 	chunkCap := min(256, q.cache.MaxRowsPerBatch(sqlDialect, 0, 5))
 	bufPtr := archivedOrderRowChunkPool.Get().(*[]ArchivedOrderRow)
 	chunk := (*bufPtr)[:0]

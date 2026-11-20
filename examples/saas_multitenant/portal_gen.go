@@ -87,6 +87,9 @@ func (q *Queries) WithTx(tx *sql.Tx) *Queries {
 
 // InTx executes fn inside a database transaction with optional retry policy.
 func (q *Queries) InTx(ctx context.Context, txOpts *sql.TxOptions, fn func(*Queries) error, opts ...runtime.TxOption) error {
+	if fn == nil {
+		return runtime.ErrNilArgument
+	}
 	return runtime.RunTxWithRetry(ctx, q.db, q.txCache, txOpts, opts, func(tc *runtime.TxStmtCache) error {
 		txQ := *q
 		txQ.txCache = tc
@@ -115,21 +118,24 @@ func (q *Queries) Pipeline(ctx context.Context) *Pipeline {
 
 // PipelineTx executes a transactional pipeline batch with optional retry policy.
 func (q *Queries) PipelineTx(ctx context.Context, txOpts *sql.TxOptions, fn func(*Pipeline) error, opts ...runtime.TxOption) error {
+	if fn == nil {
+		return runtime.ErrNilArgument
+	}
 	return runtime.RunPipelineTx(ctx, q.db, q.cache, q.txCache, q.usePrepared, sqlDialect, txOpts, opts, func(p *runtime.Pipeline) error {
 		return fn(&Pipeline{Pipeline: p, q: q})
 	})
 }
 
 // If queues conditional thenFn and optional elseFn branches gated on cond.
-func (p *Pipeline) If(cond runtime.PipelineCond, thenFn func(*Pipeline), elseFn func(*Pipeline)) *runtime.IfResult {
+func (pl *Pipeline) If(cond runtime.PipelineCond, thenFn func(*Pipeline), elseFn func(*Pipeline)) *runtime.IfResult {
 	var tFn, eFn func()
 	if thenFn != nil {
-		tFn = func() { thenFn(p) }
+		tFn = func() { thenFn(pl) }
 	}
 	if elseFn != nil {
-		eFn = func() { elseFn(p) }
+		eFn = func() { elseFn(pl) }
 	}
-	return p.Pipeline.If(cond, tFn, eFn)
+	return pl.Pipeline.If(cond, tFn, eFn)
 }
 
 type MemberRow struct {
@@ -438,6 +444,9 @@ func (q *Queries) SearchMembersSeq(ctx context.Context, p SearchMembersParams) i
 }
 
 func (q *Queries) SearchMembersEach(ctx context.Context, p SearchMembersParams, fn func(MemberRow) error) error {
+	if fn == nil {
+		return runtime.ErrNilArgument
+	}
 	for row, err := range q.SearchMembersSeq(ctx, p) {
 		if err != nil {
 			return err
@@ -747,6 +756,9 @@ func (q *Queries) ListMembersPaginatedSeq(ctx context.Context, p ListMembersPagi
 }
 
 func (q *Queries) ListMembersPaginatedEach(ctx context.Context, p ListMembersPaginatedParams, fn func(MemberItem) error) error {
+	if fn == nil {
+		return runtime.ErrNilArgument
+	}
 	for row, err := range q.ListMembersPaginatedSeq(ctx, p) {
 		if err != nil {
 			return err
@@ -1114,6 +1126,9 @@ func (q *Queries) AggregateCohortInvoicesSeq(ctx context.Context, memberQuery ru
 }
 
 func (q *Queries) AggregateCohortInvoicesEach(ctx context.Context, memberQuery runtime.Query, invoiceStatus string, fn func(CohortInvoiceSummary) error) error {
+	if fn == nil {
+		return runtime.ErrNilArgument
+	}
 	for row, err := range q.AggregateCohortInvoicesSeq(ctx, memberQuery, invoiceStatus) {
 		if err != nil {
 			return err

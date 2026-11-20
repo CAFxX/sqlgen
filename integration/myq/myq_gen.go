@@ -92,6 +92,9 @@ func (q *Queries) WithTx(tx *sql.Tx) *Queries {
 
 // InTx executes fn inside a database transaction with optional retry policy.
 func (q *Queries) InTx(ctx context.Context, txOpts *sql.TxOptions, fn func(*Queries) error, opts ...runtime.TxOption) error {
+	if fn == nil {
+		return runtime.ErrNilArgument
+	}
 	return runtime.RunTxWithRetry(ctx, q.db, q.txCache, txOpts, opts, func(tc *runtime.TxStmtCache) error {
 		txQ := *q
 		txQ.txCache = tc
@@ -120,21 +123,24 @@ func (q *Queries) Pipeline(ctx context.Context) *Pipeline {
 
 // PipelineTx executes a transactional pipeline batch with optional retry policy.
 func (q *Queries) PipelineTx(ctx context.Context, txOpts *sql.TxOptions, fn func(*Pipeline) error, opts ...runtime.TxOption) error {
+	if fn == nil {
+		return runtime.ErrNilArgument
+	}
 	return runtime.RunPipelineTx(ctx, q.db, q.cache, q.txCache, q.usePrepared, sqlDialect, txOpts, opts, func(p *runtime.Pipeline) error {
 		return fn(&Pipeline{Pipeline: p, q: q})
 	})
 }
 
 // If queues conditional thenFn and optional elseFn branches gated on cond.
-func (p *Pipeline) If(cond runtime.PipelineCond, thenFn func(*Pipeline), elseFn func(*Pipeline)) *runtime.IfResult {
+func (pl *Pipeline) If(cond runtime.PipelineCond, thenFn func(*Pipeline), elseFn func(*Pipeline)) *runtime.IfResult {
 	var tFn, eFn func()
 	if thenFn != nil {
-		tFn = func() { thenFn(p) }
+		tFn = func() { thenFn(pl) }
 	}
 	if elseFn != nil {
-		eFn = func() { elseFn(p) }
+		eFn = func() { elseFn(pl) }
 	}
-	return p.Pipeline.If(cond, tFn, eFn)
+	return pl.Pipeline.If(cond, tFn, eFn)
 }
 
 type NewItem struct {
@@ -407,6 +413,9 @@ func (q *Queries) InsertItemsBatch(ctx context.Context, rows []NewItem) (sql.Res
 }
 
 func (q *Queries) InsertItemsStream(ctx context.Context, seq iter.Seq2[NewItem, error]) (sql.Result, error) {
+	if seq == nil {
+		return nil, runtime.ErrNilArgument
+	}
 	chunkCap := min(256, q.cache.MaxRowsPerBatch(sqlDialect, 0, 5))
 	bufPtr := newItemChunkPool.Get().(*[]NewItem)
 	chunk := (*bufPtr)[:0]
@@ -778,6 +787,9 @@ func (q *Queries) ItemsByIDsSeq(ctx context.Context, ids []int64) iter.Seq2[Item
 }
 
 func (q *Queries) ItemsByIDsEach(ctx context.Context, ids []int64, fn func(Item) error) error {
+	if fn == nil {
+		return runtime.ErrNilArgument
+	}
 	for row, err := range q.ItemsByIDsSeq(ctx, ids) {
 		if err != nil {
 			return err
@@ -927,6 +939,9 @@ func (q *Queries) ItemsByIDsBatchSeq(ctx context.Context, ids []int64) iter.Seq2
 }
 
 func (q *Queries) ItemsByIDsBatchEach(ctx context.Context, ids []int64, fn func(Item) error) error {
+	if fn == nil {
+		return runtime.ErrNilArgument
+	}
 	for row, err := range q.ItemsByIDsBatchSeq(ctx, ids) {
 		if err != nil {
 			return err
@@ -1173,6 +1188,9 @@ func (q *Queries) SearchItemsSeq(ctx context.Context, p SearchItemsParams) iter.
 }
 
 func (q *Queries) SearchItemsEach(ctx context.Context, p SearchItemsParams, fn func(Item) error) error {
+	if fn == nil {
+		return runtime.ErrNilArgument
+	}
 	for row, err := range q.SearchItemsSeq(ctx, p) {
 		if err != nil {
 			return err
@@ -1456,6 +1474,9 @@ func (q *Queries) PageItemsSeq(ctx context.Context, p PageItemsParams) iter.Seq2
 }
 
 func (q *Queries) PageItemsEach(ctx context.Context, p PageItemsParams, fn func(PagedItem) error) error {
+	if fn == nil {
+		return runtime.ErrNilArgument
+	}
 	for row, err := range q.PageItemsSeq(ctx, p) {
 		if err != nil {
 			return err
@@ -1875,6 +1896,9 @@ func (q *Queries) WideRowsSeq(ctx context.Context, p WideRowsParams) iter.Seq2[W
 }
 
 func (q *Queries) WideRowsEach(ctx context.Context, p WideRowsParams, fn func(Wide) error) error {
+	if fn == nil {
+		return runtime.ErrNilArgument
+	}
 	for row, err := range q.WideRowsSeq(ctx, p) {
 		if err != nil {
 			return err
@@ -2564,6 +2588,9 @@ func (q *Queries) OrgStatsSeq(ctx context.Context, orgs runtime.Query, status st
 }
 
 func (q *Queries) OrgStatsEach(ctx context.Context, orgs runtime.Query, status string, fn func(OrgStat) error) error {
+	if fn == nil {
+		return runtime.ErrNilArgument
+	}
 	for row, err := range q.OrgStatsSeq(ctx, orgs, status) {
 		if err != nil {
 			return err

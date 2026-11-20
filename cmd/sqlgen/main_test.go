@@ -149,8 +149,11 @@ statements:
 		t.Fatalf("expected custom output file %s: %v", customOut, err)
 	}
 
-	// 13. -out write failure (directory doesn't exist) -> exit 1
-	badOut := filepath.Join(tmpDir, "nonexistent_dir", "out.go")
+	// 13. -out write failure (a parent that is a regular file cannot become a directory) -> exit 1
+	if err := os.WriteFile(filepath.Join(tmpDir, "afile"), nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	badOut := filepath.Join(tmpDir, "afile", "out.go")
 	stdout.Reset()
 	stderr.Reset()
 	if code := run([]string{"-config", cfgFile, "-out", badOut}, &stdout, &stderr); code != 1 {
@@ -244,5 +247,38 @@ func TestVersionString(t *testing.T) {
 		if got := versionString(tc.info); got != tc.want {
 			t.Errorf("%s: got %q want %q", tc.name, got, tc.want)
 		}
+	}
+}
+
+// Diagnostics from the library already start with "sqlgen:"; the CLI must not stack a second prefix.
+func TestRunCLIDiagnosticsHaveASinglePrefix(t *testing.T) {
+	dir := t.TempDir()
+	write := func(name, body string) string {
+		p := filepath.Join(dir, name)
+		if err := os.WriteFile(p, []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		return p
+	}
+	for _, tc := range []struct{ name, yaml, want string }{
+		{"bad yaml", "a: [\n", "sqlgen: parse YAML:"},
+		{"bad version", "version: \"2\"\npackage: p\nstatements: []\n", "sqlgen: unsupported config version"},
+		{"bad dialect", "package: p\ndialect: oracle\nstatements: []\n", `sqlgen: unsupported dialect "oracle" (valid dialects:`},
+	} {
+		for _, mode := range [][]string{nil, {"-check"}, {"-stdout"}} {
+			var stdout, stderr bytes.Buffer
+			args := append([]string{"-config", write("c.yaml", tc.yaml)}, mode...)
+			if code := run(args, &stdout, &stderr); code == 0 {
+				t.Fatalf("%s %v: want failure", tc.name, mode)
+			}
+			if got := stderr.String(); strings.Contains(got, "sqlgen: sqlgen:") || !strings.HasPrefix(got, tc.want) {
+				t.Errorf("%s %v: stderr = %q, want prefix %q once", tc.name, mode, got, tc.want)
+			}
+		}
+	}
+	// Missing config file: the CLI's own message, one prefix.
+	var stderr bytes.Buffer
+	if code := run([]string{"-config", filepath.Join(dir, "missing.yaml")}, &bytes.Buffer{}, &stderr); code == 0 || strings.Contains(stderr.String(), "sqlgen: sqlgen:") {
+		t.Errorf("missing file: code=%d stderr=%q", code, stderr.String())
 	}
 }
