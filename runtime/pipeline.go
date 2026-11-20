@@ -510,6 +510,46 @@ func (e *CommitError) Unwrap() error { return e.Err }
 // callback: the transaction flushes the pipeline itself once the callback returns.
 var ErrFlushInPipelineTx = errors.New("sqlgen: Flush must not be called inside PipelineTx; the transaction flushes the pipeline itself")
 
+// ErrWireNotApplicable is returned by a WirePipeliner or WireTxPipeliner BEFORE it sent anything to the
+// server, to say that it cannot run this particular batch in one round-trip (a batch larger than the
+// server's packet limit, an argument it cannot represent, a transaction option it has no equivalent for,
+// a server that failed the capability probe, ...). The runtime then runs the pipeline on the sequential
+// path, counts it in CacheStats.SequentialPipelines, and the results are identical. Nothing may have been
+// executed when it is returned; any other error means the batch was (at least partly) sent.
+var ErrWireNotApplicable = errors.New("sqlgen: pipeline not applicable to the single-round-trip path")
+
+// WireFlavor selects how the statements of a pipeline are rendered for a wire pipeliner.
+type WireFlavor uint8
+
+const (
+	// WireFlavorPostgres (the default for a pipeliner that does not implement WireFlavored): one statement
+	// per operation, built on WITH _sqlgen_op CTEs and transaction-local set_config conditions, with
+	// numbered placeholders. The runtime renders the SQL (RenderPipelineBatch) into PipelineOp.SQL before
+	// it calls the pipeliner.
+	WireFlavorPostgres WireFlavor = iota
+	// WireFlavorMySQL: a statement SEQUENCE per operation built on session user variables (@sqlgen_*),
+	// ROW_COUNT() / FOUND_ROWS() and conditional COMMIT / ROLLBACK, with the arguments inlined as
+	// literals. Rendering needs per-connection knowledge (the time zone and character set of the
+	// literals, whether a transaction is open), so the runtime does NOT pre-render: the pipeliner calls
+	// RenderMySQLBatch itself.
+	WireFlavorMySQL
+)
+
+// WireFlavored is optionally implemented by a WirePipeliner / WireTxPipeliner to tell the runtime which
+// rendering it needs. A pipeliner without it is WireFlavorPostgres.
+type WireFlavored interface {
+	WireFlavor() WireFlavor
+}
+
+// prerenders reports whether the runtime must render op.SQL (RenderPipelineBatch) before handing ops to
+// the pipeliner p.
+func prerenders(p any) bool {
+	if f, ok := p.(WireFlavored); ok {
+		return f.WireFlavor() == WireFlavorPostgres
+	}
+	return true
+}
+
 type pipelineCtxKey struct{}
 
 type pipelineCtxPayload struct {
@@ -620,8 +660,15 @@ func (w *pipelineConnWrapper) ExecContext(ctx context.Context, query string, arg
 		if payload, ok := ctx.Value(pipelineCtxKey{}).(*pipelineCtxPayload); ok && payload != nil {
 			if wp, ok := w.Conn.(WirePipeliner); ok {
 				payload.handled = true
-				RenderPipelineBatch(payload.dialect, payload.cache, payload.ops)
+				if prerenders(wp) {
+					RenderPipelineBatch(payload.dialect, payload.cache, payload.ops)
+				}
 				if err := wp.ExecPipeline(ctx, payload.ops); err != nil {
+					if errors.Is(err, ErrWireNotApplicable) {
+						// Nothing was sent: the caller runs the operations sequentially.
+						payload.handled = false
+						return driver.RowsAffected(0), nil
+					}
 					return nil, err
 				}
 				return driver.RowsAffected(1), nil
@@ -815,6 +862,9 @@ type Pipeline struct {
 	flushed     bool
 	ownsTx      bool // PipelineTx: the runtime begins, commits and (on error) rolls back the transaction
 	txOpts      *sql.TxOptions
+	// noWire is set once a wire pipeliner answered ErrWireNotApplicable: the pipeline then runs entirely on
+	// the sequential path instead of being offered to another wire attempt inside the fallback transaction.
+	noWire bool
 }
 
 // NewPipeline creates a new Pipeline.
@@ -1344,7 +1394,7 @@ func (p *Pipeline) run() error {
 // WrapConnector, otherwise one statement at a time.
 func (p *Pipeline) flushInTx() error {
 	if p.db != nil {
-		if _, isWrapped := p.db.Driver().(*wrappedDriver); isWrapped {
+		if _, isWrapped := p.db.Driver().(*wrappedDriver); isWrapped && !p.noWire {
 			payload := &pipelineCtxPayload{
 				dialect: p.dialect,
 				cache:   p.cache,
@@ -1381,19 +1431,27 @@ func (p *Pipeline) flushWireConn(txOpts *sql.TxOptions, allowPlain bool) (handle
 	rawErr := conn.Raw(func(driverConn any) error {
 		if tp := wireTxPipelinerOf(driverConn); tp != nil {
 			handled = true
-			RenderPipelineBatch(p.dialect, p.cache, p.ops)
+			if prerenders(tp) {
+				RenderPipelineBatch(p.dialect, p.cache, p.ops)
+			}
 			wireErr = tp.ExecTxPipeline(p.ctx, txOpts, p.ops)
 			return nil
 		}
 		if wp := wirePipelinerOf(driverConn); allowPlain && wp != nil {
 			handled = true
-			RenderPipelineBatch(p.dialect, p.cache, p.ops)
+			if prerenders(wp) {
+				RenderPipelineBatch(p.dialect, p.cache, p.ops)
+			}
 			wireErr = wp.ExecPipeline(p.ctx, p.ops)
 		}
 		return nil
 	})
 	_ = conn.Close()
 	if rawErr != nil || !handled {
+		return false, nil
+	}
+	if errors.Is(wireErr, ErrWireNotApplicable) {
+		p.noWire = true
 		return false, nil
 	}
 	p.cache.notePipeline(true)

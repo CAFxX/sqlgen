@@ -13,10 +13,15 @@ type streamCursor struct {
 	sliceIdx int
 	tupleIdx int
 	subIdx   int
+	// my is non-nil when rendering for WireFlavorMySQL: placeholders become inlined literals and the
+	// branch gates read session variables (see mysql_wire.go).
+	my *mysqlCursor
 }
 
 func (cur *streamCursor) writePlaceholder(b *strings.Builder) {
-	if cur.dialect == DialectQuestion {
+	if cur.my != nil {
+		cur.my.writeArg(b, cur.paramIdx)
+	} else if cur.dialect == DialectQuestion {
 		b.WriteByte('?')
 	} else {
 		b.WriteByte('$')
@@ -47,7 +52,9 @@ func (cur *streamCursor) formatSeekSQL(b *strings.Builder, orderCols []string, o
 	}
 	cols, desc, count, allSameDir := ExpandOrder(orderSpec, len(orderCols))
 	writeParam := func(idx int) {
-		if cur.dialect == DialectQuestion {
+		if cur.my != nil {
+			cur.my.writeArg(b, idx)
+		} else if cur.dialect == DialectQuestion {
 			b.WriteByte('?')
 		} else {
 			b.WriteByte('$')
@@ -134,7 +141,17 @@ func (cur *streamCursor) formatSeekSQL(b *strings.Builder, orderCols []string, o
 	b.WriteString("))")
 }
 
+// hasGates reports whether the statements rendered for in must be gated: it has enclosing If branches
+// or (MySQL flavor) an earlier operation of the batch may have failed an assertion or aborted.
+func (cur *streamCursor) hasGates(in *RenderInput) bool {
+	return len(in.BranchGates) > 0 || (cur.my != nil && cur.my.failGate)
+}
+
 func (cur *streamCursor) writeBranchGates(b *strings.Builder, gates []BranchGate) {
+	if cur.my != nil {
+		cur.my.writeGates(b, gates, cur.numBuf[:0])
+		return
+	}
 	for i, g := range gates {
 		if i > 0 {
 			b.WriteString(" AND ")
@@ -481,7 +498,24 @@ func streamDescriptorSQL(b *strings.Builder, rootDesc, desc *QueryDescriptor, in
 			}
 			cur.tupleIdx++
 			td := slot.Tuple
-			if td != nil {
+			if td != nil && cur.my != nil && cur.hasGates(in) {
+				// Gated multi-row INSERT on MySQL/MariaDB: there is no VALUES table constructor that can be
+				// filtered (and ROW() is not portable), so every row is a SELECT with the gates, glued by
+				// UNION ALL. No derived table: it would need unique column names.
+				for r := 0; r < numRows; r++ {
+					if r > 0 {
+						b.WriteString(" UNION ALL ")
+					}
+					b.WriteString("SELECT ")
+					for f := 0; f < td.NumFields; f++ {
+						b.WriteString(td.Segments[f])
+						cur.writePlaceholder(b)
+					}
+					b.WriteString(td.Segments[td.NumFields])
+					b.WriteString(" FROM DUAL WHERE ")
+					cur.writeBranchGates(b, in.BranchGates)
+				}
+			} else if td != nil {
 				for r := 0; r < numRows; r++ {
 					if r > 0 {
 						b.WriteString(", ")
@@ -510,6 +544,7 @@ func streamDescriptorSQL(b *strings.Builder, rootDesc, desc *QueryDescriptor, in
 				subCur := streamCursor{
 					dialect:  cur.dialect,
 					paramIdx: cur.paramIdx,
+					my:       cur.my.forSub(),
 				}
 				streamDescriptorSQL(b, sub.Desc, sub.Desc, &sub.Input, &subCur)
 				cur.paramIdx = subCur.paramIdx
@@ -532,7 +567,7 @@ func streamDescriptorSQL(b *strings.Builder, rootDesc, desc *QueryDescriptor, in
 			cur.formatSeekSQL(b, rootDesc.OrderCols, in.OrderSpec, in.HasSeek)
 
 		case SlotInsertValuesOpen:
-			if len(in.BranchGates) > 0 {
+			if cur.hasGates(in) {
 				cur.castVals = cur.dialect == DialectDollar
 				b.WriteString("SELECT ")
 			} else {
@@ -541,7 +576,7 @@ func streamDescriptorSQL(b *strings.Builder, rootDesc, desc *QueryDescriptor, in
 
 		case SlotInsertValuesClose:
 			cur.castVals = false
-			if len(in.BranchGates) > 0 {
+			if cur.hasGates(in) {
 				b.WriteString(" FROM (SELECT 1) AS _sqlgen_dual WHERE ")
 				cur.writeBranchGates(b, in.BranchGates)
 			} else {
@@ -549,7 +584,9 @@ func streamDescriptorSQL(b *strings.Builder, rootDesc, desc *QueryDescriptor, in
 			}
 
 		case SlotInsertTupleValuesOpen:
-			if len(in.BranchGates) > 0 {
+			if cur.my != nil && cur.hasGates(in) {
+				// the rows are SELECTs (see SlotTupleSlice): no prefix
+			} else if cur.hasGates(in) {
 				cur.castVals = cur.dialect == DialectDollar
 				b.WriteString("WITH _sqlgen_v AS (VALUES ")
 			} else {
@@ -558,25 +595,25 @@ func streamDescriptorSQL(b *strings.Builder, rootDesc, desc *QueryDescriptor, in
 
 		case SlotInsertTupleValuesClose:
 			cur.castVals = false
-			if len(in.BranchGates) > 0 {
+			if cur.my == nil && cur.hasGates(in) {
 				b.WriteString(") SELECT * FROM _sqlgen_v WHERE ")
 				cur.writeBranchGates(b, in.BranchGates)
 			}
 
 		case SlotBranchGuardOpen:
-			if len(in.BranchGates) > 0 {
+			if cur.hasGates(in) {
 				b.WriteByte('(')
 				cur.writeBranchGates(b, in.BranchGates)
 				b.WriteString(") AND (")
 			}
 
 		case SlotBranchGuardClose:
-			if len(in.BranchGates) > 0 {
+			if cur.hasGates(in) {
 				b.WriteByte(')')
 			}
 
 		case SlotBranchGuardWhere:
-			if len(in.BranchGates) > 0 {
+			if cur.hasGates(in) {
 				b.WriteString(" WHERE ")
 				cur.writeBranchGates(b, in.BranchGates)
 			}
@@ -591,7 +628,7 @@ func streamCoreStatement(b *strings.Builder, cur *streamCursor, desc *QueryDescr
 	if desc == nil {
 		return
 	}
-	hasGates := len(in.BranchGates) > 0
+	hasGates := cur.hasGates(in)
 	if desc.StmtVerb == VerbSelect && hasGates {
 		b.WriteString("SELECT * FROM (")
 	}
