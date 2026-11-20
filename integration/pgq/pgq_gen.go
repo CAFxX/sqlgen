@@ -225,6 +225,21 @@ type PagedItem struct {
 	Status string
 }
 
+type Wide struct {
+	C1  int64
+	C2  int64
+	C3  int64
+	C4  int64
+	C5  int64
+	C6  int64
+	C7  int64
+	C8  int64
+	C9  int64
+	C10 int64
+	C11 int64
+	ID  int64
+}
+
 type OrgStat struct {
 	OrgID int64
 	N     int64
@@ -1491,7 +1506,426 @@ func (pl *Pipeline) PageItems(p PageItemsParams) *runtime.SliceFuture[PagedItem]
 	)
 }
 
-const stmtIDAddScore uint32 = 6
+const stmtIDWideRows uint32 = 6
+
+const (
+	WideColC1   uint64 = 1 << 0
+	WideColC2   uint64 = 1 << 1
+	WideColC3   uint64 = 1 << 2
+	WideColC4   uint64 = 1 << 3
+	WideColC5   uint64 = 1 << 4
+	WideColC6   uint64 = 1 << 5
+	WideColC7   uint64 = 1 << 6
+	WideColC8   uint64 = 1 << 7
+	WideColC9   uint64 = 1 << 8
+	WideColC10  uint64 = 1 << 9
+	WideColC11  uint64 = 1 << 10
+	WideColID   uint64 = 1 << 11
+	WideColsAll uint64 = (1 << 12) - 1
+)
+
+const (
+	WideRowsColC1   uint64 = 1 << 0
+	WideRowsColC2   uint64 = 1 << 1
+	WideRowsColC3   uint64 = 1 << 2
+	WideRowsColC4   uint64 = 1 << 3
+	WideRowsColC5   uint64 = 1 << 4
+	WideRowsColC6   uint64 = 1 << 5
+	WideRowsColC7   uint64 = 1 << 6
+	WideRowsColC8   uint64 = 1 << 7
+	WideRowsColC9   uint64 = 1 << 8
+	WideRowsColC10  uint64 = 1 << 9
+	WideRowsColC11  uint64 = 1 << 10
+	WideRowsColID   uint64 = 1 << 11
+	WideRowsColsAll uint64 = (1 << 12) - 1
+)
+
+type WideSortCol uint8
+
+func (c WideSortCol) Asc() uint8  { return runtime.Asc(uint8(c)) }
+func (c WideSortCol) Desc() uint8 { return runtime.Desc(uint8(c)) }
+
+const (
+	WideOrderByC1    WideSortCol = 0
+	OrderWideC1Asc   uint8       = 2
+	OrderWideC1Desc  uint8       = 3
+	WideOrderC1Asc   uint8       = 2
+	WideOrderC1Desc  uint8       = 3
+	WideOrderByC2    WideSortCol = 1
+	OrderWideC2Asc   uint8       = 4
+	OrderWideC2Desc  uint8       = 5
+	WideOrderC2Asc   uint8       = 4
+	WideOrderC2Desc  uint8       = 5
+	WideOrderByC3    WideSortCol = 2
+	OrderWideC3Asc   uint8       = 6
+	OrderWideC3Desc  uint8       = 7
+	WideOrderC3Asc   uint8       = 6
+	WideOrderC3Desc  uint8       = 7
+	WideOrderByC4    WideSortCol = 3
+	OrderWideC4Asc   uint8       = 8
+	OrderWideC4Desc  uint8       = 9
+	WideOrderC4Asc   uint8       = 8
+	WideOrderC4Desc  uint8       = 9
+	WideOrderByC5    WideSortCol = 4
+	OrderWideC5Asc   uint8       = 10
+	OrderWideC5Desc  uint8       = 11
+	WideOrderC5Asc   uint8       = 10
+	WideOrderC5Desc  uint8       = 11
+	WideOrderByC6    WideSortCol = 5
+	OrderWideC6Asc   uint8       = 12
+	OrderWideC6Desc  uint8       = 13
+	WideOrderC6Asc   uint8       = 12
+	WideOrderC6Desc  uint8       = 13
+	WideOrderByC7    WideSortCol = 6
+	OrderWideC7Asc   uint8       = 14
+	OrderWideC7Desc  uint8       = 15
+	WideOrderC7Asc   uint8       = 14
+	WideOrderC7Desc  uint8       = 15
+	WideOrderByC8    WideSortCol = 7
+	OrderWideC8Asc   uint8       = 16
+	OrderWideC8Desc  uint8       = 17
+	WideOrderC8Asc   uint8       = 16
+	WideOrderC8Desc  uint8       = 17
+	WideOrderByC9    WideSortCol = 8
+	OrderWideC9Asc   uint8       = 18
+	OrderWideC9Desc  uint8       = 19
+	WideOrderC9Asc   uint8       = 18
+	WideOrderC9Desc  uint8       = 19
+	WideOrderByC10   WideSortCol = 9
+	OrderWideC10Asc  uint8       = 20
+	OrderWideC10Desc uint8       = 21
+	WideOrderC10Asc  uint8       = 20
+	WideOrderC10Desc uint8       = 21
+	WideOrderByC11   WideSortCol = 10
+	OrderWideC11Asc  uint8       = 22
+	OrderWideC11Desc uint8       = 23
+	WideOrderC11Asc  uint8       = 22
+	WideOrderC11Desc uint8       = 23
+	WideOrderByID    WideSortCol = 11
+	OrderWideIDAsc   uint8       = 24
+	OrderWideIDDesc  uint8       = 25
+	WideOrderIDAsc   uint8       = 24
+	WideOrderIDDesc  uint8       = 25
+)
+
+func OrderWide(terms ...uint8) runtime.Order {
+	return runtime.PackOrder(terms...)
+}
+
+type WideRowsSortCol uint8
+
+func (c WideRowsSortCol) Asc() uint8  { return runtime.Asc(uint8(c)) }
+func (c WideRowsSortCol) Desc() uint8 { return runtime.Desc(uint8(c)) }
+
+const (
+	WideRowsOrderByC1    WideRowsSortCol = 0
+	OrderWideRowsC1Asc   uint8           = 2
+	OrderWideRowsC1Desc  uint8           = 3
+	WideRowsOrderC1Asc   uint8           = 2
+	WideRowsOrderC1Desc  uint8           = 3
+	WideRowsOrderByC2    WideRowsSortCol = 1
+	OrderWideRowsC2Asc   uint8           = 4
+	OrderWideRowsC2Desc  uint8           = 5
+	WideRowsOrderC2Asc   uint8           = 4
+	WideRowsOrderC2Desc  uint8           = 5
+	WideRowsOrderByC3    WideRowsSortCol = 2
+	OrderWideRowsC3Asc   uint8           = 6
+	OrderWideRowsC3Desc  uint8           = 7
+	WideRowsOrderC3Asc   uint8           = 6
+	WideRowsOrderC3Desc  uint8           = 7
+	WideRowsOrderByC4    WideRowsSortCol = 3
+	OrderWideRowsC4Asc   uint8           = 8
+	OrderWideRowsC4Desc  uint8           = 9
+	WideRowsOrderC4Asc   uint8           = 8
+	WideRowsOrderC4Desc  uint8           = 9
+	WideRowsOrderByC5    WideRowsSortCol = 4
+	OrderWideRowsC5Asc   uint8           = 10
+	OrderWideRowsC5Desc  uint8           = 11
+	WideRowsOrderC5Asc   uint8           = 10
+	WideRowsOrderC5Desc  uint8           = 11
+	WideRowsOrderByC6    WideRowsSortCol = 5
+	OrderWideRowsC6Asc   uint8           = 12
+	OrderWideRowsC6Desc  uint8           = 13
+	WideRowsOrderC6Asc   uint8           = 12
+	WideRowsOrderC6Desc  uint8           = 13
+	WideRowsOrderByC7    WideRowsSortCol = 6
+	OrderWideRowsC7Asc   uint8           = 14
+	OrderWideRowsC7Desc  uint8           = 15
+	WideRowsOrderC7Asc   uint8           = 14
+	WideRowsOrderC7Desc  uint8           = 15
+	WideRowsOrderByC8    WideRowsSortCol = 7
+	OrderWideRowsC8Asc   uint8           = 16
+	OrderWideRowsC8Desc  uint8           = 17
+	WideRowsOrderC8Asc   uint8           = 16
+	WideRowsOrderC8Desc  uint8           = 17
+	WideRowsOrderByC9    WideRowsSortCol = 8
+	OrderWideRowsC9Asc   uint8           = 18
+	OrderWideRowsC9Desc  uint8           = 19
+	WideRowsOrderC9Asc   uint8           = 18
+	WideRowsOrderC9Desc  uint8           = 19
+	WideRowsOrderByC10   WideRowsSortCol = 9
+	OrderWideRowsC10Asc  uint8           = 20
+	OrderWideRowsC10Desc uint8           = 21
+	WideRowsOrderC10Asc  uint8           = 20
+	WideRowsOrderC10Desc uint8           = 21
+	WideRowsOrderByC11   WideRowsSortCol = 10
+	OrderWideRowsC11Asc  uint8           = 22
+	OrderWideRowsC11Desc uint8           = 23
+	WideRowsOrderC11Asc  uint8           = 22
+	WideRowsOrderC11Desc uint8           = 23
+	WideRowsOrderByID    WideRowsSortCol = 11
+	OrderWideRowsIDAsc   uint8           = 24
+	OrderWideRowsIDDesc  uint8           = 25
+	WideRowsOrderIDAsc   uint8           = 24
+	WideRowsOrderIDDesc  uint8           = 25
+)
+
+func OrderWideRows(terms ...uint8) runtime.Order {
+	return runtime.PackOrder(terms...)
+}
+
+func (r Wide) Seek() runtime.Seek {
+	return runtime.NewSeek(r.C1, r.C2, r.C3, r.C4, r.C5, r.C6, r.C7, r.C8, r.C9, r.C10, r.C11, r.ID)
+}
+
+func SeekWide(row Wide) runtime.Seek {
+	return row.Seek()
+}
+
+func SeekWideRows(row Wide) runtime.Seek {
+	return row.Seek()
+}
+
+type WideRowsParams struct {
+	After      runtime.Seek
+	Sort       runtime.Order
+	Limit      int64
+	SelectCols uint64
+}
+
+var descWideRows = &runtime.QueryDescriptor{
+	Name:     "WideRows",
+	StmtID:   6,
+	StmtVerb: runtime.VerbSelect,
+	Segments: []string{"SELECT ", "\nFROM sg_wide\nWHERE ", "\nORDER BY ", "\nLIMIT ", ""},
+	Slots: []runtime.Slot{
+		{Kind: runtime.SlotSelectCols},
+		{Kind: runtime.SlotSeek},
+		{Kind: runtime.SlotOrder},
+		{Kind: runtime.SlotScalar},
+	},
+	SelectColExprs: []string{"c1", "c2", "c3", "c4", "c5", "c6", "c7", "c8", "c9", "c10", "c11", "id"},
+	OrderCols:      []string{"c1", "c2", "c3", "c4", "c5", "c6", "c7", "c8", "c9", "c10", "c11", "id"},
+}
+
+func expandWideRowsParams(dst *[]any, dialect runtime.Dialect, p WideRowsParams) error {
+	_ = dialect
+	_ = p
+	if p.After.IsActive() {
+		if len(p.After.Values) != 12 {
+			return runtime.ErrInvalidSeek
+		}
+		runtime.AppendSeekArgs(dst, dialect, p.Sort, 12, p.After.Values)
+	}
+	*dst = append(*dst, p.Limit)
+	return nil
+}
+
+func expandWideRowsArgs(dst *[]any, dialect runtime.Dialect, q *runtime.Query) error {
+	return expandWideRowsParams(dst, dialect, q.Params.(WideRowsParams))
+}
+
+func computeWideRowsKey(p WideRowsParams) (runtime.VariantKey, uint64, uint64, int) {
+	_ = p
+	var colMask uint64
+	colMask = p.SelectCols & WideRowsColsAll
+	if colMask == 0 {
+		colMask = WideRowsColsAll
+	}
+	var flagMask uint64
+	var orderSpec runtime.Order
+	var hasSeek bool
+	hasSeek = p.After.IsActive()
+	orderSpec = p.Sort
+	orderKey := runtime.EncodeOrderKey(orderSpec, hasSeek)
+	approxArgs := 7
+	vk := runtime.MakeVariantKey(stmtIDWideRows, colMask, flagMask, orderKey)
+	return vk, colMask, flagMask, approxArgs
+}
+
+// WideRowsQuery constructs a composable runtime.Query without executing it.
+func WideRowsQuery(p WideRowsParams) runtime.Query {
+	_, colMask, flagMask, _ := computeWideRowsKey(p)
+	in := runtime.RenderInput{
+		ColMask:   colMask,
+		FlagMask:  flagMask,
+		OrderSpec: p.Sort,
+		HasSeek:   p.After.IsActive(),
+	}
+	orderKey := runtime.EncodeOrderKey(in.OrderSpec, in.HasSeek)
+	shapeTag := runtime.ComputeSubqueryShape(stmtIDWideRows, colMask, flagMask, orderKey, false)
+	return runtime.Query{
+		StmtID:   stmtIDWideRows,
+		Desc:     descWideRows,
+		Input:    in,
+		Params:   p,
+		Expand:   expandWideRowsArgs,
+		ShapeTag: shapeTag,
+	}
+}
+
+// WideRowsQuery constructs a composable runtime.Query without executing it.
+func (q *Queries) WideRowsQuery(p WideRowsParams) runtime.Query {
+	return WideRowsQuery(p)
+}
+
+func scanWideRowsRow(scanner interface{ Scan(...any) error }, dst *Wide, colMask uint64, p WideRowsParams) error {
+	_ = colMask
+	_ = p
+	var item Wide
+	var scanBuf [12]any
+	scanCount := 0
+	effMask := colMask
+	if (effMask & (1 << 0)) != 0 {
+		scanBuf[scanCount] = &item.C1
+		scanCount++
+	}
+	if (effMask & (1 << 1)) != 0 {
+		scanBuf[scanCount] = &item.C2
+		scanCount++
+	}
+	if (effMask & (1 << 2)) != 0 {
+		scanBuf[scanCount] = &item.C3
+		scanCount++
+	}
+	if (effMask & (1 << 3)) != 0 {
+		scanBuf[scanCount] = &item.C4
+		scanCount++
+	}
+	if (effMask & (1 << 4)) != 0 {
+		scanBuf[scanCount] = &item.C5
+		scanCount++
+	}
+	if (effMask & (1 << 5)) != 0 {
+		scanBuf[scanCount] = &item.C6
+		scanCount++
+	}
+	if (effMask & (1 << 6)) != 0 {
+		scanBuf[scanCount] = &item.C7
+		scanCount++
+	}
+	if (effMask & (1 << 7)) != 0 {
+		scanBuf[scanCount] = &item.C8
+		scanCount++
+	}
+	if (effMask & (1 << 8)) != 0 {
+		scanBuf[scanCount] = &item.C9
+		scanCount++
+	}
+	if (effMask & (1 << 9)) != 0 {
+		scanBuf[scanCount] = &item.C10
+		scanCount++
+	}
+	if (effMask & (1 << 10)) != 0 {
+		scanBuf[scanCount] = &item.C11
+		scanCount++
+	}
+	if (effMask & (1 << 11)) != 0 {
+		scanBuf[scanCount] = &item.ID
+		scanCount++
+	}
+	scanSlice := scanBuf[:scanCount]
+	if err := scanner.Scan(scanSlice...); err != nil {
+		return err
+	}
+	*dst = item
+	return nil
+}
+
+func (q *Queries) WideRows(ctx context.Context, p WideRowsParams) ([]Wide, error) {
+	return q.WideRowsInto(ctx, nil, p)
+}
+
+func (q *Queries) WideRowsInto(ctx context.Context, dst []Wide, p WideRowsParams) ([]Wide, error) {
+	for row, err := range q.WideRowsSeq(ctx, p) {
+		if err != nil {
+			return nil, err
+		}
+		dst = append(dst, row)
+	}
+	return dst, nil
+}
+
+func (q *Queries) WideRowsSeq(ctx context.Context, p WideRowsParams) iter.Seq2[Wide, error] {
+	return func(yield func(Wide, error) bool) {
+		var zero Wide
+		vk, colMask, flagMask, approxArgs := computeWideRowsKey(p)
+		_ = colMask
+		argBuf := runtime.AcquireArgsCap(approxArgs)
+		defer runtime.ReleaseArgs(argBuf)
+		if err := expandWideRowsParams(argBuf, sqlDialect, p); err != nil {
+			yield(zero, err)
+			return
+		}
+		in := runtime.RenderInput{
+			ColMask:   colMask,
+			FlagMask:  flagMask,
+			OrderSpec: p.Sort,
+			HasSeek:   p.After.IsActive(),
+		}
+		sqlRows, ms, err := q.cache.Query(ctx, q.db, q.txCache, q.usePrepared, vk, stmtIDWideRows, runtime.ComputeBatchShapeTag(colMask, flagMask), 0, nil, sqlDialect, descWideRows, &in, (*argBuf)...)
+		if err != nil {
+			yield(zero, err)
+			return
+		}
+		var item Wide
+		for sqlRows.Next() {
+			if err := scanWideRowsRow(sqlRows, &item, colMask, p); err != nil {
+				runtime.CloseRows(sqlRows, ms)
+				yield(zero, err)
+				return
+			}
+			if !yield(item, nil) {
+				runtime.CloseRows(sqlRows, ms)
+				return
+			}
+		}
+		err = sqlRows.Err()
+		runtime.CloseRows(sqlRows, ms)
+		if err != nil {
+			yield(zero, err)
+		}
+	}
+}
+
+func (q *Queries) WideRowsEach(ctx context.Context, p WideRowsParams, fn func(Wide) error) error {
+	for row, err := range q.WideRowsSeq(ctx, p) {
+		if err != nil {
+			return err
+		}
+		if err := fn(row); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (pl *Pipeline) WideRows(p WideRowsParams) *runtime.SliceFuture[Wide] {
+	vk, colMask, flagMask, approxArgs := computeWideRowsKey(p)
+	argBuf := runtime.AcquireArgsCap(approxArgs)
+	expandErr := expandWideRowsParams(argBuf, sqlDialect, p)
+	in := runtime.RenderInput{
+		ColMask:   colMask,
+		FlagMask:  flagMask,
+		OrderSpec: p.Sort,
+		HasSeek:   p.After.IsActive(),
+	}
+	return runtime.QueueSlice(pl.Pipeline, stmtIDWideRows, descWideRows, in, vk, nil, argBuf, expandErr,
+		func(rs *sql.Rows, dst *Wide) error { return scanWideRowsRow(rs, dst, colMask, p) },
+	)
+}
+
+const stmtIDAddScore uint32 = 7
 
 type paramsAddScore struct {
 	Delta int64
@@ -1501,7 +1935,7 @@ type paramsAddScore struct {
 
 var descAddScore = &runtime.QueryDescriptor{
 	Name:     "AddScore",
-	StmtID:   6,
+	StmtID:   7,
 	StmtVerb: runtime.VerbUpdate,
 	Segments: []string{"UPDATE sg_items SET score = score + ", "\nWHERE ", "id IN (", ") AND org_id = ", "", ""},
 	Slots: []runtime.Slot{
@@ -1672,7 +2106,7 @@ func (q *Queries) AddScoreBatch(ctx context.Context, delta int64, ids []int64, o
 	return batchRes, nil
 }
 
-const stmtIDAddScoreOne uint32 = 7
+const stmtIDAddScoreOne uint32 = 8
 
 type paramsAddScoreOne struct {
 	Delta int64
@@ -1681,7 +2115,7 @@ type paramsAddScoreOne struct {
 
 var descAddScoreOne = &runtime.QueryDescriptor{
 	Name:      "AddScoreOne",
-	StmtID:    7,
+	StmtID:    8,
 	StmtVerb:  runtime.VerbUpdate,
 	StaticSQL: "UPDATE sg_items SET score = score + $1 WHERE id = $2",
 	Segments:  []string{"UPDATE sg_items SET score = score + ", " WHERE ", "id = ", "", ""},
@@ -1744,7 +2178,7 @@ func (pl *Pipeline) AddScoreOne(delta int64, id int64) *runtime.ExecFuture {
 	return pl.Pipeline.QueueExec(stmtIDAddScoreOne, descAddScoreOne, in, vk, &pl.q.fastSlots[1], argBuf, expandErr)
 }
 
-const stmtIDDeleteItems uint32 = 8
+const stmtIDDeleteItems uint32 = 9
 
 type paramsDeleteItems struct {
 	IDs []int64
@@ -1752,7 +2186,7 @@ type paramsDeleteItems struct {
 
 var descDeleteItems = &runtime.QueryDescriptor{
 	Name:     "DeleteItems",
-	StmtID:   8,
+	StmtID:   9,
 	StmtVerb: runtime.VerbDelete,
 	Segments: []string{"DELETE FROM sg_items WHERE ", "id IN (", ")", ""},
 	Slots: []runtime.Slot{
@@ -1911,7 +2345,7 @@ func (q *Queries) DeleteItemsBatch(ctx context.Context, ids []int64) (sql.Result
 	return batchRes, nil
 }
 
-const stmtIDTopOrgs uint32 = 9
+const stmtIDTopOrgs uint32 = 10
 
 type paramsTopOrgs struct {
 	MinItems int64
@@ -1919,7 +2353,7 @@ type paramsTopOrgs struct {
 
 var descTopOrgs = &runtime.QueryDescriptor{
 	Name:      "TopOrgs",
-	StmtID:    9,
+	StmtID:    10,
 	StmtVerb:  runtime.VerbSelect,
 	StaticSQL: "SELECT org_id FROM sg_items GROUP BY org_id HAVING COUNT(*) >= $1",
 	Segments:  []string{"SELECT org_id FROM sg_items GROUP BY org_id HAVING COUNT(*) >= ", ""},
@@ -1978,7 +2412,7 @@ func (q *Queries) TopOrgsQuery(minItems int64) runtime.Query {
 	return TopOrgsQuery(minItems)
 }
 
-const stmtIDOrgStats uint32 = 10
+const stmtIDOrgStats uint32 = 11
 
 const (
 	OrgStatColOrgID uint64 = 1 << 0
@@ -2001,7 +2435,7 @@ type paramsOrgStats struct {
 
 var descOrgStats = &runtime.QueryDescriptor{
 	Name:     "OrgStats",
-	StmtID:   10,
+	StmtID:   11,
 	StmtVerb: runtime.VerbSelect,
 	Segments: []string{"WITH picked AS (", ")\nSELECT ", "\nFROM sg_items i\nWHERE i.org_id IN (SELECT org_id FROM picked) AND i.status = ", "\nGROUP BY i.org_id\nORDER BY i.org_id"},
 	Slots: []runtime.Slot{
@@ -2185,7 +2619,7 @@ func (pl *Pipeline) OrgStats(orgs runtime.Query, status string) *runtime.SliceFu
 	)
 }
 
-const stmtIDInsertItem uint32 = 11
+const stmtIDInsertItem uint32 = 12
 
 type paramsInsertItem struct {
 	ID     int64
@@ -2197,7 +2631,7 @@ type paramsInsertItem struct {
 
 var descInsertItem = &runtime.QueryDescriptor{
 	Name:      "InsertItem",
-	StmtID:    11,
+	StmtID:    12,
 	StmtVerb:  runtime.VerbInsert,
 	StaticSQL: "INSERT INTO sg_items (id, org_id, name, score, status)\nVALUES ($1, $2, $3, $4, $5)",
 	Segments:  []string{"INSERT INTO sg_items (id, org_id, name, score, status)\n", "", ", ", ", ", ", ", ", ", "", ""},
@@ -2272,7 +2706,7 @@ func (pl *Pipeline) InsertItem(id int64, orgID int64, name string, score int64, 
 	return pl.Pipeline.QueueExec(stmtIDInsertItem, descInsertItem, in, vk, &pl.q.fastSlots[2], argBuf, expandErr)
 }
 
-const stmtIDSetAllStatus uint32 = 12
+const stmtIDSetAllStatus uint32 = 13
 
 type paramsSetAllStatus struct {
 	Status string
@@ -2280,7 +2714,7 @@ type paramsSetAllStatus struct {
 
 var descSetAllStatus = &runtime.QueryDescriptor{
 	Name:      "SetAllStatus",
-	StmtID:    12,
+	StmtID:    13,
 	StmtVerb:  runtime.VerbUpdate,
 	StaticSQL: "UPDATE sg_items SET status = $1",
 	Segments:  []string{"UPDATE sg_items SET status = ", "", ""},
@@ -2338,7 +2772,7 @@ func (pl *Pipeline) SetAllStatus(status string) *runtime.ExecFuture {
 	return pl.Pipeline.QueueExec(stmtIDSetAllStatus, descSetAllStatus, in, vk, &pl.q.fastSlots[3], argBuf, expandErr)
 }
 
-const stmtIDUpsertItemsReturning uint32 = 13
+const stmtIDUpsertItemsReturning uint32 = 14
 
 const (
 	WrittenColID    uint64 = 1 << 0
@@ -2358,7 +2792,7 @@ type paramsUpsertItemsReturning struct {
 
 var descUpsertItemsReturning = &runtime.QueryDescriptor{
 	Name:         "UpsertItemsReturning",
-	StmtID:       13,
+	StmtID:       14,
 	StmtVerb:     runtime.VerbInsert,
 	HasReturning: true,
 	Segments:     []string{"INSERT INTO sg_items (id, org_id, name, score, status)\n", "", "", "\nON CONFLICT (id) DO UPDATE SET score = sg_items.score + EXCLUDED.score\nRETURNING ", ""},
@@ -2747,7 +3181,7 @@ func (q *Queries) UpsertItemsReturningStream(ctx context.Context, seq iter.Seq2[
 	return out, nil
 }
 
-const stmtIDBumpScoresReturning uint32 = 14
+const stmtIDBumpScoresReturning uint32 = 15
 
 const (
 	BumpScoresReturningColID    uint64 = 1 << 0
@@ -2762,7 +3196,7 @@ type paramsBumpScoresReturning struct {
 
 var descBumpScoresReturning = &runtime.QueryDescriptor{
 	Name:         "BumpScoresReturning",
-	StmtID:       14,
+	StmtID:       15,
 	StmtVerb:     runtime.VerbUpdate,
 	HasReturning: true,
 	Segments:     []string{"UPDATE sg_items SET score = score + ", "\nWHERE ", "id IN (", ")\n", "RETURNING ", ""},
@@ -3093,7 +3527,7 @@ func (q *Queries) BumpScoresReturningBatchEach(ctx context.Context, delta int64,
 	return nil
 }
 
-const stmtIDDeleteReturning uint32 = 15
+const stmtIDDeleteReturning uint32 = 16
 
 const (
 	DeleteReturningColID    uint64 = 1 << 0
@@ -3107,7 +3541,7 @@ type paramsDeleteReturning struct {
 
 var descDeleteReturning = &runtime.QueryDescriptor{
 	Name:         "DeleteReturning",
-	StmtID:       15,
+	StmtID:       16,
 	StmtVerb:     runtime.VerbDelete,
 	HasReturning: true,
 	Segments:     []string{"DELETE FROM sg_items WHERE ", "id IN (", ")\n", "RETURNING ", ""},

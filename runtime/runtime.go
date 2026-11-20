@@ -274,7 +274,18 @@ func ComputeSubqueryShape(stmtID uint32, colMask, flagMask, orderKey uint64, has
 	return InexactKeyBit | (vk.hash() & ^InexactKeyBit)
 }
 
-// Order encodes up to 7 packed sort terms in a 64-bit integer.
+// MaxOrderCols is the largest number of columns a sqlgen.Order(...) directive may list, and so the
+// largest number of terms a packed Order can carry: every term is 5 bits wide (a 1-based column index
+// of 1..12 in the upper four bits, the DESC flag in the lowest), so twelve terms fill bits 0..59 and
+// leave bit 63 for the Seek flag of EncodeOrderKey.
+const MaxOrderCols = 12
+
+const (
+	orderTermBits = 5
+	orderTermMask = 1<<orderTermBits - 1
+)
+
+// Order encodes up to MaxOrderCols packed sort terms in a 64-bit integer.
 type Order = uint64
 
 // Asc encodes a 0-based sortable column index as an ascending sort term.
@@ -287,8 +298,10 @@ func Desc(colIdx uint8) uint8 {
 	return ((colIdx + 1) << 1) | 1
 }
 
-// PackOrder packs up to 7 sort column terms (each encoded as ((colIdx1Based) << 1) | descBit)
-// into a single collision-free uint64 with zero heap allocations. Duplicate columns are ignored.
+// PackOrder packs up to MaxOrderCols sort column terms (each encoded as ((colIdx1Based) << 1) | descBit)
+// into a single collision-free uint64 with zero heap allocations. Duplicate columns and terms outside
+// 1..MaxOrderCols are ignored. Because a term can name each column at most once, every term of a
+// valid sort (at most MaxOrderCols columns exist) is kept.
 func PackOrder(terms ...uint8) uint64 {
 	var (
 		packed uint64
@@ -297,7 +310,7 @@ func PackOrder(terms ...uint8) uint64 {
 	)
 	for _, t := range terms {
 		col1 := t >> 1
-		if col1 == 0 || col1 > 63 {
+		if col1 == 0 || col1 > MaxOrderCols {
 			continue
 		}
 		bit := uint64(1) << col1
@@ -306,15 +319,12 @@ func PackOrder(terms ...uint8) uint64 {
 		}
 		seen |= bit
 		packed |= uint64(t) << shift
-		shift += 8
-		if shift >= 56 {
-			break
-		}
+		shift += orderTermBits
 	}
 	return packed
 }
 
-// EncodeOrderKey combines a 56-bit packed Order specification and a boolean hasSeek flag into a 64-bit key.
+// EncodeOrderKey combines a 60-bit packed Order specification and a boolean hasSeek flag into a 64-bit key.
 func EncodeOrderKey(orderSpec Order, hasSeek bool) uint64 {
 	if hasSeek {
 		return orderSpec | (1 << 63)
@@ -325,14 +335,18 @@ func EncodeOrderKey(orderSpec Order, hasSeek bool) uint64 {
 // ExpandOrder unpacks a packed uint64 order specification into column indices (0..numCols-1)
 // and direction flags (true == DESC), automatically appending the tie-breaker column (numCols-1)
 // if not already present (inheriting the preceding sort column's direction so single-direction
-// DESC sorts use uniform tuple comparison).
-func ExpandOrder(orderSpec uint64, numCols int) (cols [8]int, desc [8]bool, count int, allSameDir bool) {
+// DESC sorts use uniform tuple comparison). numCols must not exceed MaxOrderCols (the generator
+// rejects larger Order directives); count is at most numCols.
+func ExpandOrder(orderSpec uint64, numCols int) (cols [MaxOrderCols]int, desc [MaxOrderCols]bool, count int, allSameDir bool) {
 	if numCols <= 0 {
 		return cols, desc, 0, true
 	}
+	if numCols > MaxOrderCols {
+		numCols = MaxOrderCols
+	}
 	var seen uint64
-	for shift := uint(0); shift < 56; shift += 8 {
-		t := uint8((orderSpec >> shift) & 0xFF)
+	for shift := uint(0); shift < MaxOrderCols*orderTermBits; shift += orderTermBits {
+		t := uint8((orderSpec >> shift) & orderTermMask)
 		if t == 0 {
 			break
 		}
@@ -348,9 +362,6 @@ func ExpandOrder(orderSpec uint64, numCols int) (cols [8]int, desc [8]bool, coun
 		cols[count] = colIdx
 		desc[count] = (t & 1) != 0
 		count++
-		if count == 7 {
-			break
-		}
 	}
 	tieIdx := numCols - 1
 	tieBit := uint64(1) << uint(tieIdx)

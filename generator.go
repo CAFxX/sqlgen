@@ -2167,8 +2167,8 @@ func (p *stmtParser) scanSpan(span string, blk *parsedBlock, isTopLevel bool) er
 						return fmt.Errorf("statement %s: sqlgen.Order(...) requires at least one column", p.spec.Name)
 					}
 					parts := strings.Split(colListStr, ",")
-					if len(parts) > 15 {
-						return fmt.Errorf("statement %s: sqlgen.Order(...) supports at most 15 columns (got %d)", p.spec.Name, len(parts))
+					if len(parts) > runtime.MaxOrderCols {
+						return fmt.Errorf("statement %s: sqlgen.Order(...) supports at most %d columns (got %d)", p.spec.Name, runtime.MaxOrderCols, len(parts))
 					}
 					var cols []string
 					for _, pt := range parts {

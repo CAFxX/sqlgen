@@ -2141,3 +2141,23 @@ func TestGeneratorDiagnosticsAreActionable(t *testing.T) {
 		}
 	}
 }
+
+// The widest sqlgen.Order the generator accepts is exactly what the runtime can encode.
+func TestOrderDirectiveColumnLimitMatchesRuntime(t *testing.T) {
+	stmt := func(n int) string {
+		var sel, ord []string
+		for i := 1; i <= n; i++ {
+			sel = append(sel, fmt.Sprintf("c%d:int64", i))
+			ord = append(ord, fmt.Sprintf("c%d", i))
+		}
+		return "  - name: Q\n    kind: many\n    sql: |\n      SELECT " + strings.Join(sel, ", ") + " FROM t WHERE :a:sqlgen.Seek ORDER BY :s:sqlgen.Order(" + strings.Join(ord, ", ") + ")\n"
+	}
+	if _, err := genYAML("postgres", stmt(runtime.MaxOrderCols)); err != nil {
+		t.Fatalf("%d columns must be accepted: %v", runtime.MaxOrderCols, err)
+	}
+	_, err := genYAML("postgres", stmt(runtime.MaxOrderCols+1))
+	want := fmt.Sprintf("supports at most %d columns (got %d)", runtime.MaxOrderCols, runtime.MaxOrderCols+1)
+	if err == nil || !strings.Contains(err.Error(), want) {
+		t.Fatalf("want error containing %q, got %v", want, err)
+	}
+}

@@ -291,7 +291,7 @@ statements:
 ```
 
 **Important Rules for `Seek` & `Order`**:
-1. Every column listed in `sqlgen.Order(col1, col2, ...)` must match an unconditional selected column name (or alias) in the `SELECT` list, and at most 15 columns may be listed.
+1. Every column listed in `sqlgen.Order(col1, col2, ...)` must match an unconditional selected column name (or alias) in the `SELECT` list, and at most 12 columns may be listed (`runtime.MaxOrderCols`: the sort selection is packed into 5 bits per term, so every column of a valid directive can be named in one sort and none is silently dropped).
 2. `sqlgen` generates strongly-typed sort column tokens (`<Stmt>OrderBy<Field>.Asc()` and `.Desc()`), a type-safe constructor `Order<Stmt>(...)`, and cursor helpers:
    - `row.Seek()` (a method on `<RowType>`), `Seek<Stmt>(row)` or `Seek<RowType>(row)` $\rightarrow$ returns a `runtime.Seek` cursor populated from `row` for the next page.
    - `Order<Stmt>(ListMembersPaginatedOrderByScore.Desc(), ListMembersPaginatedOrderByID.Asc())` $\rightarrow$ builds the `runtime.Order` value.

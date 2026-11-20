@@ -52,6 +52,18 @@ statements:
       ORDER BY :Sort:sqlgen.Order(score, id)
       LIMIT :limit:int64
 
+  # Widest sqlgen.Order the generator accepts (runtime.MaxOrderCols): every column is sortable.
+  - name: WideRows
+    kind: many
+    result_type: Wide
+    params_struct: true
+    sql: |
+      SELECT c1:int64, c2:int64, c3:int64, c4:int64, c5:int64, c6:int64, c7:int64, c8:int64, c9:int64, c10:int64, c11:int64, id:int64
+      FROM sg_wide
+      WHERE :After:sqlgen.Seek
+      ORDER BY :Sort:sqlgen.Order(c1,c2,c3,c4,c5,c6,c7,c8,c9,c10,c11, id)
+      LIMIT :limit:int64
+
   - name: AddScore
     kind: exec
     sql: |
