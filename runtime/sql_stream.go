@@ -646,19 +646,24 @@ func streamOpSQL(b *strings.Builder, dialect Dialect, desc *QueryDescriptor, in 
 			}
 		}
 		b.WriteString(") AS _r")
-	} else if hasCond && (hasAssert || len(dec.ExtraConds) > 0) {
-		b.WriteString(" SELECT _sqlgen_cond._cnt, _sqlgen_cond._ok FROM _sqlgen_cond")
-		for i := range dec.ExtraConds {
-			b.WriteString(" CROSS JOIN _sqlgen_x")
-			b.Write(strconv.AppendInt(cur.numBuf[:0], int64(dec.ExtraConds[i].CondID), 10))
-		}
-		if hasAssert {
-			b.WriteString(" CROSS JOIN _sqlgen_chk")
-		}
-	} else if hasCond {
-		b.WriteString(" SELECT _cnt, _ok FROM _sqlgen_cond")
 	} else {
-		b.WriteString(" SELECT (SELECT COUNT(*) FROM _sqlgen_op), _ok FROM _sqlgen_chk")
+		// Every guard is read by a scalar subquery in the target list, which a statement can never drop:
+		// an unreferenced CTE (here an assertion whose only trace would be an overflow error, or a
+		// set_config) is pruned by PostgreSQL. The first column is the affected-row count.
+		b.WriteString(" SELECT (SELECT COUNT(*) FROM _sqlgen_op) AS _cnt")
+		if hasAssert {
+			b.WriteString(", (SELECT _ok FROM _sqlgen_chk) AS _a")
+		}
+		if hasCond {
+			b.WriteString(", (SELECT _ok FROM _sqlgen_cond) AS _c")
+			for i := range dec.ExtraConds {
+				id := strconv.AppendInt(cur.numBuf[:0], int64(dec.ExtraConds[i].CondID), 10)
+				b.WriteString(", (SELECT _ok FROM _sqlgen_x")
+				b.Write(id)
+				b.WriteString(") AS _x")
+				b.Write(id)
+			}
+		}
 	}
 }
 

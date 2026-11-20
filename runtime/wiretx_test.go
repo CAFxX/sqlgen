@@ -493,15 +493,17 @@ func TestExtraConditionsAreRecordedServerSide(t *testing.T) {
 		t.Fatalf("EstimateOpBytes = %d < rendered %d", est, len(op.SQL))
 	}
 
-	// an exec producer takes the CROSS JOIN form, with and without an assertion
+	// an exec producer reads every guard in the target list of its final SELECT, with and without an
+	// assertion (a guard the statement never reads would be pruned by the planner)
 	exec := PipelineOp{Desc: upd, Decorators: OpDecorators{AssertRows: -1, ProduceCond: &PipelineCond{Kind: CondRowsGt}, CondID: 1,
 		ExtraConds: []ProducedCond{{CondID: 2, Cond: &PipelineCond{Kind: CondRowsEq, Threshold: 1}}}}}
 	for _, assert := range []int64{-1, 1} {
 		exec.Decorators.AssertRows = assert
 		ops := []PipelineOp{exec}
 		RenderPipelineBatch(DialectDollar, nil, ops)
-		if !strings.Contains(ops[0].SQL, "FROM _sqlgen_cond CROSS JOIN _sqlgen_x2") ||
-			strings.Contains(ops[0].SQL, "CROSS JOIN _sqlgen_chk") != (assert >= 0) {
+		if !strings.Contains(ops[0].SQL, "SELECT (SELECT COUNT(*) FROM _sqlgen_op) AS _cnt") ||
+			!strings.Contains(ops[0].SQL, "(SELECT _ok FROM _sqlgen_cond) AS _c, (SELECT _ok FROM _sqlgen_x2) AS _x2") ||
+			strings.Contains(ops[0].SQL, "(SELECT _ok FROM _sqlgen_chk) AS _a") != (assert >= 0) {
 			t.Fatalf("assert=%d: unexpected SQL:\n%s", assert, ops[0].SQL)
 		}
 		if est := EstimateOpBytes(upd, &RenderInput{}, &exec.Decorators); est < len(ops[0].SQL) {

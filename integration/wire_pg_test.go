@@ -284,47 +284,55 @@ func errKind(err error) string {
 	return "other: " + err.Error()
 }
 
+// compareWireSeq (the sg_items table must exist: setupItems) runs sc in mode on the sequential fallback (plain pgx) and on the single-round-trip path
+// (pgxwire), each from the same fixture rows, and fails unless both observe the same outcome.
+func compareWireSeq(t *testing.T, db *sql.DB, dsn string, mode runMode, sc scenario) {
+	t.Helper()
+	run := func(wire bool) outcome {
+		mustExec(t, db, "DELETE FROM sg_items")
+		for i := int64(1); i <= 4; i++ {
+			mustExec(t, db, fmt.Sprintf("INSERT INTO sg_items VALUES (%d, 1, 'n%d', %d, 'new')", i, i, i*10))
+		}
+		wdb := openWire(t, dsn, wire)
+		q := pgq.New(wdb)
+		defer q.Close()
+		ifs, report, err := mode.run(ctxT(t), wdb, q, sc)
+		o := outcome{State: snapshot(t, db), Err: errKind(err)}
+		for _, r := range ifs {
+			if r != nil {
+				o.Taken = append(o.Taken, r.Taken())
+			}
+		}
+		if err == nil && report != nil {
+			o.Report = report()
+		}
+		st := q.CacheStats()
+		o.Stats = [2]uint64{st.WirePipelines, st.SequentialPipelines}
+		return o
+	}
+	seq, wire := run(false), run(true)
+	t.Logf("sequential: %+v", seq)
+	t.Logf("wire:       %+v", wire)
+	if seq.Err != wire.Err || seq.State != wire.State || seq.Report != wire.Report || !slices.Equal(seq.Taken, wire.Taken) {
+		t.Fatalf("wire pipeline diverges from sequential fallback:\n  sequential %+v\n  wire       %+v", seq, wire)
+	}
+	// the counters must tell the two paths apart
+	if seq.Stats != [2]uint64{0, 1} || wire.Stats != [2]uint64{1, 0} {
+		t.Fatalf("CacheStats{Wire,Sequential}: sequential run %v, wire run %v", seq.Stats, wire.Stats)
+	}
+}
+
 func TestRealEnginePipelineWireMatchesSequential(t *testing.T) {
 	forEachEngine(t, func(t *testing.T, e engine, db *sql.DB) {
 		if !e.isPG() {
 			t.Skip("the single-round-trip pipeline SQL is only generated for the $N (PostgreSQL-protocol) dialect")
 		}
 		dsn := os.Getenv(e.env)
+		setupItems(t, db)
 		for _, mode := range runModes {
 			for _, sc := range wireScenarios {
 				t.Run(strings.ReplaceAll(mode.name+"/"+sc.name, " ", "_"), func(t *testing.T) {
-					run := func(wire bool) outcome {
-						setupItems(t, db)
-						for i := int64(1); i <= 4; i++ {
-							mustExec(t, db, fmt.Sprintf("INSERT INTO sg_items VALUES (%d, 1, 'n%d', %d, 'new')", i, i, i*10))
-						}
-						wdb := openWire(t, dsn, wire)
-						q := pgq.New(wdb)
-						defer q.Close()
-						ifs, report, err := mode.run(ctxT(t), wdb, q, sc)
-						o := outcome{State: snapshot(t, db), Err: errKind(err)}
-						for _, r := range ifs {
-							if r != nil {
-								o.Taken = append(o.Taken, r.Taken())
-							}
-						}
-						if err == nil && report != nil {
-							o.Report = report()
-						}
-						st := q.CacheStats()
-						o.Stats = [2]uint64{st.WirePipelines, st.SequentialPipelines}
-						return o
-					}
-					seq, wire := run(false), run(true)
-					t.Logf("sequential: %+v", seq)
-					t.Logf("wire:       %+v", wire)
-					if seq.Err != wire.Err || seq.State != wire.State || seq.Report != wire.Report || !slices.Equal(seq.Taken, wire.Taken) {
-						t.Fatalf("wire pipeline diverges from sequential fallback:\n  sequential %+v\n  wire       %+v", seq, wire)
-					}
-					// the counters must tell the two paths apart
-					if seq.Stats != [2]uint64{0, 1} || wire.Stats != [2]uint64{1, 0} {
-						t.Fatalf("CacheStats{Wire,Sequential}: sequential run %v, wire run %v", seq.Stats, wire.Stats)
-					}
+					compareWireSeq(t, db, dsn, mode, sc)
 				})
 			}
 		}
