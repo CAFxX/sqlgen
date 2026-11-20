@@ -21,18 +21,10 @@ var (
 // Go compiler would, instead of only being caught when a user builds the generated file.
 func typeCheckGenerated(t *testing.T, name string, src []byte) {
 	t.Helper()
-	typeCheckMu.Lock()
-	defer typeCheckMu.Unlock()
-	file, err := parser.ParseFile(typeCheckFset, name+".go", src, parser.AllErrors)
+	errs, err := typeCheckErrors(name, src)
 	if err != nil {
 		t.Fatalf("%s: parse: %v\n%s", name, err, src)
 	}
-	var errs []error
-	conf := types.Config{
-		Importer: typeCheckImp,
-		Error:    func(err error) { errs = append(errs, err) },
-	}
-	_, _ = conf.Check(file.Name.Name, typeCheckFset, []*ast.File{file}, nil)
 	for i, e := range errs {
 		if i >= 5 {
 			t.Errorf("... and %d more type errors", len(errs)-i)
@@ -43,6 +35,23 @@ func typeCheckGenerated(t *testing.T, name string, src []byte) {
 	if len(errs) > 0 {
 		t.FailNow()
 	}
+}
+
+// typeCheckErrors is typeCheckGenerated without the testing plumbing: it returns the parse error, or the
+// list of type errors (empty when the source type-checks).
+func typeCheckErrors(name string, src []byte) (errs []error, parseErr error) {
+	typeCheckMu.Lock()
+	defer typeCheckMu.Unlock()
+	file, err := parser.ParseFile(typeCheckFset, name+".go", src, parser.AllErrors)
+	if err != nil {
+		return nil, err
+	}
+	conf := types.Config{
+		Importer: typeCheckImp,
+		Error:    func(err error) { errs = append(errs, err) },
+	}
+	_, _ = conf.Check(file.Name.Name, typeCheckFset, []*ast.File{file}, nil)
+	return errs, nil
 }
 
 // The sort tokens of one statement are a different type from those of another, so passing them to the
