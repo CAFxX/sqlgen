@@ -3,6 +3,7 @@ package runtime
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"testing"
 )
@@ -83,5 +84,33 @@ func TestPrerendersFollowsFlavor(t *testing.T) {
 	}
 	if prerenders(&flavoredWireConn{flavor: WireFlavorMySQL}) {
 		t.Fatal("WireFlavorMySQL renders itself")
+	}
+}
+
+// An operation run by a wire pipeliner reports its affected rows, but not a generated key: asking for
+// one must be an error, never a silent 0.
+func TestWireExecResultHasNoLastInsertID(t *testing.T) {
+	cfg := &mockDriverConfig{enableWireTx: true}
+	cfg.wireTxHandler = func(_ context.Context, _ *sql.TxOptions, ops []PipelineOp) error {
+		ops[0].RowCount = 4
+		return nil
+	}
+	db, cache := newWireTxDB(t, cfg)
+	var f *ExecFuture
+	if err := pipelineTx(context.Background(), db, cache, nil, nil, func(p *Pipeline) error {
+		f = queueTestExec(p)
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	res, err := f.Result()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n, err := res.RowsAffected(); n != 4 || err != nil {
+		t.Fatalf("RowsAffected = %d, %v", n, err)
+	}
+	if _, err := res.LastInsertId(); !errors.Is(err, ErrLastInsertIDNotAvailable) {
+		t.Fatalf("LastInsertId error = %v", err)
 	}
 }

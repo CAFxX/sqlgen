@@ -27,6 +27,7 @@ jobs:
           go vet ./...
           (cd integration && go vet ./...)
           (cd pgxwire && go vet ./...)
+          (cd mysqlwire && go vet ./...)
 
       - name: generated code is up to date (SPEC §13.1)
         run: |
@@ -41,8 +42,10 @@ jobs:
           echo "total coverage: ${total}%"
           awk -v t="$total" 'BEGIN { exit !(t+0 >= 95.0) }' || { echo "coverage below 95%"; exit 1; }
 
-      - name: pgxwire builds and its hermetic tests pass (engine tests run in the engines job)
-        run: cd pgxwire && go test -race -count=1 ./...
+      - name: pgxwire and mysqlwire build and their hermetic tests pass (engine tests run in the engines job)
+        run: |
+          cd pgxwire && go test -race -count=1 ./...
+          cd ../mysqlwire && go test -race -count=1 ./...
 
       # The seeded differential suite (integration/fuzz_*_test.go) needs no server for SQLite; the engines
       # job below runs the same cases on every server engine.
@@ -54,6 +57,7 @@ jobs:
           go test -run '^$' -fuzz=FuzzParseSQL -fuzztime=10s .
           go test -run '^$' -fuzz=FuzzParseYAML -fuzztime=10s .
           go test -run '^$' -fuzz=FuzzEstimateOpBytesUpperBound -fuzztime=10s ./runtime
+          go test -run '^$' -fuzz=FuzzEstimateMySQLOpBytesUpperBound -fuzztime=10s ./runtime
           go test -run '^$' -fuzz=FuzzVariantKeyAndSubqueryShapeBijectivity -fuzztime=10s ./runtime
           go test -run '^$' -fuzz=FuzzStmtCacheAdversarialStateTransitions -fuzztime=10s ./runtime
 
@@ -79,6 +83,7 @@ jobs:
             go.sum
             integration/go.sum
             pgxwire/go.sum
+            mysqlwire/go.sum
       - name: start ${{ matrix.engine }}
         run: docker compose up -d --wait ${{ matrix.engine }}
       - name: integration tests against ${{ matrix.engine }}
@@ -98,6 +103,16 @@ jobs:
           total=$(go tool cover -func=cover.out | awk '/^total:/ {gsub("%","",$3); print $3}')
           echo "pgxwire coverage on ${{ matrix.engine }}: ${total}%"
           awk -v t="$total" 'BEGIN { exit !(t+0 >= 90.0) }' || { echo "pgxwire coverage below 90%"; exit 1; }
+      # Likewise the mysqlwire driver against the MySQL-protocol engines.
+      - name: mysqlwire tests against ${{ matrix.engine }}
+        if: startsWith(matrix.engine, 'mysql') || startsWith(matrix.engine, 'mariadb')
+        run: |
+          . scripts/engines-env.sh
+          cd mysqlwire
+          SQLGEN_ENGINES=${{ matrix.engine }} go test -race -count=1 -coverprofile=cover.out ./...
+          total=$(go tool cover -func=cover.out | awk '/^total:/ {gsub("%","",$3); print $3}')
+          echo "mysqlwire coverage on ${{ matrix.engine }}: ${total}%"
+          awk -v t="$total" 'BEGIN { exit !(t+0 >= 90.0) }' || { echo "mysqlwire coverage below 90%"; exit 1; }
       - name: engine logs on failure
         if: failure()
         run: docker compose logs --no-color ${{ matrix.engine }} | tail -200

@@ -235,8 +235,14 @@ func (f *ExecFuture) Result() (sql.Result, error) {
 	if f.res != nil {
 		return f.res, nil
 	}
-	return BatchExecResult{RowsAffectedVal: f.op.RowCount}, nil
+	return BatchExecResult{RowsAffectedVal: f.op.RowCount, LastInsertIDErr: ErrLastInsertIDNotAvailable}, nil
 }
+
+// ErrLastInsertIDNotAvailable is what LastInsertId of the sql.Result of an ExecFuture reports when the
+// operation ran on the single-round-trip path: the wire drivers read the affected-row count of every
+// operation, not the generated key. Use RETURNING (PostgreSQL, MariaDB), or read the key back with a
+// SELECT, or run the statement outside a pipeline.
+var ErrLastInsertIDNotAvailable = errors.New("sqlgen: LastInsertId is not available for a pipeline operation that ran on the single-round-trip path")
 
 // RowsAffected returns the number of rows affected by the operation after the pipeline has flushed
 // (ErrFutureNotReady before).

@@ -5,7 +5,7 @@
 COMPOSE ?= $(shell docker info >/dev/null 2>&1 && echo "docker compose" || echo "docker.lima compose")
 ENGINES ?=
 
-.PHONY: all test check gen engines-up engines-down test-engines test-pgxwire bench-engines sync-adapters
+.PHONY: all test check gen engines-up engines-down test-engines test-pgxwire test-mysqlwire bench-engines sync-adapters
 
 all: check test
 
@@ -18,13 +18,15 @@ check:
 	go vet ./...
 	cd integration && go vet ./...
 	cd pgxwire && go vet ./...
+	cd mysqlwire && go vet ./...
 	@for c in examples/*/sqlgen.yaml integration/*/sqlgen.yaml; do go run ./cmd/sqlgen -config $$c -check || exit 1; done
 
 gen:
 	@for c in examples/*/sqlgen.yaml integration/*/sqlgen.yaml; do go run ./cmd/sqlgen -config $$c || exit 1; done
 
 # Real engines: PostgreSQL 15/18, CockroachDB, MySQL 8.4/9.7, MariaDB 10.11/12.3. The integration module
-# also exercises pgxwire (single-round-trip pipelines); `test-pgxwire` runs the driver's own tests.
+# also exercises pgxwire and mysqlwire (single-round-trip pipelines); `test-pgxwire` / `test-mysqlwire`
+# run the drivers' own tests.
 engines-up:
 	$(COMPOSE) up -d --wait
 
@@ -36,10 +38,15 @@ engines-down:
 test-engines:
 	. scripts/engines-env.sh && cd integration && SQLGEN_REQUIRE_ENGINES=1 SQLGEN_ENGINES=$(ENGINES) go test -count=1 -timeout 15m ./...
 	$(MAKE) test-pgxwire ENGINES=$(ENGINES)
+	$(MAKE) test-mysqlwire ENGINES=$(ENGINES)
 
 # The pgxwire driver's own tests (PostgreSQL / CockroachDB engines only; skipped when no DSN is set).
 test-pgxwire:
 	. scripts/engines-env.sh && cd pgxwire && SQLGEN_ENGINES=$(ENGINES) go test -race -count=1 -cover ./...
+
+# The mysqlwire driver's own tests (MySQL / MariaDB engines only; skipped when no DSN is set).
+test-mysqlwire:
+	. scripts/engines-env.sh && cd mysqlwire && SQLGEN_ENGINES=$(ENGINES) go test -race -count=1 -cover ./...
 
 # Overhead of a generated call vs hand-written database/sql on real servers (ENGINES is required).
 bench-engines:
