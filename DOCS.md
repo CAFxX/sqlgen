@@ -522,12 +522,107 @@ err := q.InTx(ctx, nil, func(txQ *Queries) error {
 ### 3.4. Single-Roundtrip Speculative Pipelining (`Pipeline` & `PipelineTx`)
 
 `Pipeline` and `PipelineTx` allow you to queue multiple reads, writes, row-count assertions, and data-dependent `If/Then/Else` branches and flush them together.
-- On drivers implementing `runtime.WirePipeliner` (or wrapped via `runtime.WrapConnector`), the entire conditional workflow compiles into a single SQL batch / CTE chain executed in **one network roundtrip**.
-- On standard `*sql.DB` and `*sql.Tx` connections, `Pipeline` seamlessly falls back to sequential execution while preserving identical branching, assertion, and rollback semantics!
+- With the `pgxwire` driver (below) on PostgreSQL or CockroachDB, the entire conditional workflow, `BEGIN` and `COMMIT` included, is sent to the server in **one network round-trip** (one write, one `Sync`).
+- On every other driver and engine (plain `*sql.DB`, MySQL, MariaDB, SQLite, ...), `Pipeline` seamlessly falls back to sequential execution while preserving identical branching, assertion, and rollback semantics. Nothing to configure, and nothing silently pretends to be faster than it is: see "Verifying which path ran" below.
 
-**Engine support.** The CI matrix runs the full suite against PostgreSQL 15 and 18, CockroachDB, MySQL 8.4 and 9.7, MariaDB 10.11 and 12.3 and SQLite, with real drivers (`pgx`, `go-sql-driver/mysql`). The single-roundtrip batch SQL relies on PostgreSQL's `set_config` / `current_setting` and data-modifying CTEs, so it exists only for the `$N` dialect (PostgreSQL and CockroachDB); on MySQL, MariaDB and SQLite a pipeline always runs through the sequential fallback (same semantics, one round trip per statement). A `WirePipeliner` implementation must fill each op's `RowCount`, and for ops that `ProduceCond` read the recorded condition back with `current_setting('sqlgen.c<CondID>', true)`.
+**Engine support.** The CI matrix runs the full suite against PostgreSQL 15 and 18, CockroachDB, MySQL 8.4 and 9.7, MariaDB 10.11 and 12.3 and SQLite, with real drivers (`pgx`, `go-sql-driver/mysql`). The single-roundtrip batch SQL relies on PostgreSQL's `set_config` / `current_setting` and data-modifying CTEs, so it exists only for the `$N` dialect (PostgreSQL and CockroachDB); on MySQL, MariaDB and SQLite a pipeline always runs through the sequential fallback (same semantics, one round trip per statement).
 
-**Typed placeholders in gated inserts (`$N` dialect).** An `INSERT` queued inside a `p.If` branch is sent as `INSERT ... SELECT ... WHERE <gates>`, and PostgreSQL does not infer placeholder types from the target columns there. `sqlgen` therefore casts each placeholder from its Go type (`int`/`int64` to `bigint`, `string` to `text`, `bool` to `boolean`, `float64` to `double precision`, `[]byte` to `bytea`, `time.Time` to `timestamptz`, and so on). For any other Go type (for example a `uuid` or `jsonb` column fed by a `string`), add an explicit cast in the SQL, such as `:id:string::uuid`.
+#### Wiring the single-round-trip path (`pgxwire`)
+
+`pgxwire` is a separate Go module (`github.com/CAFxX/sqlgen/pgxwire`, depends on `pgx/v5`), so the main `sqlgen` module keeps depending only on `yaml` and `sqlite`. It returns an ordinary `*sql.DB`; everything that is not a sqlgen pipeline behaves exactly as with pgx's stdlib driver.
+
+```go
+import (
+    "github.com/CAFxX/sqlgen/pgxwire"
+    "github.com/CAFxX/sqlgen/runtime"
+)
+
+db, err := pgxwire.OpenDB("postgres://user:pass@host:5432/app?sslmode=require")
+if err != nil { ... }
+db.SetMaxOpenConns(16) // must not be 1: the wire path borrows a pooled connection (see the conditions below)
+q := store.New(db)
+
+err = q.PipelineTx(ctx, nil, func(p *store.Pipeline) error {
+    p.AddScore(-5, from).AssertRowsAffected(1)
+    p.AddScore(5, to).AssertRowsAffected(1)
+    return nil
+}, runtime.WithTxRetry(runtime.DefaultRetryPolicy()))
+
+fmt.Println(q.CacheStats().WirePipelines) // 1: the whole transaction was one network round-trip
+```
+
+Use `pgxwire.Connector(cfg *pgx.ConnConfig, opts ...stdlib.OptionOpenDB)` with `sql.OpenDB` when you build the `pgx.ConnConfig` yourself (custom dialer, TLS, `AfterConnect`, ...); the options are those of `stdlib.GetConnector`. The connector is already wrapped with `runtime.WrapConnector`, so do not wrap it again.
+
+**When the single-round-trip path is used.** The condition is always the same: the *pool* hands out a pgxwire connection, and sqlgen owns (or is told about) the transaction boundary.
+
+| How the pipeline runs | Network round-trips on pgxwire | Notes |
+| :--- | :--- | :--- |
+| `q.PipelineTx(ctx, txOpts, fn)` | **1**: `BEGIN` (with the isolation level and read-only mode of `txOpts`) + every operation + `COMMIT` + `Sync` | `fn` only *queues*: the transaction begins when the batch is sent, so a failing `fn` never touches the database. Retries (`WithTxRetry`) re-run `fn` and cost one round-trip per attempt. |
+| `q.Pipeline(ctx)` ... `p.Flush()` (no transaction) | **1**: `BEGIN` + operations + `COMMIT` + `Sync`, atomic: all or nothing | |
+| `q.WithTx(tx).Pipeline(ctx)` ... `p.Flush()` (a `*sql.Tx` you began) | **1** for the operations only | `BEGIN` and `COMMIT`/`ROLLBACK` are yours (`db.BeginTx`, `tx.Commit`): 2 more round-trips you chose to make. A failing batch leaves the transaction aborted; roll it back. |
+| `q.InTx(...)`, plain query methods | unchanged (pgx's usual behaviour) | Only pipelines are batched. |
+| any other driver, `db.SetMaxOpenConns(1)`, or a `*sql.DB` not opened through pgxwire | sequential fallback (`BEGIN`, one per statement, `COMMIT`) | `CacheStats().SequentialPipelines` counts these. With one open connection the runtime cannot park a connection for the batch without risking a self-deadlock, so it runs sequentially. |
+
+An empty pipeline, or one whose `fn` returned an error, sends nothing. Calling `Flush()`/`Exec()` inside a `PipelineTx` callback returns `runtime.ErrFlushInPipelineTx`; the transaction flushes the pipeline itself.
+
+**Failure semantics.** Any failure (a failed assertion, an `Abort`, a server error in the middle of the batch, a serialization failure or deadlock, a dropped connection) rolls the transaction back and surfaces the same error value the sequential path returns (`runtime.ErrAssertionFailed`, your `Abort` error, the `*pgconn.PgError`). When a statement fails the server skips the rest of the batch and leaves the transaction aborted, so pgxwire sends one extra `ROLLBACK` round-trip (error path only) and the connection goes back to the pool clean; if even that fails the connection is closed and the pool replaces it. A failure raised by the `COMMIT` itself (a deferred constraint, a serialization failure under `SERIALIZABLE`) is reported like any other and is retried by `WithTxRetry` when `runtime.IsRetryableTxError` says so; a dropped connection during the batch has an unknown outcome (the `COMMIT` may have been processed) and is never retried.
+
+**How a first-seen pipeline stays at one round-trip.** pgx's usual query modes (`QueryExecModeCacheStatement`, the default, and `CacheDescribe`) first *describe* every statement text they have not seen, which is a separate round-trip, before running the batch. pgxwire therefore sends each pipeline statement the way `pgx.QueryExecModeExec` does: unnamed Parse/Bind/Describe/Execute messages, parameters in text format with no declared types (the server infers them from context), results in text format decoded locally into the same Go values pgx's stdlib driver produces. Consequences, all measured below:
+- A first-seen pipeline costs exactly as many round-trips as a warmed one: one.
+- pgx's statement cache is not used for pipelines, so the server parses each statement of each flush (server CPU, never a round-trip). A code path that gains nothing from batching can stay on plain query methods, which still use prepared statements.
+- Parameter types are inferred by the server from the SQL, as a describe would have inferred them; the Go type of an argument only picks its text encoding (pgx's default type mapping, like `QueryExecModeExec`). A placeholder the server cannot type from context (a bare `SELECT $1`) fails with "could not determine data type of parameter" on either path and needs a cast in the SQL; sqlgen already adds casts where it generates such contexts (see "Typed placeholders" below).
+- pgx query tracers do not see pipeline batches (they run below `pgx.Conn`); use the counters below.
+- If your connection goes through a transaction-pooling proxy (PgBouncer in transaction mode), this is the safe mode: nothing is prepared server-side.
+
+**Writing a driver for another engine or protocol.** Implement `runtime.WirePipeliner` (`ExecPipeline(ctx, ops)`: the operations only) and, if you can fold the transaction boundary in too, `runtime.WireTxPipeliner` (`ExecTxPipeline(ctx, txOpts, ops)`). The runtime has already rendered `ops[i].SQL` and `ops[i].Args`; per op, `op.WireResult()` says how to read the answer: set `op.RowCount` from the command tag, from a guarded `(affected, ok)` row, or by feeding result rows to `op.ScanWireRows` (wrap a `driver.Rows` with `runtime.RowsFromDriverRows`); for ops with `Decorators.ProduceCond` (and each `ExtraConds` entry) read the condition back with `SELECT current_setting('sqlgen.c<CondID>', true)` inside the same batch into `CondVal`/`CondSet`; map server errors with `runtime.TranslateWireError(op, err)`; wrap an error raised by the `COMMIT` in `*runtime.CommitError`; and leave no transaction open on the connection when you return an error. Wrap your connector with `runtime.WrapConnector` so user-managed transactions reach `ExecPipeline`. `pgxwire/pgxwire.go` is a complete example.
+
+**Verifying which path ran.** `q.CacheStats()` has two counters, incremented once per flushed pipeline (once per `PipelineTx` attempt):
+- `WirePipelines`: the flush went out in a single round-trip through a `WirePipeliner` / `WireTxPipeliner` connection.
+- `SequentialPipelines`: the flush executed statement by statement.
+
+A flush that fails while being built or that queued nothing counts as neither; a flush that fails on the server still counts on the path it ran. A test asserting `WirePipelines > 0 && SequentialPipelines == 0` fails loudly when a misconfigured pool (for example `SetMaxOpenConns(1)`, or a `*sql.DB` opened with plain `sql.Open("pgx", ...)`) silently loses the fast path.
+
+To count real network turns instead of trusting a counter, wrap the dialer: a *turn* is a `Read` that follows a `Write`.
+
+```go
+type turnConn struct {
+    net.Conn
+    turns *atomic.Int64
+    wrote atomic.Bool
+}
+func (c *turnConn) Write(p []byte) (int, error) { c.wrote.Store(true); return c.Conn.Write(p) }
+func (c *turnConn) Read(p []byte) (int, error) {
+    if c.wrote.Swap(false) { c.turns.Add(1) }
+    return c.Conn.Read(p)
+}
+
+cfg, _ := pgx.ParseConfig(dsn)
+cfg.DialFunc = func(ctx context.Context, network, addr string) (net.Conn, error) {
+    c, err := (&net.Dialer{}).DialContext(ctx, network, addr)
+    return &turnConn{Conn: c, turns: &turns}, err
+}
+db := sql.OpenDB(pgxwire.Connector(cfg))
+```
+
+`integration/wire_roundtrip_test.go` is exactly this, run against PostgreSQL 15, 18 and CockroachDB. Warm the connection first (the startup/authentication handshake is turns too), and note that pgx's stdlib driver pings a pooled connection that was idle for more than a second before reuse (one extra turn that is not sqlgen's; `stdlib.OptionShouldPing` controls it).
+
+**Measured round-trips** (network turns per `PipelineTx`, established connection; `integration/wire_roundtrip_test.go`):
+
+| Workload | Sequential (plain pgx) first-seen / warmed | pgxwire first-seen / warmed |
+| :--- | :--- | :--- |
+| 1 guarded update | 4 / 8 on PG 15 and 18, 4 / 6 on CockroachDB | **1 / 1** on PG 15, PG 18, CockroachDB |
+| 3 guarded updates | 5 / 5 | **1 / 1** on all three |
+| 10 guarded updates | 12 / 12 | **1 / 1** on all three |
+| read + `If`/`Else` + 3 assertions | 8 / 10 | **1 / 1** on all three |
+| standalone `Flush()` | n/a | **1** on all three |
+| `Flush()` in a user-managed tx | n/a | **1** (+1 for your `COMMIT`) on all three |
+| failure (assertion, `Abort`, server error) | n/a | 2 (the batch + the `ROLLBACK`); the pipeline after it is back to 1 |
+
+The sequential figures include the extra `Prepare` round-trips of statement-cache promotion and vary by run; the lower bound is `BEGIN` + one per executed statement + `COMMIT`. CockroachDB reaches the same single round-trip as PostgreSQL. Wall-clock effect, measured with `go test -bench PipelineTx` on a loopback server (`ENGINES=postgres18`, 10 guarded updates): about 2.5 ms for pgxwire against 16 ms sequential; with 5 ms of simulated network latency per turn 5.7 ms against 69 ms. The win is the round-trips removed, so it grows with the latency to your database and with the number of statements.
+
+#### Typed placeholders in gated inserts (`$N` dialect)
+
+An `INSERT` queued inside a `p.If` branch is sent as `INSERT ... SELECT ... WHERE <gates>`, and PostgreSQL does not infer placeholder types from the target columns there. `sqlgen` therefore casts each placeholder from its Go type (`int`/`int64` to `bigint`, `string` to `text`, `bool` to `boolean`, `float64` to `double precision`, `[]byte` to `bytea`, `time.Time` to `timestamptz`, and so on). For any other Go type (for example a `uuid` or `jsonb` column fed by a `string`), add an explicit cast in the SQL, such as `:id:string::uuid`.
 
 ```go
 err := q.PipelineTx(ctx, nil, func(p *Pipeline) error {

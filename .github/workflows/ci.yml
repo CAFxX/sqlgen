@@ -26,6 +26,7 @@ jobs:
         run: |
           go vet ./...
           (cd integration && go vet ./...)
+          (cd pgxwire && go vet ./...)
 
       - name: generated code is up to date (SPEC §13.1)
         run: |
@@ -39,6 +40,9 @@ jobs:
           total=$(go tool cover -func=coverage.out | awk '/^total:/ {gsub("%","",$3); print $3}')
           echo "total coverage: ${total}%"
           awk -v t="$total" 'BEGIN { exit !(t+0 >= 95.0) }' || { echo "coverage below 95%"; exit 1; }
+
+      - name: pgxwire builds and its hermetic tests pass (engine tests run in the engines job)
+        run: cd pgxwire && go test -race -count=1 ./...
 
       - name: fuzz (short)
         run: |
@@ -69,6 +73,7 @@ jobs:
           cache-dependency-path: |
             go.sum
             integration/go.sum
+            pgxwire/go.sum
       - name: start ${{ matrix.engine }}
         run: docker compose up -d --wait ${{ matrix.engine }}
       - name: integration tests against ${{ matrix.engine }}
@@ -76,6 +81,18 @@ jobs:
           . scripts/engines-env.sh
           cd integration
           SQLGEN_REQUIRE_ENGINES=1 SQLGEN_ENGINES=${{ matrix.engine }} go test -race -count=1 -timeout 15m -v ./...
+      # The pgxwire driver (single-round-trip pipelines) has its own tests against the PostgreSQL-protocol
+      # engines; the integration module above additionally runs the wire-vs-sequential differential,
+      # the network round-trip counts and the failure/concurrency tests through it.
+      - name: pgxwire tests against ${{ matrix.engine }}
+        if: startsWith(matrix.engine, 'postgres') || matrix.engine == 'cockroach'
+        run: |
+          . scripts/engines-env.sh
+          cd pgxwire
+          SQLGEN_ENGINES=${{ matrix.engine }} go test -race -count=1 -coverprofile=cover.out ./...
+          total=$(go tool cover -func=cover.out | awk '/^total:/ {gsub("%","",$3); print $3}')
+          echo "pgxwire coverage on ${{ matrix.engine }}: ${total}%"
+          awk -v t="$total" 'BEGIN { exit !(t+0 >= 90.0) }' || { echo "pgxwire coverage below 90%"; exit 1; }
       - name: engine logs on failure
         if: failure()
         run: docker compose logs --no-color ${{ matrix.engine }} | tail -200

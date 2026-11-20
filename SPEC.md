@@ -34,7 +34,7 @@ Note: the spec comes from the spec workshop on https://share.gemini.google/Nm8OX
 8. **Deadlock-Prevention Global Presorting (`ASC` / `DESC`)**:
    - Slices and tuple-slices with `ASC`/`DESC` modifiers run an $O(N)$ `isSorted` check first (0 allocs). If unsorted, they sort a pooled `*[]int` index permutation (`AcquireIndices`) globally **before** chunk slicing—never mutating the caller's slice and guaranteeing that the *bound parameters* are globally monotonic across all chunks. Monotonic **lock acquisition** follows only where the engine processes keys in bound order (multi-row `INSERT`/upsert `VALUES`); for `UPDATE`/`DELETE ... WHERE col IN (...)` the engine's plan decides the order rows are visited, locked and returned (PostgreSQL scans an `IN` list in ascending index order, so `DESC` has no effect there).
 9. **Single-Roundtrip `Pipeline` & `PipelineTx` with Server-Side Bail-Out & `If/Then/Else`**:
-   - Flushes `[BEGIN + Q1..Qn + COMMIT + Sync]` in **1 network round-trip** on drivers implementing `WirePipeliner` (and on `*sql.Tx` via `WrapConnector`), falling back automatically to sequential Tier-2 prepared statements on standard drivers.
+   - Flushes `[BEGIN + Q1..Qn + COMMIT + Sync]` in **1 network round-trip** on connections implementing `WireTxPipeliner` (`PipelineTx` and a standalone `Pipeline.Flush`), and `[Q1..Qn + Sync]` in 1 round-trip inside a caller-owned `*sql.Tx` on connections implementing `WirePipeliner` (via `WrapConnector`). The shipped driver is the nested module `pgxwire` (pgx `ExecBatch` with `QueryExecModeExec` semantics, so even first-seen statements need no describe round-trip); it is verified on PostgreSQL 15/18 and CockroachDB by counting real network turns (`integration/wire_roundtrip_test.go`). Everything else falls back automatically to sequential Tier-2 prepared statements, and `CacheStats.WirePipelines` / `SequentialPipelines` report which path ran.
    - Supports `.AssertRowsAffected(n)`, `.AssertFound()`, and `p.If(cond, thenFn, elseFn)` with `p.Abort(err)`.
 10. **Automatic Transaction Retries (`TxRetryPolicy`)**:
     - `InTx` and `PipelineTx` retry with exponential backoff and full jitter (`math/rand/v2`) on deterministic transient deadlocks and serialization failures (`40P01`, `40001`, `55P03`, MySQL `1213`/`1205`, SQLite `SQLITE_BUSY`/`SQLITE_LOCKED`), while never retrying ambiguous network disconnects (`driver.ErrBadConn`, `io.EOF`, `net.Error`) during `Commit`.
@@ -61,6 +61,11 @@ Target Go version: **Go 1.27+** (matches `go.mod`)
 │   └── sqlgen/
 │       ├── main.go                     # CLI binary (-config, -out, -stdout, -check, -version)
 │       └── main_test.go                # CLI exit-code, drift-check, and stderr diagnostic tests
+├── pgxwire/                            # NESTED MODULE (pgx/v5): single-round-trip WirePipeliner / WireTxPipeliner for PostgreSQL & CockroachDB
+│   ├── pgxwire.go                      # OpenDB / Connector, ExecPipeline / ExecTxPipeline (pgconn ExecBatch, QueryExecModeExec semantics)
+│   ├── rows.go                         # text-format results -> database/sql driver values
+│   └── *_test.go                       # engine tests (skipped without SQLGEN_*_DSN)
+├── integration/                        # NESTED MODULE: real-engine suite incl. wire-vs-sequential differential, network-turn counts, failure/concurrency tests
 └── examples/                           # Clean-room dogfooding applications built strictly from DOCS.md
     ├── fintech_ledger/
     │   ├── sqlgen.yaml
@@ -87,6 +92,8 @@ Target Go version: **Go 1.27+** (matches `go.mod`)
 External dependencies in `go.mod`:
 - `go.yaml.in/yaml/v3`
 - `modernc.org/sqlite` (test-only dependency)
+
+The root module depends on nothing else. `pgxwire/` (module `github.com/CAFxX/sqlgen/pgxwire`, requires `pgx/v5` and `sqlgen`) and `integration/` are separate modules, each with `replace github.com/CAFxX/sqlgen => ../`, so pgx and the database drivers never enter the root module's dependency graph.
 
 ---
 
@@ -810,9 +817,11 @@ func (s *tinyLFUSketch) estimate(h uint64) uint8 {
 
 ## 8. Single-Roundtrip `Pipeline`, `PipelineTx`, `If/Then/Else` & `TxRetryPolicy` (`runtime/pipeline.go`)
 
-1. **Wire-Pipelined Mode (`WirePipeliner`)**:
-   - Detected via `conn.Raw` (when `txCache == nil`) or via `WrapConnector` sentinel execution `tx.ExecContext(withPipelineOps(ctx, ops), "--sqlgen:pipeline")` (when `txCache != nil`).
-   - Calls `RenderPipelineBatch(dialect, cache, ops)` to populate `ops[i].SQL` using at most 1 `strings.Builder`.
+1. **Wire-Pipelined Mode (`WireTxPipeliner` / `WirePipeliner`)**:
+   - `WireTxPipeliner.ExecTxPipeline(ctx, txOpts, ops)` runs `BEGIN [isolation / read-only from txOpts]`, every operation and `COMMIT` in one round-trip. It is detected via `db.Conn` + `conn.Raw` (unwrapping `WrapConnector`'s wrapper) when the runtime owns the transaction: `PipelineTx` (via `RunPipelineTx`, which only *queues* in the user callback and begins the transaction when it flushes, retrying the whole attempt under `WithTxRetry`) and a standalone `Pipeline.Flush`. It is skipped when `MaxOpenConnections == 1`. On any error the implementation leaves no transaction open on the connection (an extra `ROLLBACK` round-trip is allowed on the error path only) and reports a broken connection to the pool; an error raised by the `COMMIT` is wrapped in `*CommitError` so `IsRetryableTxError(err, duringCommit=true)` applies, and the wrapper is removed before the error reaches the caller. A transport error in the batch has an unknown outcome and is reported as a commit-time failure (never retried).
+   - `WirePipeliner.ExecPipeline(ctx, ops)` runs the operations only, inside the transaction the connection is in (a caller-owned `*sql.Tx`, reached via `WrapConnector` sentinel execution `tx.ExecContext(withPipelinePayload(ctx, payload), "--sqlgen:pipeline")` when `txCache != nil`; the caller commits or rolls back). On an idle connection the `pgxwire` implementation wraps the batch in `BEGIN ... COMMIT` itself, because the transaction-local `set_config` the condition recording relies on is rejected by CockroachDB outside an explicit transaction. A driver implementing only `WirePipeliner` gets `BeginTx` + one wire call + `Commit` for `PipelineTx`.
+   - Calls `RenderPipelineBatch(dialect, cache, ops)` to populate `ops[i].SQL` using at most 1 `strings.Builder`. `PipelineOp.WireResult()` tells a driver how to read each answer (command tag, scanned rows, guarded `(affected, ok)` row, discarded abort row). Conditions recorded by `set_config('sqlgen.c<ID>', ..., true)` are read back inside the same batch with `current_setting('sqlgen.c<ID>', true)`; several `If`s over one future record one condition each (`OpDecorators.ExtraConds`, CTE `_sqlgen_x<ID>`), and the driver reads each back (`ProducedCond.Val/Set`).
+   - `Pipeline.Flush`/`Exec` called inside a `PipelineTx` callback returns `ErrFlushInPipelineTx`. A flush counts toward `CacheStats.WirePipelines` when a wire pipeliner ran it and `SequentialPipelines` when it ran statement by statement; an empty flush or one that fails while being built counts as neither.
    - Translates any integer-overflow error (`SQLSTATE 22003` or `"integer overflow"` / `"bigint out of range"`) on an operation with `Decorators.IsAbort == true` into `op.AbortErr`, and on an operation with `Decorators.AssertRows >= 0` into a `*runtime.AssertionError` (matching `runtime.ErrAssertionFailed`) carrying the statement name (`op.Desc.Name`) and the expected count, with `GotKnown == false`.
 2. **Sequential Fallback Mode (`*sql.DB` / `*sql.Tx`)**:
    - Executes operations sequentially through `StmtCache` (using Tier-2 prepared statements).
@@ -986,4 +995,8 @@ go test -fuzz=FuzzStmtCacheAdversarialStateTransitions -fuzztime=5s ./runtime
 
 # 5. Zero-allocation and throughput benchmarks
 go test -bench=. -benchmem ./runtime
+
+# 6. Nested modules (real engines; `. scripts/engines-env.sh` exports the DSNs of `make engines-up`)
+(cd pgxwire && go vet ./... && go test -race -count=1 -cover ./...)        # >= 90% with the PG/CRDB engines up
+(cd integration && SQLGEN_REQUIRE_ENGINES=1 go test -race -count=1 -timeout 15m ./...)
 ```
