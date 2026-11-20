@@ -683,6 +683,8 @@ func MapSeq[In, Out any](seq iter.Seq2[In, error], fn func(In) Out) iter.Seq2[Ou
 // BatchExecResult aggregates sql.Result across multiple batch chunks.
 type BatchExecResult struct {
 	RowsAffectedVal int64
+	// RowsAffectedErr is the first error a chunk's RowsAffected reported; the sum is then incomplete.
+	RowsAffectedErr error
 	LastInsertIDVal int64
 	LastInsertIDErr error
 }
@@ -692,9 +694,10 @@ func (r BatchExecResult) LastInsertId() (int64, error) {
 	return r.LastInsertIDVal, r.LastInsertIDErr
 }
 
-// RowsAffected returns the sum of rows affected across all executed batch chunks.
+// RowsAffected returns the sum of rows affected across all executed batch chunks, or the first error a
+// chunk reported (the sum would otherwise silently undercount).
 func (r BatchExecResult) RowsAffected() (int64, error) {
-	return r.RowsAffectedVal, nil
+	return r.RowsAffectedVal, r.RowsAffectedErr
 }
 
 // Add accumulates a chunk sql.Result into r.
@@ -704,6 +707,8 @@ func (r *BatchExecResult) Add(res sql.Result) {
 	}
 	if n, err := res.RowsAffected(); err == nil {
 		r.RowsAffectedVal += n
+	} else if r.RowsAffectedErr == nil {
+		r.RowsAffectedErr = err
 	}
 	id, err := res.LastInsertId()
 	r.LastInsertIDVal = id
