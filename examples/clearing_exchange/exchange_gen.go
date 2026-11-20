@@ -3107,65 +3107,79 @@ const (
 
 type RiskPositionViewSortCol uint8
 
-func (c RiskPositionViewSortCol) Asc() uint8  { return runtime.Asc(uint8(c)) }
-func (c RiskPositionViewSortCol) Desc() uint8 { return runtime.Desc(uint8(c)) }
+// RiskPositionViewSortTerm is a sort column with a direction, accepted by OrderRiskPositionView.
+type RiskPositionViewSortTerm uint8
+
+func (c RiskPositionViewSortCol) Asc() RiskPositionViewSortTerm {
+	return RiskPositionViewSortTerm(runtime.Asc(uint8(c)))
+}
+func (c RiskPositionViewSortCol) Desc() RiskPositionViewSortTerm {
+	return RiskPositionViewSortTerm(runtime.Desc(uint8(c)))
+}
 
 const (
-	RiskPositionViewOrderByNotionalCents        RiskPositionViewSortCol = 0
-	OrderRiskPositionViewNotionalCentsAsc       uint8                   = 2
-	OrderRiskPositionViewNotionalCentsDesc      uint8                   = 3
-	RiskPositionViewOrderNotionalCentsAsc       uint8                   = 2
-	RiskPositionViewOrderNotionalCentsDesc      uint8                   = 3
-	RiskPositionViewOrderByUnrealizedPnlCents   RiskPositionViewSortCol = 1
-	OrderRiskPositionViewUnrealizedPnlCentsAsc  uint8                   = 4
-	OrderRiskPositionViewUnrealizedPnlCentsDesc uint8                   = 5
-	RiskPositionViewOrderUnrealizedPnlCentsAsc  uint8                   = 4
-	RiskPositionViewOrderUnrealizedPnlCentsDesc uint8                   = 5
-	RiskPositionViewOrderByUpdatedSeq           RiskPositionViewSortCol = 2
-	OrderRiskPositionViewUpdatedSeqAsc          uint8                   = 6
-	OrderRiskPositionViewUpdatedSeqDesc         uint8                   = 7
-	RiskPositionViewOrderUpdatedSeqAsc          uint8                   = 6
-	RiskPositionViewOrderUpdatedSeqDesc         uint8                   = 7
-	RiskPositionViewOrderByPositionID           RiskPositionViewSortCol = 3
-	OrderRiskPositionViewPositionIDAsc          uint8                   = 8
-	OrderRiskPositionViewPositionIDDesc         uint8                   = 9
-	RiskPositionViewOrderPositionIDAsc          uint8                   = 8
-	RiskPositionViewOrderPositionIDDesc         uint8                   = 9
+	RiskPositionViewOrderByNotionalCents        RiskPositionViewSortCol  = 0
+	OrderRiskPositionViewNotionalCentsAsc       RiskPositionViewSortTerm = 2
+	OrderRiskPositionViewNotionalCentsDesc      RiskPositionViewSortTerm = 3
+	RiskPositionViewOrderNotionalCentsAsc       RiskPositionViewSortTerm = 2
+	RiskPositionViewOrderNotionalCentsDesc      RiskPositionViewSortTerm = 3
+	RiskPositionViewOrderByUnrealizedPnlCents   RiskPositionViewSortCol  = 1
+	OrderRiskPositionViewUnrealizedPnlCentsAsc  RiskPositionViewSortTerm = 4
+	OrderRiskPositionViewUnrealizedPnlCentsDesc RiskPositionViewSortTerm = 5
+	RiskPositionViewOrderUnrealizedPnlCentsAsc  RiskPositionViewSortTerm = 4
+	RiskPositionViewOrderUnrealizedPnlCentsDesc RiskPositionViewSortTerm = 5
+	RiskPositionViewOrderByUpdatedSeq           RiskPositionViewSortCol  = 2
+	OrderRiskPositionViewUpdatedSeqAsc          RiskPositionViewSortTerm = 6
+	OrderRiskPositionViewUpdatedSeqDesc         RiskPositionViewSortTerm = 7
+	RiskPositionViewOrderUpdatedSeqAsc          RiskPositionViewSortTerm = 6
+	RiskPositionViewOrderUpdatedSeqDesc         RiskPositionViewSortTerm = 7
+	RiskPositionViewOrderByPositionID           RiskPositionViewSortCol  = 3
+	OrderRiskPositionViewPositionIDAsc          RiskPositionViewSortTerm = 8
+	OrderRiskPositionViewPositionIDDesc         RiskPositionViewSortTerm = 9
+	RiskPositionViewOrderPositionIDAsc          RiskPositionViewSortTerm = 8
+	RiskPositionViewOrderPositionIDDesc         RiskPositionViewSortTerm = 9
 )
 
-func OrderRiskPositionView(terms ...uint8) runtime.Order {
+func OrderRiskPositionView(terms ...RiskPositionViewSortTerm) runtime.Order {
 	return runtime.PackOrder(terms...)
 }
 
 type QueryRiskPositionsPageSortCol uint8
 
-func (c QueryRiskPositionsPageSortCol) Asc() uint8  { return runtime.Asc(uint8(c)) }
-func (c QueryRiskPositionsPageSortCol) Desc() uint8 { return runtime.Desc(uint8(c)) }
+// QueryRiskPositionsPageSortTerm is a sort column with a direction, accepted by OrderQueryRiskPositionsPage.
+type QueryRiskPositionsPageSortTerm uint8
+
+func (c QueryRiskPositionsPageSortCol) Asc() QueryRiskPositionsPageSortTerm {
+	return QueryRiskPositionsPageSortTerm(runtime.Asc(uint8(c)))
+}
+func (c QueryRiskPositionsPageSortCol) Desc() QueryRiskPositionsPageSortTerm {
+	return QueryRiskPositionsPageSortTerm(runtime.Desc(uint8(c)))
+}
 
 const (
-	QueryRiskPositionsPageOrderByNotionalCents        QueryRiskPositionsPageSortCol = 0
-	OrderQueryRiskPositionsPageNotionalCentsAsc       uint8                         = 2
-	OrderQueryRiskPositionsPageNotionalCentsDesc      uint8                         = 3
-	QueryRiskPositionsPageOrderNotionalCentsAsc       uint8                         = 2
-	QueryRiskPositionsPageOrderNotionalCentsDesc      uint8                         = 3
-	QueryRiskPositionsPageOrderByUnrealizedPnlCents   QueryRiskPositionsPageSortCol = 1
-	OrderQueryRiskPositionsPageUnrealizedPnlCentsAsc  uint8                         = 4
-	OrderQueryRiskPositionsPageUnrealizedPnlCentsDesc uint8                         = 5
-	QueryRiskPositionsPageOrderUnrealizedPnlCentsAsc  uint8                         = 4
-	QueryRiskPositionsPageOrderUnrealizedPnlCentsDesc uint8                         = 5
-	QueryRiskPositionsPageOrderByUpdatedSeq           QueryRiskPositionsPageSortCol = 2
-	OrderQueryRiskPositionsPageUpdatedSeqAsc          uint8                         = 6
-	OrderQueryRiskPositionsPageUpdatedSeqDesc         uint8                         = 7
-	QueryRiskPositionsPageOrderUpdatedSeqAsc          uint8                         = 6
-	QueryRiskPositionsPageOrderUpdatedSeqDesc         uint8                         = 7
-	QueryRiskPositionsPageOrderByPositionID           QueryRiskPositionsPageSortCol = 3
-	OrderQueryRiskPositionsPagePositionIDAsc          uint8                         = 8
-	OrderQueryRiskPositionsPagePositionIDDesc         uint8                         = 9
-	QueryRiskPositionsPageOrderPositionIDAsc          uint8                         = 8
-	QueryRiskPositionsPageOrderPositionIDDesc         uint8                         = 9
+	QueryRiskPositionsPageOrderByNotionalCents        QueryRiskPositionsPageSortCol  = 0
+	OrderQueryRiskPositionsPageNotionalCentsAsc       QueryRiskPositionsPageSortTerm = 2
+	OrderQueryRiskPositionsPageNotionalCentsDesc      QueryRiskPositionsPageSortTerm = 3
+	QueryRiskPositionsPageOrderNotionalCentsAsc       QueryRiskPositionsPageSortTerm = 2
+	QueryRiskPositionsPageOrderNotionalCentsDesc      QueryRiskPositionsPageSortTerm = 3
+	QueryRiskPositionsPageOrderByUnrealizedPnlCents   QueryRiskPositionsPageSortCol  = 1
+	OrderQueryRiskPositionsPageUnrealizedPnlCentsAsc  QueryRiskPositionsPageSortTerm = 4
+	OrderQueryRiskPositionsPageUnrealizedPnlCentsDesc QueryRiskPositionsPageSortTerm = 5
+	QueryRiskPositionsPageOrderUnrealizedPnlCentsAsc  QueryRiskPositionsPageSortTerm = 4
+	QueryRiskPositionsPageOrderUnrealizedPnlCentsDesc QueryRiskPositionsPageSortTerm = 5
+	QueryRiskPositionsPageOrderByUpdatedSeq           QueryRiskPositionsPageSortCol  = 2
+	OrderQueryRiskPositionsPageUpdatedSeqAsc          QueryRiskPositionsPageSortTerm = 6
+	OrderQueryRiskPositionsPageUpdatedSeqDesc         QueryRiskPositionsPageSortTerm = 7
+	QueryRiskPositionsPageOrderUpdatedSeqAsc          QueryRiskPositionsPageSortTerm = 6
+	QueryRiskPositionsPageOrderUpdatedSeqDesc         QueryRiskPositionsPageSortTerm = 7
+	QueryRiskPositionsPageOrderByPositionID           QueryRiskPositionsPageSortCol  = 3
+	OrderQueryRiskPositionsPagePositionIDAsc          QueryRiskPositionsPageSortTerm = 8
+	OrderQueryRiskPositionsPagePositionIDDesc         QueryRiskPositionsPageSortTerm = 9
+	QueryRiskPositionsPageOrderPositionIDAsc          QueryRiskPositionsPageSortTerm = 8
+	QueryRiskPositionsPageOrderPositionIDDesc         QueryRiskPositionsPageSortTerm = 9
 )
 
-func OrderQueryRiskPositionsPage(terms ...uint8) runtime.Order {
+func OrderQueryRiskPositionsPage(terms ...QueryRiskPositionsPageSortTerm) runtime.Order {
 	return runtime.PackOrder(terms...)
 }
 
@@ -3273,6 +3287,9 @@ func expandQueryRiskPositionsPageParams(dst *[]any, dialect runtime.Dialect, p Q
 			return runtime.ErrInvalidSeek
 		}
 		runtime.AppendSeekArgs(dst, dialect, p.Order, 4, p.Seek.Values)
+	}
+	if !runtime.OrderValid(p.Order) {
+		return runtime.ErrInvalidOrder
 	}
 	*dst = append(*dst, p.Limit)
 	return nil

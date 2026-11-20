@@ -380,6 +380,7 @@ var (
 	ErrUninitializedQuery = errors.New("sqlgen: curried Query argument is uninitialized")
 	ErrAssertionFailed    = errors.New("sqlgen: pipeline row-count assertion failed")
 	ErrBranchNotTaken     = errors.New("sqlgen: pipeline if/else branch was not taken")
+	ErrInvalidOrder       = errors.New("sqlgen: invalid order specification")
 	ErrNilArgument        = errors.New("sqlgen: nil iterator or callback argument")
 	ErrFutureNotReady     = errors.New("sqlgen: pipeline future read before the pipeline was flushed")
 )
@@ -501,23 +502,33 @@ const (
 	orderTermMask = 1<<orderTermBits - 1
 )
 
+// orderInvalidBit marks a packed Order built from an invalid term list (see PackOrder). It sits above the
+// 60 term bits and below the Seek flag, and is ignored by ExpandOrder.
+const orderInvalidBit = uint64(1) << 62
+
 // PackOrder packs up to MaxOrderCols sort column terms (each encoded as ((colIdx1Based) << 1) | descBit)
-// into a single collision-free uint64 with zero heap allocations. Duplicate columns and terms outside
-// 1..MaxOrderCols are ignored. Because a term can name each column at most once, every term of a
-// valid sort (at most MaxOrderCols columns exist) is kept.
-func PackOrder(terms ...uint8) uint64 {
+// into a single collision-free uint64 with zero heap allocations. It accepts any type whose underlying
+// type is uint8, so the generated per-statement term types (which make mixing the tokens of two
+// statements a compile error) pack without conversion. A term that is zero, names a column beyond
+// MaxOrderCols, or repeats a column already named marks the result invalid: OrderValid reports false
+// and the generated statement methods return ErrInvalidOrder instead of running a sort the caller did
+// not ask for.
+func PackOrder[T ~uint8](terms ...T) uint64 {
 	var (
 		packed uint64
 		seen   uint64
 		shift  uint
 	)
-	for _, t := range terms {
+	for _, term := range terms {
+		t := uint8(term)
 		col1 := t >> 1
 		if col1 == 0 || col1 > MaxOrderCols {
+			packed |= orderInvalidBit
 			continue
 		}
 		bit := uint64(1) << col1
 		if (seen & bit) != 0 {
+			packed |= orderInvalidBit
 			continue
 		}
 		seen |= bit
@@ -526,6 +537,10 @@ func PackOrder(terms ...uint8) uint64 {
 	}
 	return packed
 }
+
+// OrderValid reports whether orderSpec was packed from a valid term list (see PackOrder). The zero Order
+// (no terms) is valid.
+func OrderValid(orderSpec Order) bool { return orderSpec&orderInvalidBit == 0 }
 
 // ExpandOrder unpacks a packed uint64 order specification into column indices (0..numCols-1)
 // and direction flags (true == DESC), automatically appending the tie-breaker column (numCols-1)
@@ -858,7 +873,7 @@ func (s *tinyLFUSketch) estimate(h uint64) uint8 {
 For each statement `<Name>` in `sqlgen.yaml`, `Generate` emits into a single `bytes.Buffer`:
 1. Tuple structs (`<TupleStruct>`), `<tupleStruct>ChunkPool`, `compare<TupleStruct>`, and `is<TupleStruct>Sorted` (when `HasSort == true`).
 2. 1D slice presort helpers `is<Type>AscSorted` / `is<Type>DescSorted` (when `HasSort == true`).
-3. Output row struct (`<RowType>`), `<RowType>Col` bitmask constants (`1 << iota`), and `<RowType>Order` / `<RowType>SortCol` / `Order<RowType>(...)` helpers.
+3. Output row struct (`<RowType>`), `<RowType>Col` bitmask constants (`1 << iota`), and `<RowType>Order` / `<RowType>SortCol` / `<RowType>SortTerm` / `Order<RowType>(...)` helpers (`Order<RowType>` takes `<RowType>SortTerm`, so the sort tokens of another statement do not compile; a repeated or out-of-range term yields `runtime.ErrInvalidOrder`).
 4. `<Name>Params` struct (when `UseParamsStruct == true`).
 5. Static `QueryDescriptor` (`<name>Desc`) and non-capturing `expand<Name>Args` function.
 6. Currying constructors: `func <Name>Query(...) Query` and `func (q *Queries) <Name>Query(...) Query`.

@@ -78,19 +78,22 @@ func TestRealEngineWidestOrder(t *testing.T) {
 			return 0
 		})
 
-		var terms []uint8
+		var pgTerms []pgq.WideSortTerm
+		var myTerms []myq.WideSortTerm
 		for i := 0; i < n; i++ {
 			if desc(i) {
-				terms = append(terms, runtime.Desc(uint8(i)))
+				pgTerms = append(pgTerms, pgq.WideSortCol(i).Desc())
+				myTerms = append(myTerms, myq.WideSortCol(i).Desc())
 			} else {
-				terms = append(terms, runtime.Asc(uint8(i)))
+				pgTerms = append(pgTerms, pgq.WideSortCol(i).Asc())
+				myTerms = append(myTerms, myq.WideSortCol(i).Asc())
 			}
 		}
 
 		var got []row
 		page := func(after runtime.Seek) (rs []row, next runtime.Seek, err error) {
 			if e.isPG() {
-				r, err := pgq.New(db).WideRows(ctxT(t), pgq.WideRowsParams{After: after, Sort: pgq.OrderWide(terms...), Limit: 7})
+				r, err := pgq.New(db).WideRows(ctxT(t), pgq.WideRowsParams{After: after, Sort: pgq.OrderWide(pgTerms...), Limit: 7})
 				for _, w := range r {
 					rs = append(rs, row{w.C1, w.C2, w.C3, w.C4, w.C5, w.C6, w.C7, w.C8, w.C9, w.C10, w.C11, w.ID})
 				}
@@ -99,7 +102,7 @@ func TestRealEngineWidestOrder(t *testing.T) {
 				}
 				return rs, next, err
 			}
-			r, err := myq.New(db).WideRows(ctxT(t), myq.WideRowsParams{After: after, Sort: myq.OrderWide(terms...), Limit: 7})
+			r, err := myq.New(db).WideRows(ctxT(t), myq.WideRowsParams{After: after, Sort: myq.OrderWide(myTerms...), Limit: 7})
 			for _, w := range r {
 				rs = append(rs, row{w.C1, w.C2, w.C3, w.C4, w.C5, w.C6, w.C7, w.C8, w.C9, w.C10, w.C11, w.ID})
 			}

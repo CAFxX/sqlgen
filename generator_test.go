@@ -1159,7 +1159,7 @@ func TestPropertyKeysetPaginationEquivalence(t *testing.T) {
 
 	// Test all 16 sort-direction masks over the 4 columns (group_key, priority, created_ts, id)
 	for mask := 0; mask < 16; mask++ {
-		var terms [4]uint8
+		var terms [4]QuadItemSortTerm
 		if (mask & 1) == 0 {
 			terms[0] = QuadItemOrderByGroupKey.Asc()
 		} else {

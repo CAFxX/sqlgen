@@ -77,7 +77,6 @@ var (
 	WithPromoteThreshold = runtime.WithPromoteThreshold
 	WithMaxBatchParams   = runtime.WithMaxBatchParams
 	NewSeek              = runtime.NewSeek
-	PackOrder            = runtime.PackOrder
 	ExpandOrder          = runtime.ExpandOrder
 	Asc                  = runtime.Asc
 	Desc                 = runtime.Desc
@@ -3314,6 +3313,13 @@ func emitSlotArgExpansion(b *bytes.Buffer, cs *compiledStmt, blk *parsedBlock, p
 		case runtime.SlotScalar:
 			p := cs.Params[sl.ParamIdx]
 			fmt.Fprintf(b, "\t*dst = append(*dst, %s)\n", paramAccess(p))
+		case runtime.SlotOrder:
+			for _, op := range cs.Params {
+				if op.Kind == paramOrder {
+					fmt.Fprintf(b, "\tif !runtime.OrderValid(%s) {\n\t\treturn runtime.ErrInvalidOrder\n\t}\n", paramAccess(op))
+					break
+				}
+			}
 		case runtime.SlotSlice:
 			p := cs.Params[sl.ParamIdx]
 			acc := paramAccess(p)
@@ -3390,23 +3396,27 @@ func emitSlotArgExpansion(b *bytes.Buffer, cs *compiledStmt, blk *parsedBlock, p
 }
 
 func emitSortHelperGroup(b *bytes.Buffer, typeTag string, orderCols []orderColRef) {
+	// A sort column and an encoded sort term are distinct types per row type / statement, so the tokens of
+	// one statement cannot be passed to the Order constructor of another (a compile error).
 	fmt.Fprintf(b, "type %sSortCol uint8\n\n", typeTag)
-	fmt.Fprintf(b, "func (c %sSortCol) Asc() uint8  { return runtime.Asc(uint8(c)) }\n", typeTag)
-	fmt.Fprintf(b, "func (c %sSortCol) Desc() uint8 { return runtime.Desc(uint8(c)) }\n\n", typeTag)
+	fmt.Fprintf(b, "// %sSortTerm is a sort column with a direction, accepted by Order%s.\n", typeTag, typeTag)
+	fmt.Fprintf(b, "type %sSortTerm uint8\n\n", typeTag)
+	fmt.Fprintf(b, "func (c %sSortCol) Asc() %sSortTerm  { return %sSortTerm(runtime.Asc(uint8(c))) }\n", typeTag, typeTag, typeTag)
+	fmt.Fprintf(b, "func (c %sSortCol) Desc() %sSortTerm { return %sSortTerm(runtime.Desc(uint8(c))) }\n\n", typeTag, typeTag, typeTag)
 
 	b.WriteString("const (\n")
 	for idx, oc := range orderCols {
 		ascVal := runtime.Asc(uint8(idx))
 		descVal := runtime.Desc(uint8(idx))
 		fmt.Fprintf(b, "\t%sOrderBy%s %sSortCol = %d\n", typeTag, oc.FieldName, typeTag, idx)
-		fmt.Fprintf(b, "\tOrder%s%sAsc uint8 = %d\n", typeTag, oc.FieldName, ascVal)
-		fmt.Fprintf(b, "\tOrder%s%sDesc uint8 = %d\n", typeTag, oc.FieldName, descVal)
-		fmt.Fprintf(b, "\t%sOrder%sAsc uint8 = %d\n", typeTag, oc.FieldName, ascVal)
-		fmt.Fprintf(b, "\t%sOrder%sDesc uint8 = %d\n", typeTag, oc.FieldName, descVal)
+		fmt.Fprintf(b, "\tOrder%s%sAsc %sSortTerm = %d\n", typeTag, oc.FieldName, typeTag, ascVal)
+		fmt.Fprintf(b, "\tOrder%s%sDesc %sSortTerm = %d\n", typeTag, oc.FieldName, typeTag, descVal)
+		fmt.Fprintf(b, "\t%sOrder%sAsc %sSortTerm = %d\n", typeTag, oc.FieldName, typeTag, ascVal)
+		fmt.Fprintf(b, "\t%sOrder%sDesc %sSortTerm = %d\n", typeTag, oc.FieldName, typeTag, descVal)
 	}
 	b.WriteString(")\n\n")
 
-	fmt.Fprintf(b, "func Order%s(terms ...uint8) runtime.Order {\n", typeTag)
+	fmt.Fprintf(b, "func Order%s(terms ...%sSortTerm) runtime.Order {\n", typeTag, typeTag)
 	b.WriteString("\treturn runtime.PackOrder(terms...)\n")
 	b.WriteString("}\n\n")
 }

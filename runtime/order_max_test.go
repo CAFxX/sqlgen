@@ -85,14 +85,6 @@ func TestOrderHonoursEveryTermUpToMaxOrderCols(t *testing.T) {
 	}
 }
 
-func TestPackOrderIgnoresTermsBeyondMaxOrderCols(t *testing.T) {
-	spec := PackOrder(Asc(MaxOrderCols), Desc(MaxOrderCols+3), Asc(0))
-	cols, _, count, _ := ExpandOrder(spec, MaxOrderCols)
-	if count != 2 || cols[0] != 0 || cols[1] != MaxOrderCols-1 {
-		t.Fatalf("out-of-range terms leaked: cols=%v count=%d", cols[:count], count)
-	}
-}
-
 // Documented defaults (DOCS.md 2.6): no Order falls back to the last listed column ascending, a partial
 // Order appends that column with the direction of the last term given, and a first page renders TRUE.
 func TestOrderDefaultsAndFirstPageSeek(t *testing.T) {
@@ -141,5 +133,52 @@ func TestMaxRowsPerBatchDefaultsAndWireLimits(t *testing.T) {
 	}
 	if got := big.MaxRowsPerBatch(DialectQuestion, 0, 2); got != 32766/2 {
 		t.Errorf("question clamped = %d, want %d", got, 32766/2)
+	}
+}
+
+type testTerm uint8 // stands in for a generated per-statement <Stmt>SortTerm
+
+func TestPackOrderMarksInvalidTermLists(t *testing.T) {
+	valid := [][]testTerm{
+		nil,
+		{testTerm(Asc(0))},
+		{testTerm(Desc(3)), testTerm(Asc(0))},
+	}
+	for _, terms := range valid {
+		if !OrderValid(PackOrder(terms...)) {
+			t.Errorf("%v must be valid", terms)
+		}
+	}
+	all := make([]testTerm, MaxOrderCols)
+	for i := range all {
+		all[i] = testTerm(Asc(uint8(i)))
+	}
+	if !OrderValid(PackOrder(all...)) {
+		t.Error("every column named once must be valid")
+	}
+	for name, terms := range map[string][]testTerm{
+		"duplicate column":        {testTerm(Asc(0)), testTerm(Desc(0))},
+		"zero term":               {0},
+		"beyond MaxOrderCols":     {testTerm(Asc(MaxOrderCols))},
+		"valid then out of range": {testTerm(Asc(0)), testTerm(Desc(60))},
+	} {
+		if OrderValid(PackOrder(terms...)) {
+			t.Errorf("%s: must be invalid", name)
+		}
+	}
+	if !OrderValid(0) {
+		t.Error("the zero Order must be valid")
+	}
+	// The invalid flag must not disturb the terms that were kept.
+	cols, _, count, _ := ExpandOrder(PackOrder(testTerm(Asc(1)), testTerm(Desc(1)), testTerm(Desc(0))), 3)
+	if count != 3 || cols[0] != 1 || cols[1] != 0 || cols[2] != 2 {
+		t.Errorf("ExpandOrder over an invalid spec: cols=%v count=%d", cols[:count], count)
+	}
+}
+
+func TestPackOrderOfTypedTermsAllocatesNothing(t *testing.T) {
+	a, b := testTerm(Asc(0)), testTerm(Desc(1))
+	if n := testing.AllocsPerRun(100, func() { _ = PackOrder(a, b) }); n != 0 {
+		t.Fatalf("PackOrder allocated %.1f objects", n)
 	}
 }

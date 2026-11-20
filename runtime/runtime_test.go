@@ -1281,7 +1281,7 @@ func TestExpandOrderAndSeekAndHelpers(t *testing.T) {
 		t.Fatalf("unexpected default ExpandOrder: count=%d cols=%v desc=%v", count, cols[:count], desc[:count])
 	}
 
-	spec := PackOrder(Desc(0), Desc(0), Asc(200))
+	spec := PackOrder(Desc(0))
 	cols, desc, count, allSame = ExpandOrder(spec, 3)
 	if count != 2 || cols[0] != 0 || !desc[0] || cols[1] != 2 || !desc[1] || !allSame {
 		t.Fatalf("unexpected single-DESC ExpandOrder: count=%d cols=%v desc=%v", count, cols[:count], desc[:count])
@@ -2233,7 +2233,8 @@ func TestPipelineWirePipelinerAndSequentialCoverage(t *testing.T) {
 
 	// PackOrder, ExpandOrder, and AppendSeekArgs edge cases
 	_ = PackOrder(0, Asc(0), Desc(0), Asc(1), Asc(2), Asc(3), Asc(4), Asc(5), Asc(6), Asc(7), Asc(8))
-	dupOrderSpec := uint64(Asc(0)) | (uint64(Desc(0)) << 8) | (uint64(Asc(99)) << 16)
+	// A hand-built spec with a repeated column and a column beyond numCols: ExpandOrder skips both.
+	dupOrderSpec := uint64(Asc(0)) | (uint64(Desc(0)) << orderTermBits) | (uint64(Asc(3)) << (2 * orderTermBits))
 	_, _, _, _ = ExpandOrder(dupOrderSpec, 3)
 	sevenOrder := PackOrder(Asc(0), Asc(1), Asc(2), Asc(3), Asc(4), Asc(5), Asc(6))
 	_, _, _, _ = ExpandOrder(sevenOrder, 8)
@@ -2556,7 +2557,7 @@ func BenchmarkZeroAllocHotPath(b *testing.B) {
 	b.ReportAllocs()
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		ord := PackOrder(1, 0x01, 0x82)
+		ord := PackOrder[uint8](1, 0x01, 0x82)
 		vk := MakeVariantKey(1, 0b11, 0b1, EncodeOrderKey(ord, true), 4)
 		_ = vk
 		sqlStr := BuildComposedSQL(staticDesc, &in, DialectQuestion)

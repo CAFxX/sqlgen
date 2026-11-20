@@ -305,23 +305,33 @@ func Desc(colIdx uint8) uint8 {
 	return ((colIdx + 1) << 1) | 1
 }
 
+// orderInvalidBit marks a packed Order built from an invalid term list (see PackOrder). It sits above the
+// 60 term bits and below the Seek flag, and is ignored by ExpandOrder.
+const orderInvalidBit = uint64(1) << 62
+
 // PackOrder packs up to MaxOrderCols sort column terms (each encoded as ((colIdx1Based) << 1) | descBit)
-// into a single collision-free uint64 with zero heap allocations. Duplicate columns and terms outside
-// 1..MaxOrderCols are ignored. Because a term can name each column at most once, every term of a
-// valid sort (at most MaxOrderCols columns exist) is kept.
-func PackOrder(terms ...uint8) uint64 {
+// into a single collision-free uint64 with zero heap allocations. It accepts any type whose underlying
+// type is uint8, so the generated per-statement term types (which make mixing the tokens of two
+// statements a compile error) pack without conversion. A term that is zero, names a column beyond
+// MaxOrderCols, or repeats a column already named marks the result invalid: OrderValid reports false
+// and the generated statement methods return ErrInvalidOrder instead of running a sort the caller did
+// not ask for.
+func PackOrder[T ~uint8](terms ...T) uint64 {
 	var (
 		packed uint64
 		seen   uint64
 		shift  uint
 	)
-	for _, t := range terms {
+	for _, term := range terms {
+		t := uint8(term)
 		col1 := t >> 1
 		if col1 == 0 || col1 > MaxOrderCols {
+			packed |= orderInvalidBit
 			continue
 		}
 		bit := uint64(1) << col1
 		if (seen & bit) != 0 {
+			packed |= orderInvalidBit
 			continue
 		}
 		seen |= bit
@@ -331,7 +341,11 @@ func PackOrder(terms ...uint8) uint64 {
 	return packed
 }
 
-// EncodeOrderKey combines a 60-bit packed Order specification and a boolean hasSeek flag into a 64-bit key.
+// OrderValid reports whether orderSpec was packed from a valid term list (see PackOrder). The zero Order
+// (no terms) is valid.
+func OrderValid(orderSpec Order) bool { return orderSpec&orderInvalidBit == 0 }
+
+// EncodeOrderKey combines a packed Order specification (60 term bits plus the invalid flag) and a boolean hasSeek flag into a 64-bit key.
 func EncodeOrderKey(orderSpec Order, hasSeek bool) uint64 {
 	if hasSeek {
 		return orderSpec | (1 << 63)

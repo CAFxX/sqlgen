@@ -36,3 +36,14 @@ func TestNilIteratorAndCallbackArgumentsAreErrors(t *testing.T) {
 		}
 	}
 }
+
+// An Order that repeats a column makes argument expansion fail with ErrInvalidOrder.
+func TestInvalidOrderFailsArgumentExpansion(t *testing.T) {
+	bad := OrderQueryRiskPositionsPage(QueryRiskPositionsPageOrderByNotionalCents.Asc(), QueryRiskPositionsPageOrderByNotionalCents.Desc())
+	var dst []any
+	sub := runtime.Query{Desc: &runtime.QueryDescriptor{}, Expand: func(*[]any, runtime.Dialect, *runtime.Query) error { return nil }}
+	err := expandQueryRiskPositionsPageParams(&dst, runtime.DialectQuestion, QueryRiskPositionsPageParams{MatchingPositions: sub, Order: bad})
+	if !errors.Is(err, runtime.ErrInvalidOrder) {
+		t.Fatalf("err = %v, want runtime.ErrInvalidOrder", err)
+	}
+}
