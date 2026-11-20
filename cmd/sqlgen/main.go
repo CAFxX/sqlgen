@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"path/filepath"
 	"runtime/debug"
 	"strings"
 
@@ -100,17 +99,6 @@ func run(args []string, stdout, stderr io.Writer) int {
 		return 1
 	}
 
-	targetOut := outPath
-	if targetOut == "" {
-		targetOut = cfg.Out
-		if targetOut == "" {
-			targetOut = "sqlgen_gen.go"
-		}
-		if !filepath.IsAbs(targetOut) {
-			targetOut = filepath.Join(filepath.Dir(cfgPath), targetOut)
-		}
-	}
-
 	src, err := sqlgen.Generate(cfg)
 	if err != nil {
 		reportErr(stderr, err)
@@ -125,6 +113,11 @@ func run(args []string, stdout, stderr io.Writer) int {
 		return 0
 	}
 
+	targetOut, err := sqlgen.OutputPath(cfgPath, cfg, outPath)
+	if err != nil {
+		reportErr(stderr, err)
+		return 1
+	}
 	existing, err := os.ReadFile(targetOut)
 	if err != nil {
 		_, _ = fmt.Fprintf(stderr, "sqlgen: -check failed: cannot read %s: %v (run sqlgen -config %s to regenerate)\n", targetOut, err, cfgPath)
