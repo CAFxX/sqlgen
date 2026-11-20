@@ -356,6 +356,9 @@ func EstimateOpBytes(desc *QueryDescriptor, in *RenderInput, dec *OpDecorators) 
 		}
 		if dec.ProduceCond != nil {
 			total += 480 + dec.ProduceCond.estimateBytes()
+			for i := range dec.ExtraConds {
+				total += 480 + dec.ExtraConds[i].Cond.estimateBytes()
+			}
 		}
 	}
 	if total < 8 {
@@ -597,6 +600,16 @@ func streamOpSQL(b *strings.Builder, dialect Dialect, desc *QueryDescriptor, in 
 		b.WriteString("', CASE WHEN (")
 		dec.ProduceCond.writeSQL(b, &cur)
 		b.WriteString(") THEN 'true' ELSE 'false' END, true) = 'true' AS _ok FROM _sqlgen_op)")
+		for i := range dec.ExtraConds {
+			ec := &dec.ExtraConds[i]
+			b.WriteString(", _sqlgen_x")
+			b.Write(strconv.AppendInt(cur.numBuf[:0], int64(ec.CondID), 10))
+			b.WriteString(" AS (SELECT COUNT(*) AS _cnt, set_config('sqlgen.c")
+			b.Write(strconv.AppendInt(cur.numBuf[:0], int64(ec.CondID), 10))
+			b.WriteString("', CASE WHEN (")
+			ec.Cond.writeSQL(b, &cur)
+			b.WriteString(") THEN 'true' ELSE 'false' END, true) = 'true' AS _ok FROM _sqlgen_op)")
+		}
 	}
 
 	hasResultCols := desc != nil && (desc.StmtVerb == VerbSelect || desc.HasReturning)
@@ -612,6 +625,13 @@ func streamOpSQL(b *strings.Builder, dialect Dialect, desc *QueryDescriptor, in 
 		}
 		if hasCond {
 			b.WriteString(", (SELECT _ok FROM _sqlgen_cond) AS _c")
+			for i := range dec.ExtraConds {
+				id := strconv.AppendInt(cur.numBuf[:0], int64(dec.ExtraConds[i].CondID), 10)
+				b.WriteString(", (SELECT _ok FROM _sqlgen_x")
+				b.Write(id)
+				b.WriteString(") AS _x")
+				b.Write(id)
+			}
 		}
 		b.WriteString(") AS _f CROSS JOIN LATERAL (SELECT * FROM _sqlgen_op WHERE _f._o IS NOT NULL")
 		if hasAssert {
@@ -619,10 +639,22 @@ func streamOpSQL(b *strings.Builder, dialect Dialect, desc *QueryDescriptor, in 
 		}
 		if hasCond {
 			b.WriteString(" AND _f._c IS NOT NULL")
+			for i := range dec.ExtraConds {
+				b.WriteString(" AND _f._x")
+				b.Write(strconv.AppendInt(cur.numBuf[:0], int64(dec.ExtraConds[i].CondID), 10))
+				b.WriteString(" IS NOT NULL")
+			}
 		}
 		b.WriteString(") AS _r")
-	} else if hasCond && hasAssert {
-		b.WriteString(" SELECT _sqlgen_cond._cnt, _sqlgen_cond._ok FROM _sqlgen_cond CROSS JOIN _sqlgen_chk")
+	} else if hasCond && (hasAssert || len(dec.ExtraConds) > 0) {
+		b.WriteString(" SELECT _sqlgen_cond._cnt, _sqlgen_cond._ok FROM _sqlgen_cond")
+		for i := range dec.ExtraConds {
+			b.WriteString(" CROSS JOIN _sqlgen_x")
+			b.Write(strconv.AppendInt(cur.numBuf[:0], int64(dec.ExtraConds[i].CondID), 10))
+		}
+		if hasAssert {
+			b.WriteString(" CROSS JOIN _sqlgen_chk")
+		}
 	} else if hasCond {
 		b.WriteString(" SELECT _cnt, _ok FROM _sqlgen_cond")
 	} else {

@@ -6,6 +6,7 @@ import (
 	"database/sql/driver"
 	"errors"
 	"io"
+	"strings"
 	"testing"
 	"time"
 )
@@ -445,5 +446,82 @@ func TestWireResultKinds(t *testing.T) {
 		if got := tc.op.WireResult(); got != tc.want {
 			t.Errorf("%s: WireResult = %v, want %v", tc.name, got, tc.want)
 		}
+	}
+}
+
+// A second If over the same future needs its own server-side recording: the branch gates of its
+// operations read sqlgen.c<ID> for that ID, so it must be set by the SQL of the producing operation.
+func TestExtraConditionsAreRecordedServerSide(t *testing.T) {
+	get := &QueryDescriptor{
+		Name: "Get", StmtID: 2, StmtVerb: VerbSelect,
+		StaticSQL:      "SELECT id FROM t WHERE id = $1",
+		Segments:       []string{"SELECT ", " FROM t WHERE id = ", ""},
+		Slots:          []Slot{{Kind: SlotSelectCols}, {Kind: SlotScalar}},
+		SelectColExprs: []string{"id"},
+	}
+	upd := &QueryDescriptor{
+		Name: "Upd", StmtID: 3, StmtVerb: VerbUpdate,
+		StaticSQL: "UPDATE t SET v = v + $1 WHERE id = $2",
+		Segments:  []string{"UPDATE t SET v = v + ", " WHERE ", "id = ", "", ""},
+		Slots:     []Slot{{Kind: SlotScalar}, {Kind: SlotBranchGuardOpen}, {Kind: SlotScalar}, {Kind: SlotBranchGuardClose}},
+	}
+	p := NewPipeline(context.Background(), nil, nil, nil, true, DialectDollar)
+	f := QueueRow[int64](p, 2, get, RenderInput{}, MakeVariantKey(2, 0, 0, 0), nil, nil, nil,
+		func(r *sql.Row, dst *int64) error { return r.Scan(dst) }, func(rs *sql.Rows, dst *int64) error { return rs.Scan(dst) })
+	p.If(f.Found(), func() { p.QueueExec(3, upd, RenderInput{}, MakeVariantKey(3, 0, 0, 0), nil, nil, nil) }, nil)
+	p.If(f.NotFound(), nil, func() { p.QueueExec(3, upd, RenderInput{}, MakeVariantKey(3, 0, 0, 0), nil, nil, nil) })
+	p.If(f.RowsAffectedGe(1), nil, nil)
+	p.syncOpsFromPtrs()
+	RenderPipelineBatch(DialectDollar, nil, p.ops)
+
+	op := p.ops[0]
+	if len(op.ExtraConds) != 2 || len(op.Decorators.ExtraConds) != 2 {
+		t.Fatalf("ExtraConds = %d / %d", len(op.ExtraConds), len(op.Decorators.ExtraConds))
+	}
+	for _, want := range []string{
+		"_sqlgen_cond AS (SELECT COUNT(*) AS _cnt, set_config('sqlgen.c1'",
+		"_sqlgen_x2 AS (SELECT COUNT(*) AS _cnt, set_config('sqlgen.c2'",
+		"_sqlgen_x3 AS (SELECT COUNT(*) AS _cnt, set_config('sqlgen.c3'",
+		"(SELECT _ok FROM _sqlgen_x2) AS _x2",
+		"AND _f._x3 IS NOT NULL",
+	} {
+		if !strings.Contains(op.SQL, want) {
+			t.Fatalf("SQL lacks %q:\n%s", want, op.SQL)
+		}
+	}
+	if est := EstimateOpBytes(op.Desc, &op.Input, &op.Decorators); est < len(op.SQL) {
+		t.Fatalf("EstimateOpBytes = %d < rendered %d", est, len(op.SQL))
+	}
+
+	// an exec producer takes the CROSS JOIN form, with and without an assertion
+	exec := PipelineOp{Desc: upd, Decorators: OpDecorators{AssertRows: -1, ProduceCond: &PipelineCond{Kind: CondRowsGt}, CondID: 1,
+		ExtraConds: []ProducedCond{{CondID: 2, Cond: &PipelineCond{Kind: CondRowsEq, Threshold: 1}}}}}
+	for _, assert := range []int64{-1, 1} {
+		exec.Decorators.AssertRows = assert
+		ops := []PipelineOp{exec}
+		RenderPipelineBatch(DialectDollar, nil, ops)
+		if !strings.Contains(ops[0].SQL, "FROM _sqlgen_cond CROSS JOIN _sqlgen_x2") ||
+			strings.Contains(ops[0].SQL, "CROSS JOIN _sqlgen_chk") != (assert >= 0) {
+			t.Fatalf("assert=%d: unexpected SQL:\n%s", assert, ops[0].SQL)
+		}
+		if est := EstimateOpBytes(upd, &RenderInput{}, &exec.Decorators); est < len(ops[0].SQL) {
+			t.Fatalf("EstimateOpBytes = %d < rendered %d", est, len(ops[0].SQL))
+		}
+	}
+
+	// values read back from the server win over the Go evaluation
+	p2 := NewPipeline(context.Background(), nil, nil, nil, true, DialectDollar)
+	f2 := QueueRow[int64](p2, 2, get, RenderInput{}, MakeVariantKey(2, 0, 0, 0), nil, nil, nil,
+		func(r *sql.Row, dst *int64) error { return r.Scan(dst) }, func(rs *sql.Rows, dst *int64) error { return rs.Scan(dst) })
+	r1 := p2.If(f2.Found(), nil, nil)
+	r2 := p2.If(f2.NotFound(), nil, nil)
+	p2.syncOpsFromPtrs()
+	p2.ops[0].CondVal, p2.ops[0].CondSet = true, true
+	p2.ops[0].ExtraConds[0].Val, p2.ops[0].ExtraConds[0].Set = true, true // the Go evaluation would say false
+	if err := p2.executePipelineOps(context.Background(), true); err != nil {
+		t.Fatal(err)
+	}
+	if !r1.Taken() || !r2.Taken() {
+		t.Fatalf("taken = %v / %v", r1.Taken(), r2.Taken())
 	}
 }

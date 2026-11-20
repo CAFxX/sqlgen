@@ -125,6 +125,10 @@ func WhereCol[T any](f *RowFuture[T], sqlPred string, goPred func(T) bool) Pipel
 type ProducedCond struct {
 	CondID int
 	Cond   *PipelineCond
+	// Val and Set are filled in by a wire driver that read the condition back from the server (as
+	// PipelineOp.CondVal / CondSet are for the first condition). When Set is false the condition is
+	// evaluated in Go after the results were scanned.
+	Val, Set bool
 }
 
 // PipelineOp represents a single queued operation inside a Pipeline or PipelineTx.
@@ -1069,10 +1073,9 @@ func (p *Pipeline) If(cond PipelineCond, thenFn func(), elseFn func()) *IfResult
 			rootOp.Decorators.ProduceCond = &cCopy
 			rootOp.Decorators.CondID = condID
 		} else {
-			rootOp.ExtraConds = append(rootOp.ExtraConds, ProducedCond{
-				CondID: condID,
-				Cond:   &cCopy,
-			})
+			pc := ProducedCond{CondID: condID, Cond: &cCopy}
+			rootOp.ExtraConds = append(rootOp.ExtraConds, pc)
+			rootOp.Decorators.ExtraConds = append(rootOp.Decorators.ExtraConds, pc)
 		}
 	}
 	res := &IfResult{
@@ -1169,7 +1172,11 @@ func (p *Pipeline) executePipelineOps(ctx context.Context, wireMode bool) error 
 			}
 		}
 		for _, ec := range op.ExtraConds {
-			condVals[ec.CondID] = ec.Cond.EvalGoFn()
+			if wireMode && ec.Set {
+				condVals[ec.CondID] = ec.Val
+			} else {
+				condVals[ec.CondID] = ec.Cond.EvalGoFn()
+			}
 		}
 		*p.opPtrs[i] = *op
 		if op.OnDone != nil {

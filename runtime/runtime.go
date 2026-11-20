@@ -534,6 +534,10 @@ type OpDecorators struct {
 	IsAbort     bool
 	ProduceCond *PipelineCond
 	CondID      int
+	// ExtraConds are further conditions over the same operation (a second If on the same future).
+	// Rendered like ProduceCond, each recorded server-side under its own CondID. Pipeline.If keeps it in
+	// step with PipelineOp.ExtraConds.
+	ExtraConds []ProducedCond
 }
 
 // ArgsExpander appends a Query's bound arguments into dst.

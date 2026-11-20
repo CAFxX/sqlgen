@@ -4,6 +4,7 @@ go 1.27
 
 require (
 	github.com/CAFxX/sqlgen v0.0.0
+	github.com/CAFxX/sqlgen/pgxwire v0.0.0
 	github.com/go-sql-driver/mysql v1.10.2
 	github.com/jackc/pgx/v5 v5.13.0
 )
@@ -18,3 +19,5 @@ require (
 )
 
 replace github.com/CAFxX/sqlgen => ../
+
+replace github.com/CAFxX/sqlgen/pgxwire => ../pgxwire
