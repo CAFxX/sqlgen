@@ -43,10 +43,10 @@ Or add a `//go:generate` directive to any Go file in your package:
 version: "1"                                    # Optional: must be "" or "1"
 package: ledger                                 # Target Go package name (required)
 out: ledger_gen.go                              # Output Go file path relative to YAML file (default: "sqlgen_gen.go")
-dialect: postgres                               # "postgres" | "postgresql" | "pgx" ($1, $2)
+dialect: postgres                               # "postgres" | "postgresql" | "pgx" | "cockroachdb" | "cockroach" ($1, $2)
                                                 # "sqlite" | "sqlite3" | "mysql" | "mariadb" (?)
-                                                # "sqlserver" | "mssql" (@p1, @p2)
-                                                # "oracle" (:1, :2)
+                                                # also the engine-neutral "dollar" ($) and "question" (?); anything else is an error
+                                                # (SQL Server and Oracle are not supported)
 runtime_import: "github.com/CAFxX/sqlgen/runtime" # Optional override for runtime import path
 extra_imports:                                  # Optional extra Go import paths
   - "github.com/google/uuid"
@@ -70,7 +70,34 @@ statements:
       WHERE org_id = :org_id AND id = :account_id
 ```
 
+Statement names are exported Go identifiers: `name: getAccount` is rejected at generate time (`must be an exported Go identifier`), as are names that collide with generated methods. The `out:` directory is created if it does not exist.
+
 > **Strict YAML Validation**: `sqlgen` decodes `sqlgen.yaml` with `KnownFields(true)`. Unknown keys at any level, empty YAML files, or trailing YAML documents produce an immediate compile-time error.
+
+#### Placeholders are generated, never hand-written
+
+Write parameters as `:name:type` and let `sqlgen` emit the engine's placeholders. A hand-written placeholder would collide with the generated numbering and arguments, so it is a generate-time error when it can be recognised without ambiguity (placeholder-looking text inside string literals, quoted identifiers, dollar-quoted strings and comments is never flagged):
+- `dialect: postgres` / `cockroachdb` (`$N`): a literal `$1`, `$2`, ... is rejected. A bare `?` is left alone, because PostgreSQL's `jsonb` operators (`?`, `?|`, `?&`) use it.
+- `dialect: mysql` / `mariadb` / `sqlite` (`?`): a literal `?` is rejected (none of these engines has a `?` operator, so outside literals it can only be a placeholder). `$1` text is left alone.
+- A tuple slice (`:rows:[]T(...)`) expands to a comma-separated list of parenthesised rows, so it is only accepted after `VALUES` or inside `IN (...)`; anywhere else (`WHERE x = :rows:[]T(...)`) is an error.
+
+### Engine support
+
+| Feature | PostgreSQL | CockroachDB | SQLite | MySQL | MariaDB |
+| :--- | :--- | :--- | :--- | :--- | :--- |
+| `dialect:` | `postgres` | `cockroachdb` | `sqlite` | `mysql` | `mariadb` |
+| Placeholders | `$N` | `$N` | `?` | `?` | `?` |
+| `RETURNING` (`kind: many` on `INSERT` / `UPDATE` / `DELETE`) | yes | yes | yes | **no** (generate-time error) | `INSERT` and `DELETE` only (no `UPDATE ... RETURNING`) |
+| Tested versions | 15, 18 | v25.2 | `modernc.org/sqlite` | 8.4, 9.7 | 10.11, 12.3 |
+| Keyset `Seek` / `Order`, `SelectCols`, `{?Flag:}` blocks, `Batch` / `Stream`, `InTx` | yes | yes | yes | yes | yes |
+| Single-round-trip pipelines (`pgxwire`) | yes | yes | no (sequential) | no (sequential) | no (sequential) |
+| Typed `::type` placeholder casts in gated inserts | yes | yes | n/a | n/a | n/a |
+| Batch chunk limit (parameters per statement, see `WithMaxBatchParams`) | 16384 default, at most 65535 | same | 16384 default, at most 32766 | same as SQLite | same as SQLite |
+
+Notes:
+- **`RETURNING`.** MySQL has no `RETURNING` clause; a statement containing one under `dialect: mysql` fails at generate time with a hint. MariaDB 10.5+ supports it for `INSERT` and `DELETE` (not `UPDATE`): pick `dialect: mariadb` for it (the two dialects generate the same `?` placeholders, so `mariadb` merely allows `RETURNING`). On MySQL read the rows back with a `SELECT`.
+- **`time.Time` on MySQL and MariaDB.** `go-sql-driver/mysql` returns `DATE` / `DATETIME` / `TIMESTAMP` columns as `[]byte` unless the DSN has `parseTime=true`; scanning them into a `time.Time` result field fails without it (`user:pass@tcp(host)/db?parseTime=true`).
+- **First page of a keyset query.** The `Seek` slot renders the literal `TRUE` (a valid boolean expression on every engine above) when no cursor is given.
 
 ---
 
@@ -298,10 +325,12 @@ statements:
 
    **Which names to use.** Every statement gets its own set (`Order<Stmt>`, `<Stmt>OrderBy<Col>`, `Seek<Stmt>`) and, in addition, a set keyed by its row type (`Order<RowType>`, `<RowType>OrderBy<Col>`, `Seek<RowType>`). Prefer the per-statement names: they are always unambiguous. The row-type names exist for statements that share one `result_type` (they then share one set, which is why such statements must list identical `sqlgen.Order` columns). With the default `result_type` (`<Stmt>Row`) the row-type names carry an extra `Row` (`Order<Stmt>Row`, `<Stmt>RowOrderBy<Col>`). Besides the typed tokens there are raw `uint8` constants for each column and direction (`Order<Stmt><Col>Asc`, `Order<Stmt><Col>Desc`, and the equivalent `<Stmt>Order<Col>Asc` / `<Stmt>Order<Col>Desc`) that can be passed to `Order<Stmt>(...)` directly; the typed tokens are the recommended spelling.
 3. **First Page vs. Subsequent Pages**:
-   - On Page 1, pass a zero `runtime.Seek{}` (`After: runtime.Seek{}`). `sqlgen` renders `1=1` and binds `0` cursor parameters.
+   - On Page 1, pass a zero `runtime.Seek{}` (`After: runtime.Seek{}`). `sqlgen` renders `TRUE` and binds `0` cursor parameters.
    - On Page 2+, pass `After: lastRow.Seek()`.
    - If all sort columns share the same direction (all `ASC` or all `DESC`), `sqlgen` renders compact row-value comparison `(col1, col2) > (?, ?)` (or `<`).
    - If sort directions are **mixed** (e.g. `score DESC, id ASC`), `sqlgen` automatically renders a B-tree index-friendly bounding-box prefix (`col1 <= ?`) combined with exact lexicographical tie-breaking `OR` branches!
+
+4. **Defaults for a short or empty `Sort`.** The last column listed in `sqlgen.Order(...)` (the unique tie-breaker) is always part of the sort. A zero `runtime.Order` (an unset `Sort` field, or `Order<Stmt>()`) sorts by that column ascending only: `ORDER BY id ASC`. A partial `Order` keeps the terms you gave, in your order, and appends the tie-breaker if you did not name it, using the direction of the **last term you gave** (so `Desc(score)` gives `score DESC, id DESC`, and `Desc(score), Asc(role)` gives `score DESC, role ASC, id ASC`); name the tie-breaker yourself to choose its direction. Naming the same column twice keeps the first term.
 
 ```go
 // Per-statement names (preferred): the statement is ListMembersPaginated.
@@ -433,7 +462,7 @@ For a `kind: many` statement `<Name>`:
 
 #### Automatic Wire-Safe Batching (`*Batch`)
 
-Database drivers enforce hard limits on parameters per statement (e.g., 65,535 in PostgreSQL, 32,766 in SQLite). When a `kind: exec` or `kind: many` statement has exactly one collection parameter (a tuple slice `[]Tuple` or a 1D slice `[]T`) and no `sqlgen.Order`, `sqlgen.Seek` or composed `sqlgen.Query` parameter, `sqlgen` generates `*Batch` methods:
+Database drivers enforce hard limits on parameters per statement (e.g., 65,535 in PostgreSQL, 32,766 in SQLite). `sqlgen` starts a chunk at no more than `16384` parameters by default (see `WithMaxBatchParams`). When a `kind: exec` or `kind: many` statement has exactly one collection parameter (a tuple slice `[]Tuple` or a 1D slice `[]T`) and no `sqlgen.Order`, `sqlgen.Seek` or composed `sqlgen.Query` parameter, `sqlgen` generates `*Batch` methods:
 
 - `kind: exec`:
   - `q.<Name>Batch(ctx, ...) (sql.Result, error)` — the result sums `RowsAffected()` over all chunks (its concrete type is `runtime.BatchExecResult`; `LastInsertId()` is the one of the final chunk).
@@ -458,7 +487,7 @@ When a statement qualifies for `*Batch` **and** its collection parameter is a tu
   - `q.<Name>Stream(ctx, ..., seq iter.Seq2[<TupleType>, error], ...) ([]<RowType>, error)`
   - `q.<Name>StreamSeq(ctx, ..., seq iter.Seq2[<TupleType>, error], ...) iter.Seq2[<RowType>, error]`
 
-An error yielded by `seq` stops the stream and is returned (or yielded) as-is. `runtime.Seq2[T]` is a convenience alias for `iter.Seq2[T, error]`, so values of either spelling are accepted.
+An error yielded by `seq` stops the stream and is returned (or yielded) as-is. A nil `seq` (and a nil callback passed to `<Name>Each`, `<Name>BatchEach`, `InTx` or `PipelineTx`) returns `runtime.ErrNilArgument` instead of panicking. `runtime.Seq2[T]` is a convenience alias for `iter.Seq2[T, error]`, so values of either spelling are accepted.
 
 **Iterator Adapters in `runtime`** (all return plain `iter.Seq2[T, error]`):
 - `runtime.FromSlice(items []T) iter.Seq2[T, error]` — wraps an in-memory slice.
@@ -696,6 +725,7 @@ err := q.PipelineTx(ctx, nil, func(p *Pipeline) error {
      - `.AssertRowsAffected(n int64) *SliceFuture[T]`, `.AssertFound() *SliceFuture[T]`
      - `.Found()`, `.NotFound()`, `.RowsAffectedEq(n)`, `.RowsAffectedGt(n)`, `.RowsAffectedGe(n)`, `.RowsAffectedLt(n)`, `.RowsAffectedLe(n)`, `.WhereCol(sqlPred, goPred func(T) bool)`
      - `.Get() ([]T, error)` (or `.Values() ([]T, error)`) and `.Skipped() bool` (valid after flush).
+   - Reading any future's result (`Result`, `RowsAffected`, `Get`, `Value`, `Values`) before its pipeline has flushed (`Flush`, or the end of `PipelineTx`) returns `runtime.ErrFutureNotReady`, never a result that could be mistaken for a real one; after the flush a `*RowFuture` whose statement matched no row returns `sql.ErrNoRows`.
 2. **Boolean Combinators & Control Flow**:
    - `condA.And(condB)`, `condA.Or(condB)`, `condA.Not()` combine `PipelineCond` values.
      The operands may come from different futures (`del.NotFound().And(get.Found())`): every leaf is evaluated over its own operation's rows, also on the single-round-trip path, where each earlier operation records its leaf server-side and the latest one combines the records, still in one network round-trip. A leaf over an operation that did not run (its branch was not taken) is false, so `Not` of it is true, identically on both paths.
@@ -718,7 +748,7 @@ err := q.PipelineTx(ctx, nil, func(p *Pipeline) error {
 | `runtime.WithMaxSQLVariants(n)` | `4096` (`256`/shard) | Maximum Tier-1 rendered SQL strings cached across all 16 shards (`0` disables Tier 1+2). |
 | `runtime.WithMaxPartialBytes(bytes)` | `4 MiB` (`256 KiB`/shard) | Hard memory budget in bytes for Tier-1 cached SQL strings. |
 | `runtime.WithPromoteThreshold(hits)` | `2` | Sketch frequency required before promoting a Tier-1 SQL variant (or recurring batch size) to a Tier-2 `*sql.Stmt`. |
-| `runtime.WithMaxBatchParams(params)` | Dialect default (`65535` PG, `32766` SQLite/MySQL) | Overrides the maximum wire parameters per batch chunk. |
+| `runtime.WithMaxBatchParams(params)` | `16384` | Maximum parameters per batch chunk. It is always clamped to the wire limit of the placeholder style: `65535` for `$N` (PostgreSQL, CockroachDB) and `32766` for `?` (SQLite, MySQL, MariaDB: the SQLite-safe value, below MySQL's own 65535, because the runtime only knows the placeholder style). With the default the limit never binds. |
 
 Inspect live cache telemetry at any time via `stats := q.CacheStats()`:
 - `stats.PreparedHits`: Tier-2 `*sql.Stmt` cache hits.

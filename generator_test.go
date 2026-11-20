@@ -2235,3 +2235,25 @@ func TestGenerateFromYAMLFileCreatesOutputDirectory(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+// SQLite accepts RETURNING (DOCS.md "Engine support"): the generated shape runs on the sqlite driver.
+func TestSQLiteAcceptsReturning(t *testing.T) {
+	db, err := sql.Open("sqlite", ":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = db.Close() }()
+	if _, err := db.Exec("CREATE TABLE t (id INTEGER PRIMARY KEY, v INTEGER)"); err != nil {
+		t.Fatal(err)
+	}
+	for _, q := range []string{
+		"INSERT INTO t (id, v) VALUES (1, 10) RETURNING id",
+		"UPDATE t SET v = v + 1 WHERE id = 1 RETURNING v",
+		"DELETE FROM t WHERE id = 1 RETURNING id",
+	} {
+		var n int64
+		if err := db.QueryRow(q).Scan(&n); err != nil {
+			t.Errorf("%s: %v", q, err)
+		}
+	}
+}

@@ -92,3 +92,54 @@ func TestPackOrderIgnoresTermsBeyondMaxOrderCols(t *testing.T) {
 		t.Fatalf("out-of-range terms leaked: cols=%v count=%d", cols[:count], count)
 	}
 }
+
+// Documented defaults (DOCS.md 2.6): no Order falls back to the last listed column ascending, a partial
+// Order appends that column with the direction of the last term given, and a first page renders TRUE.
+func TestOrderDefaultsAndFirstPageSeek(t *testing.T) {
+	d := &QueryDescriptor{
+		StmtID:    1,
+		Segments:  []string{"SELECT 1 FROM t WHERE ", " ORDER BY ", ""},
+		Slots:     []Slot{{Kind: SlotSeek}, {Kind: SlotOrder}},
+		OrderCols: []string{"a", "b", "id"},
+	}
+	for _, tc := range []struct {
+		name string
+		spec uint64
+		want string
+	}{
+		{"zero Order", 0, "id ASC"},
+		{"partial ascending", PackOrder(Asc(1)), "b ASC, id ASC"},
+		{"partial descending", PackOrder(Desc(0)), "a DESC, id DESC"},
+		{"partial mixed: last given term decides", PackOrder(Desc(0), Asc(1)), "a DESC, b ASC, id ASC"},
+		{"partial mixed, descending last", PackOrder(Asc(0), Desc(1)), "a ASC, b DESC, id DESC"},
+		{"tie-break named explicitly", PackOrder(Desc(0), Asc(2)), "a DESC, id ASC"},
+	} {
+		for _, dialect := range []Dialect{DialectDollar, DialectQuestion} {
+			sql := BuildComposedSQL(d, &RenderInput{OrderSpec: tc.spec}, dialect)
+			if want := "SELECT 1 FROM t WHERE TRUE ORDER BY " + tc.want; sql != want {
+				t.Errorf("%s dialect=%v: got %q, want %q", tc.name, dialect, sql, want)
+			}
+		}
+	}
+}
+
+func TestMaxRowsPerBatchDefaultsAndWireLimits(t *testing.T) {
+	c := NewStmtCache()
+	defer func() { _ = c.Close() }()
+	// Default budget (DefaultMaxBatchParams) binds on both placeholder styles.
+	if got := c.MaxRowsPerBatch(DialectDollar, 0, 2); got != DefaultMaxBatchParams/2 {
+		t.Errorf("dollar default = %d", got)
+	}
+	if got := c.MaxRowsPerBatch(DialectQuestion, 0, 2); got != DefaultMaxBatchParams/2 {
+		t.Errorf("question default = %d", got)
+	}
+	// A larger budget is clamped to the wire limit of the placeholder style.
+	big := NewStmtCache(WithMaxBatchParams(1 << 20))
+	defer func() { _ = big.Close() }()
+	if got := big.MaxRowsPerBatch(DialectDollar, 0, 2); got != 65535/2 {
+		t.Errorf("dollar clamped = %d, want %d", got, 65535/2)
+	}
+	if got := big.MaxRowsPerBatch(DialectQuestion, 0, 2); got != 32766/2 {
+		t.Errorf("question clamped = %d, want %d", got, 32766/2)
+	}
+}
