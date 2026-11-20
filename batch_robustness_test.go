@@ -68,3 +68,30 @@ func TestRowIteratorsReleaseResourcesWhenUserCodePanics(t *testing.T) {
 		})
 	}
 }
+
+// A parameter that appears several times in the SQL binds one argument per occurrence, so a chunk's size
+// must be planned from the placeholder count, not from the number of declared parameters: with the bind
+// budget raised to the engine's limit, a chunk sized for one `Score` overflowed SQLite's variable limit.
+func TestBatchChunkBudgetCountsRepeatedParameterOccurrences(t *testing.T) {
+	db, _ := setupE2EDB(t)
+	q := New(db, runtime.WithMaxBatchParams(32766), runtime.WithPromoteThreshold(1))
+	t.Cleanup(func() { _ = q.Close() })
+	ctx := context.Background()
+	if _, err := q.CreateUser(ctx, 7, 1, "a@x", "member", 10, "b"); err != nil {
+		t.Fatal(err)
+	}
+	ids := make([]int64, 32765)
+	for i := range ids {
+		ids[i] = int64(i)
+	}
+	// Repeat so the exact-size chunk is promoted and planned at the largest size the budget allows.
+	for i := 0; i < 3; i++ {
+		got, err := q.UserIDsNearScoreBatch(ctx, 10, ids)
+		if err != nil {
+			t.Fatalf("call %d: %v", i, err)
+		}
+		if len(got) != 1 || got[0].ID != 7 {
+			t.Fatalf("call %d: got %+v, want the single user 7", i, got)
+		}
+	}
+}

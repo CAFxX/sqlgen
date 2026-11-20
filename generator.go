@@ -446,6 +446,24 @@ var predeclaredGoTypes = []string{
 	"any",
 }
 
+// countScalarPlaceholders returns how many bind arguments the scalar slots of a statement add to every
+// execution: one per occurrence, so a parameter that appears three times in the SQL counts three times
+// (len(Params) counts it once), and parameters of optional blocks count as if the block were enabled.
+func countScalarPlaceholders(slots []slotRef) int {
+	n := 0
+	for _, sl := range slots {
+		switch sl.Kind {
+		case runtime.SlotScalar:
+			n++
+		case runtime.SlotOptBlock:
+			if sl.Inner != nil {
+				n += countScalarPlaceholders(sl.Inner.Slots)
+			}
+		}
+	}
+	return n
+}
+
 func isPredeclaredGoType(t string) bool {
 	return slices.Contains(predeclaredGoTypes, t)
 }
@@ -2564,7 +2582,7 @@ func compileStatement(id uint32, spec StatementSpec, sd stmtDialect) (*compiledS
 				cs.BatchParamIdx = sl.ParamIdx
 				cs.BatchIsTuple = true
 				cs.BatchArity = len(sl.Tuple.Fields)
-				cs.ScalarParamCnt = len(cs.Params) - 1
+				cs.ScalarParamCnt = countScalarPlaceholders(cs.Root.Slots)
 				cs.MaxRowsPerStmt = max(1, (32766-cs.ScalarParamCnt)/max(1, cs.BatchArity))
 				break
 			}
@@ -2574,7 +2592,7 @@ func compileStatement(id uint32, spec StatementSpec, sd stmtDialect) (*compiledS
 				cs.BatchParamIdx = sl.ParamIdx
 				cs.BatchIsTuple = false
 				cs.BatchArity = 1
-				cs.ScalarParamCnt = len(cs.Params) - 1
+				cs.ScalarParamCnt = countScalarPlaceholders(cs.Root.Slots)
 				cs.MaxRowsPerStmt = max(1, 32766-cs.ScalarParamCnt)
 				break
 			}

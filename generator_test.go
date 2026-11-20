@@ -131,6 +131,12 @@ statements:
       INSERT INTO quad_items (id, group_key, priority, created_ts)
       VALUES Rows:[]QuadInput(ID:int64 ASC, GroupKey:string, Priority:int64, CreatedTS:int64)
 
+  - name: UserIDsNearScore
+    kind: many
+    sql: |
+      SELECT id:int64 FROM users
+      WHERE (score = :Score:int64 OR score + 1 = :Score:int64 OR score + 2 = :Score:int64) AND id IN (:IDs:[]int64)
+
   - name: PageQuad
     kind: many
     params_struct: true

@@ -3788,7 +3788,7 @@ func (q *Queries) FzBumpBatch(ctx context.Context, p FzBumpParams) (sql.Result, 
 	}
 	_, colMask, flagMask, _ := computeFzBumpKey(p)
 	shapeTag := runtime.ComputeBatchShapeTag(colMask, flagMask)
-	maxRows := q.cache.MaxRowsPerBatch(sqlDialect, 2, 1)
+	maxRows := q.cache.MaxRowsPerBatch(sqlDialect, 3, 1)
 	firstChunk := q.cache.PlanBatchChunk(stmtIDFzBump, colMask, flagMask, totalRows, maxRows, true)
 	txCache := q.txCache
 	var autoTx *sql.Tx

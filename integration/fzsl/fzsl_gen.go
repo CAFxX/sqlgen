@@ -3788,7 +3788,7 @@ func (q *Queries) FzBumpBatch(ctx context.Context, p FzBumpParams) (sql.Result, 
 	}
 	_, colMask, flagMask, _ := computeFzBumpKey(p)
 	shapeTag := runtime.ComputeBatchShapeTag(colMask, flagMask)
-	maxRows := q.cache.MaxRowsPerBatch(sqlDialect, 2, 1)
+	maxRows := q.cache.MaxRowsPerBatch(sqlDialect, 3, 1)
 	firstChunk := q.cache.PlanBatchChunk(stmtIDFzBump, colMask, flagMask, totalRows, maxRows, true)
 	txCache := q.txCache
 	var autoTx *sql.Tx
@@ -6500,7 +6500,7 @@ func (q *Queries) FzBumpRetBatchInto(ctx context.Context, dst []FzOut, p FzBumpR
 		return nil, runtime.ErrEmptySliceParam
 	}
 	_, colMask, flagMask, _ := computeFzBumpRetKey(p)
-	maxRows := q.cache.MaxRowsPerBatch(sqlDialect, 2, 1)
+	maxRows := q.cache.MaxRowsPerBatch(sqlDialect, 3, 1)
 	firstChunk := q.cache.PlanBatchChunk(stmtIDFzBumpRet, colMask, flagMask, totalRows, maxRows, true)
 	targetQ := q
 	var autoTx *sql.Tx
@@ -6546,7 +6546,7 @@ func (q *Queries) FzBumpRetBatchSeq(ctx context.Context, p FzBumpRetParams) iter
 		}
 		_, colMask, flagMask, _ := computeFzBumpRetKey(p)
 		shapeTag := runtime.ComputeBatchShapeTag(colMask, flagMask)
-		maxRows := q.cache.MaxRowsPerBatch(sqlDialect, 2, 1)
+		maxRows := q.cache.MaxRowsPerBatch(sqlDialect, 3, 1)
 		firstChunk := q.cache.PlanBatchChunk(stmtIDFzBumpRet, colMask, flagMask, totalRows, maxRows, true)
 		var sqlRows *sql.Rows
 		var ms *runtime.ManagedStmt

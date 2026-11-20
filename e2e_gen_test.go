@@ -299,6 +299,10 @@ type InsertUsersBatchReturningRow struct {
 	Points int64
 }
 
+type UserIDsNearScoreRow struct {
+	ID int64
+}
+
 type QuadItem struct {
 	ID        int64
 	GroupKey  string
@@ -2964,7 +2968,346 @@ func (q *Queries) InsertQuadBatchStreamSeq(ctx context.Context, seq iter.Seq2[Qu
 	return q.InsertQuadBatchStream(ctx, seq)
 }
 
-const stmtIDPageQuad uint32 = 13
+const stmtIDUserIDsNearScore uint32 = 13
+
+const (
+	UserIDsNearScoreRowColID   uint64 = 1 << 0
+	UserIDsNearScoreRowColsAll uint64 = (1 << 1) - 1
+)
+
+const (
+	UserIDsNearScoreColID   uint64 = 1 << 0
+	UserIDsNearScoreColsAll uint64 = (1 << 1) - 1
+)
+
+type paramsUserIDsNearScore struct {
+	Score int64
+	IDs   []int64
+}
+
+var descUserIDsNearScore = &runtime.QueryDescriptor{
+	Name:     "UserIDsNearScore",
+	StmtID:   13,
+	StmtVerb: runtime.VerbSelect,
+	Segments: []string{"SELECT id FROM users\nWHERE (score = ", " OR score + 1 = ", " OR score + 2 = ", ") AND id IN (", ")"},
+	Slots: []runtime.Slot{
+		{Kind: runtime.SlotScalar},
+		{Kind: runtime.SlotScalar},
+		{Kind: runtime.SlotScalar},
+		{Kind: runtime.SlotSlice},
+	},
+	NumSlices: 1,
+}
+
+func expandUserIDsNearScoreParams(dst *[]any, dialect runtime.Dialect, p paramsUserIDsNearScore) error {
+	_ = dialect
+	_ = p
+	*dst = append(*dst, p.Score)
+	*dst = append(*dst, p.Score)
+	*dst = append(*dst, p.Score)
+	if len(p.IDs) == 0 {
+		return runtime.ErrEmptySliceParam
+	}
+	for _, v := range p.IDs {
+		*dst = append(*dst, v)
+	}
+	return nil
+}
+
+func expandUserIDsNearScoreArgs(dst *[]any, dialect runtime.Dialect, q *runtime.Query) error {
+	return expandUserIDsNearScoreParams(dst, dialect, q.Params.(paramsUserIDsNearScore))
+}
+
+func computeUserIDsNearScoreKey(p paramsUserIDsNearScore) (runtime.VariantKey, uint64, uint64, int) {
+	_ = p
+	var colMask uint64
+	var flagMask uint64
+	var orderSpec runtime.Order
+	var hasSeek bool
+	orderKey := runtime.EncodeOrderKey(orderSpec, hasSeek)
+	approxArgs := 6
+	var d0 uint64
+	d0 = uint64(len(p.IDs))
+	approxArgs += len(p.IDs)
+	vk := runtime.MakeVariantKey(stmtIDUserIDsNearScore, colMask, flagMask, orderKey, d0)
+	return vk, colMask, flagMask, approxArgs
+}
+
+// UserIDsNearScoreQuery constructs a composable runtime.Query without executing it.
+func UserIDsNearScoreQuery(score int64, ids []int64) runtime.Query {
+	p := paramsUserIDsNearScore{
+		Score: score,
+		IDs:   ids,
+	}
+	_, colMask, flagMask, _ := computeUserIDsNearScoreKey(p)
+	var sliceLensBuf [1]int
+	sliceLensBuf[0] = len(p.IDs)
+	in := runtime.RenderInput{
+		ColMask:   colMask,
+		FlagMask:  flagMask,
+		SliceLens: sliceLensBuf[:],
+	}
+	orderKey := runtime.EncodeOrderKey(in.OrderSpec, in.HasSeek)
+	var shapeLens [1]int
+	copy(shapeLens[:], in.SliceLens)
+	shapeTag := runtime.ComputeSubqueryShape(stmtIDUserIDsNearScore, colMask, flagMask, orderKey, false, shapeLens[:]...)
+	return runtime.Query{
+		StmtID:   stmtIDUserIDsNearScore,
+		Desc:     descUserIDsNearScore,
+		Input:    in,
+		Params:   p,
+		Expand:   expandUserIDsNearScoreArgs,
+		ShapeTag: shapeTag,
+	}
+}
+
+// UserIDsNearScoreQuery constructs a composable runtime.Query without executing it.
+func (q *Queries) UserIDsNearScoreQuery(score int64, ids []int64) runtime.Query {
+	return UserIDsNearScoreQuery(score, ids)
+}
+
+func scanUserIDsNearScoreRow(scanner interface{ Scan(...any) error }, dst *UserIDsNearScoreRow, colMask uint64, p paramsUserIDsNearScore) error {
+	_ = colMask
+	_ = p
+	var item UserIDsNearScoreRow
+	var scanBuf [1]any
+	scanBuf[0] = &item.ID
+	scanSlice := scanBuf[:1]
+	if err := scanner.Scan(scanSlice...); err != nil {
+		return err
+	}
+	*dst = item
+	return nil
+}
+
+func (q *Queries) UserIDsNearScore(ctx context.Context, score int64, ids []int64) ([]UserIDsNearScoreRow, error) {
+	return q.UserIDsNearScoreInto(ctx, nil, score, ids)
+}
+
+func (q *Queries) UserIDsNearScoreInto(ctx context.Context, dst []UserIDsNearScoreRow, score int64, ids []int64) ([]UserIDsNearScoreRow, error) {
+	for row, err := range q.UserIDsNearScoreSeq(ctx, score, ids) {
+		if err != nil {
+			return nil, err
+		}
+		dst = append(dst, row)
+	}
+	return dst, nil
+}
+
+func (q *Queries) UserIDsNearScoreSeq(ctx context.Context, score int64, ids []int64) iter.Seq2[UserIDsNearScoreRow, error] {
+	return func(yield func(UserIDsNearScoreRow, error) bool) {
+		var zero UserIDsNearScoreRow
+		p := paramsUserIDsNearScore{
+			Score: score,
+			IDs:   ids,
+		}
+		vk, colMask, flagMask, approxArgs := computeUserIDsNearScoreKey(p)
+		_ = colMask
+		argBuf := runtime.AcquireArgsCap(approxArgs)
+		defer runtime.ReleaseArgs(argBuf)
+		if err := expandUserIDsNearScoreParams(argBuf, sqlDialect, p); err != nil {
+			yield(zero, err)
+			return
+		}
+		var sliceLensBuf [1]int
+		sliceLensBuf[0] = len(p.IDs)
+		in := runtime.RenderInput{
+			ColMask:   colMask,
+			FlagMask:  flagMask,
+			SliceLens: sliceLensBuf[:],
+		}
+		sqlRows, ms, err := q.cache.Query(ctx, q.db, q.txCache, q.usePrepared, vk, stmtIDUserIDsNearScore, runtime.ComputeBatchShapeTag(colMask, flagMask), 0, nil, sqlDialect, descUserIDsNearScore, &in, (*argBuf)...)
+		if err != nil {
+			yield(zero, err)
+			return
+		}
+		defer func() { runtime.CloseRows(sqlRows, ms) }()
+		var item UserIDsNearScoreRow
+		for sqlRows.Next() {
+			if err := scanUserIDsNearScoreRow(sqlRows, &item, colMask, p); err != nil {
+				runtime.CloseRows(sqlRows, ms)
+				sqlRows, ms = nil, nil
+				yield(zero, err)
+				return
+			}
+			if !yield(item, nil) {
+				return
+			}
+		}
+		err = sqlRows.Err()
+		runtime.CloseRows(sqlRows, ms)
+		sqlRows, ms = nil, nil
+		if err != nil {
+			yield(zero, err)
+		}
+	}
+}
+
+func (q *Queries) UserIDsNearScoreEach(ctx context.Context, score int64, ids []int64, fn func(UserIDsNearScoreRow) error) error {
+	if fn == nil {
+		return runtime.ErrNilArgument
+	}
+	for row, err := range q.UserIDsNearScoreSeq(ctx, score, ids) {
+		if err != nil {
+			return err
+		}
+		if err := fn(row); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (pl *Pipeline) UserIDsNearScore(score int64, ids []int64) *runtime.SliceFuture[UserIDsNearScoreRow] {
+	p := paramsUserIDsNearScore{
+		Score: score,
+		IDs:   ids,
+	}
+	vk, colMask, flagMask, approxArgs := computeUserIDsNearScoreKey(p)
+	argBuf := runtime.AcquireArgsCap(approxArgs)
+	expandErr := expandUserIDsNearScoreParams(argBuf, sqlDialect, p)
+	var sliceLensBuf [1]int
+	sliceLensBuf[0] = len(p.IDs)
+	in := runtime.RenderInput{
+		ColMask:   colMask,
+		FlagMask:  flagMask,
+		SliceLens: sliceLensBuf[:],
+	}
+	return runtime.QueueSlice(pl.Pipeline, stmtIDUserIDsNearScore, descUserIDsNearScore, in, vk, nil, argBuf, expandErr,
+		func(rs *sql.Rows, dst *UserIDsNearScoreRow) error {
+			return scanUserIDsNearScoreRow(rs, dst, colMask, p)
+		},
+	)
+}
+
+func (q *Queries) UserIDsNearScoreBatch(ctx context.Context, score int64, ids []int64) ([]UserIDsNearScoreRow, error) {
+	return q.UserIDsNearScoreBatchInto(ctx, nil, score, ids)
+}
+
+func (q *Queries) UserIDsNearScoreBatchInto(ctx context.Context, dst []UserIDsNearScoreRow, score int64, ids []int64) ([]UserIDsNearScoreRow, error) {
+	totalRows := len(ids)
+	if totalRows == 0 {
+		return nil, runtime.ErrEmptySliceParam
+	}
+	p := paramsUserIDsNearScore{
+		Score: score,
+		IDs:   ids,
+	}
+	_, colMask, flagMask, _ := computeUserIDsNearScoreKey(p)
+	maxRows := q.cache.MaxRowsPerBatch(sqlDialect, 3, 1)
+	firstChunk := q.cache.PlanBatchChunk(stmtIDUserIDsNearScore, colMask, flagMask, totalRows, maxRows, true)
+	targetQ := q
+	var autoTx *sql.Tx
+	if q.txCache == nil && firstChunk < totalRows {
+		var err error
+		autoTx, err = q.db.BeginTx(ctx, nil)
+		if err != nil {
+			return nil, err
+		}
+		targetQ = q.WithTx(autoTx)
+		defer func() { _ = targetQ.Close() }()
+	}
+	for row, err := range targetQ.UserIDsNearScoreBatchSeq(ctx, score, ids) {
+		if err != nil {
+			if autoTx != nil {
+				_ = autoTx.Rollback()
+			}
+			return nil, err
+		}
+		dst = append(dst, row)
+	}
+	if autoTx != nil {
+		if err := autoTx.Commit(); err != nil {
+			return nil, err
+		}
+	}
+	return dst, nil
+}
+
+func (q *Queries) UserIDsNearScoreBatchSeq(ctx context.Context, score int64, ids []int64) iter.Seq2[UserIDsNearScoreRow, error] {
+	return func(yield func(UserIDsNearScoreRow, error) bool) {
+		var zero UserIDsNearScoreRow
+		totalRows := len(ids)
+		if totalRows == 0 {
+			yield(zero, runtime.ErrEmptySliceParam)
+			return
+		}
+		p := paramsUserIDsNearScore{
+			Score: score,
+			IDs:   ids,
+		}
+		_, colMask, flagMask, _ := computeUserIDsNearScoreKey(p)
+		shapeTag := runtime.ComputeBatchShapeTag(colMask, flagMask)
+		maxRows := q.cache.MaxRowsPerBatch(sqlDialect, 3, 1)
+		firstChunk := q.cache.PlanBatchChunk(stmtIDUserIDsNearScore, colMask, flagMask, totalRows, maxRows, true)
+		var sqlRows *sql.Rows
+		var ms *runtime.ManagedStmt
+		defer func() { runtime.CloseRows(sqlRows, ms) }()
+		for offset := 0; offset < totalRows; {
+			chunkSize := firstChunk
+			if offset > 0 {
+				chunkSize = q.cache.PlanBatchChunk(stmtIDUserIDsNearScore, colMask, flagMask, totalRows-offset, maxRows, false)
+			}
+			chunkRows := ids[offset : offset+chunkSize]
+			chunkP := p
+			chunkP.IDs = chunkRows
+			vk, _, _, approxArgs := computeUserIDsNearScoreKey(chunkP)
+			argBuf := runtime.AcquireArgsCap(approxArgs)
+			_ = expandUserIDsNearScoreParams(argBuf, sqlDialect, chunkP)
+			var sliceLensBuf [1]int
+			sliceLensBuf[0] = len(chunkP.IDs)
+			in := runtime.RenderInput{
+				ColMask:   colMask,
+				FlagMask:  flagMask,
+				SliceLens: sliceLensBuf[:],
+			}
+			var err error
+			sqlRows, ms, err = q.cache.Query(ctx, q.db, q.txCache, q.usePrepared, vk, stmtIDUserIDsNearScore, shapeTag, chunkSize, nil, sqlDialect, descUserIDsNearScore, &in, (*argBuf)...)
+			runtime.ReleaseArgs(argBuf)
+			if err != nil {
+				yield(zero, err)
+				return
+			}
+			var item UserIDsNearScoreRow
+			for sqlRows.Next() {
+				if err := scanUserIDsNearScoreRow(sqlRows, &item, colMask, chunkP); err != nil {
+					runtime.CloseRows(sqlRows, ms)
+					sqlRows, ms = nil, nil
+					yield(zero, err)
+					return
+				}
+				if !yield(item, nil) {
+					return
+				}
+			}
+			err = sqlRows.Err()
+			runtime.CloseRows(sqlRows, ms)
+			sqlRows, ms = nil, nil
+			if err != nil {
+				yield(zero, err)
+				return
+			}
+			offset += chunkSize
+		}
+	}
+}
+
+func (q *Queries) UserIDsNearScoreBatchEach(ctx context.Context, score int64, ids []int64, fn func(UserIDsNearScoreRow) error) error {
+	if fn == nil {
+		return runtime.ErrNilArgument
+	}
+	for row, err := range q.UserIDsNearScoreBatchSeq(ctx, score, ids) {
+		if err != nil {
+			return err
+		}
+		if err := fn(row); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+const stmtIDPageQuad uint32 = 14
 
 const (
 	QuadItemColID        uint64 = 1 << 0
@@ -3073,7 +3416,7 @@ type PageQuadParams struct {
 
 var descPageQuad = &runtime.QueryDescriptor{
 	Name:     "PageQuad",
-	StmtID:   13,
+	StmtID:   14,
 	StmtVerb: runtime.VerbSelect,
 	Segments: []string{"SELECT ", "\nFROM quad_items\nWHERE ", "\nORDER BY ", "\nLIMIT ", ""},
 	Slots: []runtime.Slot{
