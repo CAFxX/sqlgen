@@ -444,7 +444,7 @@ func (q *Queries) InsertItemsStream(ctx context.Context, seq iter.Seq2[NewItem, 
 	bufPtr := newItemChunkPool.Get().(*[]NewItem)
 	chunk := (*bufPtr)[:0]
 	defer func() {
-		clear(chunk)
+		clear(chunk[:cap(chunk)])
 		*bufPtr = chunk[:0]
 		newItemChunkPool.Put(bufPtr)
 	}()
@@ -3211,7 +3211,7 @@ func (q *Queries) UpsertItemsReturningStreamSeq(ctx context.Context, seq iter.Se
 		bufPtr := newItemChunkPool.Get().(*[]NewItem)
 		chunk := (*bufPtr)[:0]
 		defer func() {
-			clear(chunk)
+			clear(chunk[:cap(chunk)])
 			*bufPtr = chunk[:0]
 			newItemChunkPool.Put(bufPtr)
 		}()

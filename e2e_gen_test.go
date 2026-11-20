@@ -2483,7 +2483,7 @@ func (q *Queries) InsertUsersBatchReturningStreamSeq(ctx context.Context, seq it
 		bufPtr := batchUserInputChunkPool.Get().(*[]BatchUserInput)
 		chunk := (*bufPtr)[:0]
 		defer func() {
-			clear(chunk)
+			clear(chunk[:cap(chunk)])
 			*bufPtr = chunk[:0]
 			batchUserInputChunkPool.Put(bufPtr)
 		}()
@@ -2708,7 +2708,7 @@ func (q *Queries) UpdateUsersBatchFromValuesStream(ctx context.Context, seq iter
 	bufPtr := batchBonusInputChunkPool.Get().(*[]BatchBonusInput)
 	chunk := (*bufPtr)[:0]
 	defer func() {
-		clear(chunk)
+		clear(chunk[:cap(chunk)])
 		*bufPtr = chunk[:0]
 		batchBonusInputChunkPool.Put(bufPtr)
 	}()
@@ -2930,7 +2930,7 @@ func (q *Queries) InsertQuadBatchStream(ctx context.Context, seq iter.Seq2[QuadI
 	bufPtr := quadInputChunkPool.Get().(*[]QuadInput)
 	chunk := (*bufPtr)[:0]
 	defer func() {
-		clear(chunk)
+		clear(chunk[:cap(chunk)])
 		*bufPtr = chunk[:0]
 		quadInputChunkPool.Put(bufPtr)
 	}()

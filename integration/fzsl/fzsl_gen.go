@@ -588,7 +588,7 @@ func (q *Queries) FzInsertAscStream(ctx context.Context, seq iter.Seq2[FzNew, er
 	bufPtr := fzNewChunkPool.Get().(*[]FzNew)
 	chunk := (*bufPtr)[:0]
 	defer func() {
-		clear(chunk)
+		clear(chunk[:cap(chunk)])
 		*bufPtr = chunk[:0]
 		fzNewChunkPool.Put(bufPtr)
 	}()
@@ -837,7 +837,7 @@ func (q *Queries) FzInsertDescStream(ctx context.Context, seq iter.Seq2[FzNew, e
 	bufPtr := fzNewChunkPool.Get().(*[]FzNew)
 	chunk := (*bufPtr)[:0]
 	defer func() {
-		clear(chunk)
+		clear(chunk[:cap(chunk)])
 		*bufPtr = chunk[:0]
 		fzNewChunkPool.Put(bufPtr)
 	}()
@@ -1039,7 +1039,7 @@ func (q *Queries) FzInsertRawStream(ctx context.Context, seq iter.Seq2[FzNew, er
 	bufPtr := fzNewChunkPool.Get().(*[]FzNew)
 	chunk := (*bufPtr)[:0]
 	defer func() {
-		clear(chunk)
+		clear(chunk[:cap(chunk)])
 		*bufPtr = chunk[:0]
 		fzNewChunkPool.Put(bufPtr)
 	}()
@@ -1261,7 +1261,7 @@ func (q *Queries) FzInsertLitStream(ctx context.Context, seq iter.Seq2[FzLit, er
 	bufPtr := fzLitChunkPool.Get().(*[]FzLit)
 	chunk := (*bufPtr)[:0]
 	defer func() {
-		clear(chunk)
+		clear(chunk[:cap(chunk)])
 		*bufPtr = chunk[:0]
 		fzLitChunkPool.Put(bufPtr)
 	}()
@@ -3276,7 +3276,7 @@ func (q *Queries) FzByKeysStreamSeq(ctx context.Context, seq iter.Seq2[FzKey, er
 		bufPtr := fzKeyChunkPool.Get().(*[]FzKey)
 		chunk := (*bufPtr)[:0]
 		defer func() {
-			clear(chunk)
+			clear(chunk[:cap(chunk)])
 			*bufPtr = chunk[:0]
 			fzKeyChunkPool.Put(bufPtr)
 		}()
@@ -4767,7 +4767,7 @@ func (q *Queries) FzTypedInsertStream(ctx context.Context, seq iter.Seq2[FzTyped
 	bufPtr := fzTypedNewChunkPool.Get().(*[]FzTypedNew)
 	chunk := (*bufPtr)[:0]
 	defer func() {
-		clear(chunk)
+		clear(chunk[:cap(chunk)])
 		*bufPtr = chunk[:0]
 		fzTypedNewChunkPool.Put(bufPtr)
 	}()
@@ -5843,7 +5843,7 @@ func (q *Queries) FzInsertRetStreamSeq(ctx context.Context, seq iter.Seq2[FzNew,
 		bufPtr := fzNewChunkPool.Get().(*[]FzNew)
 		chunk := (*bufPtr)[:0]
 		defer func() {
-			clear(chunk)
+			clear(chunk[:cap(chunk)])
 			*bufPtr = chunk[:0]
 			fzNewChunkPool.Put(bufPtr)
 		}()

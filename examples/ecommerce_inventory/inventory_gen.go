@@ -615,7 +615,7 @@ func (q *Queries) GetInventoryBySKUsStreamSeq(ctx context.Context, seq iter.Seq2
 		bufPtr := sKUKeyChunkPool.Get().(*[]SKUKey)
 		chunk := (*bufPtr)[:0]
 		defer func() {
-			clear(chunk)
+			clear(chunk[:cap(chunk)])
 			*bufPtr = chunk[:0]
 			sKUKeyChunkPool.Put(bufPtr)
 		}()
@@ -817,7 +817,7 @@ func (q *Queries) InsertOrderItemsStream(ctx context.Context, seq iter.Seq2[NewO
 	bufPtr := newOrderItemChunkPool.Get().(*[]NewOrderItem)
 	chunk := (*bufPtr)[:0]
 	defer func() {
-		clear(chunk)
+		clear(chunk[:cap(chunk)])
 		*bufPtr = chunk[:0]
 		newOrderItemChunkPool.Put(bufPtr)
 	}()
@@ -1202,7 +1202,7 @@ func (q *Queries) InsertArchivedOrdersStream(ctx context.Context, seq iter.Seq2[
 	bufPtr := archivedOrderRowChunkPool.Get().(*[]ArchivedOrderRow)
 	chunk := (*bufPtr)[:0]
 	defer func() {
-		clear(chunk)
+		clear(chunk[:cap(chunk)])
 		*bufPtr = chunk[:0]
 		archivedOrderRowChunkPool.Put(bufPtr)
 	}()

@@ -1058,7 +1058,7 @@ func (q *Queries) UpsertAccountBalancesStream(ctx context.Context, seq iter.Seq2
 	bufPtr := accountSettlementChunkPool.Get().(*[]AccountSettlement)
 	chunk := (*bufPtr)[:0]
 	defer func() {
-		clear(chunk)
+		clear(chunk[:cap(chunk)])
 		*bufPtr = chunk[:0]
 		accountSettlementChunkPool.Put(bufPtr)
 	}()

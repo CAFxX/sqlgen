@@ -95,3 +95,32 @@ func TestBatchChunkBudgetCountsRepeatedParameterOccurrences(t *testing.T) {
 		}
 	}
 }
+
+// The pooled chunk buffer of a Stream method must not keep the caller's rows (strings, byte slices,
+// pointers) reachable after the stream ends: the flush leaves len(chunk) == 0, so clearing only the live
+// length cleared nothing.
+func TestStreamReleasesRowsHeldByPooledChunkBuffer(t *testing.T) {
+	db, q := setupE2EDB(t)
+	_ = db
+	ctx := context.Background()
+	observed := 0
+	for i := 0; i < 50; i++ {
+		rows := []QuadInput{{ID: int64(i*10 + 1), GroupKey: "retained-key", Priority: 1, CreatedTs: 1}, {ID: int64(i*10 + 2), GroupKey: "retained-key", Priority: 1, CreatedTs: 1}}
+		if _, err := q.InsertQuadBatchStream(ctx, runtime.FromSlice(rows)); err != nil {
+			t.Fatal(err)
+		}
+		bufPtr := quadInputChunkPool.Get().(*[]QuadInput)
+		if cap(*bufPtr) > 0 {
+			observed++
+			for j, r := range (*bufPtr)[:cap(*bufPtr)] {
+				if r != (QuadInput{}) {
+					t.Fatalf("pooled chunk buffer still holds row %d: %+v", j, r)
+				}
+			}
+		}
+		quadInputChunkPool.Put(bufPtr)
+	}
+	if observed == 0 {
+		t.Skip("sync.Pool never handed the buffer back")
+	}
+}

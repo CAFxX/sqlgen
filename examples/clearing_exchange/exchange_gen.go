@@ -691,7 +691,7 @@ func (q *Queries) ApplyMarginSettlementsStream(ctx context.Context, seq iter.Seq
 	bufPtr := marginSettlementChunkPool.Get().(*[]MarginSettlement)
 	chunk := (*bufPtr)[:0]
 	defer func() {
-		clear(chunk)
+		clear(chunk[:cap(chunk)])
 		*bufPtr = chunk[:0]
 		marginSettlementChunkPool.Put(bufPtr)
 	}()
@@ -1522,7 +1522,7 @@ func (q *Queries) IngestOrdersStreamSeq(ctx context.Context, seq iter.Seq2[Order
 		bufPtr := orderSubmissionChunkPool.Get().(*[]OrderSubmission)
 		chunk := (*bufPtr)[:0]
 		defer func() {
-			clear(chunk)
+			clear(chunk[:cap(chunk)])
 			*bufPtr = chunk[:0]
 			orderSubmissionChunkPool.Put(bufPtr)
 		}()
