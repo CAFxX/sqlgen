@@ -165,30 +165,85 @@ func writeOverflowExpr(b *strings.Builder, dialect Dialect) {
 	}
 }
 
-func (c *PipelineCond) estimateBytes() int {
+// gateExtraBytes bounds what wrapping a leaf in "CASE WHEN (<gates>) THEN (...) ELSE FALSE END" adds.
+func gateExtraBytes(numGates int) int {
+	if numGates == 0 {
+		return 0
+	}
+	return 48 + 56*numGates
+}
+
+// estimateBytes bounds the bytes writeSQL streams for c on an operation with numGates branch gates.
+func (c *PipelineCond) estimateBytes(numGates int) int {
 	if c == nil {
 		return 8
 	}
 	switch c.Kind {
 	case CondRowsEq, CondRowsGt, CondRowsGe, CondRowsLt, CondRowsLe:
-		return 36
+		return 80 + gateExtraBytes(numGates)
 	case CondColPred:
-		return 64 + len(c.SQLPred)
+		return 80 + len(c.SQLPred) + gateExtraBytes(numGates)
 	case CondAnd:
-		return 9 + c.Left.estimateBytes() + c.Right.estimateBytes()
+		return 9 + c.Left.estimateBytes(numGates) + c.Right.estimateBytes(numGates)
 	case CondOr:
-		return 8 + c.Left.estimateBytes() + c.Right.estimateBytes()
+		return 8 + c.Left.estimateBytes(numGates) + c.Right.estimateBytes(numGates)
 	case CondNot:
-		return 6 + c.Left.estimateBytes()
+		return 6 + c.Left.estimateBytes(numGates)
 	default:
 		return 16
 	}
 }
 
-func (c *PipelineCond) writeSQL(b *strings.Builder, cur *streamCursor) {
+// writeSQL streams c as a boolean expression for the statement of an operation that has the given
+// branch gates. The expression is evaluated inside an aggregate SELECT over that operation's rows
+// (_sqlgen_op); a leaf over a different operation reads the value its own operation recorded.
+func (c *PipelineCond) writeSQL(b *strings.Builder, cur *streamCursor, gates []BranchGate) {
 	if c == nil {
 		b.WriteString("TRUE")
 		return
+	}
+	switch c.Kind {
+	case CondRowsEq, CondRowsGt, CondRowsGe, CondRowsLt, CondRowsLe, CondColPred:
+		c.writeLeafSQL(b, cur, gates)
+	case CondAnd:
+		b.WriteByte('(')
+		c.Left.writeSQL(b, cur, gates)
+		b.WriteString(" AND ")
+		c.Right.writeSQL(b, cur, gates)
+		b.WriteByte(')')
+	case CondOr:
+		b.WriteByte('(')
+		c.Left.writeSQL(b, cur, gates)
+		b.WriteString(" OR ")
+		c.Right.writeSQL(b, cur, gates)
+		b.WriteByte(')')
+	case CondNot:
+		b.WriteString("NOT (")
+		c.Left.writeSQL(b, cur, gates)
+		b.WriteByte(')')
+	default:
+		b.WriteString("TRUE")
+	}
+}
+
+// writeLeafSQL streams a leaf. Its value is FALSE when its operation did not run (the operation's own
+// branch gates are closed), exactly as PipelineCond.EvalGoFn treats a skipped operation, so Not(leaf)
+// is TRUE then; NULL gates (never recorded) count as closed.
+func (c *PipelineCond) writeLeafSQL(b *strings.Builder, cur *streamCursor, gates []BranchGate) {
+	if c.Recorded != 0 {
+		b.WriteString("COALESCE(current_setting('sqlgen.l")
+		b.Write(strconv.AppendInt(cur.numBuf[:0], int64(c.Recorded), 10))
+		b.WriteString("', true) = 'true', false)")
+		return
+	}
+	if c.Op == nil {
+		b.WriteString("FALSE") // no operation: EvalGoFn is false
+		return
+	}
+	if len(gates) > 0 {
+		b.WriteString("CASE WHEN (")
+		cur.writeBranchGates(b, gates)
+		b.WriteString(") THEN (")
 	}
 	switch c.Kind {
 	case CondRowsEq:
@@ -210,24 +265,9 @@ func (c *PipelineCond) writeSQL(b *strings.Builder, cur *streamCursor) {
 		b.WriteString("COUNT(*) > 0 AND MIN(CASE WHEN (")
 		b.WriteString(c.SQLPred)
 		b.WriteString(") THEN 1 ELSE 0 END) = 1")
-	case CondAnd:
-		b.WriteByte('(')
-		c.Left.writeSQL(b, cur)
-		b.WriteString(" AND ")
-		c.Right.writeSQL(b, cur)
-		b.WriteByte(')')
-	case CondOr:
-		b.WriteByte('(')
-		c.Left.writeSQL(b, cur)
-		b.WriteString(" OR ")
-		c.Right.writeSQL(b, cur)
-		b.WriteByte(')')
-	case CondNot:
-		b.WriteString("NOT (")
-		c.Left.writeSQL(b, cur)
-		b.WriteByte(')')
-	default:
-		b.WriteString("TRUE")
+	}
+	if len(gates) > 0 {
+		b.WriteString(") ELSE FALSE END")
 	}
 }
 
@@ -355,10 +395,13 @@ func EstimateOpBytes(desc *QueryDescriptor, in *RenderInput, dec *OpDecorators) 
 			total += 400 + 56*numGates
 		}
 		if dec.ProduceCond != nil {
-			total += 480 + dec.ProduceCond.estimateBytes()
+			total += 480 + dec.ProduceCond.estimateBytes(numGates)
 			for i := range dec.ExtraConds {
-				total += 480 + dec.ExtraConds[i].Cond.estimateBytes()
+				total += 480 + dec.ExtraConds[i].Cond.estimateBytes(numGates)
 			}
+		}
+		for i := range dec.LeafRecs {
+			total += 480 + dec.LeafRecs[i].Cond.estimateBytes(numGates)
 		}
 	}
 	if total < 8 {
@@ -568,7 +611,11 @@ func streamOpSQL(b *strings.Builder, dialect Dialect, desc *QueryDescriptor, in 
 
 	hasAssert := dec != nil && dec.AssertRows >= 0
 	hasCond := dec != nil && dec.ProduceCond != nil
-	if !hasAssert && !hasCond {
+	var leafRecs []ProducedCond
+	if dec != nil {
+		leafRecs = dec.LeafRecs
+	}
+	if !hasAssert && !hasCond && len(leafRecs) == 0 {
 		streamCoreStatement(b, &cur, desc, in)
 		return
 	}
@@ -594,22 +641,58 @@ func streamOpSQL(b *strings.Builder, dialect Dialect, desc *QueryDescriptor, in 
 		b.WriteString(" END AS _ok FROM _sqlgen_op)")
 	}
 
-	if hasCond {
-		b.WriteString(", _sqlgen_cond AS (SELECT COUNT(*) AS _cnt, set_config('sqlgen.c")
-		b.Write(strconv.AppendInt(cur.numBuf[:0], int64(dec.CondID), 10))
+	// Each recorded condition is a CTE that stores its value with the transaction-local set_config under
+	// sqlgen.<kind><ID>. COUNT(*) makes the SELECT aggregate, so it yields exactly one row whatever
+	// _sqlgen_op returned, and the CTE can be read by a scalar subquery.
+	// writeName writes base followed by id (no suffix when id is 0).
+	writeName := func(base string, id int) {
+		b.WriteString(base)
+		if id != 0 {
+			b.Write(strconv.AppendInt(cur.numBuf[:0], int64(id), 10))
+		}
+	}
+	writeRecorder := func(cteBase string, kind byte, id int, cond *PipelineCond, cteID int) {
+		b.WriteString(", ")
+		writeName(cteBase, cteID)
+		b.WriteString(" AS (SELECT COUNT(*) AS _cnt, set_config('sqlgen.")
+		b.WriteByte(kind)
+		b.Write(strconv.AppendInt(cur.numBuf[:0], int64(id), 10))
 		b.WriteString("', CASE WHEN (")
-		dec.ProduceCond.writeSQL(b, &cur)
+		cond.writeSQL(b, &cur, in.BranchGates)
 		b.WriteString(") THEN 'true' ELSE 'false' END, true) = 'true' AS _ok FROM _sqlgen_op)")
+	}
+	if hasCond {
+		writeRecorder("_sqlgen_cond", 'c', dec.CondID, dec.ProduceCond, 0)
 		for i := range dec.ExtraConds {
 			ec := &dec.ExtraConds[i]
-			b.WriteString(", _sqlgen_x")
-			b.Write(strconv.AppendInt(cur.numBuf[:0], int64(ec.CondID), 10))
-			b.WriteString(" AS (SELECT COUNT(*) AS _cnt, set_config('sqlgen.c")
-			b.Write(strconv.AppendInt(cur.numBuf[:0], int64(ec.CondID), 10))
-			b.WriteString("', CASE WHEN (")
-			ec.Cond.writeSQL(b, &cur)
-			b.WriteString(") THEN 'true' ELSE 'false' END, true) = 'true' AS _ok FROM _sqlgen_op)")
+			writeRecorder("_sqlgen_x", 'c', ec.CondID, ec.Cond, ec.CondID)
 		}
+	}
+	for i := range leafRecs {
+		writeRecorder("_sqlgen_l", 'l', leafRecs[i].CondID, leafRecs[i].Cond, leafRecs[i].CondID)
+	}
+
+	// The guards, in the order of the CTEs: the alias (the column name in the final SELECT) and the CTE
+	// name are each a base plus the condition ID (0: none).
+	guards := func(yield func(aliasBase, cteBase string, id int)) {
+		if hasAssert {
+			yield("_a", "_sqlgen_chk", 0)
+		}
+		if hasCond {
+			yield("_c", "_sqlgen_cond", 0)
+			for i := range dec.ExtraConds {
+				yield("_x", "_sqlgen_x", dec.ExtraConds[i].CondID)
+			}
+		}
+		for i := range leafRecs {
+			yield("_l", "_sqlgen_l", leafRecs[i].CondID)
+		}
+	}
+	writeGuardRead := func(aliasBase, cteBase string, id int) {
+		b.WriteString(", (SELECT _ok FROM ")
+		writeName(cteBase, id)
+		b.WriteString(") AS ")
+		writeName(aliasBase, id)
 	}
 
 	hasResultCols := desc != nil && (desc.StmtVerb == VerbSelect || desc.HasReturning)
@@ -620,51 +703,21 @@ func streamOpSQL(b *strings.Builder, dialect Dialect, desc *QueryDescriptor, in 
 		// side of a LATERAL join whose inner side references every _f column forces it to be evaluated
 		// first, whatever the planner decides about join order or column pruning.
 		b.WriteString(" SELECT _r.* FROM (SELECT 1 AS _o")
-		if hasAssert {
-			b.WriteString(", (SELECT _ok FROM _sqlgen_chk) AS _a")
-		}
-		if hasCond {
-			b.WriteString(", (SELECT _ok FROM _sqlgen_cond) AS _c")
-			for i := range dec.ExtraConds {
-				id := strconv.AppendInt(cur.numBuf[:0], int64(dec.ExtraConds[i].CondID), 10)
-				b.WriteString(", (SELECT _ok FROM _sqlgen_x")
-				b.Write(id)
-				b.WriteString(") AS _x")
-				b.Write(id)
-			}
-		}
+		guards(writeGuardRead)
 		b.WriteString(") AS _f CROSS JOIN LATERAL (SELECT * FROM _sqlgen_op WHERE _f._o IS NOT NULL")
-		if hasAssert {
-			b.WriteString(" AND _f._a IS NOT NULL")
-		}
-		if hasCond {
-			b.WriteString(" AND _f._c IS NOT NULL")
-			for i := range dec.ExtraConds {
-				b.WriteString(" AND _f._x")
-				b.Write(strconv.AppendInt(cur.numBuf[:0], int64(dec.ExtraConds[i].CondID), 10))
-				b.WriteString(" IS NOT NULL")
-			}
-		}
+		guards(func(aliasBase, _ string, id int) {
+			b.WriteString(" AND _f.")
+			writeName(aliasBase, id)
+			b.WriteString(" IS NOT NULL")
+		})
 		b.WriteString(") AS _r")
-	} else {
-		// Every guard is read by a scalar subquery in the target list, which a statement can never drop:
-		// an unreferenced CTE (here an assertion whose only trace would be an overflow error, or a
-		// set_config) is pruned by PostgreSQL. The first column is the affected-row count.
-		b.WriteString(" SELECT (SELECT COUNT(*) FROM _sqlgen_op) AS _cnt")
-		if hasAssert {
-			b.WriteString(", (SELECT _ok FROM _sqlgen_chk) AS _a")
-		}
-		if hasCond {
-			b.WriteString(", (SELECT _ok FROM _sqlgen_cond) AS _c")
-			for i := range dec.ExtraConds {
-				id := strconv.AppendInt(cur.numBuf[:0], int64(dec.ExtraConds[i].CondID), 10)
-				b.WriteString(", (SELECT _ok FROM _sqlgen_x")
-				b.Write(id)
-				b.WriteString(") AS _x")
-				b.Write(id)
-			}
-		}
+		return
 	}
+	// Every guard is read by a scalar subquery in the target list, which a statement can never drop:
+	// an unreferenced CTE (here an assertion whose only trace would be an overflow error, or a
+	// set_config) is pruned by PostgreSQL. The first column is the affected-row count.
+	b.WriteString(" SELECT (SELECT COUNT(*) FROM _sqlgen_op) AS _cnt")
+	guards(writeGuardRead)
 }
 
 // BuildComposedSQL renders desc with in for dialect using a single pre-sized strings.Builder.
@@ -710,8 +763,7 @@ func RenderPipelineBatch(dialect Dialect, cache *StmtCache, ops []PipelineOp) {
 	for i := range ops {
 		op := &ops[i]
 		plain := !op.Decorators.IsAbort &&
-			op.Decorators.AssertRows < 0 &&
-			op.Decorators.ProduceCond == nil &&
+			!op.Decorators.guarded() &&
 			len(op.Input.BranchGates) == 0
 		if plain && op.Desc != nil && op.Desc.StaticSQL != "" && op.Input.ColMask == 0 && op.Input.FlagMask == 0 {
 			op.SQL = op.Desc.StaticSQL

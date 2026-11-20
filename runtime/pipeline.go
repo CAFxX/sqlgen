@@ -38,6 +38,11 @@ type PipelineCond struct {
 	EvalGoPred func() bool
 	Left       *PipelineCond
 	Right      *PipelineCond
+	// Recorded is set only on the leaves of a condition bound by Pipeline.If whose operation is NOT the
+	// operation that evaluates the condition (the latest one of a compound): it is the ID under which
+	// that leaf's own operation recorded the leaf's value server-side (OpDecorators.LeafRecs). The
+	// evaluating statement reads the recorded value instead of looking at its own rows.
+	Recorded int
 }
 
 // And combines c and other with a logical AND.
@@ -681,7 +686,7 @@ func (op *PipelineOp) WireResult() WireResultKind {
 		return WireResultDiscard
 	case op.HasResultCols:
 		return WireResultRows
-	case op.Decorators.AssertRows >= 0 || op.Decorators.ProduceCond != nil:
+	case op.Decorators.guarded():
 		return WireResultGuarded
 	default:
 		return WireResultCommandTag
@@ -1068,12 +1073,15 @@ func (p *Pipeline) If(cond PipelineCond, thenFn func(), elseFn func()) *IfResult
 	p.condSeq++
 	condID := p.condSeq
 	if rootOp := cond.Op; rootOp != nil {
-		cCopy := cond
+		// Every leaf of a compound condition must be evaluated over ITS OWN operation's rows. Only the
+		// root (latest) operation's statement can see its own rows, so the earlier operations record
+		// their leaves server-side and the bound condition reads those records.
+		bound := p.bindCond(&cond, rootOp)
 		if rootOp.Decorators.ProduceCond == nil {
-			rootOp.Decorators.ProduceCond = &cCopy
+			rootOp.Decorators.ProduceCond = bound
 			rootOp.Decorators.CondID = condID
 		} else {
-			pc := ProducedCond{CondID: condID, Cond: &cCopy}
+			pc := ProducedCond{CondID: condID, Cond: bound}
 			rootOp.ExtraConds = append(rootOp.ExtraConds, pc)
 			rootOp.Decorators.ExtraConds = append(rootOp.Decorators.ExtraConds, pc)
 		}
@@ -1105,6 +1113,42 @@ func (p *Pipeline) If(cond PipelineCond, thenFn func(), elseFn func()) *IfResult
 		p.branchStack = p.branchStack[:len(p.branchStack)-1]
 	}
 	return res
+}
+
+// bindCond returns a copy of c in which every leaf over an operation other than root refers to the
+// server-side record its own operation makes of it. c itself is never modified (it may be reused by the
+// caller in other conditions).
+func (p *Pipeline) bindCond(c *PipelineCond, root *PipelineOp) *PipelineCond {
+	if c == nil {
+		return nil
+	}
+	out := *c
+	switch c.Kind {
+	case CondAnd, CondOr, CondNot:
+		out.Left = p.bindCond(c.Left, root)
+		out.Right = p.bindCond(c.Right, root)
+	default:
+		if c.Op != nil && c.Op != root {
+			out.Recorded = p.recordLeaf(c)
+		}
+	}
+	return &out
+}
+
+// recordLeaf makes leaf's own operation record the leaf's value and returns the record's ID. Equal
+// leaves of one operation share a record.
+func (p *Pipeline) recordLeaf(leaf *PipelineCond) int {
+	op := leaf.Op
+	for _, r := range op.Decorators.LeafRecs {
+		if r.Cond.Kind == leaf.Kind && r.Cond.Threshold == leaf.Threshold && r.Cond.SQLPred == leaf.SQLPred {
+			return r.CondID
+		}
+	}
+	p.condSeq++
+	own := *leaf
+	own.Recorded = 0
+	op.Decorators.LeafRecs = append(op.Decorators.LeafRecs, ProducedCond{CondID: p.condSeq, Cond: &own})
+	return p.condSeq
 }
 
 func (p *Pipeline) releaseArgBufs() {

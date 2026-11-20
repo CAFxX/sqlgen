@@ -2156,12 +2156,12 @@ func TestPipelineWirePipelinerAndSequentialCoverage(t *testing.T) {
 	var nilCond *PipelineCond
 	_ = nilCond.EvalGoFn()
 	_ = (&PipelineCond{Kind: 99}).EvalGoFn()
-	_ = nilCond.estimateBytes()
-	_ = (&PipelineCond{Kind: 99}).estimateBytes()
+	_ = nilCond.estimateBytes(0)
+	_ = (&PipelineCond{Kind: 99}).estimateBytes(0)
 	var sb strings.Builder
 	sc := streamCursor{dialect: DialectDollar, paramIdx: 1}
-	nilCond.writeSQL(&sb, &sc)
-	(&PipelineCond{Kind: 99}).writeSQL(&sb, &sc)
+	nilCond.writeSQL(&sb, &sc, nil)
+	(&PipelineCond{Kind: 99}).writeSQL(&sb, &sc, nil)
 	streamCoreStatement(&sb, &sc, nil, &RenderInput{})
 	_ = estimateDescriptorBytes(nil, nil, &RenderInput{}, &estCursor{})
 
@@ -2904,11 +2904,13 @@ func TestEstimateOpBytesCoversEveryPipelineOpShape(t *testing.T) {
 	sel := &QueryDescriptor{StmtVerb: VerbSelect, Segments: []string{"SELECT id FROM t WHERE id = ", ""}, Slots: []Slot{{Kind: SlotScalar}}}
 	upd := &QueryDescriptor{StmtVerb: VerbUpdate, Segments: []string{"UPDATE t SET v = ", ""}, Slots: []Slot{{Kind: SlotScalar}}}
 	updRet := &QueryDescriptor{StmtVerb: VerbUpdate, HasReturning: true, Segments: []string{"UPDATE t SET v = ", " RETURNING id"}, Slots: []Slot{{Kind: SlotScalar}}}
+	op := &PipelineOp{}
 	conds := map[string]*PipelineCond{
-		"none": nil,
-		"rows": {Kind: CondRowsGt, Threshold: -9223372036854775807},
-		"col":  {Kind: CondColPred, SQLPred: "score >= 100 AND status = 'active'"},
-		"and":  {Kind: CondAnd, Left: &PipelineCond{Kind: CondRowsLe, Threshold: 99}, Right: &PipelineCond{Kind: CondNot, Left: &PipelineCond{Kind: CondRowsEq, Threshold: 1}}},
+		"none":     nil,
+		"rows":     {Kind: CondRowsGt, Op: op, Threshold: -9223372036854775807},
+		"col":      {Kind: CondColPred, Op: op, SQLPred: "score >= 100 AND status = 'active'"},
+		"recorded": {Kind: CondOr, Left: &PipelineCond{Kind: CondRowsGe, Op: op, Recorded: 2147483647}, Right: &PipelineCond{Kind: CondRowsLt, Op: op, Threshold: -9223372036854775807}},
+		"and":      {Kind: CondAnd, Left: &PipelineCond{Kind: CondRowsLe, Op: op, Threshold: 99}, Right: &PipelineCond{Kind: CondNot, Left: &PipelineCond{Kind: CondRowsEq, Op: op, Threshold: 1}}},
 	}
 	for dname, dialect := range map[string]Dialect{"dollar": DialectDollar, "question": DialectQuestion} {
 		for dn, desc := range map[string]*QueryDescriptor{"select": sel, "update": upd, "update-returning": updRet} {
@@ -2920,6 +2922,10 @@ func TestEstimateOpBytesCoversEveryPipelineOpShape(t *testing.T) {
 							gates = append(gates, BranchGate{CondID: 1000000 + g, WantTrue: g%2 == 0})
 						}
 						dec := OpDecorators{AssertRows: assert, ProduceCond: cond, CondID: 9223372036854775807 & 0x7fffffff}
+						if cond != nil {
+							dec.ExtraConds = []ProducedCond{{CondID: 2147483647, Cond: cond}}
+							dec.LeafRecs = []ProducedCond{{CondID: 2147483647, Cond: conds["col"]}, {CondID: 2147483646, Cond: cond}}
+						}
 						in := RenderInput{BranchGates: gates}
 						sql := renderPipelineOp(t, dialect, desc, in, dec) // fails on estimate < len
 						_ = sql

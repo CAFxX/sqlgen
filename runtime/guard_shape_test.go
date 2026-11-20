@@ -45,6 +45,9 @@ func TestEveryGuardCTEIsReferencedByTheFinalSelect(t *testing.T) {
 		"colpred": func() (*PipelineCond, []ProducedCond) {
 			return &PipelineCond{Kind: CondColPred, SQLPred: "score > 1"}, nil
 		},
+		"recorded": func() (*PipelineCond, []ProducedCond) {
+			return &PipelineCond{Kind: CondOr, Left: &PipelineCond{Kind: CondRowsEq, Recorded: 30, Op: &PipelineOp{}}, Right: rows(CondRowsGt, 0)}, nil
+		},
 		"not(and)": func() (*PipelineCond, []ProducedCond) {
 			return &PipelineCond{Kind: CondNot, Left: &PipelineCond{Kind: CondAnd, Left: rows(CondRowsGt, 0), Right: rows(CondRowsLe, 3)}}, nil
 		},
@@ -52,31 +55,36 @@ func TestEveryGuardCTEIsReferencedByTheFinalSelect(t *testing.T) {
 	for dn, desc := range descs {
 		for cn, mk := range condShapes {
 			for _, assert := range []int64{-1, 0, 1} {
-				for _, nGates := range []int{0, 2} {
-					name := fmt.Sprintf("%s/%s/assert=%d/gates=%d", dn, cn, assert, nGates)
-					cond, extra := mk()
-					dec := OpDecorators{AssertRows: assert, ProduceCond: cond, CondID: 3, ExtraConds: extra}
-					var gates []BranchGate
-					for g := 0; g < nGates; g++ {
-						gates = append(gates, BranchGate{CondID: 20 + g, WantTrue: g%2 == 0})
-					}
-					sql := renderPipelineOp(t, DialectDollar, desc, RenderInput{BranchGates: gates}, dec)
-					guards := guardCTERe.FindAllStringSubmatch(sql, -1)
-					want := 0
-					if assert >= 0 {
-						want++
-					}
-					if cond != nil {
-						want += 1 + len(extra)
-					}
-					if len(guards) != want {
-						t.Errorf("%s: %d guard CTEs rendered, want %d:\n%s", name, len(guards), want, sql)
-						continue
-					}
-					tail := guardTail(sql)
-					for _, g := range guards {
-						if !strings.Contains(tail, "(SELECT _ok FROM "+g[1]+")") {
-							t.Errorf("%s: guard %s is not referenced by the final SELECT (the planner may prune it):\n%s", name, g[1], sql)
+				for _, nLeaf := range []int{0, 1, 2} {
+					for _, nGates := range []int{0, 2} {
+						name := fmt.Sprintf("%s/%s/assert=%d/leafrecs=%d/gates=%d", dn, cn, assert, nLeaf, nGates)
+						cond, extra := mk()
+						dec := OpDecorators{AssertRows: assert, ProduceCond: cond, CondID: 3, ExtraConds: extra}
+						for l := 0; l < nLeaf; l++ { // records of leaves of conditions rooted in later operations
+							dec.LeafRecs = append(dec.LeafRecs, ProducedCond{CondID: 40 + l, Cond: &PipelineCond{Kind: CondRowsEq, Op: &PipelineOp{}, Threshold: int64(l)}})
+						}
+						var gates []BranchGate
+						for g := 0; g < nGates; g++ {
+							gates = append(gates, BranchGate{CondID: 20 + g, WantTrue: g%2 == 0})
+						}
+						sql := renderPipelineOp(t, DialectDollar, desc, RenderInput{BranchGates: gates}, dec)
+						guards := guardCTERe.FindAllStringSubmatch(sql, -1)
+						want := nLeaf
+						if assert >= 0 {
+							want++
+						}
+						if cond != nil {
+							want += 1 + len(extra)
+						}
+						if len(guards) != want {
+							t.Errorf("%s: %d guard CTEs rendered, want %d:\n%s", name, len(guards), want, sql)
+							continue
+						}
+						tail := guardTail(sql)
+						for _, g := range guards {
+							if !strings.Contains(tail, "(SELECT _ok FROM "+g[1]+")") {
+								t.Errorf("%s: guard %s is not referenced by the final SELECT (the planner may prune it):\n%s", name, g[1], sql)
+							}
 						}
 					}
 				}

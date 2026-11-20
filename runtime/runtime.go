@@ -538,6 +538,18 @@ type OpDecorators struct {
 	// Rendered like ProduceCond, each recorded server-side under its own CondID. Pipeline.If keeps it in
 	// step with PipelineOp.ExtraConds.
 	ExtraConds []ProducedCond
+	// LeafRecs record, server-side, the value of a leaf of a compound condition that is rooted in a LATER
+	// operation (see PipelineCond.Recorded): this operation's statement evaluates the leaf over its own
+	// rows and stores it under sqlgen.l<CondID>; the later statement combines the recorded values.
+	// Val and Set of the entries are unused (nobody reads them back).
+	LeafRecs []ProducedCond
+}
+
+// guarded reports whether the statement of an operation needs the WITH _sqlgen_op guard shape: an
+// assertion, a condition that is recorded server-side, or the record of a leaf of someone else's
+// compound condition. (ExtraConds only ever accompany a ProduceCond.)
+func (d *OpDecorators) guarded() bool {
+	return d.AssertRows >= 0 || d.ProduceCond != nil || len(d.LeafRecs) > 0
 }
 
 // ArgsExpander appends a Query's bound arguments into dst.
