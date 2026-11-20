@@ -171,6 +171,7 @@ type PipelineOp struct {
 
 // ExecFuture represents the pending result of an exec statement queued in a Pipeline.
 type ExecFuture struct {
+	pl      *Pipeline
 	op      *PipelineOp
 	res     sql.Result
 	skipped bool
@@ -217,8 +218,14 @@ func (f *ExecFuture) NotFound() PipelineCond {
 	return PipelineCond{Kind: CondRowsEq, Op: f.op, Threshold: 0}
 }
 
-// Result returns the sql.Result of the operation after the pipeline has flushed.
+// futureNotReady reports whether a future queued on pl is read before pl started flushing.
+func futureNotReady(pl *Pipeline) bool { return pl != nil && !pl.flushed }
+
+// Result returns the sql.Result of the operation after the pipeline has flushed (ErrFutureNotReady before).
 func (f *ExecFuture) Result() (sql.Result, error) {
+	if futureNotReady(f.pl) {
+		return nil, ErrFutureNotReady
+	}
 	if f.skipped {
 		return nil, ErrBranchNotTaken
 	}
@@ -231,8 +238,12 @@ func (f *ExecFuture) Result() (sql.Result, error) {
 	return BatchExecResult{RowsAffectedVal: f.op.RowCount}, nil
 }
 
-// RowsAffected returns the number of rows affected by the operation after the pipeline has flushed.
+// RowsAffected returns the number of rows affected by the operation after the pipeline has flushed
+// (ErrFutureNotReady before).
 func (f *ExecFuture) RowsAffected() (int64, error) {
+	if futureNotReady(f.pl) {
+		return 0, ErrFutureNotReady
+	}
 	if f.skipped {
 		return 0, ErrBranchNotTaken
 	}
@@ -249,6 +260,7 @@ func (f *ExecFuture) Skipped() bool {
 
 // RowFuture represents the pending result of a single-row ("one") statement queued in a Pipeline.
 type RowFuture[T any] struct {
+	pl      *Pipeline
 	op      *PipelineOp
 	val     T
 	found   bool
@@ -308,9 +320,13 @@ func (f *RowFuture[T]) WhereCol(sqlPred string, goPred func(T) bool) PipelineCon
 	}
 }
 
-// Get returns the scanned row after the pipeline has flushed.
+// Get returns the scanned row after the pipeline has flushed (ErrFutureNotReady before, sql.ErrNoRows
+// when the flushed statement matched no row).
 func (f *RowFuture[T]) Get() (T, error) {
 	var zero T
+	if futureNotReady(f.pl) {
+		return zero, ErrFutureNotReady
+	}
 	if f.skipped {
 		return zero, ErrBranchNotTaken
 	}
@@ -335,6 +351,7 @@ func (f *RowFuture[T]) Skipped() bool {
 
 // SliceFuture represents the pending result of a multi-row ("many") statement queued in a Pipeline.
 type SliceFuture[T any] struct {
+	pl      *Pipeline
 	op      *PipelineOp
 	vals    []T
 	skipped bool
@@ -401,8 +418,11 @@ func (f *SliceFuture[T]) WhereCol(sqlPred string, goPred func(T) bool) PipelineC
 	}
 }
 
-// Get returns the scanned slice of rows after the pipeline has flushed.
+// Get returns the scanned slice of rows after the pipeline has flushed (ErrFutureNotReady before).
 func (f *SliceFuture[T]) Get() ([]T, error) {
+	if futureNotReady(f.pl) {
+		return nil, ErrFutureNotReady
+	}
 	if f.skipped {
 		return nil, ErrBranchNotTaken
 	}
@@ -856,7 +876,7 @@ func (p *Pipeline) QueueExec(
 		p.SetBuildError(expandErr)
 	}
 	in.BranchGates = p.cloneGates()
-	fut := &ExecFuture{}
+	fut := &ExecFuture{pl: p}
 	var args []any
 	if argBuf != nil {
 		args = *argBuf
@@ -921,7 +941,7 @@ func QueueRow[T any](
 		p.SetBuildError(expandErr)
 	}
 	in.BranchGates = p.cloneGates()
-	fut := &RowFuture[T]{}
+	fut := &RowFuture[T]{pl: p}
 	var args []any
 	if argBuf != nil {
 		args = *argBuf
@@ -1016,7 +1036,7 @@ func QueueSlice[T any](
 		p.SetBuildError(expandErr)
 	}
 	in.BranchGates = p.cloneGates()
-	fut := &SliceFuture[T]{}
+	fut := &SliceFuture[T]{pl: p}
 	var args []any
 	if argBuf != nil {
 		args = *argBuf

@@ -72,6 +72,13 @@ var (
 	// ErrAssertionFailed is matched (errors.Is) by every pipeline row-count assertion failure. The returned
 	// error is an *AssertionError naming the statement and the expected count.
 	ErrAssertionFailed = errors.New("sqlgen: pipeline row-count assertion failed")
+	// ErrNilArgument is returned by generated entry points that take an iterator or a callback (the
+	// <Name>Stream / <Name>StreamSeq sequence, the Each callbacks, InTx and PipelineTx) when it is nil.
+	ErrNilArgument = errors.New("sqlgen: nil iterator or callback argument")
+	// ErrFutureNotReady is returned when a future (ExecFuture, RowFuture, SliceFuture) is read before the
+	// pipeline that queued it has been flushed (Flush, or the end of PipelineTx). It is distinct from
+	// sql.ErrNoRows, which a flushed RowFuture returns for a statement that matched no row.
+	ErrFutureNotReady = errors.New("sqlgen: pipeline future read before the pipeline was flushed")
 	// ErrBranchNotTaken is returned when reading a future from an untaken If/Else branch.
 	ErrBranchNotTaken = errors.New("sqlgen: pipeline if/else branch was not taken")
 	// ErrInvalidSeek is returned when a Seek cursor has an invalid column count.

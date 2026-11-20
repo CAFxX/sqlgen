@@ -380,6 +380,8 @@ var (
 	ErrUninitializedQuery = errors.New("sqlgen: curried Query argument is uninitialized")
 	ErrAssertionFailed    = errors.New("sqlgen: pipeline row-count assertion failed")
 	ErrBranchNotTaken     = errors.New("sqlgen: pipeline if/else branch was not taken")
+	ErrNilArgument        = errors.New("sqlgen: nil iterator or callback argument")
+	ErrFutureNotReady     = errors.New("sqlgen: pipeline future read before the pipeline was flushed")
 )
 
 // AssertionError is what a failed AssertRowsAffected / AssertFound returns. It matches
