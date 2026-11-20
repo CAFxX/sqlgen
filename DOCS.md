@@ -570,7 +570,7 @@ An empty pipeline, or one whose `fn` returned an error, sends nothing. Calling `
 **How a first-seen pipeline stays at one round-trip.** pgx's usual query modes (`QueryExecModeCacheStatement`, the default, and `CacheDescribe`) first *describe* every statement text they have not seen, which is a separate round-trip, before running the batch. pgxwire therefore sends each pipeline statement the way `pgx.QueryExecModeExec` does: unnamed Parse/Bind/Describe/Execute messages, parameters in text format with no declared types (the server infers them from context), results in text format decoded locally into the same Go values pgx's stdlib driver produces. Consequences, all measured below:
 - A first-seen pipeline costs exactly as many round-trips as a warmed one: one.
 - pgx's statement cache is not used for pipelines, so the server parses each statement of each flush (server CPU, never a round-trip). A code path that gains nothing from batching can stay on plain query methods, which still use prepared statements.
-- Parameter types are inferred by the server from the SQL, as a describe would have inferred them; the Go type of an argument only picks its text encoding (pgx's default type mapping, like `QueryExecModeExec`). A placeholder the server cannot type from context (a bare `SELECT $1`) fails with "could not determine data type of parameter" on either path and needs a cast in the SQL; sqlgen already adds casts where it generates such contexts (see "Typed placeholders" below).
+- Parameter types are inferred by the server from the SQL, as a describe would have inferred them. A placeholder the server cannot type from context (a bare `SELECT $1`) fails with "could not determine data type of parameter" on either path and needs a cast in the SQL; sqlgen already adds casts where it generates such contexts (see "Typed placeholders" below). Because the server, not pgx, decides the type, the Go arguments are encoded so that they mean the same as on a prepared statement; see "Argument types on the single-round-trip path" below.
 - pgx query tracers do not see pipeline batches (they run below `pgx.Conn`); use the counters below.
 - If your connection goes through a transaction-pooling proxy (PgBouncer in transaction mode), this is the safe mode: nothing is prepared server-side.
 
@@ -619,6 +619,22 @@ db := sql.OpenDB(pgxwire.Connector(cfg))
 | failure (assertion, `Abort`, server error) | n/a | 2 (the batch + the `ROLLBACK`); the pipeline after it is back to 1 |
 
 The sequential figures include the extra `Prepare` round-trips of statement-cache promotion and vary by run; the lower bound is `BEGIN` + one per executed statement + `COMMIT`. CockroachDB reaches the same single round-trip as PostgreSQL. Wall-clock effect, measured with `go test -bench PipelineTx` on a loopback server (`ENGINES=postgres18`, 10 guarded updates): about 2.5 ms for pgxwire against 16 ms sequential; with 5 ms of simulated network latency per turn 5.7 ms against 69 ms. The win is the round-trips removed, so it grows with the latency to your database and with the number of statements.
+
+#### Argument types on the single-round-trip path
+
+Pipeline statements carry no declared parameter types, so the type the server reads an argument as is the type of the column or expression its placeholder meets. pgxwire resolves the Go values first so that the stored data is the same as on a prepared statement (the `integration` suite compares both paths on PostgreSQL 15, 18 and CockroachDB):
+
+| Go argument | Sent as | Works for |
+|---|---|---|
+| `time.Time`, `*time.Time`, `sql.NullTime`, a `driver.Valuer` returning a time | text keeping the value's **own** UTC offset (`2024-03-01 22:30:00-05:00:00`; years before 1 as `... BC`) | `timestamp` / `date` / `time` columns store the Go wall clock (PostgreSQL ignores the offset for them, exactly as a prepared statement stores it); `timestamptz` stores the instant. pgx's own mode converts to UTC first, which would store `22:30-05:00` into a `timestamp` column as `03:30` of the next day. |
+| `[]time.Time` | an array literal with the same element format | `timestamp[]`, `timestamptz[]` |
+| `[]byte` | raw bytes, binary format | `bytea`, `text`, `varchar`, `uuid` (16 bytes). **Not `json`/`jsonb`** (the server expects a version prefix): the statement fails with an error naming the `[]byte` argument; write `$N::text::jsonb` in the SQL, or pass a `string`, `json.RawMessage` or a map/struct instead. A nil slice is `NULL`. |
+| `[16]byte` (a UUID) | canonical `xxxxxxxx-xxxx-...` text | `uuid`, `text` |
+| `map`, `struct`, pointer to struct, slice of structs/maps (anything pgx cannot encode) | JSON text | `json`, `jsonb`, `text` |
+| `driver.Valuer` (`sql.Null*`, `uuid.UUID`, ...) | the resolved `driver.Value`, then as above | as for the resolved value |
+| everything else (`string`, integers, floats, `bool`, `[]string`, `[]int64`, `json.RawMessage`, ...) | pgx's default text encoding | as before |
+
+A value no rule can encode is rejected before anything is sent, with an error that names the argument (`argument $2 (chan int)`) and suggests an explicit cast in the SQL (`$2::text`) or converting the value yourself. Known differences from a prepared statement that are deliberately not emulated: a `time.Time` bound to a `text` column is stored in PostgreSQL's date-time syntax rather than Go's `Time.String()` form, and `float32` is sent in its shortest decimal form (`0.1`, not `0.10000000149011612`).
 
 #### Typed placeholders in gated inserts (`$N` dialect)
 

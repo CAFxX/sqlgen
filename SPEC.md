@@ -63,6 +63,7 @@ Target Go version: **Go 1.27+** (matches `go.mod`)
 │       └── main_test.go                # CLI exit-code, drift-check, and stderr diagnostic tests
 ├── pgxwire/                            # NESTED MODULE (pgx/v5): single-round-trip WirePipeliner / WireTxPipeliner for PostgreSQL & CockroachDB
 │   ├── pgxwire.go                      # OpenDB / Connector, ExecPipeline / ExecTxPipeline (pgconn ExecBatch, QueryExecModeExec semantics)
+│   ├── args.go                         # argument resolution for typeless placeholders: time.Time keeps its offset, []byte -> raw binary, [16]byte -> uuid text, map/struct -> JSON, Valuers resolved (DOCS.md 3.4)
 │   ├── rows.go                         # text-format results -> database/sql driver values
 │   └── *_test.go                       # engine tests (skipped without SQLGEN_*_DSN)
 ├── integration/                        # NESTED MODULE: real-engine suite incl. wire-vs-sequential differential, network-turn counts, failure/concurrency tests

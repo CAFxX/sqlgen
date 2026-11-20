@@ -20,7 +20,10 @@
 //   - pgx's statement cache is not used for pipelines, so the server parses every statement of every
 //     flush. That costs server CPU, never a round-trip. Parse-heavy hot paths that gain nothing from
 //     batching can stay on the sequential (prepared-statement) path by using a plain *sql.DB.
-//   - A Go value is converted by pgx's default type mapping (pgtype.Map), like QueryExecModeExec.
+//   - A Go value is resolved to a form the server reads correctly whatever type it infers for the
+//     placeholder (times keep their own offset, []byte travels as raw binary, maps and structs as JSON,
+//     ...) and is otherwise converted by pgx's default type mapping, like QueryExecModeExec. See args.go
+//     and the sqlgen DOCS.md, section 3.4, "Argument types on the single-round-trip path".
 //   - pgx query tracers do not observe pipeline batches (they run below pgx.Conn); use
 //     runtime.CacheStats.WirePipelines to confirm the path.
 package pgxwire
@@ -117,6 +120,9 @@ type stmtRef struct {
 	role  stmtRole
 	op    *runtime.PipelineOp
 	extra int // index into op.ExtraConds for roleExtraCond
+	// rawArgs are the 1-based numbers of the []byte arguments of a roleOp statement, which travel as raw
+	// binary parameters (see args.go).
+	rawArgs []int
 }
 
 func (c *conn) exec(ctx context.Context, tx bool, txOpts *sql.TxOptions, ops []runtime.PipelineOp) error {
@@ -144,13 +150,24 @@ func (c *conn) exec(ctx context.Context, tx bool, txOpts *sql.TxOptions, ops []r
 	}
 	for i := range ops {
 		op := &ops[i]
-		// Declared parameter types stay empty: the server infers them (QueryExecModeExec semantics), so
-		// no describe round-trip is ever needed, even for a statement text pgx has never seen.
-		if err := eqb.Build(pc.TypeMap(), nil, op.Args); err != nil {
-			return fmt.Errorf("pgxwire: %s: %w", opName(op), err)
+		// Declared parameter types stay empty: the server infers them, so no describe round-trip is ever
+		// needed, even for a statement text pgx has never seen. The arguments are first resolved to
+		// forms that are read correctly whatever type the server infers (see args.go).
+		args, raws, err := resolveArgs(pc.TypeMap(), op.Args)
+		if err == nil {
+			err = eqb.Build(pc.TypeMap(), nil, args)
+		}
+		if err != nil {
+			return fmt.Errorf("pgxwire: %s: %w (the single-round-trip path sends arguments without declared types: convert the value yourself or give its placeholder an explicit cast in the SQL, for example $N::text; see DOCS.md section 3.4)", opName(op), err)
+		}
+		ref := stmtRef{role: roleOp, op: op}
+		for _, r := range raws {
+			eqb.ParamFormats[r.idx] = pgx.BinaryFormatCode
+			eqb.ParamValues[r.idx] = r.val
+			ref.rawArgs = append(ref.rawArgs, r.idx+1)
 		}
 		batch.ExecParams(op.SQL, eqb.ParamValues, nil, eqb.ParamFormats, nil)
-		refs = append(refs, stmtRef{role: roleOp, op: op})
+		refs = append(refs, ref)
 		if op.Decorators.ProduceCond != nil {
 			// The condition was recorded server-side by set_config('sqlgen.c<ID>', ..., true). Read it back
 			// inside the same batch: later operations are gated on it by the server, and the Go side needs
@@ -220,7 +237,12 @@ func (c *conn) fail(ctx context.Context, pg *pgconn.PgConn, tx bool, refs []stmt
 	}
 	switch ref := refs[failed]; ref.role {
 	case roleOp:
-		return runtime.TranslateWireError(ref.op, err)
+		terr := runtime.TranslateWireError(ref.op, err)
+		if herr := withRawArgHint(terr, ref.rawArgs); herr != terr {
+			ref.op.Err = herr
+			return herr
+		}
+		return terr
 	case roleCommit:
 		return &runtime.CommitError{Err: err}
 	default:
