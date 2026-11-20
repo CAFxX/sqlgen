@@ -491,7 +491,7 @@ When a statement qualifies for `*Batch` **and** its collection parameter is a tu
   - `q.<Name>Stream(ctx, ..., seq iter.Seq2[<TupleType>, error], ...) ([]<RowType>, error)`
   - `q.<Name>StreamSeq(ctx, ..., seq iter.Seq2[<TupleType>, error], ...) iter.Seq2[<RowType>, error]`
 
-An error yielded by `seq` stops the stream and is returned (or yielded) as-is. A nil `seq` (and a nil callback passed to `<Name>Each`, `<Name>BatchEach`, `InTx` or `PipelineTx`) returns `runtime.ErrNilArgument` instead of panicking. `runtime.Seq2[T]` is a convenience alias for `iter.Seq2[T, error]`, so values of either spelling are accepted.
+**Atomicity.** `<Name>Batch` of more than one chunk runs in its own transaction (all or nothing, unless called on a `WithTx`/`InTx` query, which uses the caller's). A stream is not one transaction: every flush (up to `256` items) is atomic, but an error or a cancelled context part-way leaves the earlier flushes committed. Run the stream inside `q.InTx` for all-or-nothing ingestion. An error yielded by `seq` stops the stream and is returned (or yielded) as-is. A nil `seq` (and a nil callback passed to `<Name>Each`, `<Name>BatchEach`, `InTx` or `PipelineTx`) returns `runtime.ErrNilArgument` instead of panicking. `runtime.Seq2[T]` is a convenience alias for `iter.Seq2[T, error]`, so values of either spelling are accepted.
 
 **Iterator Adapters in `runtime`** (all return plain `iter.Seq2[T, error]`):
 - `runtime.FromSlice(items []T) iter.Seq2[T, error]` — wraps an in-memory slice.
