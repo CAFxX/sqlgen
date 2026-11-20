@@ -1677,20 +1677,22 @@ func (q *Queries) FzSearchSeq(ctx context.Context, p FzSearchParams) iter.Seq2[F
 			yield(zero, err)
 			return
 		}
+		defer func() { runtime.CloseRows(sqlRows, ms) }()
 		var item FzRow
 		for sqlRows.Next() {
 			if err := scanFzSearchRow(sqlRows, &item, colMask, p); err != nil {
 				runtime.CloseRows(sqlRows, ms)
+				sqlRows, ms = nil, nil
 				yield(zero, err)
 				return
 			}
 			if !yield(item, nil) {
-				runtime.CloseRows(sqlRows, ms)
 				return
 			}
 		}
 		err = sqlRows.Err()
 		runtime.CloseRows(sqlRows, ms)
+		sqlRows, ms = nil, nil
 		if err != nil {
 			yield(zero, err)
 		}
@@ -1912,20 +1914,22 @@ func (q *Queries) FzNarrowSeq(ctx context.Context, p FzNarrowParams) iter.Seq2[F
 			yield(zero, err)
 			return
 		}
+		defer func() { runtime.CloseRows(sqlRows, ms) }()
 		var item FzNarrowRow
 		for sqlRows.Next() {
 			if err := scanFzNarrowRow(sqlRows, &item, colMask, p); err != nil {
 				runtime.CloseRows(sqlRows, ms)
+				sqlRows, ms = nil, nil
 				yield(zero, err)
 				return
 			}
 			if !yield(item, nil) {
-				runtime.CloseRows(sqlRows, ms)
 				return
 			}
 		}
 		err = sqlRows.Err()
 		runtime.CloseRows(sqlRows, ms)
+		sqlRows, ms = nil, nil
 		if err != nil {
 			yield(zero, err)
 		}
@@ -2420,20 +2424,22 @@ func (q *Queries) FzPageSeq(ctx context.Context, p FzPageParams) iter.Seq2[FzRow
 			yield(zero, err)
 			return
 		}
+		defer func() { runtime.CloseRows(sqlRows, ms) }()
 		var item FzRow
 		for sqlRows.Next() {
 			if err := scanFzPageRow(sqlRows, &item, colMask, p); err != nil {
 				runtime.CloseRows(sqlRows, ms)
+				sqlRows, ms = nil, nil
 				yield(zero, err)
 				return
 			}
 			if !yield(item, nil) {
-				runtime.CloseRows(sqlRows, ms)
 				return
 			}
 		}
 		err = sqlRows.Err()
 		runtime.CloseRows(sqlRows, ms)
+		sqlRows, ms = nil, nil
 		if err != nil {
 			yield(zero, err)
 		}
@@ -2834,20 +2840,22 @@ func (q *Queries) FzAggSeq(ctx context.Context, p FzAggParams) iter.Seq2[FzAggRo
 			yield(zero, err)
 			return
 		}
+		defer func() { runtime.CloseRows(sqlRows, ms) }()
 		var item FzAggRow
 		for sqlRows.Next() {
 			if err := scanFzAggRow(sqlRows, &item, colMask, p); err != nil {
 				runtime.CloseRows(sqlRows, ms)
+				sqlRows, ms = nil, nil
 				yield(zero, err)
 				return
 			}
 			if !yield(item, nil) {
-				runtime.CloseRows(sqlRows, ms)
 				return
 			}
 		}
 		err = sqlRows.Err()
 		runtime.CloseRows(sqlRows, ms)
+		sqlRows, ms = nil, nil
 		if err != nil {
 			yield(zero, err)
 		}
@@ -3062,20 +3070,22 @@ func (q *Queries) FzByKeysSeq(ctx context.Context, keys []FzKey) iter.Seq2[FzRow
 			yield(zero, err)
 			return
 		}
+		defer func() { runtime.CloseRows(sqlRows, ms) }()
 		var item FzRow
 		for sqlRows.Next() {
 			if err := scanFzByKeysRow(sqlRows, &item, colMask, p); err != nil {
 				runtime.CloseRows(sqlRows, ms)
+				sqlRows, ms = nil, nil
 				yield(zero, err)
 				return
 			}
 			if !yield(item, nil) {
-				runtime.CloseRows(sqlRows, ms)
 				return
 			}
 		}
 		err = sqlRows.Err()
 		runtime.CloseRows(sqlRows, ms)
+		sqlRows, ms = nil, nil
 		if err != nil {
 			yield(zero, err)
 		}
@@ -3180,6 +3190,9 @@ func (q *Queries) FzByKeysBatchSeq(ctx context.Context, keys []FzKey) iter.Seq2[
 		shapeTag := runtime.ComputeBatchShapeTag(colMask, flagMask)
 		maxRows := q.cache.MaxRowsPerBatch(sqlDialect, 0, 2)
 		firstChunk := q.cache.PlanBatchChunk(stmtIDFzByKeys, colMask, flagMask, totalRows, maxRows, true)
+		var sqlRows *sql.Rows
+		var ms *runtime.ManagedStmt
+		defer func() { runtime.CloseRows(sqlRows, ms) }()
 		for offset := 0; offset < totalRows; {
 			chunkSize := firstChunk
 			if offset > 0 {
@@ -3206,7 +3219,8 @@ func (q *Queries) FzByKeysBatchSeq(ctx context.Context, keys []FzKey) iter.Seq2[
 				FlagMask:  flagMask,
 				TupleLens: tupleLensBuf[:],
 			}
-			sqlRows, ms, err := q.cache.Query(ctx, q.db, q.txCache, q.usePrepared, vk, stmtIDFzByKeys, shapeTag, chunkSize, nil, sqlDialect, descFzByKeys, &in, (*argBuf)...)
+			var err error
+			sqlRows, ms, err = q.cache.Query(ctx, q.db, q.txCache, q.usePrepared, vk, stmtIDFzByKeys, shapeTag, chunkSize, nil, sqlDialect, descFzByKeys, &in, (*argBuf)...)
 			runtime.ReleaseArgs(argBuf)
 			if err != nil {
 				yield(zero, err)
@@ -3216,16 +3230,17 @@ func (q *Queries) FzByKeysBatchSeq(ctx context.Context, keys []FzKey) iter.Seq2[
 			for sqlRows.Next() {
 				if err := scanFzByKeysRow(sqlRows, &item, colMask, chunkP); err != nil {
 					runtime.CloseRows(sqlRows, ms)
+					sqlRows, ms = nil, nil
 					yield(zero, err)
 					return
 				}
 				if !yield(item, nil) {
-					runtime.CloseRows(sqlRows, ms)
 					return
 				}
 			}
 			err = sqlRows.Err()
 			runtime.CloseRows(sqlRows, ms)
+			sqlRows, ms = nil, nil
 			if err != nil {
 				yield(zero, err)
 				return
@@ -3473,20 +3488,22 @@ func (q *Queries) FzByIDsSeq(ctx context.Context, ids []int64) iter.Seq2[FzRow, 
 			yield(zero, err)
 			return
 		}
+		defer func() { runtime.CloseRows(sqlRows, ms) }()
 		var item FzRow
 		for sqlRows.Next() {
 			if err := scanFzByIDsRow(sqlRows, &item, colMask, p); err != nil {
 				runtime.CloseRows(sqlRows, ms)
+				sqlRows, ms = nil, nil
 				yield(zero, err)
 				return
 			}
 			if !yield(item, nil) {
-				runtime.CloseRows(sqlRows, ms)
 				return
 			}
 		}
 		err = sqlRows.Err()
 		runtime.CloseRows(sqlRows, ms)
+		sqlRows, ms = nil, nil
 		if err != nil {
 			yield(zero, err)
 		}
@@ -3585,6 +3602,9 @@ func (q *Queries) FzByIDsBatchSeq(ctx context.Context, ids []int64) iter.Seq2[Fz
 		shapeTag := runtime.ComputeBatchShapeTag(colMask, flagMask)
 		maxRows := q.cache.MaxRowsPerBatch(sqlDialect, 0, 1)
 		firstChunk := q.cache.PlanBatchChunk(stmtIDFzByIDs, colMask, flagMask, totalRows, maxRows, true)
+		var sqlRows *sql.Rows
+		var ms *runtime.ManagedStmt
+		defer func() { runtime.CloseRows(sqlRows, ms) }()
 		for offset := 0; offset < totalRows; {
 			chunkSize := firstChunk
 			if offset > 0 {
@@ -3603,7 +3623,8 @@ func (q *Queries) FzByIDsBatchSeq(ctx context.Context, ids []int64) iter.Seq2[Fz
 				FlagMask:  flagMask,
 				SliceLens: sliceLensBuf[:],
 			}
-			sqlRows, ms, err := q.cache.Query(ctx, q.db, q.txCache, q.usePrepared, vk, stmtIDFzByIDs, shapeTag, chunkSize, nil, sqlDialect, descFzByIDs, &in, (*argBuf)...)
+			var err error
+			sqlRows, ms, err = q.cache.Query(ctx, q.db, q.txCache, q.usePrepared, vk, stmtIDFzByIDs, shapeTag, chunkSize, nil, sqlDialect, descFzByIDs, &in, (*argBuf)...)
 			runtime.ReleaseArgs(argBuf)
 			if err != nil {
 				yield(zero, err)
@@ -3613,16 +3634,17 @@ func (q *Queries) FzByIDsBatchSeq(ctx context.Context, ids []int64) iter.Seq2[Fz
 			for sqlRows.Next() {
 				if err := scanFzByIDsRow(sqlRows, &item, colMask, chunkP); err != nil {
 					runtime.CloseRows(sqlRows, ms)
+					sqlRows, ms = nil, nil
 					yield(zero, err)
 					return
 				}
 				if !yield(item, nil) {
-					runtime.CloseRows(sqlRows, ms)
 					return
 				}
 			}
 			err = sqlRows.Err()
 			runtime.CloseRows(sqlRows, ms)
+			sqlRows, ms = nil, nil
 			if err != nil {
 				yield(zero, err)
 				return
@@ -4263,20 +4285,22 @@ func (q *Queries) FzSubsSeq(ctx context.Context, p FzSubsParams) iter.Seq2[FzRow
 			yield(zero, err)
 			return
 		}
+		defer func() { runtime.CloseRows(sqlRows, ms) }()
 		var item FzRow
 		for sqlRows.Next() {
 			if err := scanFzSubsRow(sqlRows, &item, colMask, p); err != nil {
 				runtime.CloseRows(sqlRows, ms)
+				sqlRows, ms = nil, nil
 				yield(zero, err)
 				return
 			}
 			if !yield(item, nil) {
-				runtime.CloseRows(sqlRows, ms)
 				return
 			}
 		}
 		err = sqlRows.Err()
 		runtime.CloseRows(sqlRows, ms)
+		sqlRows, ms = nil, nil
 		if err != nil {
 			yield(zero, err)
 		}
@@ -4503,20 +4527,22 @@ func (q *Queries) FzJoinSeq(ctx context.Context, p FzJoinParams) iter.Seq2[FzJoi
 			yield(zero, err)
 			return
 		}
+		defer func() { runtime.CloseRows(sqlRows, ms) }()
 		var item FzJoinRow
 		for sqlRows.Next() {
 			if err := scanFzJoinRow(sqlRows, &item, colMask, p); err != nil {
 				runtime.CloseRows(sqlRows, ms)
+				sqlRows, ms = nil, nil
 				yield(zero, err)
 				return
 			}
 			if !yield(item, nil) {
-				runtime.CloseRows(sqlRows, ms)
 				return
 			}
 		}
 		err = sqlRows.Err()
 		runtime.CloseRows(sqlRows, ms)
+		sqlRows, ms = nil, nil
 		if err != nil {
 			yield(zero, err)
 		}
@@ -5053,20 +5079,22 @@ func (q *Queries) FzTypedSearchSeq(ctx context.Context, p FzTypedSearchParams) i
 			yield(zero, err)
 			return
 		}
+		defer func() { runtime.CloseRows(sqlRows, ms) }()
 		var item FzTypedRow
 		for sqlRows.Next() {
 			if err := scanFzTypedSearchRow(sqlRows, &item, colMask, p); err != nil {
 				runtime.CloseRows(sqlRows, ms)
+				sqlRows, ms = nil, nil
 				yield(zero, err)
 				return
 			}
 			if !yield(item, nil) {
-				runtime.CloseRows(sqlRows, ms)
 				return
 			}
 		}
 		err = sqlRows.Err()
 		runtime.CloseRows(sqlRows, ms)
+		sqlRows, ms = nil, nil
 		if err != nil {
 			yield(zero, err)
 		}
@@ -5355,20 +5383,22 @@ func (q *Queries) FzTypedPageSeq(ctx context.Context, after runtime.Seek, sort r
 			yield(zero, err)
 			return
 		}
+		defer func() { runtime.CloseRows(sqlRows, ms) }()
 		var item FzTypedRow
 		for sqlRows.Next() {
 			if err := scanFzTypedPageRow(sqlRows, &item, colMask, p); err != nil {
 				runtime.CloseRows(sqlRows, ms)
+				sqlRows, ms = nil, nil
 				yield(zero, err)
 				return
 			}
 			if !yield(item, nil) {
-				runtime.CloseRows(sqlRows, ms)
 				return
 			}
 		}
 		err = sqlRows.Err()
 		runtime.CloseRows(sqlRows, ms)
+		sqlRows, ms = nil, nil
 		if err != nil {
 			yield(zero, err)
 		}
@@ -5596,20 +5626,22 @@ func (q *Queries) FzInsertRetSeq(ctx context.Context, rows []FzNew) iter.Seq2[Fz
 			yield(zero, err)
 			return
 		}
+		defer func() { runtime.CloseRows(sqlRows, ms) }()
 		var item FzOut
 		for sqlRows.Next() {
 			if err := scanFzInsertRetRow(sqlRows, &item, colMask, p); err != nil {
 				runtime.CloseRows(sqlRows, ms)
+				sqlRows, ms = nil, nil
 				yield(zero, err)
 				return
 			}
 			if !yield(item, nil) {
-				runtime.CloseRows(sqlRows, ms)
 				return
 			}
 		}
 		err = sqlRows.Err()
 		runtime.CloseRows(sqlRows, ms)
+		sqlRows, ms = nil, nil
 		if err != nil {
 			yield(zero, err)
 		}
@@ -5714,6 +5746,9 @@ func (q *Queries) FzInsertRetBatchSeq(ctx context.Context, rows []FzNew) iter.Se
 		shapeTag := runtime.ComputeBatchShapeTag(colMask, flagMask)
 		maxRows := q.cache.MaxRowsPerBatch(sqlDialect, 0, 13)
 		firstChunk := q.cache.PlanBatchChunk(stmtIDFzInsertRet, colMask, flagMask, totalRows, maxRows, true)
+		var sqlRows *sql.Rows
+		var ms *runtime.ManagedStmt
+		defer func() { runtime.CloseRows(sqlRows, ms) }()
 		for offset := 0; offset < totalRows; {
 			chunkSize := firstChunk
 			if offset > 0 {
@@ -5751,7 +5786,8 @@ func (q *Queries) FzInsertRetBatchSeq(ctx context.Context, rows []FzNew) iter.Se
 				FlagMask:  flagMask,
 				TupleLens: tupleLensBuf[:],
 			}
-			sqlRows, ms, err := q.cache.Query(ctx, q.db, q.txCache, q.usePrepared, vk, stmtIDFzInsertRet, shapeTag, chunkSize, nil, sqlDialect, descFzInsertRet, &in, (*argBuf)...)
+			var err error
+			sqlRows, ms, err = q.cache.Query(ctx, q.db, q.txCache, q.usePrepared, vk, stmtIDFzInsertRet, shapeTag, chunkSize, nil, sqlDialect, descFzInsertRet, &in, (*argBuf)...)
 			runtime.ReleaseArgs(argBuf)
 			if err != nil {
 				yield(zero, err)
@@ -5761,16 +5797,17 @@ func (q *Queries) FzInsertRetBatchSeq(ctx context.Context, rows []FzNew) iter.Se
 			for sqlRows.Next() {
 				if err := scanFzInsertRetRow(sqlRows, &item, colMask, chunkP); err != nil {
 					runtime.CloseRows(sqlRows, ms)
+					sqlRows, ms = nil, nil
 					yield(zero, err)
 					return
 				}
 				if !yield(item, nil) {
-					runtime.CloseRows(sqlRows, ms)
 					return
 				}
 			}
 			err = sqlRows.Err()
 			runtime.CloseRows(sqlRows, ms)
+			sqlRows, ms = nil, nil
 			if err != nil {
 				yield(zero, err)
 				return
@@ -6030,20 +6067,22 @@ func (q *Queries) FzDeleteRetSeq(ctx context.Context, p FzDeleteRetParams) iter.
 			yield(zero, err)
 			return
 		}
+		defer func() { runtime.CloseRows(sqlRows, ms) }()
 		var item FzOut
 		for sqlRows.Next() {
 			if err := scanFzDeleteRetRow(sqlRows, &item, colMask, p); err != nil {
 				runtime.CloseRows(sqlRows, ms)
+				sqlRows, ms = nil, nil
 				yield(zero, err)
 				return
 			}
 			if !yield(item, nil) {
-				runtime.CloseRows(sqlRows, ms)
 				return
 			}
 		}
 		err = sqlRows.Err()
 		runtime.CloseRows(sqlRows, ms)
+		sqlRows, ms = nil, nil
 		if err != nil {
 			yield(zero, err)
 		}
@@ -6139,6 +6178,9 @@ func (q *Queries) FzDeleteRetBatchSeq(ctx context.Context, p FzDeleteRetParams) 
 		shapeTag := runtime.ComputeBatchShapeTag(colMask, flagMask)
 		maxRows := q.cache.MaxRowsPerBatch(sqlDialect, 1, 1)
 		firstChunk := q.cache.PlanBatchChunk(stmtIDFzDeleteRet, colMask, flagMask, totalRows, maxRows, true)
+		var sqlRows *sql.Rows
+		var ms *runtime.ManagedStmt
+		defer func() { runtime.CloseRows(sqlRows, ms) }()
 		for offset := 0; offset < totalRows; {
 			chunkSize := firstChunk
 			if offset > 0 {
@@ -6167,7 +6209,8 @@ func (q *Queries) FzDeleteRetBatchSeq(ctx context.Context, p FzDeleteRetParams) 
 				FlagMask:  flagMask,
 				SliceLens: sliceLensBuf[:],
 			}
-			sqlRows, ms, err := q.cache.Query(ctx, q.db, q.txCache, q.usePrepared, vk, stmtIDFzDeleteRet, shapeTag, chunkSize, nil, sqlDialect, descFzDeleteRet, &in, (*argBuf)...)
+			var err error
+			sqlRows, ms, err = q.cache.Query(ctx, q.db, q.txCache, q.usePrepared, vk, stmtIDFzDeleteRet, shapeTag, chunkSize, nil, sqlDialect, descFzDeleteRet, &in, (*argBuf)...)
 			runtime.ReleaseArgs(argBuf)
 			if err != nil {
 				yield(zero, err)
@@ -6177,16 +6220,17 @@ func (q *Queries) FzDeleteRetBatchSeq(ctx context.Context, p FzDeleteRetParams) 
 			for sqlRows.Next() {
 				if err := scanFzDeleteRetRow(sqlRows, &item, colMask, chunkP); err != nil {
 					runtime.CloseRows(sqlRows, ms)
+					sqlRows, ms = nil, nil
 					yield(zero, err)
 					return
 				}
 				if !yield(item, nil) {
-					runtime.CloseRows(sqlRows, ms)
 					return
 				}
 			}
 			err = sqlRows.Err()
 			runtime.CloseRows(sqlRows, ms)
+			sqlRows, ms = nil, nil
 			if err != nil {
 				yield(zero, err)
 				return

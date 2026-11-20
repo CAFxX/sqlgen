@@ -409,20 +409,22 @@ func (q *Queries) GetInventoryBySKUsSeq(ctx context.Context, keys []SKUKey) iter
 			yield(zero, err)
 			return
 		}
+		defer func() { runtime.CloseRows(sqlRows, ms) }()
 		var item InventoryItem
 		for sqlRows.Next() {
 			if err := scanGetInventoryBySKUsRow(sqlRows, &item, colMask, p); err != nil {
 				runtime.CloseRows(sqlRows, ms)
+				sqlRows, ms = nil, nil
 				yield(zero, err)
 				return
 			}
 			if !yield(item, nil) {
-				runtime.CloseRows(sqlRows, ms)
 				return
 			}
 		}
 		err = sqlRows.Err()
 		runtime.CloseRows(sqlRows, ms)
+		sqlRows, ms = nil, nil
 		if err != nil {
 			yield(zero, err)
 		}
@@ -527,6 +529,9 @@ func (q *Queries) GetInventoryBySKUsBatchSeq(ctx context.Context, keys []SKUKey)
 		shapeTag := runtime.ComputeBatchShapeTag(colMask, flagMask)
 		maxRows := q.cache.MaxRowsPerBatch(sqlDialect, 0, 2)
 		firstChunk := q.cache.PlanBatchChunk(stmtIDGetInventoryBySKUs, colMask, flagMask, totalRows, maxRows, true)
+		var sqlRows *sql.Rows
+		var ms *runtime.ManagedStmt
+		defer func() { runtime.CloseRows(sqlRows, ms) }()
 		for offset := 0; offset < totalRows; {
 			chunkSize := firstChunk
 			if offset > 0 {
@@ -553,7 +558,8 @@ func (q *Queries) GetInventoryBySKUsBatchSeq(ctx context.Context, keys []SKUKey)
 				FlagMask:  flagMask,
 				TupleLens: tupleLensBuf[:],
 			}
-			sqlRows, ms, err := q.cache.Query(ctx, q.db, q.txCache, q.usePrepared, vk, stmtIDGetInventoryBySKUs, shapeTag, chunkSize, nil, sqlDialect, descGetInventoryBySKUs, &in, (*argBuf)...)
+			var err error
+			sqlRows, ms, err = q.cache.Query(ctx, q.db, q.txCache, q.usePrepared, vk, stmtIDGetInventoryBySKUs, shapeTag, chunkSize, nil, sqlDialect, descGetInventoryBySKUs, &in, (*argBuf)...)
 			runtime.ReleaseArgs(argBuf)
 			if err != nil {
 				yield(zero, err)
@@ -563,16 +569,17 @@ func (q *Queries) GetInventoryBySKUsBatchSeq(ctx context.Context, keys []SKUKey)
 			for sqlRows.Next() {
 				if err := scanGetInventoryBySKUsRow(sqlRows, &item, colMask, chunkP); err != nil {
 					runtime.CloseRows(sqlRows, ms)
+					sqlRows, ms = nil, nil
 					yield(zero, err)
 					return
 				}
 				if !yield(item, nil) {
-					runtime.CloseRows(sqlRows, ms)
 					return
 				}
 			}
 			err = sqlRows.Err()
 			runtime.CloseRows(sqlRows, ms)
+			sqlRows, ms = nil, nil
 			if err != nil {
 				yield(zero, err)
 				return
@@ -984,20 +991,22 @@ func (q *Queries) StreamFulfilledOrdersSeq(ctx context.Context, cutoffTs int64) 
 			yield(zero, err)
 			return
 		}
+		defer func() { runtime.CloseRows(sqlRows, ms) }()
 		var item FulfilledOrder
 		for sqlRows.Next() {
 			if err := scanStreamFulfilledOrdersRow(sqlRows, &item, colMask, p); err != nil {
 				runtime.CloseRows(sqlRows, ms)
+				sqlRows, ms = nil, nil
 				yield(zero, err)
 				return
 			}
 			if !yield(item, nil) {
-				runtime.CloseRows(sqlRows, ms)
 				return
 			}
 		}
 		err = sqlRows.Err()
 		runtime.CloseRows(sqlRows, ms)
+		sqlRows, ms = nil, nil
 		if err != nil {
 			yield(zero, err)
 		}

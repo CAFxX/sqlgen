@@ -1305,20 +1305,22 @@ func (q *Queries) IngestOrdersSeq(ctx context.Context, rows []OrderSubmission, e
 			yield(zero, err)
 			return
 		}
+		defer func() { runtime.CloseRows(sqlRows, ms) }()
 		var item OrderAck
 		for sqlRows.Next() {
 			if err := scanIngestOrdersRow(sqlRows, &item, colMask, p); err != nil {
 				runtime.CloseRows(sqlRows, ms)
+				sqlRows, ms = nil, nil
 				yield(zero, err)
 				return
 			}
 			if !yield(item, nil) {
-				runtime.CloseRows(sqlRows, ms)
 				return
 			}
 		}
 		err = sqlRows.Err()
 		runtime.CloseRows(sqlRows, ms)
+		sqlRows, ms = nil, nil
 		if err != nil {
 			yield(zero, err)
 		}
@@ -1426,6 +1428,9 @@ func (q *Queries) IngestOrdersBatchSeq(ctx context.Context, rows []OrderSubmissi
 		shapeTag := runtime.ComputeBatchShapeTag(colMask, flagMask)
 		maxRows := q.cache.MaxRowsPerBatch(sqlDialect, 1, 9)
 		firstChunk := q.cache.PlanBatchChunk(stmtIDIngestOrders, colMask, flagMask, totalRows, maxRows, true)
+		var sqlRows *sql.Rows
+		var ms *runtime.ManagedStmt
+		defer func() { runtime.CloseRows(sqlRows, ms) }()
 		for offset := 0; offset < totalRows; {
 			chunkSize := firstChunk
 			if offset > 0 {
@@ -1460,7 +1465,8 @@ func (q *Queries) IngestOrdersBatchSeq(ctx context.Context, rows []OrderSubmissi
 				FlagMask:  flagMask,
 				TupleLens: tupleLensBuf[:],
 			}
-			sqlRows, ms, err := q.cache.Query(ctx, q.db, q.txCache, q.usePrepared, vk, stmtIDIngestOrders, shapeTag, chunkSize, nil, sqlDialect, descIngestOrders, &in, (*argBuf)...)
+			var err error
+			sqlRows, ms, err = q.cache.Query(ctx, q.db, q.txCache, q.usePrepared, vk, stmtIDIngestOrders, shapeTag, chunkSize, nil, sqlDialect, descIngestOrders, &in, (*argBuf)...)
 			runtime.ReleaseArgs(argBuf)
 			if err != nil {
 				yield(zero, err)
@@ -1470,16 +1476,17 @@ func (q *Queries) IngestOrdersBatchSeq(ctx context.Context, rows []OrderSubmissi
 			for sqlRows.Next() {
 				if err := scanIngestOrdersRow(sqlRows, &item, colMask, chunkP); err != nil {
 					runtime.CloseRows(sqlRows, ms)
+					sqlRows, ms = nil, nil
 					yield(zero, err)
 					return
 				}
 				if !yield(item, nil) {
-					runtime.CloseRows(sqlRows, ms)
 					return
 				}
 			}
 			err = sqlRows.Err()
 			runtime.CloseRows(sqlRows, ms)
+			sqlRows, ms = nil, nil
 			if err != nil {
 				yield(zero, err)
 				return
@@ -1736,20 +1743,22 @@ func (q *Queries) CancelOrdersByIDsSeq(ctx context.Context, cancelSeq int64, fir
 			yield(zero, err)
 			return
 		}
+		defer func() { runtime.CloseRows(sqlRows, ms) }()
 		var item OrderAck
 		for sqlRows.Next() {
 			if err := scanCancelOrdersByIDsRow(sqlRows, &item, colMask, p); err != nil {
 				runtime.CloseRows(sqlRows, ms)
+				sqlRows, ms = nil, nil
 				yield(zero, err)
 				return
 			}
 			if !yield(item, nil) {
-				runtime.CloseRows(sqlRows, ms)
 				return
 			}
 		}
 		err = sqlRows.Err()
 		runtime.CloseRows(sqlRows, ms)
+		sqlRows, ms = nil, nil
 		if err != nil {
 			yield(zero, err)
 		}
@@ -1860,6 +1869,9 @@ func (q *Queries) CancelOrdersByIDsBatchSeq(ctx context.Context, cancelSeq int64
 		shapeTag := runtime.ComputeBatchShapeTag(colMask, flagMask)
 		maxRows := q.cache.MaxRowsPerBatch(sqlDialect, 2, 1)
 		firstChunk := q.cache.PlanBatchChunk(stmtIDCancelOrdersByIDs, colMask, flagMask, totalRows, maxRows, true)
+		var sqlRows *sql.Rows
+		var ms *runtime.ManagedStmt
+		defer func() { runtime.CloseRows(sqlRows, ms) }()
 		for offset := 0; offset < totalRows; {
 			chunkSize := firstChunk
 			if offset > 0 {
@@ -1887,7 +1899,8 @@ func (q *Queries) CancelOrdersByIDsBatchSeq(ctx context.Context, cancelSeq int64
 				FlagMask:  flagMask,
 				SliceLens: sliceLensBuf[:],
 			}
-			sqlRows, ms, err := q.cache.Query(ctx, q.db, q.txCache, q.usePrepared, vk, stmtIDCancelOrdersByIDs, shapeTag, chunkSize, nil, sqlDialect, descCancelOrdersByIDs, &in, (*argBuf)...)
+			var err error
+			sqlRows, ms, err = q.cache.Query(ctx, q.db, q.txCache, q.usePrepared, vk, stmtIDCancelOrdersByIDs, shapeTag, chunkSize, nil, sqlDialect, descCancelOrdersByIDs, &in, (*argBuf)...)
 			runtime.ReleaseArgs(argBuf)
 			if err != nil {
 				yield(zero, err)
@@ -1897,16 +1910,17 @@ func (q *Queries) CancelOrdersByIDsBatchSeq(ctx context.Context, cancelSeq int64
 			for sqlRows.Next() {
 				if err := scanCancelOrdersByIDsRow(sqlRows, &item, colMask, chunkP); err != nil {
 					runtime.CloseRows(sqlRows, ms)
+					sqlRows, ms = nil, nil
 					yield(zero, err)
 					return
 				}
 				if !yield(item, nil) {
-					runtime.CloseRows(sqlRows, ms)
 					return
 				}
 			}
 			err = sqlRows.Err()
 			runtime.CloseRows(sqlRows, ms)
+			sqlRows, ms = nil, nil
 			if err != nil {
 				yield(zero, err)
 				return
@@ -2089,20 +2103,22 @@ func (q *Queries) ListOpenOrdersForSymbolSeq(ctx context.Context, symbol string,
 			yield(zero, err)
 			return
 		}
+		defer func() { runtime.CloseRows(sqlRows, ms) }()
 		var item OpenOrderRow
 		for sqlRows.Next() {
 			if err := scanListOpenOrdersForSymbolRow(sqlRows, &item, colMask, p); err != nil {
 				runtime.CloseRows(sqlRows, ms)
+				sqlRows, ms = nil, nil
 				yield(zero, err)
 				return
 			}
 			if !yield(item, nil) {
-				runtime.CloseRows(sqlRows, ms)
 				return
 			}
 		}
 		err = sqlRows.Err()
 		runtime.CloseRows(sqlRows, ms)
+		sqlRows, ms = nil, nil
 		if err != nil {
 			yield(zero, err)
 		}
@@ -3482,20 +3498,22 @@ func (q *Queries) QueryRiskPositionsPageSeq(ctx context.Context, p QueryRiskPosi
 			yield(zero, err)
 			return
 		}
+		defer func() { runtime.CloseRows(sqlRows, ms) }()
 		var item RiskPositionView
 		for sqlRows.Next() {
 			if err := scanQueryRiskPositionsPageRow(sqlRows, &item, colMask, p); err != nil {
 				runtime.CloseRows(sqlRows, ms)
+				sqlRows, ms = nil, nil
 				yield(zero, err)
 				return
 			}
 			if !yield(item, nil) {
-				runtime.CloseRows(sqlRows, ms)
 				return
 			}
 		}
 		err = sqlRows.Err()
 		runtime.CloseRows(sqlRows, ms)
+		sqlRows, ms = nil, nil
 		if err != nil {
 			yield(zero, err)
 		}

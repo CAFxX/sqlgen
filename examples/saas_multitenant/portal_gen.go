@@ -423,20 +423,22 @@ func (q *Queries) SearchMembersSeq(ctx context.Context, p SearchMembersParams) i
 			yield(zero, err)
 			return
 		}
+		defer func() { runtime.CloseRows(sqlRows, ms) }()
 		var item MemberRow
 		for sqlRows.Next() {
 			if err := scanSearchMembersRow(sqlRows, &item, colMask, p); err != nil {
 				runtime.CloseRows(sqlRows, ms)
+				sqlRows, ms = nil, nil
 				yield(zero, err)
 				return
 			}
 			if !yield(item, nil) {
-				runtime.CloseRows(sqlRows, ms)
 				return
 			}
 		}
 		err = sqlRows.Err()
 		runtime.CloseRows(sqlRows, ms)
+		sqlRows, ms = nil, nil
 		if err != nil {
 			yield(zero, err)
 		}
@@ -750,20 +752,22 @@ func (q *Queries) ListMembersPaginatedSeq(ctx context.Context, p ListMembersPagi
 			yield(zero, err)
 			return
 		}
+		defer func() { runtime.CloseRows(sqlRows, ms) }()
 		var item MemberItem
 		for sqlRows.Next() {
 			if err := scanListMembersPaginatedRow(sqlRows, &item, colMask, p); err != nil {
 				runtime.CloseRows(sqlRows, ms)
+				sqlRows, ms = nil, nil
 				yield(zero, err)
 				return
 			}
 			if !yield(item, nil) {
-				runtime.CloseRows(sqlRows, ms)
 				return
 			}
 		}
 		err = sqlRows.Err()
 		runtime.CloseRows(sqlRows, ms)
+		sqlRows, ms = nil, nil
 		if err != nil {
 			yield(zero, err)
 		}
@@ -1120,20 +1124,22 @@ func (q *Queries) AggregateCohortInvoicesSeq(ctx context.Context, memberQuery ru
 			yield(zero, err)
 			return
 		}
+		defer func() { runtime.CloseRows(sqlRows, ms) }()
 		var item CohortInvoiceSummary
 		for sqlRows.Next() {
 			if err := scanAggregateCohortInvoicesRow(sqlRows, &item, colMask, p); err != nil {
 				runtime.CloseRows(sqlRows, ms)
+				sqlRows, ms = nil, nil
 				yield(zero, err)
 				return
 			}
 			if !yield(item, nil) {
-				runtime.CloseRows(sqlRows, ms)
 				return
 			}
 		}
 		err = sqlRows.Err()
 		runtime.CloseRows(sqlRows, ms)
+		sqlRows, ms = nil, nil
 		if err != nil {
 			yield(zero, err)
 		}

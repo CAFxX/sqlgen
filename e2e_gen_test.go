@@ -711,20 +711,22 @@ func (q *Queries) ListUsersByIDsSeq(ctx context.Context, ids []int64) iter.Seq2[
 			yield(zero, err)
 			return
 		}
+		defer func() { runtime.CloseRows(sqlRows, ms) }()
 		var item User
 		for sqlRows.Next() {
 			if err := scanListUsersByIDsRow(sqlRows, &item, colMask, p); err != nil {
 				runtime.CloseRows(sqlRows, ms)
+				sqlRows, ms = nil, nil
 				yield(zero, err)
 				return
 			}
 			if !yield(item, nil) {
-				runtime.CloseRows(sqlRows, ms)
 				return
 			}
 		}
 		err = sqlRows.Err()
 		runtime.CloseRows(sqlRows, ms)
+		sqlRows, ms = nil, nil
 		if err != nil {
 			yield(zero, err)
 		}
@@ -829,6 +831,9 @@ func (q *Queries) ListUsersByIDsBatchSeq(ctx context.Context, ids []int64) iter.
 		shapeTag := runtime.ComputeBatchShapeTag(colMask, flagMask)
 		maxRows := q.cache.MaxRowsPerBatch(sqlDialect, 0, 1)
 		firstChunk := q.cache.PlanBatchChunk(stmtIDListUsersByIDs, colMask, flagMask, totalRows, maxRows, true)
+		var sqlRows *sql.Rows
+		var ms *runtime.ManagedStmt
+		defer func() { runtime.CloseRows(sqlRows, ms) }()
 		for offset := 0; offset < totalRows; {
 			chunkSize := firstChunk
 			if offset > 0 {
@@ -854,7 +859,8 @@ func (q *Queries) ListUsersByIDsBatchSeq(ctx context.Context, ids []int64) iter.
 				FlagMask:  flagMask,
 				SliceLens: sliceLensBuf[:],
 			}
-			sqlRows, ms, err := q.cache.Query(ctx, q.db, q.txCache, q.usePrepared, vk, stmtIDListUsersByIDs, shapeTag, chunkSize, nil, sqlDialect, descListUsersByIDs, &in, (*argBuf)...)
+			var err error
+			sqlRows, ms, err = q.cache.Query(ctx, q.db, q.txCache, q.usePrepared, vk, stmtIDListUsersByIDs, shapeTag, chunkSize, nil, sqlDialect, descListUsersByIDs, &in, (*argBuf)...)
 			runtime.ReleaseArgs(argBuf)
 			if err != nil {
 				yield(zero, err)
@@ -864,16 +870,17 @@ func (q *Queries) ListUsersByIDsBatchSeq(ctx context.Context, ids []int64) iter.
 			for sqlRows.Next() {
 				if err := scanListUsersByIDsRow(sqlRows, &item, colMask, chunkP); err != nil {
 					runtime.CloseRows(sqlRows, ms)
+					sqlRows, ms = nil, nil
 					yield(zero, err)
 					return
 				}
 				if !yield(item, nil) {
-					runtime.CloseRows(sqlRows, ms)
 					return
 				}
 			}
 			err = sqlRows.Err()
 			runtime.CloseRows(sqlRows, ms)
+			sqlRows, ms = nil, nil
 			if err != nil {
 				yield(zero, err)
 				return
@@ -1059,20 +1066,22 @@ func (q *Queries) SelectUserProfileSubsetSeq(ctx context.Context, p SelectUserPr
 			yield(zero, err)
 			return
 		}
+		defer func() { runtime.CloseRows(sqlRows, ms) }()
 		var item SelectUserProfileSubsetRow
 		for sqlRows.Next() {
 			if err := scanSelectUserProfileSubsetRow(sqlRows, &item, colMask, p); err != nil {
 				runtime.CloseRows(sqlRows, ms)
+				sqlRows, ms = nil, nil
 				yield(zero, err)
 				return
 			}
 			if !yield(item, nil) {
-				runtime.CloseRows(sqlRows, ms)
 				return
 			}
 		}
 		err = sqlRows.Err()
 		runtime.CloseRows(sqlRows, ms)
+		sqlRows, ms = nil, nil
 		if err != nil {
 			yield(zero, err)
 		}
@@ -1352,20 +1361,22 @@ func (q *Queries) SearchUsersCoupledSeq(ctx context.Context, p SearchUsersCouple
 			yield(zero, err)
 			return
 		}
+		defer func() { runtime.CloseRows(sqlRows, ms) }()
 		var item SearchUsersCoupledRow
 		for sqlRows.Next() {
 			if err := scanSearchUsersCoupledRow(sqlRows, &item, colMask, p); err != nil {
 				runtime.CloseRows(sqlRows, ms)
+				sqlRows, ms = nil, nil
 				yield(zero, err)
 				return
 			}
 			if !yield(item, nil) {
-				runtime.CloseRows(sqlRows, ms)
 				return
 			}
 		}
 		err = sqlRows.Err()
 		runtime.CloseRows(sqlRows, ms)
+		sqlRows, ms = nil, nil
 		if err != nil {
 			yield(zero, err)
 		}
@@ -1753,20 +1764,22 @@ func (q *Queries) PageUsersSeq(ctx context.Context, p PageUsersParams) iter.Seq2
 			yield(zero, err)
 			return
 		}
+		defer func() { runtime.CloseRows(sqlRows, ms) }()
 		var item PageUsersRow
 		for sqlRows.Next() {
 			if err := scanPageUsersRow(sqlRows, &item, colMask, p); err != nil {
 				runtime.CloseRows(sqlRows, ms)
+				sqlRows, ms = nil, nil
 				yield(zero, err)
 				return
 			}
 			if !yield(item, nil) {
-				runtime.CloseRows(sqlRows, ms)
 				return
 			}
 		}
 		err = sqlRows.Err()
 		runtime.CloseRows(sqlRows, ms)
+		sqlRows, ms = nil, nil
 		if err != nil {
 			yield(zero, err)
 		}
@@ -1961,20 +1974,22 @@ func (q *Queries) UsersFromCTEAndInSubquerySeq(ctx context.Context, ctesub runti
 			yield(zero, err)
 			return
 		}
+		defer func() { runtime.CloseRows(sqlRows, ms) }()
 		var item UsersFromCTEAndInSubqueryRow
 		for sqlRows.Next() {
 			if err := scanUsersFromCTEAndInSubqueryRow(sqlRows, &item, colMask, p); err != nil {
 				runtime.CloseRows(sqlRows, ms)
+				sqlRows, ms = nil, nil
 				yield(zero, err)
 				return
 			}
 			if !yield(item, nil) {
-				runtime.CloseRows(sqlRows, ms)
 				return
 			}
 		}
 		err = sqlRows.Err()
 		runtime.CloseRows(sqlRows, ms)
+		sqlRows, ms = nil, nil
 		if err != nil {
 			yield(zero, err)
 		}
@@ -2255,20 +2270,22 @@ func (q *Queries) InsertUsersBatchReturningSeq(ctx context.Context, rows []Batch
 			yield(zero, err)
 			return
 		}
+		defer func() { runtime.CloseRows(sqlRows, ms) }()
 		var item InsertUsersBatchReturningRow
 		for sqlRows.Next() {
 			if err := scanInsertUsersBatchReturningRow(sqlRows, &item, colMask, p); err != nil {
 				runtime.CloseRows(sqlRows, ms)
+				sqlRows, ms = nil, nil
 				yield(zero, err)
 				return
 			}
 			if !yield(item, nil) {
-				runtime.CloseRows(sqlRows, ms)
 				return
 			}
 		}
 		err = sqlRows.Err()
 		runtime.CloseRows(sqlRows, ms)
+		sqlRows, ms = nil, nil
 		if err != nil {
 			yield(zero, err)
 		}
@@ -2375,6 +2392,9 @@ func (q *Queries) InsertUsersBatchReturningBatchSeq(ctx context.Context, rows []
 		shapeTag := runtime.ComputeBatchShapeTag(colMask, flagMask)
 		maxRows := q.cache.MaxRowsPerBatch(sqlDialect, 0, 3)
 		firstChunk := q.cache.PlanBatchChunk(stmtIDInsertUsersBatchReturning, colMask, flagMask, totalRows, maxRows, true)
+		var sqlRows *sql.Rows
+		var ms *runtime.ManagedStmt
+		defer func() { runtime.CloseRows(sqlRows, ms) }()
 		for offset := 0; offset < totalRows; {
 			chunkSize := firstChunk
 			if offset > 0 {
@@ -2402,7 +2422,8 @@ func (q *Queries) InsertUsersBatchReturningBatchSeq(ctx context.Context, rows []
 				FlagMask:  flagMask,
 				TupleLens: tupleLensBuf[:],
 			}
-			sqlRows, ms, err := q.cache.Query(ctx, q.db, q.txCache, q.usePrepared, vk, stmtIDInsertUsersBatchReturning, shapeTag, chunkSize, nil, sqlDialect, descInsertUsersBatchReturning, &in, (*argBuf)...)
+			var err error
+			sqlRows, ms, err = q.cache.Query(ctx, q.db, q.txCache, q.usePrepared, vk, stmtIDInsertUsersBatchReturning, shapeTag, chunkSize, nil, sqlDialect, descInsertUsersBatchReturning, &in, (*argBuf)...)
 			runtime.ReleaseArgs(argBuf)
 			if err != nil {
 				yield(zero, err)
@@ -2412,16 +2433,17 @@ func (q *Queries) InsertUsersBatchReturningBatchSeq(ctx context.Context, rows []
 			for sqlRows.Next() {
 				if err := scanInsertUsersBatchReturningRow(sqlRows, &item, colMask, chunkP); err != nil {
 					runtime.CloseRows(sqlRows, ms)
+					sqlRows, ms = nil, nil
 					yield(zero, err)
 					return
 				}
 				if !yield(item, nil) {
-					runtime.CloseRows(sqlRows, ms)
 					return
 				}
 			}
 			err = sqlRows.Err()
 			runtime.CloseRows(sqlRows, ms)
+			sqlRows, ms = nil, nil
 			if err != nil {
 				yield(zero, err)
 				return
@@ -3195,20 +3217,22 @@ func (q *Queries) PageQuadSeq(ctx context.Context, p PageQuadParams) iter.Seq2[Q
 			yield(zero, err)
 			return
 		}
+		defer func() { runtime.CloseRows(sqlRows, ms) }()
 		var item QuadItem
 		for sqlRows.Next() {
 			if err := scanPageQuadRow(sqlRows, &item, colMask, p); err != nil {
 				runtime.CloseRows(sqlRows, ms)
+				sqlRows, ms = nil, nil
 				yield(zero, err)
 				return
 			}
 			if !yield(item, nil) {
-				runtime.CloseRows(sqlRows, ms)
 				return
 			}
 		}
 		err = sqlRows.Err()
 		runtime.CloseRows(sqlRows, ms)
+		sqlRows, ms = nil, nil
 		if err != nil {
 			yield(zero, err)
 		}
