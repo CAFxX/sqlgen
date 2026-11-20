@@ -161,3 +161,40 @@ func TestUserManagedTxAssertionFailureDoesNotRollBack(t *testing.T) {
 		t.Fatalf("after Rollback n=%d err=%v", n, err)
 	}
 }
+
+// The question dialect (SQLite, which the example suites use to simulate a wire driver) cannot carry a
+// marker in an error message: its guard is a constant integer overflow, and only operations rendered for
+// that dialect recognise it. For the $N dialect the very same error is a genuine database error.
+func TestQuestionDialectGuardIsRecognisedAsOverflow(t *testing.T) {
+	upd := &QueryDescriptor{Name: "Upd", StmtVerb: VerbUpdate, Segments: []string{"UPDATE t SET v = ", ""}, Slots: []Slot{{Kind: SlotScalar}}}
+	abortErr := errors.New("stop")
+	mk := func() []PipelineOp {
+		return []PipelineOp{
+			{Desc: upd, Decorators: OpDecorators{AssertRows: 1}},
+			{Decorators: OpDecorators{AssertRows: -1, IsAbort: true}, AbortErr: abortErr},
+			{Desc: upd, Decorators: OpDecorators{AssertRows: -1}},
+		}
+	}
+	overflow := errors.New("SQL logic error: integer overflow (1)")
+
+	q := mk()
+	RenderPipelineBatch(DialectQuestion, nil, q)
+	if got := TranslateWireError(&q[0], overflow); !errors.Is(got, ErrAssertionFailed) {
+		t.Errorf("assertion: %v", got)
+	}
+	if got := TranslateWireError(&q[1], sqlStateErr{"22003", "x"}); !errors.Is(got, abortErr) {
+		t.Errorf("abort: %v", got)
+	}
+	if got := TranslateWireError(&q[2], overflow); got != overflow {
+		t.Errorf("an unguarded operation translated an overflow: %v", got)
+	}
+	if got := TranslateWireError(&q[0], errors.New("disk I/O error")); got.Error() != "disk I/O error" {
+		t.Errorf("unrelated error translated: %v", got)
+	}
+
+	d := mk()
+	RenderPipelineBatch(DialectDollar, nil, d)
+	if got := TranslateWireError(&d[0], overflow); got != overflow {
+		t.Errorf("$N dialect: a genuine overflow was translated: %v", got)
+	}
+}

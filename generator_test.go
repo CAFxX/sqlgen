@@ -1341,7 +1341,7 @@ func (c *parityWireConn) ExecPipeline(ctx context.Context, ops []runtime.Pipelin
 			continue
 		}
 		if op.Decorators.IsAbort {
-			return runtime.TranslateWireError(op, errors.New(`ERROR: invalid input syntax for type integer: "sqlgen:abort:1" (SQLSTATE 22P02)`))
+			return runtime.TranslateWireError(op, errors.New("SQLSTATE 22003: integer out of range"))
 		}
 		if op.HasResultCols {
 			// Render clean core statement for mirror SQLite execution
@@ -1382,7 +1382,7 @@ func (c *parityWireConn) ExecPipeline(ctx context.Context, ops []runtime.Pipelin
 			op.RowCount = aff
 		}
 		if op.Decorators.AssertRows >= 0 && op.RowCount != op.Decorators.AssertRows {
-			return runtime.TranslateWireError(op, fmt.Errorf(`ERROR: invalid input syntax for type integer: "sqlgen:assert:%d" (SQLSTATE 22P02)`, op.RowCount))
+			return runtime.TranslateWireError(op, errors.New("SQLSTATE 22003: numeric value out of range"))
 		}
 		if op.OnDone != nil {
 			op.OnDone(op.RowCount, nil)

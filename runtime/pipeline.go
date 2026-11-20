@@ -162,6 +162,11 @@ type PipelineOp struct {
 	CondVal       bool
 	CondSet       bool
 	Err           error
+	// overflowGuard is set by RenderPipelineBatch for an operation whose guard was rendered for the
+	// question dialect (SQLite, which the example suites use to simulate a wire driver): that dialect
+	// cannot carry a marker in an error message, its guard is a constant integer overflow, and
+	// TranslateWireError recognises that overflow instead of a marker.
+	overflowGuard bool
 }
 
 // ExecFuture represents the pending result of an exec statement queued in a Pipeline.
@@ -710,6 +715,9 @@ func TranslateWireError(op *PipelineOp, err error) error {
 	if err == nil || op == nil {
 		return err
 	}
+	if op.overflowGuard {
+		return translateOverflowGuard(op, err)
+	}
 	var st interface{ SQLState() string }
 	if errors.As(err, &st) && st.SQLState() != "22P02" {
 		op.Err = err
@@ -734,6 +742,34 @@ func TranslateWireError(op *PipelineOp, err error) error {
 			}
 			op.Err = aerr
 			return aerr
+		}
+	}
+	op.Err = err
+	return err
+}
+
+// translateOverflowGuard is TranslateWireError for guards rendered for the question dialect, whose only
+// possible failure is the constant integer overflow ABS(-9223372036854775808): there is no marker, so an
+// overflow of that class on a guarded operation is taken to be the guard.
+func translateOverflowGuard(op *PipelineOp, err error) error {
+	isOverflow := false
+	var st interface{ SQLState() string }
+	if errors.As(err, &st) && st.SQLState() == "22003" {
+		isOverflow = true
+	} else {
+		msg := strings.ToLower(err.Error())
+		isOverflow = strings.Contains(msg, "sqlstate 22003") ||
+			strings.Contains(msg, "integer overflow") ||
+			strings.Contains(msg, "bigint out of range")
+	}
+	if isOverflow {
+		if op.Decorators.IsAbort && op.AbortErr != nil {
+			op.Err = op.AbortErr
+			return op.AbortErr
+		}
+		if op.Decorators.AssertRows >= 0 {
+			op.Err = &AssertionError{Statement: op.stmtName(), Want: op.Decorators.AssertRows}
+			return op.Err
 		}
 	}
 	op.Err = err

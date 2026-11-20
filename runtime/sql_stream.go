@@ -810,6 +810,7 @@ func RenderPipelineBatch(dialect Dialect, cache *StmtCache, ops []PipelineOp) {
 		op := &ops[i]
 		spans[i].start = b.Len()
 		streamOpSQL(&b, dialect, op.Desc, &op.Input, &op.Decorators)
+		op.overflowGuard = dialect != DialectDollar && (op.Decorators.IsAbort || op.Decorators.AssertRows >= 0)
 		spans[i].end = b.Len()
 	}
 
