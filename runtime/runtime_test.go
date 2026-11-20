@@ -14,6 +14,7 @@ import (
 	"math/rand/v2"
 	"net"
 	"path/filepath"
+	"regexp"
 	stdruntime "runtime"
 	"slices"
 	"strings"
@@ -1699,19 +1700,19 @@ func TestPipelineWirePipelinerAndSequentialCoverage(t *testing.T) {
 		t.Fatalf("expected ErrBranchNotTaken from skipped ExecFuture.RowsAffected, got %v", err)
 	}
 
-	// 2. Test TranslateWireError for integer overflow (22003 / "integer overflow") on IsAbort and AssertRows
+	// 2. Test TranslateWireError for the guard markers on IsAbort and AssertRows
 	abortCustomErr := errors.New("custom abort")
 	abortOp := &PipelineOp{
 		Decorators: OpDecorators{IsAbort: true, AssertRows: -1},
 		AbortErr:   abortCustomErr,
 	}
-	if got := TranslateWireError(abortOp, &mockError{msg: "out of range", sqlState: "22003"}); !errors.Is(got, abortCustomErr) {
-		t.Fatalf("expected abortCustomErr from TranslateWireError(22003), got %v", got)
+	if got := TranslateWireError(abortOp, &mockError{msg: `invalid input syntax for type integer: "sqlgen:abort:1"`, sqlState: "22P02"}); !errors.Is(got, abortCustomErr) {
+		t.Fatalf("expected abortCustomErr from TranslateWireError(abort marker), got %v", got)
 	}
 	assertOp := &PipelineOp{
 		Decorators: OpDecorators{AssertRows: 1},
 	}
-	if got := TranslateWireError(assertOp, errors.New("BIGINT out of range")); !errors.Is(got, ErrAssertionFailed) {
+	if got := TranslateWireError(assertOp, errors.New(`invalid input syntax for type integer: "sqlgen:assert:0"`)); !errors.Is(got, ErrAssertionFailed) {
 		t.Fatalf("expected ErrAssertionFailed from TranslateWireError, got %v", got)
 	}
 	if got := TranslateWireError(nil, nil); got != nil {
@@ -2830,6 +2831,9 @@ func renderPipelineOp(t *testing.T, dialect Dialect, desc *QueryDescriptor, in R
 	return ops[0].SQL
 }
 
+// the marker cast to an integer, whose operand contains an aggregate
+var runtimeGuardRe = regexp.MustCompile(`\('sqlgen:(assert|abort):' \|\| (COUNT\(\*\)|\(SELECT COUNT\(\*\)\))::text\)::int`)
+
 func TestPipelineSQLOverflowGuardIsNotConstantFoldable(t *testing.T) {
 	upd := &QueryDescriptor{StmtVerb: VerbUpdate, Segments: []string{"UPDATE t SET v = ", " WHERE id = ", ""}, Slots: []Slot{{Kind: SlotScalar}, {Kind: SlotScalar}}}
 	gates := []BranchGate{{CondID: 1, WantTrue: true}}
@@ -2839,10 +2843,10 @@ func TestPipelineSQLOverflowGuardIsNotConstantFoldable(t *testing.T) {
 		"abort":       renderPipelineOp(t, DialectDollar, nil, RenderInput{}, OpDecorators{AssertRows: -1, IsAbort: true}),
 		"abort+gate":  renderPipelineOp(t, DialectDollar, nil, RenderInput{BranchGates: gates}, OpDecorators{AssertRows: -1, IsAbort: true}),
 	} {
-		// PostgreSQL folds constant expressions at plan time even in an unreached CASE branch, and
-		// -9223372036854775808::bigint overflows on its own: the guard must depend on a runtime value.
-		if strings.Contains(got, "-9223372036854775808::bigint") || !strings.Contains(got, "(SELECT COUNT(*) + 1)") {
-			t.Errorf("%s: overflow guard may be constant-folded by PostgreSQL:\n%s", name, got)
+		// PostgreSQL folds constant expressions at plan time even in an unreached CASE branch: the
+		// guard must depend on a runtime value (an aggregate), never be a constant cast of a literal.
+		if !runtimeGuardRe.MatchString(got) {
+			t.Errorf("%s: guard error may be constant-folded by PostgreSQL:\n%s", name, got)
 		}
 	}
 	// SQLite keeps its constant form (it evaluates lazily and has no plan-time folding of errors).
@@ -3040,9 +3044,10 @@ type sqlStateErr struct{ state, msg string }
 func (e sqlStateErr) Error() string    { return e.msg }
 func (e sqlStateErr) SQLState() string { return e.state }
 
-// Only a genuine integer overflow (the assertion/abort guard) may be translated into the pipeline's
-// assertion/abort errors; unrelated "out of range" failures must surface unchanged.
-func TestTranslateWireErrorOnlyTranslatesIntegerOverflow(t *testing.T) {
+// Only the guard's own marked error may be translated into the pipeline's assertion/abort errors:
+// every other failure of the statement, a genuine integer overflow of the caller's own operation
+// included (it must surface as the real database error, as on the sequential path), passes unchanged.
+func TestTranslateWireErrorOnlyTranslatesTheGuardMarkers(t *testing.T) {
 	assertOp := func() *PipelineOp { return &PipelineOp{Decorators: OpDecorators{AssertRows: 1}} }
 	abortErr := errors.New("custom abort")
 	abortOp := func() *PipelineOp {
@@ -3051,6 +3056,18 @@ func TestTranslateWireErrorOnlyTranslatesIntegerOverflow(t *testing.T) {
 	for _, e := range []error{
 		sqlStateErr{"22008", "ERROR: date/time field value out of range: \"2026-13-45\" (SQLSTATE 22008)"},
 		errors.New("ERROR: timestamp out of range (SQLSTATE 22008)"),
+		// a genuine overflow of the user's statement, in every wording the engines use
+		sqlStateErr{"22003", "ERROR: bigint out of range"},
+		fmt.Errorf("exec: %w", sqlStateErr{"22003", "opaque"}),
+		errors.New("ERROR: bigint out of range (SQLSTATE 22003)"),
+		errors.New("integer overflow"),
+		errors.New("ERROR: integer out of range"),
+		// an invalid-text error that is not the guard's
+		sqlStateErr{"22P02", `ERROR: invalid input syntax for type integer: "abc"`},
+		// the marker text, but with another SQLSTATE: not the guard
+		sqlStateErr{"23505", `duplicate key value "sqlgen:assert:3"`},
+		// the other guard's marker
+		sqlStateErr{"22P02", `ERROR: invalid input syntax for type integer: "sqlgen:zzz:1"`},
 	} {
 		if got := TranslateWireError(assertOp(), e); got != e {
 			t.Errorf("unrelated error %q translated to %v", e, got)
@@ -3059,17 +3076,15 @@ func TestTranslateWireErrorOnlyTranslatesIntegerOverflow(t *testing.T) {
 			t.Errorf("unrelated error %q translated to %v on abort op", e, got)
 		}
 	}
-	for _, e := range []error{
-		sqlStateErr{"22003", "ERROR: bigint out of range"},
-		fmt.Errorf("exec: %w", sqlStateErr{"22003", "opaque"}),
-		errors.New("ERROR: bigint out of range (SQLSTATE 22003)"),
-		errors.New("integer overflow"),
-	} {
-		if got := TranslateWireError(assertOp(), e); !errors.Is(got, ErrAssertionFailed) {
-			t.Errorf("overflow %q not translated to ErrAssertionFailed: %v", e, got)
-		}
-		if got := TranslateWireError(abortOp(), e); !errors.Is(got, abortErr) {
-			t.Errorf("overflow %q not translated to the abort error: %v", e, got)
-		}
+	// each operation only answers to its own marker
+	if e := (sqlStateErr{"22P02", `ERROR: invalid input syntax for type integer: "sqlgen:abort:1"`}); TranslateWireError(assertOp(), e) != error(e) {
+		t.Error("an assertion operation translated the abort marker")
+	}
+	if e := (sqlStateErr{"22P02", `ERROR: invalid input syntax for type integer: "sqlgen:assert:2"`}); TranslateWireError(abortOp(), e) != error(e) {
+		t.Error("an abort operation translated the assertion marker")
+	}
+	// nil error / nil op
+	if TranslateWireError(assertOp(), nil) != nil || TranslateWireError(nil, errors.New("x")) == nil {
+		t.Error("nil handling")
 	}
 }

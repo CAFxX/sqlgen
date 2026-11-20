@@ -8,6 +8,7 @@ import (
 	"io"
 	"math/rand/v2"
 	"net"
+	"strconv"
 	"strings"
 	"sync/atomic"
 	"time"
@@ -674,8 +675,7 @@ const (
 	// guard's value and carries no further information.
 	WireResultGuarded
 	// WireResultDiscard: an Abort bail-out. It returns one row that is ignored; its only effect is the
-	// integer-overflow error raised when the branch gates are open, which TranslateWireError maps to
-	// op.AbortErr.
+	// marked error raised when the branch gates are open, which TranslateWireError maps to op.AbortErr.
 	WireResultDiscard
 )
 
@@ -700,33 +700,40 @@ func (op *PipelineOp) stmtName() string {
 	return op.Desc.Name
 }
 
-// TranslateWireError maps server-side integer-overflow sentinel errors (SQLSTATE 22003)
-// back to op.AbortErr (for IsAbort operations) or ErrAssertionFailed (for AssertRows operations).
+// TranslateWireError maps the error a guard raised on the server back to what the caller expects:
+// op.AbortErr for an Abort operation, an *AssertionError (with the actual row count) for an operation
+// with an assertion. A guard fails its statement with invalid_text_representation (22P02) and an
+// unmistakable marker in the message (see writeGuardRaise); nothing else is translated, in particular a
+// genuine integer overflow (22003) raised by the caller's own statement passes through unchanged, as on
+// the sequential path.
 func TranslateWireError(op *PipelineOp, err error) error {
 	if err == nil || op == nil {
 		return err
 	}
-	// The assertion/abort guard raises an integer overflow (SQLSTATE 22003). Match that class only: a bare
-	// "out of range" would also swallow unrelated failures (date/time or timestamp out of range, 22008).
-	isOverflow := false
 	var st interface{ SQLState() string }
-	if errors.As(err, &st) && st.SQLState() == "22003" {
-		isOverflow = true
-	} else {
-		msg := strings.ToLower(err.Error())
-		isOverflow = strings.Contains(msg, "sqlstate 22003") ||
-			strings.Contains(msg, "integer overflow") ||
-			strings.Contains(msg, "bigint out of range")
+	if errors.As(err, &st) && st.SQLState() != "22P02" {
+		op.Err = err
+		return err
 	}
-	if isOverflow {
-		if op.Decorators.IsAbort && op.AbortErr != nil {
-			op.Err = op.AbortErr
-			return op.AbortErr
-		}
-		if op.Decorators.AssertRows >= 0 {
-			// The server only signals the violation: the actual count is unknown on this path.
-			op.Err = &AssertionError{Statement: op.stmtName(), Want: op.Decorators.AssertRows}
-			return op.Err
+	msg := err.Error()
+	if op.Decorators.IsAbort && op.AbortErr != nil && strings.Contains(msg, wireAbortMarker) {
+		op.Err = op.AbortErr
+		return op.AbortErr
+	}
+	if op.Decorators.AssertRows >= 0 {
+		if i := strings.Index(msg, wireAssertMarker); i >= 0 {
+			aerr := &AssertionError{Statement: op.stmtName(), Want: op.Decorators.AssertRows}
+			// The marker carries the row count the statement produced.
+			rest := msg[i+len(wireAssertMarker):]
+			n := 0
+			for n < len(rest) && rest[n] >= '0' && rest[n] <= '9' {
+				n++
+			}
+			if got, perr := strconv.ParseInt(rest[:n], 10, 64); perr == nil {
+				aerr.Got, aerr.GotKnown = got, true
+			}
+			op.Err = aerr
+			return aerr
 		}
 	}
 	op.Err = err

@@ -275,6 +275,11 @@ func errKind(err error) string {
 	case err == nil:
 		return ""
 	case errors.Is(err, runtime.ErrAssertionFailed):
+		// the wanted and the actual row count are part of the contract on both paths
+		var ae *runtime.AssertionError
+		if errors.As(err, &ae) {
+			return fmt.Sprintf("ErrAssertionFailed(%s want=%d got=%d known=%v)", ae.Statement, ae.Want, ae.Got, ae.GotKnown)
+		}
 		return "ErrAssertionFailed"
 	case errors.Is(err, errStop):
 		return "errStop"

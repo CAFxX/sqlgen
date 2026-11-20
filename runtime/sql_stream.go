@@ -149,17 +149,34 @@ func (cur *streamCursor) writeBranchGates(b *strings.Builder, gates []BranchGate
 	}
 }
 
-// writeOverflowExpr writes an expression that raises an integer-overflow error (SQLSTATE 22003 /
-// "bigint out of range") when, and only when, it is evaluated.
+// Markers of the errors a guard raises on purpose. A guard must fail the statement with an error that
+// cannot be mistaken for anything else the statement may raise: an operation of the caller can itself
+// fail with a genuine integer overflow, which has to surface unchanged. The guard therefore casts a
+// text that carries the marker to an integer; PostgreSQL and CockroachDB answer with
+// `invalid input syntax for type integer: "sqlgen:assert:3"` (22P02), which names the marker and, for an
+// assertion, the number of rows the operation actually produced. TranslateWireError matches the marker.
+const (
+	wireAssertMarker = "sqlgen:assert:"
+	wireAbortMarker  = "sqlgen:abort:"
+)
+
+// writeGuardRaise writes an expression that raises the guard error for marker when, and only when, it is
+// evaluated. rows is the SQL of the row count the marker carries.
 //
 // DialectDollar must not use a constant expression: PostgreSQL constant-folds it at plan time, even
-// inside the unreached branch of a CASE, which made every guarded statement fail unconditionally
-// (and "-9223372036854775808::bigint" parses as -(9223372036854775808::bigint), whose inner cast
-// already overflows). The aggregate in the scalar subquery keeps the planner from folding it, so it
-// is only evaluated when the CASE branch is actually taken.
-func writeOverflowExpr(b *strings.Builder, dialect Dialect) {
+// inside the unreached branch of a CASE, which once made every guarded statement fail unconditionally.
+// The aggregate in rows keeps the planner from folding it, so it is only evaluated when the CASE branch
+// is actually taken.
+//
+// DialectQuestion (SQLite) keeps a constant overflow: that dialect has no wire path, and SQLite
+// evaluates lazily.
+func writeGuardRaise(b *strings.Builder, dialect Dialect, marker, rows string) {
 	if dialect == DialectDollar {
-		b.WriteString("(9223372036854775807::bigint + (SELECT COUNT(*) + 1))")
+		b.WriteString("('")
+		b.WriteString(marker)
+		b.WriteString("' || ")
+		b.WriteString(rows)
+		b.WriteString("::text)::int")
 	} else {
 		b.WriteString("ABS(-9223372036854775808)")
 	}
@@ -600,11 +617,11 @@ func streamOpSQL(b *strings.Builder, dialect Dialect, desc *QueryDescriptor, in 
 			b.WriteString("SELECT CASE WHEN (")
 			cur.writeBranchGates(b, in.BranchGates)
 			b.WriteString(") THEN ")
-			writeOverflowExpr(b, dialect)
+			writeGuardRaise(b, dialect, wireAbortMarker, "(SELECT COUNT(*))")
 			b.WriteString(" ELSE 1 END")
 		} else {
 			b.WriteString("SELECT ")
-			writeOverflowExpr(b, dialect)
+			writeGuardRaise(b, dialect, wireAbortMarker, "(SELECT COUNT(*))")
 		}
 		return
 	}
@@ -637,7 +654,7 @@ func streamOpSQL(b *strings.Builder, dialect Dialect, desc *QueryDescriptor, in 
 		b.WriteString("COUNT(*) = ")
 		b.Write(strconv.AppendInt(cur.numBuf[:0], dec.AssertRows, 10))
 		b.WriteString(" THEN 1 ELSE ")
-		writeOverflowExpr(b, dialect)
+		writeGuardRaise(b, dialect, wireAssertMarker, "COUNT(*)")
 		b.WriteString(" END AS _ok FROM _sqlgen_op)")
 	}
 

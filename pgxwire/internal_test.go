@@ -164,18 +164,24 @@ func TestFailTranslatesByStatementRole(t *testing.T) {
 	op := &runtime.PipelineOp{Decorators: runtime.OpDecorators{AssertRows: 1}}
 	refs := []stmtRef{{role: roleBegin}, {role: roleOp, op: op}, {role: roleCond, op: op}, {role: roleCommit}}
 	ok := &pgconn.Result{}
-	serverErr := &pgconn.PgError{Code: "22003", Message: "bigint out of range"}
+	// the guard's own error: invalid_text_representation carrying the assertion marker
+	serverErr := &pgconn.PgError{Code: "22P02", Message: `invalid input syntax for type integer: "sqlgen:assert:0"`}
 
 	// the failed statement is the first one without a clean result
 	if err := c.fail(ctx, pg, false, refs, nil, serverErr); err == nil || errors.Is(err, runtime.ErrAssertionFailed) {
 		t.Fatalf("BEGIN failing must pass the server error through, got %v", err)
 	}
 	if err := c.fail(ctx, pg, false, refs, []*pgconn.Result{ok}, serverErr); !errors.Is(err, runtime.ErrAssertionFailed) {
-		t.Fatalf("an overflow on an asserting op is an assertion failure, got %v", err)
+		t.Fatalf("the guard's error on an asserting op is an assertion failure, got %v", err)
 	}
 	failedRes := &pgconn.Result{Err: serverErr}
 	if err := c.fail(ctx, pg, false, refs, []*pgconn.Result{ok, failedRes}, serverErr); !errors.Is(err, runtime.ErrAssertionFailed) {
 		t.Fatalf("a failed result is the statement that failed, got %v", err)
+	}
+	// a genuine overflow of the user's own statement is NOT the guard: it passes through unchanged
+	overflow := &pgconn.PgError{Code: "22003", Message: "bigint out of range"}
+	if err := c.fail(ctx, pg, false, refs, []*pgconn.Result{ok}, overflow); err != overflow {
+		t.Fatalf("a genuine overflow must surface as the database error, got %v", err)
 	}
 	if err := c.fail(ctx, pg, false, refs, []*pgconn.Result{ok, ok, ok}, serverErr); err == nil {
 		t.Fatal("expected the commit error")

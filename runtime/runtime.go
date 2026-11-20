@@ -486,8 +486,8 @@ type QueryDescriptor struct {
 }
 
 // AssertionError is the error returned when AssertRowsAffected/AssertFound fails. errors.Is(err,
-// ErrAssertionFailed) is true for it. GotKnown is false when the server only signalled the violation (the
-// single-roundtrip wire path) and the actual row count is therefore unavailable.
+// ErrAssertionFailed) is true for it. GotKnown is false only when the actual row count could not be
+// determined.
 type AssertionError struct {
 	Statement string // statement name; empty when unknown
 	Want, Got int64

@@ -8,6 +8,7 @@ package integration
 import (
 	"database/sql"
 	"fmt"
+	"math"
 	"os"
 	"strings"
 	"testing"
@@ -106,6 +107,72 @@ func TestRealEnginePipelineGuardMatrix(t *testing.T) {
 		setupItems(t, db)
 		for _, mode := range runModes {
 			for _, sc := range guardScenarios() {
+				t.Run(strings.ReplaceAll(mode.name+"/"+sc.name, " ", "_"), func(t *testing.T) {
+					compareWireSeq(t, db, dsn, mode, sc)
+				})
+			}
+		}
+	})
+}
+
+// A genuine integer overflow (SQLSTATE 22003) raised by the caller's own statement must surface as the
+// database error, never as ErrAssertionFailed (the guards used to be recognised by 22003 alone).
+var overflowScenarios = []scenario{
+	{"overflowing update with an assertion", func(p *pgq.Pipeline) ([]*runtime.IfResult, func() string) {
+		p.AddScoreOne(1, 1)
+		p.AddScoreOne(math.MaxInt64, 2).AssertRowsAffected(1) // 20 + MaxInt64 overflows
+		return nil, nil
+	}},
+	{"overflowing update without an assertion", func(p *pgq.Pipeline) ([]*runtime.IfResult, func() string) {
+		p.AddScoreOne(math.MaxInt64, 2)
+		return nil, nil
+	}},
+	{"overflowing update with an assertion and a condition", func(p *pgq.Pipeline) ([]*runtime.IfResult, func() string) {
+		u := p.AddScoreOne(math.MaxInt64, 2).AssertRowsAffected(1)
+		return []*runtime.IfResult{p.If(u.Found(), func(p *pgq.Pipeline) { p.AddScoreOne(1, 3) }, nil)}, nil
+	}},
+	{"overflowing update in a taken branch", func(p *pgq.Pipeline) ([]*runtime.IfResult, func() string) {
+		g := p.GetItem(1)
+		return []*runtime.IfResult{p.If(g.Found(), func(p *pgq.Pipeline) { p.AddScoreOne(math.MaxInt64, 2).AssertRowsAffected(1) }, nil)}, nil
+	}},
+	{"overflowing update in a branch that is not taken", func(p *pgq.Pipeline) ([]*runtime.IfResult, func() string) {
+		g := p.GetItem(404)
+		return []*runtime.IfResult{p.If(g.Found(), func(p *pgq.Pipeline) { p.AddScoreOne(math.MaxInt64, 2).AssertRowsAffected(1) },
+			func(p *pgq.Pipeline) { p.AddScoreOne(1, 2).AssertRowsAffected(1) })}, nil
+	}},
+	{"overflow after a failed assertion never runs", func(p *pgq.Pipeline) ([]*runtime.IfResult, func() string) {
+		p.AddScoreOne(1, 999).AssertRowsAffected(1) // fails first
+		p.AddScoreOne(math.MaxInt64, 2)
+		return nil, nil
+	}},
+	{"abort after an overflow never runs", func(p *pgq.Pipeline) ([]*runtime.IfResult, func() string) {
+		p.AddScoreOne(math.MaxInt64, 2).AssertRowsAffected(1)
+		p.Abort(errStop)
+		return nil, nil
+	}},
+	{"abort in a taken branch keeps its own error", func(p *pgq.Pipeline) ([]*runtime.IfResult, func() string) {
+		g := p.GetItem(1)
+		return []*runtime.IfResult{p.If(g.Found(), func(p *pgq.Pipeline) { p.Abort(errStop) }, nil)}, nil
+	}},
+	{"failed assertion reports the actual count (many rows)", func(p *pgq.Pipeline) ([]*runtime.IfResult, func() string) {
+		p.ItemsByIDs([]int64{1, 2, 3}).AssertRowsAffected(2)
+		return nil, nil
+	}},
+	{"failed assertion reports the actual count (zero rows)", func(p *pgq.Pipeline) ([]*runtime.IfResult, func() string) {
+		p.DeleteItems([]int64{98, 99}).AssertRowsAffected(2)
+		return nil, nil
+	}},
+}
+
+func TestRealEnginePipelineUserOverflowIsNotAnAssertion(t *testing.T) {
+	forEachEngine(t, func(t *testing.T, e engine, db *sql.DB) {
+		if !e.isPG() {
+			t.Skip("the single-round-trip pipeline SQL is only generated for the $N (PostgreSQL-protocol) dialect")
+		}
+		dsn := os.Getenv(e.env)
+		setupItems(t, db)
+		for _, mode := range runModes {
+			for _, sc := range overflowScenarios {
 				t.Run(strings.ReplaceAll(mode.name+"/"+sc.name, " ", "_"), func(t *testing.T) {
 					compareWireSeq(t, db, dsn, mode, sc)
 				})

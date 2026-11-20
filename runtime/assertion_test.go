@@ -93,19 +93,29 @@ func TestAssertionErrorFormatting(t *testing.T) {
 	}
 }
 
-func TestTranslateWireErrorAssertionNamesStatementWithoutActual(t *testing.T) {
+func TestTranslateWireErrorAssertionNamesStatementAndCarriesTheActualCount(t *testing.T) {
 	op := &PipelineOp{
 		Desc:       &QueryDescriptor{Name: "InsertAudit"},
 		Decorators: OpDecorators{AssertRows: 5},
 	}
-	got := TranslateWireError(op, sqlStateErr{"22003", "ERROR: bigint out of range"})
-	want := `sqlgen: pipeline assertion failed on statement "InsertAudit": expected 5 rows affected`
+	got := TranslateWireError(op, sqlStateErr{"22P02", `ERROR: invalid input syntax for type integer: "sqlgen:assert:3" (SQLSTATE 22P02)`})
+	want := `sqlgen: pipeline assertion failed on statement "InsertAudit": expected 5 rows affected, got 3`
 	if got == nil || got.Error() != want {
 		t.Fatalf("got %v want %q", got, want)
 	}
 	var ae *AssertionError
-	if !errors.As(got, &ae) || ae.GotKnown || ae.Want != 5 || !errors.Is(got, ErrAssertionFailed) {
+	if !errors.As(got, &ae) || !ae.GotKnown || ae.Got != 3 || ae.Want != 5 || !errors.Is(got, ErrAssertionFailed) {
 		t.Fatalf("unexpected error %#v", got)
+	}
+	// CockroachDB words it differently but carries the same marker; without a readable count the
+	// violation is still reported, just without the actual count
+	crdb := TranslateWireError(&PipelineOp{Desc: op.Desc, Decorators: op.Decorators}, errors.New(`ERROR: could not parse "sqlgen:assert:12" as type int: strconv.ParseInt: parsing "sqlgen:assert:12": invalid syntax (SQLSTATE 22P02)`))
+	if !errors.As(crdb, &ae) || !ae.GotKnown || ae.Got != 12 {
+		t.Fatalf("cockroach wording: %#v", crdb)
+	}
+	noCount := TranslateWireError(&PipelineOp{Desc: op.Desc, Decorators: op.Decorators}, errors.New(`ERROR: invalid input syntax for type integer: "sqlgen:assert:x"`))
+	if !errors.As(noCount, &ae) || ae.GotKnown {
+		t.Fatalf("unreadable count: %#v", noCount)
 	}
 }
 
