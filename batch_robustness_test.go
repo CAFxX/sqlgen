@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"testing"
 
+	"github.com/CAFxX/sqlgen"
 	"github.com/CAFxX/sqlgen/runtime"
 )
 
@@ -122,5 +123,28 @@ func TestStreamReleasesRowsHeldByPooledChunkBuffer(t *testing.T) {
 	}
 	if observed == 0 {
 		t.Skip("sync.Pool never handed the buffer back")
+	}
+}
+
+// A parameter named like a package-level identifier generated for its own statement (descFoo, stmtIDFoo,
+// sqlDialect, ...) used to shadow it inside the statement's methods, so the generated file did not compile.
+func TestParametersNamedLikeGeneratedIdentifiersStillCompile(t *testing.T) {
+	names := []string{"desc_foo", "stmt_i_d_foo", "params_foo", "compute_foo_key", "expand_foo_params", "scan_foo_row", "sql_dialect"}
+	shapes := map[string]string{
+		"one":   "kind: one\n    sql: |\n      SELECT id:int64 FROM t WHERE a = :%[1]s:int64 AND b = :%[1]s:int64",
+		"batch": "kind: many\n    sql: |\n      SELECT id:int64 FROM t WHERE a IN (:ids:[]int64 ASC) AND z = :%[1]s:string",
+		"tuple": "kind: exec\n    sql: |\n      INSERT INTO t (a, b) VALUES :rows:[]Row(A:int64 ASC, B:string) -- :%[1]s:int64",
+	}
+	for _, name := range names {
+		for shape, body := range shapes {
+			for _, ps := range []bool{false, true} {
+				y := fmt.Sprintf("version: \"1\"\npackage: p\ndialect: postgres\nstatements:\n  - name: Foo\n    params_struct: %v\n    %s\n", ps, fmt.Sprintf(body, name))
+				src, err := sqlgen.GenerateFromYAML([]byte(y))
+				if err != nil {
+					t.Fatalf("%s/%s ps=%v: %v", name, shape, ps, err)
+				}
+				typeCheckGenerated(t, name+"_"+shape, src)
+			}
+		}
 	}
 }

@@ -796,7 +796,7 @@ func toGoParamName(s string) string {
 var reservedParamNames = func() map[string]bool {
 	m := map[string]bool{}
 	for _, n := range strings.Fields(`
-		_ approxArgs argBuf autoTx batchRes bufPtr chunk chunkCap chunkP chunkRows chunkSize colMask cp d0 d1
+		_ sqlDialect approxArgs argBuf autoTx batchRes bufPtr chunk chunkCap chunkP chunkRows chunkSize colMask cp d0 d1
 		dst eFn effMask err expandErr firstChunk flagMask flushChunk hasSeek i idx idxBuf in item j k maxRows ms
 		offset orderKey orderSpec out p r res row rs scanBuf scanCount scanDest scanSlice shapeLens shapeTag
 		sliceLensBuf sortedIdx sqlRow sqlRows sub subsBuf tFn targetQ tc totalRows tupleLensBuf txCache txQ v vk
@@ -1627,6 +1627,19 @@ type stmtParser struct {
 	sd stmtDialect
 }
 
+// stmtScopedParamName is toGoParamName plus the package-level identifiers generated for statement stmt: a
+// parameter named like one of them (a statement Foo with a parameter descFoo) would shadow it inside the
+// statement's own methods and stop the file from compiling.
+func stmtScopedParamName(stmt, rawName string) string {
+	n := toGoParamName(rawName)
+	switch n {
+	case "desc" + stmt, "stmtID" + stmt, "params" + stmt, "compute" + stmt + "Key",
+		"expand" + stmt + "Params", "expand" + stmt + "Args", "scan" + stmt + "Row":
+		return n + "Param"
+	}
+	return n
+}
+
 func (p *stmtParser) addOrGetParam(rawName string, kind paramKind, goType, elemGoType string, tuple *tupleStructDef, hasSort, desc bool) (int, error) {
 	canonKey := strings.ToLower(toGoParamName(rawName))
 	if idx, exists := p.paramsByCanon[canonKey]; exists {
@@ -1660,7 +1673,7 @@ func (p *stmtParser) addOrGetParam(rawName string, kind paramKind, goType, elemG
 	p.cs.Params = append(p.cs.Params, paramDef{
 		RawName:    rawName,
 		FieldName:  fieldName,
-		ParamName:  toGoParamName(rawName),
+		ParamName:  stmtScopedParamName(p.spec.Name, rawName),
 		Kind:       kind,
 		GoType:     goType,
 		ElemGoType: elemGoType,
