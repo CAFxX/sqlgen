@@ -638,7 +638,7 @@ A value no rule can encode is rejected before anything is sent, with an error th
 
 #### Typed placeholders in gated inserts (`$N` dialect)
 
-An `INSERT` queued inside a `p.If` branch is sent as `INSERT ... SELECT ... WHERE <gates>`, and PostgreSQL does not infer placeholder types from the target columns there. `sqlgen` therefore casts each placeholder from its Go type (`int`/`int64` to `bigint`, `string` to `text`, `bool` to `boolean`, `float64` to `double precision`, `[]byte` to `bytea`, `time.Time` to `timestamptz`, and so on). For any other Go type (for example a `uuid` or `jsonb` column fed by a `string`), add an explicit cast in the SQL, such as `:id:string::uuid`.
+An `INSERT` queued inside a `p.If` branch is sent as `INSERT ... SELECT ... WHERE <gates>`, and PostgreSQL does not infer placeholder types from the target columns there. `sqlgen` therefore casts each placeholder from its Go type (`int`/`int64` to `bigint`, `string` to `text`, `bool` to `boolean`, `float64` to `double precision`, `[]byte` to `bytea`, `time.Time` to `timestamptz`, and so on). For any other Go type (for example a `uuid` or `jsonb` column fed by a `string`), add an explicit cast in the SQL, such as `:id:string::uuid`. The same applies where the generated cast is not the type of the column: a `time.Time` bound to a `timestamp` (without time zone) column inside a gated insert is first cast to `timestamptz`, so the instant is converted with the session time zone instead of keeping the Go wall clock; write `::timestamp` explicitly there (the "Argument types" rules above cover the ungated case).
 
 ```go
 err := q.PipelineTx(ctx, nil, func(p *Pipeline) error {
