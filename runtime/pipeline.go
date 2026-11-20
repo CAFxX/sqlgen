@@ -452,7 +452,9 @@ func (r *IfResult) Skipped() bool {
 //
 // ExecPipeline runs the operations in the transaction the connection is in (a user-managed
 // *sql.Tx; the caller commits or rolls back) or, on an idle connection, atomically in a transaction of
-// its own. The conditions recorded by set_config(..., true) need an explicit transaction block on
+// its own. In a user-managed transaction a failed assertion or Abort (the errors TranslateWireError
+// maps) must leave the transaction usable, with the work of the operations before the failing one
+// kept, as the sequential path does; a database error of the caller's own statement need not. The conditions recorded by set_config(..., true) need an explicit transaction block on
 // some engines (CockroachDB), so an implementation should open one itself rather than rely on the
 // implicit transaction of a Sync. Connections that can also fold BEGIN and COMMIT into the same
 // round-trip should implement WireTxPipeliner too.

@@ -93,7 +93,9 @@ var (
 )
 
 // ExecPipeline sends ops in one round-trip. Inside a transaction the caller began (a user-managed
-// *sql.Tx) the ops simply run there and the caller owns commit and rollback. On an idle connection the
+// *sql.Tx) the ops simply run there and the caller owns commit and rollback; a failed assertion or Abort
+// leaves that transaction usable (each guarded operation runs after a SAVEPOINT, and the failure rolls
+// back to it), a database error of one of the operations aborts it like PostgreSQL does. On an idle connection the
 // batch is wrapped in BEGIN ... COMMIT, exactly like ExecTxPipeline with default options: atomicity
 // then does not depend on the engine's handling of implicit transactions (CockroachDB, for one, rejects
 // the transaction-local set_config the condition recording relies on outside an explicit transaction).
@@ -114,6 +116,8 @@ const (
 	roleCond      // reads back the condition recorded by roleOp's statement
 	roleExtraCond // reads back op.ExtraConds[extra]
 	roleCommit
+	roleSavepoint // SAVEPOINT before a guarded operation of a user-managed transaction
+	roleRelease   // RELEASE of the first savepoint (and with it every later one)
 )
 
 type stmtRef struct {
@@ -123,6 +127,9 @@ type stmtRef struct {
 	// rawArgs are the 1-based numbers of the []byte arguments of a roleOp statement, which travel as raw
 	// binary parameters (see args.go).
 	rawArgs []int
+	// savepoint is, for a roleOp, the savepoint taken right before it (a guarded operation inside a
+	// user-managed transaction), and for roleSavepoint / roleRelease the savepoint's name.
+	savepoint string
 }
 
 func (c *conn) exec(ctx context.Context, tx bool, txOpts *sql.TxOptions, ops []runtime.PipelineOp) error {
@@ -134,11 +141,18 @@ func (c *conn) exec(ctx context.Context, tx bool, txOpts *sql.TxOptions, ops []r
 	if !tx && pg.TxStatus() == 'I' {
 		tx = true
 	}
+	// A transaction the caller began. A failed assertion or Abort must leave it usable, as on the
+	// sequential path, but the server aborts the whole transaction when the guard raises: each guarded
+	// operation therefore runs after a SAVEPOINT (in the same batch, no extra round-trip), and a guard
+	// failure rolls back to it (one extra round-trip, on that error path only).
+	userTx := !tx
 
 	var (
 		batch pgconn.Batch
 		eqb   pgx.ExtendedQueryBuilder
 		refs  = make([]stmtRef, 0, len(ops)+2)
+
+		firstSavepoint string
 	)
 	if tx {
 		begin, err := beginSQL(txOpts)
@@ -161,6 +175,14 @@ func (c *conn) exec(ctx context.Context, tx bool, txOpts *sql.TxOptions, ops []r
 			return fmt.Errorf("pgxwire: %s: %w (the single-round-trip path sends arguments without declared types: convert the value yourself or give its placeholder an explicit cast in the SQL, for example $N::text; see DOCS.md section 3.4)", opName(op), err)
 		}
 		ref := stmtRef{role: roleOp, op: op}
+		if userTx && (op.Decorators.AssertRows >= 0 || op.Decorators.IsAbort) {
+			ref.savepoint = savepointName(i)
+			batch.ExecParams("SAVEPOINT "+ref.savepoint, nil, nil, nil, nil)
+			refs = append(refs, stmtRef{role: roleSavepoint, savepoint: ref.savepoint})
+			if firstSavepoint == "" {
+				firstSavepoint = ref.savepoint
+			}
+		}
 		for _, r := range raws {
 			eqb.ParamFormats[r.idx] = pgx.BinaryFormatCode
 			eqb.ParamValues[r.idx] = r.val
@@ -179,6 +201,11 @@ func (c *conn) exec(ctx context.Context, tx bool, txOpts *sql.TxOptions, ops []r
 				refs = append(refs, stmtRef{role: roleExtraCond, op: op, extra: j})
 			}
 		}
+	}
+	if firstSavepoint != "" {
+		// releasing the first savepoint releases every later one: no subtransaction outlives the batch
+		batch.ExecParams("RELEASE SAVEPOINT "+firstSavepoint, nil, nil, nil, nil)
+		refs = append(refs, stmtRef{role: roleRelease, savepoint: firstSavepoint})
 	}
 	if tx {
 		batch.ExecParams("COMMIT", nil, nil, nil, nil)
@@ -238,6 +265,9 @@ func (c *conn) fail(ctx context.Context, pg *pgconn.PgConn, tx bool, refs []stmt
 	switch ref := refs[failed]; ref.role {
 	case roleOp:
 		terr := runtime.TranslateWireError(ref.op, err)
+		if ref.savepoint != "" && isGuardError(ref.op, terr) {
+			c.rollbackToSavepoint(ctx, pg, ref.savepoint, refs)
+		}
 		if herr := withRawArgHint(terr, ref.rawArgs); herr != terr {
 			ref.op.Err = herr
 			return herr
@@ -295,6 +325,38 @@ func (c *conn) deliverOp(ctx context.Context, op *runtime.PipelineOp, res *pgcon
 	case runtime.WireResultDiscard:
 	}
 	return nil
+}
+
+func savepointName(opIndex int) string { return "sqlgen_sp" + strconv.Itoa(opIndex) }
+
+// isGuardError reports whether err is the assertion / abort error TranslateWireError made of the
+// guard's own failure on op (as opposed to a database error of the caller's statement).
+func isGuardError(op *runtime.PipelineOp, err error) bool {
+	if _, ok := err.(*runtime.AssertionError); ok {
+		return true
+	}
+	return op.Decorators.IsAbort && op.AbortErr != nil && err == op.AbortErr
+}
+
+// rollbackToSavepoint revives the user-managed transaction a guard failure aborted: it returns to the
+// state right before the failing operation (the work of the operations before it stays) and drops the
+// batch's savepoints. When this fails (a connection error, or an engine that needs a full restart) the
+// transaction stays aborted and the caller's own rollback handles it; the original error is returned
+// either way.
+func (c *conn) rollbackToSavepoint(ctx context.Context, pg *pgconn.PgConn, savepoint string, refs []stmtRef) {
+	if pg.IsClosed() || pg.TxStatus() == 'I' {
+		return
+	}
+	first := savepoint
+	for _, r := range refs {
+		if r.role == roleSavepoint {
+			first = r.savepoint
+			break
+		}
+	}
+	rctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+	defer cancel()
+	_, _ = pg.Exec(rctx, "ROLLBACK TO SAVEPOINT "+savepoint+"; RELEASE SAVEPOINT "+first).ReadAll()
 }
 
 func condSQL(id int) string {

@@ -439,6 +439,77 @@ func TestUserManagedTransactionFlushesOpsInOneBatch(t *testing.T) {
 	})
 }
 
+// A failed assertion or Abort on a transaction the caller began leaves it usable: the work before the
+// failing operation stays, the failing operation and everything after it have no effect, nothing leaks.
+func TestUserManagedTransactionSurvivesAGuardFailure(t *testing.T) {
+	forEachEngine(t, func(t *testing.T, e testEngine, db, plain *sql.DB) {
+		k := newKVTable(t, db)
+		ctx := ctxT(t)
+		abortErr := errors.New("stop")
+		for _, tc := range []struct {
+			name  string
+			build func(p *runtime.Pipeline)
+			check func(err error) bool
+			want  []row // committed state: the work before the failing operation + the caller's own update
+		}{
+			{"assertion", func(p *runtime.Pipeline) {
+				k.Upd(p, 1, 1).AssertRowsAffected(1)
+				k.Upd(p, 5, 2)
+				k.Upd(p, 1, 404).AssertRowsAffected(1) // fails
+				k.Upd(p, 1000, 3)
+			}, func(err error) bool { return errors.Is(err, runtime.ErrAssertionFailed) }, []row{{1, 11}, {2, 25}, {3, 130}}},
+			{"abort", func(p *runtime.Pipeline) {
+				k.Upd(p, 1, 1).AssertRowsAffected(1)
+				g := k.Get(p, 1)
+				p.If(g.Found(), func() { p.Abort(abortErr) }, nil)
+				k.Upd(p, 1000, 3)
+			}, func(err error) bool { return errors.Is(err, abortErr) }, []row{{1, 11}, {2, 20}, {3, 130}}},
+		} {
+			tx, err := db.BeginTx(ctx, nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			p := runtime.NewPipeline(ctx, db, k.cache, runtime.NewTxStmtCache(tx), true, runtime.DialectDollar)
+			tc.build(p)
+			if err := p.Flush(); !tc.check(err) {
+				t.Fatalf("%s: Flush = %v", tc.name, err)
+			}
+			// the transaction is alive: more work, then commit
+			if _, err := tx.ExecContext(ctx, "UPDATE "+k.table+" SET v = v + 100 WHERE id = 3"); err != nil {
+				t.Fatalf("%s: the transaction is unusable after the failure: %v", tc.name, err)
+			}
+			if err := tx.Commit(); err != nil {
+				t.Fatalf("%s: commit: %v", tc.name, err)
+			}
+			sameRows(t, k.rows(t, plain), tc.want)
+			poolIdle(t, db)
+			// reset for the next case
+			if _, err := db.Exec("UPDATE " + k.table + " SET v = id * 10"); err != nil {
+				t.Fatal(err)
+			}
+		}
+		// a database error is NOT a guard failure and leaves the transaction aborted
+		tx, err := db.BeginTx(ctx, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		p := runtime.NewPipeline(ctx, db, k.cache, runtime.NewTxStmtCache(tx), true, runtime.DialectDollar)
+		k.Upd(p, 1, 1).AssertRowsAffected(1)
+		k.Ins(p, 1, 0).AssertRowsAffected(1) // unique violation raised by the caller's own statement
+		var pgErr *pgconn.PgError
+		if err := p.Flush(); !errors.As(err, &pgErr) || pgErr.Code != "23505" {
+			t.Fatalf("Flush = %v", err)
+		}
+		if _, err := tx.ExecContext(ctx, "SELECT 1"); err == nil {
+			t.Fatal("the transaction is usable after a database error: only guard failures are rolled back to a savepoint")
+		}
+		if err := tx.Rollback(); err != nil {
+			t.Fatal(err)
+		}
+		poolIdle(t, db)
+	})
+}
+
 func TestCommitTimeErrorsAreMarkedAndReusable(t *testing.T) {
 	forEachEngine(t, func(t *testing.T, e testEngine, db, plain *sql.DB) {
 		if e.crdb {
