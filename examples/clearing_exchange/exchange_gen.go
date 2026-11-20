@@ -1305,12 +1305,11 @@ func (q *Queries) IngestOrdersSeq(ctx context.Context, rows []OrderSubmission, e
 			yield(zero, err)
 			return
 		}
-		defer func() { runtime.CloseRows(sqlRows, ms) }()
+		defer runtime.ReleaseRows(&sqlRows, &ms)
 		var item OrderAck
 		for sqlRows.Next() {
 			if err := scanIngestOrdersRow(sqlRows, &item, colMask, p); err != nil {
-				runtime.CloseRows(sqlRows, ms)
-				sqlRows, ms = nil, nil
+				runtime.ReleaseRows(&sqlRows, &ms)
 				yield(zero, err)
 				return
 			}
@@ -1319,8 +1318,7 @@ func (q *Queries) IngestOrdersSeq(ctx context.Context, rows []OrderSubmission, e
 			}
 		}
 		err = sqlRows.Err()
-		runtime.CloseRows(sqlRows, ms)
-		sqlRows, ms = nil, nil
+		runtime.ReleaseRows(&sqlRows, &ms)
 		if err != nil {
 			yield(zero, err)
 		}
@@ -1430,7 +1428,7 @@ func (q *Queries) IngestOrdersBatchSeq(ctx context.Context, rows []OrderSubmissi
 		firstChunk := q.cache.PlanBatchChunk(stmtIDIngestOrders, colMask, flagMask, totalRows, maxRows, true)
 		var sqlRows *sql.Rows
 		var ms *runtime.ManagedStmt
-		defer func() { runtime.CloseRows(sqlRows, ms) }()
+		defer runtime.ReleaseRows(&sqlRows, &ms)
 		for offset := 0; offset < totalRows; {
 			chunkSize := firstChunk
 			if offset > 0 {
@@ -1475,8 +1473,7 @@ func (q *Queries) IngestOrdersBatchSeq(ctx context.Context, rows []OrderSubmissi
 			var item OrderAck
 			for sqlRows.Next() {
 				if err := scanIngestOrdersRow(sqlRows, &item, colMask, chunkP); err != nil {
-					runtime.CloseRows(sqlRows, ms)
-					sqlRows, ms = nil, nil
+					runtime.ReleaseRows(&sqlRows, &ms)
 					yield(zero, err)
 					return
 				}
@@ -1485,8 +1482,7 @@ func (q *Queries) IngestOrdersBatchSeq(ctx context.Context, rows []OrderSubmissi
 				}
 			}
 			err = sqlRows.Err()
-			runtime.CloseRows(sqlRows, ms)
-			sqlRows, ms = nil, nil
+			runtime.ReleaseRows(&sqlRows, &ms)
 			if err != nil {
 				yield(zero, err)
 				return
@@ -1743,12 +1739,11 @@ func (q *Queries) CancelOrdersByIDsSeq(ctx context.Context, cancelSeq int64, fir
 			yield(zero, err)
 			return
 		}
-		defer func() { runtime.CloseRows(sqlRows, ms) }()
+		defer runtime.ReleaseRows(&sqlRows, &ms)
 		var item OrderAck
 		for sqlRows.Next() {
 			if err := scanCancelOrdersByIDsRow(sqlRows, &item, colMask, p); err != nil {
-				runtime.CloseRows(sqlRows, ms)
-				sqlRows, ms = nil, nil
+				runtime.ReleaseRows(&sqlRows, &ms)
 				yield(zero, err)
 				return
 			}
@@ -1757,8 +1752,7 @@ func (q *Queries) CancelOrdersByIDsSeq(ctx context.Context, cancelSeq int64, fir
 			}
 		}
 		err = sqlRows.Err()
-		runtime.CloseRows(sqlRows, ms)
-		sqlRows, ms = nil, nil
+		runtime.ReleaseRows(&sqlRows, &ms)
 		if err != nil {
 			yield(zero, err)
 		}
@@ -1871,7 +1865,7 @@ func (q *Queries) CancelOrdersByIDsBatchSeq(ctx context.Context, cancelSeq int64
 		firstChunk := q.cache.PlanBatchChunk(stmtIDCancelOrdersByIDs, colMask, flagMask, totalRows, maxRows, true)
 		var sqlRows *sql.Rows
 		var ms *runtime.ManagedStmt
-		defer func() { runtime.CloseRows(sqlRows, ms) }()
+		defer runtime.ReleaseRows(&sqlRows, &ms)
 		for offset := 0; offset < totalRows; {
 			chunkSize := firstChunk
 			if offset > 0 {
@@ -1909,8 +1903,7 @@ func (q *Queries) CancelOrdersByIDsBatchSeq(ctx context.Context, cancelSeq int64
 			var item OrderAck
 			for sqlRows.Next() {
 				if err := scanCancelOrdersByIDsRow(sqlRows, &item, colMask, chunkP); err != nil {
-					runtime.CloseRows(sqlRows, ms)
-					sqlRows, ms = nil, nil
+					runtime.ReleaseRows(&sqlRows, &ms)
 					yield(zero, err)
 					return
 				}
@@ -1919,8 +1912,7 @@ func (q *Queries) CancelOrdersByIDsBatchSeq(ctx context.Context, cancelSeq int64
 				}
 			}
 			err = sqlRows.Err()
-			runtime.CloseRows(sqlRows, ms)
-			sqlRows, ms = nil, nil
+			runtime.ReleaseRows(&sqlRows, &ms)
 			if err != nil {
 				yield(zero, err)
 				return
@@ -2103,12 +2095,11 @@ func (q *Queries) ListOpenOrdersForSymbolSeq(ctx context.Context, symbol string,
 			yield(zero, err)
 			return
 		}
-		defer func() { runtime.CloseRows(sqlRows, ms) }()
+		defer runtime.ReleaseRows(&sqlRows, &ms)
 		var item OpenOrderRow
 		for sqlRows.Next() {
 			if err := scanListOpenOrdersForSymbolRow(sqlRows, &item, colMask, p); err != nil {
-				runtime.CloseRows(sqlRows, ms)
-				sqlRows, ms = nil, nil
+				runtime.ReleaseRows(&sqlRows, &ms)
 				yield(zero, err)
 				return
 			}
@@ -2117,8 +2108,7 @@ func (q *Queries) ListOpenOrdersForSymbolSeq(ctx context.Context, symbol string,
 			}
 		}
 		err = sqlRows.Err()
-		runtime.CloseRows(sqlRows, ms)
-		sqlRows, ms = nil, nil
+		runtime.ReleaseRows(&sqlRows, &ms)
 		if err != nil {
 			yield(zero, err)
 		}
@@ -3498,12 +3488,11 @@ func (q *Queries) QueryRiskPositionsPageSeq(ctx context.Context, p QueryRiskPosi
 			yield(zero, err)
 			return
 		}
-		defer func() { runtime.CloseRows(sqlRows, ms) }()
+		defer runtime.ReleaseRows(&sqlRows, &ms)
 		var item RiskPositionView
 		for sqlRows.Next() {
 			if err := scanQueryRiskPositionsPageRow(sqlRows, &item, colMask, p); err != nil {
-				runtime.CloseRows(sqlRows, ms)
-				sqlRows, ms = nil, nil
+				runtime.ReleaseRows(&sqlRows, &ms)
 				yield(zero, err)
 				return
 			}
@@ -3512,8 +3501,7 @@ func (q *Queries) QueryRiskPositionsPageSeq(ctx context.Context, p QueryRiskPosi
 			}
 		}
 		err = sqlRows.Err()
-		runtime.CloseRows(sqlRows, ms)
-		sqlRows, ms = nil, nil
+		runtime.ReleaseRows(&sqlRows, &ms)
 		if err != nil {
 			yield(zero, err)
 		}

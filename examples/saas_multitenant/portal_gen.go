@@ -423,12 +423,11 @@ func (q *Queries) SearchMembersSeq(ctx context.Context, p SearchMembersParams) i
 			yield(zero, err)
 			return
 		}
-		defer func() { runtime.CloseRows(sqlRows, ms) }()
+		defer runtime.ReleaseRows(&sqlRows, &ms)
 		var item MemberRow
 		for sqlRows.Next() {
 			if err := scanSearchMembersRow(sqlRows, &item, colMask, p); err != nil {
-				runtime.CloseRows(sqlRows, ms)
-				sqlRows, ms = nil, nil
+				runtime.ReleaseRows(&sqlRows, &ms)
 				yield(zero, err)
 				return
 			}
@@ -437,8 +436,7 @@ func (q *Queries) SearchMembersSeq(ctx context.Context, p SearchMembersParams) i
 			}
 		}
 		err = sqlRows.Err()
-		runtime.CloseRows(sqlRows, ms)
-		sqlRows, ms = nil, nil
+		runtime.ReleaseRows(&sqlRows, &ms)
 		if err != nil {
 			yield(zero, err)
 		}
@@ -752,12 +750,11 @@ func (q *Queries) ListMembersPaginatedSeq(ctx context.Context, p ListMembersPagi
 			yield(zero, err)
 			return
 		}
-		defer func() { runtime.CloseRows(sqlRows, ms) }()
+		defer runtime.ReleaseRows(&sqlRows, &ms)
 		var item MemberItem
 		for sqlRows.Next() {
 			if err := scanListMembersPaginatedRow(sqlRows, &item, colMask, p); err != nil {
-				runtime.CloseRows(sqlRows, ms)
-				sqlRows, ms = nil, nil
+				runtime.ReleaseRows(&sqlRows, &ms)
 				yield(zero, err)
 				return
 			}
@@ -766,8 +763,7 @@ func (q *Queries) ListMembersPaginatedSeq(ctx context.Context, p ListMembersPagi
 			}
 		}
 		err = sqlRows.Err()
-		runtime.CloseRows(sqlRows, ms)
-		sqlRows, ms = nil, nil
+		runtime.ReleaseRows(&sqlRows, &ms)
 		if err != nil {
 			yield(zero, err)
 		}
@@ -1124,12 +1120,11 @@ func (q *Queries) AggregateCohortInvoicesSeq(ctx context.Context, memberQuery ru
 			yield(zero, err)
 			return
 		}
-		defer func() { runtime.CloseRows(sqlRows, ms) }()
+		defer runtime.ReleaseRows(&sqlRows, &ms)
 		var item CohortInvoiceSummary
 		for sqlRows.Next() {
 			if err := scanAggregateCohortInvoicesRow(sqlRows, &item, colMask, p); err != nil {
-				runtime.CloseRows(sqlRows, ms)
-				sqlRows, ms = nil, nil
+				runtime.ReleaseRows(&sqlRows, &ms)
 				yield(zero, err)
 				return
 			}
@@ -1138,8 +1133,7 @@ func (q *Queries) AggregateCohortInvoicesSeq(ctx context.Context, memberQuery ru
 			}
 		}
 		err = sqlRows.Err()
-		runtime.CloseRows(sqlRows, ms)
-		sqlRows, ms = nil, nil
+		runtime.ReleaseRows(&sqlRows, &ms)
 		if err != nil {
 			yield(zero, err)
 		}

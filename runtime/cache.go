@@ -86,6 +86,15 @@ func CloseRows(rows *sql.Rows, ms *ManagedStmt) {
 	}
 }
 
+// ReleaseRows closes *rows and releases *ms, then clears both so that a later call is a no-op. Generated
+// iterators defer it (covering a panic in the caller's loop body) and also call it explicitly to release the
+// connection before an error is handed to the caller.
+func ReleaseRows(rows **sql.Rows, ms **ManagedStmt) {
+	r, m := *rows, *ms
+	*rows, *ms = nil, nil
+	CloseRows(r, m)
+}
+
 type txState struct {
 	mu     sync.Mutex
 	heldMS []*ManagedStmt

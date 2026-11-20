@@ -409,12 +409,11 @@ func (q *Queries) GetInventoryBySKUsSeq(ctx context.Context, keys []SKUKey) iter
 			yield(zero, err)
 			return
 		}
-		defer func() { runtime.CloseRows(sqlRows, ms) }()
+		defer runtime.ReleaseRows(&sqlRows, &ms)
 		var item InventoryItem
 		for sqlRows.Next() {
 			if err := scanGetInventoryBySKUsRow(sqlRows, &item, colMask, p); err != nil {
-				runtime.CloseRows(sqlRows, ms)
-				sqlRows, ms = nil, nil
+				runtime.ReleaseRows(&sqlRows, &ms)
 				yield(zero, err)
 				return
 			}
@@ -423,8 +422,7 @@ func (q *Queries) GetInventoryBySKUsSeq(ctx context.Context, keys []SKUKey) iter
 			}
 		}
 		err = sqlRows.Err()
-		runtime.CloseRows(sqlRows, ms)
-		sqlRows, ms = nil, nil
+		runtime.ReleaseRows(&sqlRows, &ms)
 		if err != nil {
 			yield(zero, err)
 		}
@@ -531,7 +529,7 @@ func (q *Queries) GetInventoryBySKUsBatchSeq(ctx context.Context, keys []SKUKey)
 		firstChunk := q.cache.PlanBatchChunk(stmtIDGetInventoryBySKUs, colMask, flagMask, totalRows, maxRows, true)
 		var sqlRows *sql.Rows
 		var ms *runtime.ManagedStmt
-		defer func() { runtime.CloseRows(sqlRows, ms) }()
+		defer runtime.ReleaseRows(&sqlRows, &ms)
 		for offset := 0; offset < totalRows; {
 			chunkSize := firstChunk
 			if offset > 0 {
@@ -568,8 +566,7 @@ func (q *Queries) GetInventoryBySKUsBatchSeq(ctx context.Context, keys []SKUKey)
 			var item InventoryItem
 			for sqlRows.Next() {
 				if err := scanGetInventoryBySKUsRow(sqlRows, &item, colMask, chunkP); err != nil {
-					runtime.CloseRows(sqlRows, ms)
-					sqlRows, ms = nil, nil
+					runtime.ReleaseRows(&sqlRows, &ms)
 					yield(zero, err)
 					return
 				}
@@ -578,8 +575,7 @@ func (q *Queries) GetInventoryBySKUsBatchSeq(ctx context.Context, keys []SKUKey)
 				}
 			}
 			err = sqlRows.Err()
-			runtime.CloseRows(sqlRows, ms)
-			sqlRows, ms = nil, nil
+			runtime.ReleaseRows(&sqlRows, &ms)
 			if err != nil {
 				yield(zero, err)
 				return
@@ -991,12 +987,11 @@ func (q *Queries) StreamFulfilledOrdersSeq(ctx context.Context, cutoffTs int64) 
 			yield(zero, err)
 			return
 		}
-		defer func() { runtime.CloseRows(sqlRows, ms) }()
+		defer runtime.ReleaseRows(&sqlRows, &ms)
 		var item FulfilledOrder
 		for sqlRows.Next() {
 			if err := scanStreamFulfilledOrdersRow(sqlRows, &item, colMask, p); err != nil {
-				runtime.CloseRows(sqlRows, ms)
-				sqlRows, ms = nil, nil
+				runtime.ReleaseRows(&sqlRows, &ms)
 				yield(zero, err)
 				return
 			}
@@ -1005,8 +1000,7 @@ func (q *Queries) StreamFulfilledOrdersSeq(ctx context.Context, cutoffTs int64) 
 			}
 		}
 		err = sqlRows.Err()
-		runtime.CloseRows(sqlRows, ms)
-		sqlRows, ms = nil, nil
+		runtime.ReleaseRows(&sqlRows, &ms)
 		if err != nil {
 			yield(zero, err)
 		}
