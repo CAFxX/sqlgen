@@ -45,6 +45,9 @@ test-pgxwire:
 bench-engines:
 	. scripts/engines-env.sh && cd integration && SQLGEN_ENGINES=$(ENGINES) go test -run '^$$' -bench . -benchtime=2s ./...
 
-# adapter_myq_test.go is adapter_pgq_test.go with the package name swapped.
+# adapter_myq_test.go is adapter_pgq_test.go with the package name swapped (likewise the fuzz adapter).
 sync-adapters:
 	sed 's/pgq/myq/g; s/Pgq/Myq/g' integration/adapter_pgq_test.go > integration/adapter_myq_test.go
+	sed 's/fzpg/fzmy/g; s/Fzpg/Fzmy/g' integration/fuzz_adapter_fzpg_test.go > integration/fuzz_adapter_fzmy_test.go
+	sed 's/fzpg/fzsl/g; s/Fzpg/Fzsl/g' integration/fuzz_adapter_fzpg_test.go > integration/fuzz_adapter_fzsl_test.go
+	sed 's/fzpg/fzsl/g; s/Fzpg/Fzsl/g' integration/fuzz_bump_fzpg_test.go > integration/fuzz_bump_fzsl_test.go

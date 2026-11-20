@@ -1,0 +1,372 @@
+package integration
+
+// This file is mirrored to fuzz_adapter_fzmy_test.go with `fzmy` -> `fzmy` (see `make sync-adapters`).
+// It adapts the generated fuzz package to the engine-agnostic fzAPI.
+
+import (
+	"context"
+	"database/sql"
+	"iter"
+
+	"github.com/CAFxX/sqlgen/integration/fzmy"
+	"github.com/CAFxX/sqlgen/runtime"
+)
+
+type fzmyAPI struct{ q *fzmy.Queries }
+
+func newFzmyAPI(db *sql.DB, opts ...runtime.CacheOption) *fzmyAPI {
+	return &fzmyAPI{q: fzmy.New(db, opts...)}
+}
+
+func (a *fzmyAPI) Close() error { return a.q.Close() }
+
+func (a *fzmyAPI) Tx(tx *sql.Tx) fzAPI { return &fzmyAPI{q: a.q.WithTx(tx)} }
+
+func toNewFzmy(r fzRow) fzmy.FzNew {
+	return fzmy.FzNew{ID: r.ID, Grp: r.Grp, K1: r.K[0], K2: r.K[1], K3: r.K[2], K4: r.K[3], K5: r.K[4],
+		K6: r.K[5], K7: r.K[6], K8: r.K[7], Tag: r.Tag, Tag2: r.Tag2, Note: r.Note}
+}
+
+func toNewsFzmy(rows []fzRow) []fzmy.FzNew {
+	out := make([]fzmy.FzNew, len(rows))
+	for i, r := range rows {
+		out[i] = toNewFzmy(r)
+	}
+	return out
+}
+
+func fromRowFzmy(r fzmy.FzRow) fzRow {
+	return fzRow{ID: r.ID, Grp: r.Grp, K: [8]int64{r.K1, r.K2, r.K3, r.K4, r.K5, r.K6, r.K7, r.K8},
+		Tag: r.Tag, Tag2: r.Tag2, Note: r.Note}
+}
+
+func fromRowsFzmy(rows []fzmy.FzRow, err error) ([]fzRow, error) {
+	out := make([]fzRow, len(rows))
+	for i, r := range rows {
+		out[i] = fromRowFzmy(r)
+	}
+	return out, err
+}
+
+func toRowFzmy(r fzRow) fzmy.FzRow {
+	return fzmy.FzRow{ID: r.ID, Grp: r.Grp, K1: r.K[0], K2: r.K[1], K3: r.K[2], K4: r.K[3], K5: r.K[4],
+		K6: r.K[5], K7: r.K[6], K8: r.K[7], Tag: r.Tag, Tag2: r.Tag2, Note: r.Note}
+}
+
+func rowsAffectedFzmy(res sql.Result, err error) (int64, error) {
+	if err != nil {
+		return 0, err
+	}
+	return res.RowsAffected()
+}
+
+func outsFzmy(rows []fzmy.FzOut, err error) ([]fzOut, error) {
+	out := make([]fzOut, len(rows))
+	for i, r := range rows {
+		out[i] = fzOut{r.ID, r.K1}
+	}
+	return out, err
+}
+
+func varFzmy(
+	into func(dst []fzmy.FzRow) ([]fzmy.FzRow, error),
+	seq iter.Seq2[fzmy.FzRow, error],
+	each func(func(fzmy.FzRow) error) error,
+) fzVar {
+	return fzVar{
+		Into: func(prefix, spare int) ([]fzRow, error) {
+			return fromRowsFzmy(into(make([]fzmy.FzRow, prefix, prefix+spare)))
+		},
+		Seq: func() iter.Seq2[fzRow, error] {
+			return func(yield func(fzRow, error) bool) {
+				for r, err := range seq {
+					if !yield(fromRowFzmy(r), err) {
+						return
+					}
+				}
+			}
+		},
+		Each: func(fn func(fzRow) error) error {
+			return each(func(r fzmy.FzRow) error { return fn(fromRowFzmy(r)) })
+		},
+	}
+}
+
+func searchParamsFzmy(s fzSearchArgs) fzmy.FzSearchParams {
+	p := fzmy.FzSearchParams{Lo: s.Lo, Grp: s.Grp, Grps: s.Grps, Tags: s.Tags, NoteLike: s.NoteLike, Hi: s.Hi,
+		ByGrp: s.ByGrp, ByGrps: s.ByGrps, ByTags: s.ByTags, FilterNote: s.FilterNote, NoteNull: s.NoteNull,
+		ByPairs: s.ByPairs, Narrow: s.Narrow, HiK4: s.HiK4, SelectCols: s.SelectCols}
+	for _, pr := range s.Pairs {
+		p.Pairs = append(p.Pairs, fzmy.FzPair{Grp: pr[0], K2: pr[1]})
+	}
+	return p
+}
+
+func pageParamsFzmy(s fzPageArgs) fzmy.FzPageParams {
+	var terms []fzmy.FzPageSortTerm
+	for _, t := range s.Terms {
+		if t.Desc {
+			terms = append(terms, fzmy.FzPageSortCol(t.Col).Desc())
+		} else {
+			terms = append(terms, fzmy.FzPageSortCol(t.Col).Asc())
+		}
+	}
+	return fzmy.FzPageParams{Lo: s.Lo, Grps: s.Grps, After: s.After, Sub: buildSubFzmy(s.Sub), ExTag: s.ExTag,
+		Sort: fzmy.OrderFzPage(terms...), Limit: s.Limit, ByGrps: s.ByGrps, InSub: s.InSub, SkipTag: s.SkipTag,
+		SelectCols: s.Cols}
+}
+
+func (a *fzmyAPI) SearchV(ctx context.Context, s fzSearchArgs) fzVar {
+	p := searchParamsFzmy(s)
+	return varFzmy(func(dst []fzmy.FzRow) ([]fzmy.FzRow, error) { return a.q.FzSearchInto(ctx, dst, p) },
+		a.q.FzSearchSeq(ctx, p), func(fn func(fzmy.FzRow) error) error { return a.q.FzSearchEach(ctx, p, fn) })
+}
+
+func (a *fzmyAPI) PageV(ctx context.Context, s fzPageArgs) fzVar {
+	p := pageParamsFzmy(s)
+	return varFzmy(func(dst []fzmy.FzRow) ([]fzmy.FzRow, error) { return a.q.FzPageInto(ctx, dst, p) },
+		a.q.FzPageSeq(ctx, p), func(fn func(fzmy.FzRow) error) error { return a.q.FzPageEach(ctx, p, fn) })
+}
+
+func (a *fzmyAPI) ByIDsBatchV(ctx context.Context, ids []int64) fzVar {
+	return varFzmy(func(dst []fzmy.FzRow) ([]fzmy.FzRow, error) { return a.q.FzByIDsBatchInto(ctx, dst, ids) },
+		a.q.FzByIDsBatchSeq(ctx, ids), func(fn func(fzmy.FzRow) error) error { return a.q.FzByIDsBatchEach(ctx, ids, fn) })
+}
+
+func (a *fzmyAPI) ByKeysBatchV(ctx context.Context, keys [][2]int64) fzVar {
+	ks := make([]fzmy.FzKey, len(keys))
+	for i, k := range keys {
+		ks[i] = fzmy.FzKey{Grp: k[0], K1: k[1]}
+	}
+	return varFzmy(func(dst []fzmy.FzRow) ([]fzmy.FzRow, error) { return a.q.FzByKeysBatchInto(ctx, dst, ks) },
+		a.q.FzByKeysBatchSeq(ctx, ks), func(fn func(fzmy.FzRow) error) error { return a.q.FzByKeysBatchEach(ctx, ks, fn) })
+}
+
+func fromTRowsFzmy(rows []fzmy.FzTypedRow, err error) ([]fzTRow, error) {
+	out := make([]fzTRow, len(rows))
+	for i, r := range rows {
+		out[i] = fzTRow{r.ID, r.I32, r.F64, r.Flag, r.Bin, r.Ni}
+	}
+	return out, err
+}
+
+func (a *fzmyAPI) TypedInsert(ctx context.Context, rows []fzTRow, batch bool) (int64, error) {
+	in := make([]fzmy.FzTypedNew, len(rows))
+	for i, r := range rows {
+		in[i] = fzmy.FzTypedNew{ID: r.ID, I32: r.I32, F64: r.F64, Flag: r.Flag, Bin: r.Blob, Ni: r.NI}
+	}
+	if batch {
+		return rowsAffectedFzmy(a.q.FzTypedInsertBatch(ctx, in))
+	}
+	return rowsAffectedFzmy(a.q.FzTypedInsert(ctx, in))
+}
+
+func (a *fzmyAPI) TypedSearch(ctx context.Context, s fzTSearch) ([]fzTRow, error) {
+	return fromTRowsFzmy(a.q.FzTypedSearch(ctx, fzmy.FzTypedSearchParams{Lo: s.Lo, I32s: s.I32s, F64s: s.F64s,
+		Flag: s.Flag, Bin: s.Blob, NiMin: s.NiMin, ByI32s: s.ByI32s, ByF64s: s.ByF64s, ByFlag: s.ByFlag,
+		ByBin: s.ByBlob, NiAtLeast: s.NiAtLeast}))
+}
+
+func (a *fzmyAPI) TypedPage(ctx context.Context, terms []fzTerm, after runtime.Seek, limit int64) ([]fzTRow, error) {
+	var ts []fzmy.FzTypedPageSortTerm
+	for _, t := range terms {
+		if t.Desc {
+			ts = append(ts, fzmy.FzTypedPageSortCol(t.Col).Desc())
+		} else {
+			ts = append(ts, fzmy.FzTypedPageSortCol(t.Col).Asc())
+		}
+	}
+	return fromTRowsFzmy(a.q.FzTypedPage(ctx, after, fzmy.OrderFzTypedPage(ts...), limit))
+}
+
+func (a *fzmyAPI) TypedCursor(r fzTRow) runtime.Seek {
+	return fzmy.SeekFzTypedPage(fzmy.FzTypedRow{ID: r.ID, I32: r.I32, F64: r.F64, Flag: r.Flag, Bin: r.Blob, Ni: r.NI})
+}
+
+func (a *fzmyAPI) Insert(ctx context.Context, v fzIns, rows []fzRow) (int64, error) {
+	if v.Order == 3 { // FzInsertLit: only id, grp, k1 and tag are parameters; the rest are literals in the template
+		in := make([]fzmy.FzLit, len(rows))
+		for i, r := range rows {
+			in[i] = fzmy.FzLit{ID: r.ID, Grp: r.Grp, K1: r.K[0], Tag: r.Tag}
+		}
+		switch v.Path {
+		case 0:
+			return rowsAffectedFzmy(a.q.FzInsertLit(ctx, in))
+		case 1:
+			return rowsAffectedFzmy(a.q.FzInsertLitBatch(ctx, in))
+		}
+		return rowsAffectedFzmy(a.q.FzInsertLitStream(ctx, func(yield func(fzmy.FzLit, error) bool) {
+			for _, r := range in {
+				if !yield(r, nil) {
+					return
+				}
+			}
+		}))
+	}
+	in := toNewsFzmy(rows)
+	seq := func() iter.Seq2[fzmy.FzNew, error] {
+		return func(yield func(fzmy.FzNew, error) bool) {
+			for _, r := range in {
+				if !yield(r, nil) {
+					return
+				}
+			}
+		}
+	}
+	type fn func(context.Context, []fzmy.FzNew) (sql.Result, error)
+	type sfn func(context.Context, iter.Seq2[fzmy.FzNew, error]) (sql.Result, error)
+	var plain, batch fn
+	var stream sfn
+	switch v.Order {
+	case 0:
+		plain, batch, stream = a.q.FzInsertAsc, a.q.FzInsertAscBatch, a.q.FzInsertAscStream
+	case 1:
+		plain, batch, stream = a.q.FzInsertDesc, a.q.FzInsertDescBatch, a.q.FzInsertDescStream
+	default:
+		plain, batch, stream = a.q.FzInsertRaw, a.q.FzInsertRawBatch, a.q.FzInsertRawStream
+	}
+	switch v.Path {
+	case 0:
+		return rowsAffectedFzmy(plain(ctx, in))
+	case 1:
+		return rowsAffectedFzmy(batch(ctx, in))
+	}
+	return rowsAffectedFzmy(stream(ctx, seq()))
+}
+
+// InsertStreamErr streams rows then fails with err after the first n: the error must come back unchanged.
+func (a *fzmyAPI) InsertStreamErr(ctx context.Context, rows []fzRow, n int, err error) error {
+	_, e := a.q.FzInsertRawStream(ctx, func(yield func(fzmy.FzNew, error) bool) {
+		for i, r := range rows {
+			if i == n {
+				yield(fzmy.FzNew{}, err)
+				return
+			}
+			if !yield(toNewFzmy(r), nil) {
+				return
+			}
+		}
+	})
+	return e
+}
+
+func (a *fzmyAPI) Search(ctx context.Context, s fzSearchArgs) ([]fzRow, error) {
+	return fromRowsFzmy(a.q.FzSearch(ctx, searchParamsFzmy(s)))
+}
+
+func (a *fzmyAPI) Narrow(ctx context.Context, minID int64, byGrp bool, grp int64, cols uint64) ([]fzRow, error) {
+	rows, err := a.q.FzNarrow(ctx, fzmy.FzNarrowParams{MinID: minID, Grp: grp, ByGrp: byGrp, SelectCols: cols})
+	out := make([]fzRow, len(rows))
+	for i, r := range rows {
+		out[i] = fzRow{ID: r.ID, Grp: r.Grp, Tag: r.Tag, Note: r.Note}
+		out[i].K[0], out[i].K[1] = r.K1, r.K2
+	}
+	return out, err
+}
+
+func buildSubFzmy(s *fzSub) runtime.Query {
+	if s == nil {
+		return runtime.Query{}
+	}
+	if s.Note {
+		return fzmy.FzSubNoteQuery(fzmy.FzSubNoteParams{Inner: buildSubFzmy(s.Inner), K3max: s.K3Max, MaxK3: s.MaxK3})
+	}
+	return fzmy.FzSubGrpsQuery(fzmy.FzSubGrpsParams{Grps: s.Grps, K2min: s.K2Min, MinK2: s.MinK2})
+}
+
+func (a *fzmyAPI) Page(ctx context.Context, s fzPageArgs) ([]fzRow, error) {
+	return fromRowsFzmy(a.q.FzPage(ctx, pageParamsFzmy(s)))
+}
+
+func (a *fzmyAPI) Cursor(r fzRow) runtime.Seek { return fzmy.SeekFzPage(toRowFzmy(r)) }
+
+func (a *fzmyAPI) Agg(ctx context.Context, pick *fzSub, byTag bool, tag string) ([]fzAggRow, error) {
+	rows, err := a.q.FzAgg(ctx, fzmy.FzAggParams{Pick: buildSubFzmy(pick), Tag: tag, ByTag: byTag})
+	out := make([]fzAggRow, len(rows))
+	for i, r := range rows {
+		out[i] = fzAggRow{r.Grp, r.N, r.Total}
+	}
+	return out, err
+}
+
+func (a *fzmyAPI) Subs(ctx context.Context, sa, sb *fzSub, lo int64, excludeB, againA bool) ([]fzRow, error) {
+	return fromRowsFzmy(a.q.FzSubs(ctx, fzmy.FzSubsParams{A: buildSubFzmy(sa), Lo: lo, B: buildSubFzmy(sb),
+		ExcludeB: excludeB, AgainA: againA}))
+}
+
+func (a *fzmyAPI) Join(ctx context.Context, peerOff, minID int64, withPeer, byGrp bool, grp int64, cols uint64) ([]fzJoinRow, error) {
+	rows, err := a.q.FzJoin(ctx, fzmy.FzJoinParams{PeerOff: peerOff, MinID: minID, Grp: grp, WithPeer: withPeer,
+		ByGrp: byGrp, SelectCols: cols})
+	out := make([]fzJoinRow, len(rows))
+	for i, r := range rows {
+		out[i] = fzJoinRow{r.ID, r.Grp, r.K1, r.PeerID, r.PeerTag}
+	}
+	return out, err
+}
+
+func (a *fzmyAPI) ByKeys(ctx context.Context, keys [][2]int64, batch bool) ([]fzRow, error) {
+	ks := make([]fzmy.FzKey, len(keys))
+	for i, k := range keys {
+		ks[i] = fzmy.FzKey{Grp: k[0], K1: k[1]}
+	}
+	if batch {
+		return fromRowsFzmy(a.q.FzByKeysBatch(ctx, ks))
+	}
+	return fromRowsFzmy(a.q.FzByKeys(ctx, ks))
+}
+
+func (a *fzmyAPI) ByIDs(ctx context.Context, ids []int64, batch bool) ([]fzRow, error) {
+	if batch {
+		return fromRowsFzmy(a.q.FzByIDsBatch(ctx, ids))
+	}
+	return fromRowsFzmy(a.q.FzByIDs(ctx, ids))
+}
+
+func (a *fzmyAPI) Bump(ctx context.Context, delta int64, ids []int64, grp *int64, batch bool) (int64, error) {
+	p := fzmy.FzBumpParams{Delta: delta, IDs: ids}
+	if grp != nil {
+		p.OnlyGrp, p.Grp = true, *grp
+	}
+	if batch {
+		return rowsAffectedFzmy(a.q.FzBumpBatch(ctx, p))
+	}
+	return rowsAffectedFzmy(a.q.FzBump(ctx, p))
+}
+
+func (a *fzmyAPI) Delete(ctx context.Context, ids []int64, tag *string, batch bool) (int64, error) {
+	p := fzmy.FzDeleteParams{IDs: ids}
+	if tag != nil {
+		p.OnlyTag, p.Tag = true, *tag
+	}
+	if batch {
+		return rowsAffectedFzmy(a.q.FzDeleteBatch(ctx, p))
+	}
+	return rowsAffectedFzmy(a.q.FzDelete(ctx, p))
+}
+
+func (a *fzmyAPI) InsertRet(ctx context.Context, rows []fzRow, mode int) ([]fzOut, error) {
+	switch mode {
+	case 1:
+		return outsFzmy(a.q.FzInsertRetBatch(ctx, toNewsFzmy(rows)))
+	case 2:
+		return outsFzmy(a.q.FzInsertRetStream(ctx, func(yield func(fzmy.FzNew, error) bool) {
+			for _, r := range rows {
+				if !yield(toNewFzmy(r), nil) {
+					return
+				}
+			}
+		}))
+	}
+	return outsFzmy(a.q.FzInsertRet(ctx, toNewsFzmy(rows)))
+}
+
+func (a *fzmyAPI) DeleteRet(ctx context.Context, ids []int64, tag *string, batch bool) ([]fzOut, error) {
+	p := fzmy.FzDeleteRetParams{IDs: ids}
+	if tag != nil {
+		p.OnlyTag, p.Tag = true, *tag
+	}
+	if batch {
+		return outsFzmy(a.q.FzDeleteRetBatch(ctx, p))
+	}
+	return outsFzmy(a.q.FzDeleteRet(ctx, p))
+}

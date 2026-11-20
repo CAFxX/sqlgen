@@ -44,6 +44,11 @@ jobs:
       - name: pgxwire builds and its hermetic tests pass (engine tests run in the engines job)
         run: cd pgxwire && go test -race -count=1 ./...
 
+      # The seeded differential suite (integration/fuzz_*_test.go) needs no server for SQLite; the engines
+      # job below runs the same cases on every server engine.
+      - name: differential fuzz against SQLite (race)
+        run: cd integration && SQLGEN_ENGINES=sqlite go test -race -count=1 -run 'TestFuzz' ./
+
       - name: fuzz (short)
         run: |
           go test -run '^$' -fuzz=FuzzParseSQL -fuzztime=10s .

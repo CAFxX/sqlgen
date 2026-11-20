@@ -31,6 +31,7 @@ const (
 	famCockroach
 	famMySQL
 	famMariaDB
+	famSQLite // only used by the fuzz tests (in-process, no DSN); not part of engines
 )
 
 type engine struct {
