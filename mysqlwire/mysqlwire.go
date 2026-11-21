@@ -469,6 +469,14 @@ func (c *conn) deliver(ctx context.Context, rows driver.Rows, b *runtime.MySQLBa
 		}
 		n, serr := op.ScanWireRows(sqlRows)
 		_ = sqlRows.Close()
+		var me *mysql.MySQLError
+		if errors.As(serr, &me) {
+			// The statement failed while its rows were streamed (MariaDB sends the column definitions of an
+			// INSERT ... SELECT ... RETURNING before it inserts, so a duplicate key arrives as a row-read
+			// error): that is a database error that ended the batch, not a scan error. Nothing follows it.
+			_ = rows.Close()
+			return -1, serr
+		}
 		if serr != nil {
 			firstErr = &scanError{serr}
 			continue

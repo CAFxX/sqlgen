@@ -68,10 +68,13 @@ func TestMySQLLiterals(t *testing.T) {
 		{"backslash goes through hex", fl, `a\b`, "_utf8mb4 0x615c62"},
 		{"backslash then quote", fl, `\'`, "_utf8mb4 0x5c27"},
 		{"unsafe charset goes through hex", gbk, "abc", "_gbk 0x616263"},
-		{"bytes", fl, []byte{0, 1, 0xff}, "0x0001ff"},
+		{"bytes", fl, []byte{0, 1, 0xff}, "_binary 0x0001ff"},
 		{"empty bytes", fl, []byte{}, "''"},
 		{"nil bytes", fl, []byte(nil), "NULL"},
-		{"named bytes", fl, namedBytes("hi"), "0x6869"},
+		{"valid UTF-8 bytes travel as text", fl, namedBytes("hi's"), "'hi''s'"},
+		{"valid UTF-8 bytes with a backslash", fl, []byte(`a\b`), "_utf8mb4 0x615c62"},
+		{"bytes in a gbk session stay binary", gbk, []byte("hi"), "_binary 0x6869"},
+		{"midnight is a bare date", fl, time.Date(2024, 3, 31, 0, 0, 0, 0, time.UTC), "'2024-03-31'"},
 		{"nil pointer", fl, (*int)(nil), "NULL"},
 		{"pointer", fl, ptr(5), "5"},
 		{"valuer", fl, valuerOf{"x'y"}, "'x''y'"},
@@ -81,7 +84,7 @@ func TestMySQLLiterals(t *testing.T) {
 		{"time UTC keeps every digit", fl, time.Date(2024, 2, 29, 23, 59, 59, 123456789, time.UTC), "'2024-02-29 23:59:59.123456789'"},
 		{"time without fraction", fl, time.Date(2024, 2, 29, 23, 59, 59, 0, time.UTC), "'2024-02-29 23:59:59'"},
 		{"time converted to Loc", romeFl, time.Date(2024, 7, 1, 10, 0, 0, 0, time.UTC), "'2024-07-01 12:00:00'"},
-		{"zero time", fl, time.Time{}, "'0000-00-00 00:00:00.000000'"},
+		{"zero time", fl, time.Time{}, "'0000-00-00'"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -462,7 +465,7 @@ func TestMySQLGoldenShapes(t *testing.T) {
 			t.Fatal(err)
 		}
 		want := "SET @sqlgen_p=-1;START TRANSACTION;" +
-			"SET @sqlgen_p=0;UPDATE t SET score = score + 7\nWHERE id IN ('o''k', 0x0102) AND org_id = NULL;SET @sqlgen_n0=ROW_COUNT();" +
+			"SET @sqlgen_p=0;UPDATE t SET score = score + 7\nWHERE id IN ('o''k', '\x01\x02') AND org_id = NULL;SET @sqlgen_n0=ROW_COUNT();" +
 			"SET @sqlgen_p=1;SELECT id FROM t WHERE id = 7;" +
 			"SET @sqlgen_p=2;COMMIT;SELECT @sqlgen_n0;"
 		if b.SQL != want {
@@ -494,7 +497,7 @@ func TestMySQLGoldenShapes(t *testing.T) {
 			t.Fatal(err)
 		}
 		want := "SET @sqlgen_p=-1;SET @sqlgen_f=-1;START TRANSACTION;" +
-			"SET @sqlgen_p=0;UPDATE t SET score = score + 7\nWHERE id IN ('o''k', 0x0102) AND org_id = NULL;SET @sqlgen_n0=ROW_COUNT();" +
+			"SET @sqlgen_p=0;UPDATE t SET score = score + 7\nWHERE id IN ('o''k', '\x01\x02') AND org_id = NULL;SET @sqlgen_n0=ROW_COUNT();" +
 			"SET @sqlgen_f=IF(@sqlgen_f<0 AND (1) AND NOT (@sqlgen_n0<=>1),0,@sqlgen_f);SET @sqlgen_c1=COALESCE(@sqlgen_n0>0,0);" +
 			"SET @sqlgen_p=1;UPDATE t SET status = 7 WHERE @sqlgen_f<0 AND @sqlgen_c1=1;SET @sqlgen_n1=ROW_COUNT();" +
 			"SET @sqlgen_p=2;SET @sqlgen_q=IF(@sqlgen_f<0,'COMMIT','ROLLBACK');PREPARE sqlgen_s FROM @sqlgen_q;EXECUTE sqlgen_s;DEALLOCATE PREPARE sqlgen_s;" +

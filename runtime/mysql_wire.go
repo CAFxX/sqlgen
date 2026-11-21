@@ -10,6 +10,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode/utf8"
+	"unsafe"
 )
 
 // This file is the MySQL / MariaDB flavor of the single-round-trip pipeline (WireFlavorMySQL). Where the
@@ -155,7 +157,11 @@ func (fl *MySQLFlavor) normalize(args []any) ([]any, error) {
 					err = errors.New("NaN and Inf cannot be written as a literal")
 				}
 			case time.Time:
-				if y := x.Year(); !x.IsZero() && (y < 0 || y > 9999) {
+				loc := fl.Loc
+				if loc == nil {
+					loc = time.UTC
+				}
+				if y := x.In(loc).Year(); !x.IsZero() && (y < 0 || y > 9999) {
 					err = errors.New("year out of range")
 				}
 			}
@@ -206,41 +212,25 @@ func (fl *MySQLFlavor) WriteLiteral(b *strings.Builder, arg any) {
 		var buf [40]byte
 		b.Write(strconv.AppendFloat(buf[:0], x, 'e', -1, 64))
 	case string:
-		switch {
-		case x == "":
-			b.WriteString("''")
-		case fl.plainQuotable(x):
-			b.WriteByte('\'')
-			for {
-				i := strings.IndexByte(x, '\'')
-				if i < 0 {
-					break
-				}
-				b.WriteString(x[:i+1])
-				b.WriteByte('\'')
-				x = x[i+1:]
-			}
-			b.WriteString(x)
-			b.WriteByte('\'')
-		default:
-			b.WriteByte('_')
-			b.WriteString(fl.charset())
-			b.WriteString(" 0x")
-			writeHex(b, x)
-		}
+		fl.writeString(b, x)
 	case []byte:
 		switch {
 		case x == nil:
 			b.WriteString("NULL")
 		case len(x) == 0:
 			b.WriteString("''")
+		case fl.utf8() && utf8.Valid(x):
+			// Text in the connection character set travels as a string, exactly as the prepared path sends
+			// it (the server converts it for the column: 0x3132 would be the NUMBER 12594 in an integer
+			// column, and a JSON column refuses a binary string).
+			fl.writeString(b, unsafe.String(&x[0], len(x)))
 		default:
-			b.WriteString("0x")
+			b.WriteString("_binary 0x")
 			writeHexBytes(b, x)
 		}
 	case time.Time:
 		if x.IsZero() {
-			b.WriteString("'0000-00-00 00:00:00.000000'")
+			b.WriteString("'0000-00-00'")
 			return
 		}
 		loc := fl.Loc
@@ -249,8 +239,50 @@ func (fl *MySQLFlavor) WriteLiteral(b *strings.Builder, arg any) {
 		}
 		var buf [40]byte
 		b.WriteByte('\'')
-		b.Write(x.In(loc).AppendFormat(buf[:0], "2006-01-02 15:04:05.999999999"))
+		x = x.In(loc)
+		if h, m, sec := x.Clock(); h|m|sec|x.Nanosecond() == 0 {
+			// the prepared path (go-sql-driver) writes a time without a time of day as a bare date, which
+			// is what a character or binary column stores
+			b.Write(x.AppendFormat(buf[:0], "2006-01-02"))
+		} else {
+			b.Write(x.AppendFormat(buf[:0], "2006-01-02 15:04:05.999999999"))
+		}
 		b.WriteByte('\'')
+	}
+}
+
+// utf8 reports whether the connection character set is a UTF-8 one.
+func (fl *MySQLFlavor) utf8() bool {
+	switch fl.charset() {
+	case "utf8mb4", "utf8mb3", "utf8":
+		return true
+	}
+	return false
+}
+
+// writeString writes a string literal (see WriteLiteral for the rules).
+func (fl *MySQLFlavor) writeString(b *strings.Builder, x string) {
+	switch {
+	case x == "":
+		b.WriteString("''")
+	case fl.plainQuotable(x):
+		b.WriteByte('\'')
+		for {
+			i := strings.IndexByte(x, '\'')
+			if i < 0 {
+				break
+			}
+			b.WriteString(x[:i+1])
+			b.WriteByte('\'')
+			x = x[i+1:]
+		}
+		b.WriteString(x)
+		b.WriteByte('\'')
+	default:
+		b.WriteByte('_')
+		b.WriteString(fl.charset())
+		b.WriteString(" 0x")
+		writeHex(b, x)
 	}
 }
 
@@ -284,7 +316,7 @@ func (fl *MySQLFlavor) literalBound(arg any) int {
 	case string:
 		return 2*len(x) + len(fl.charset()) + 8
 	case []byte:
-		return 2*len(x) + 4
+		return 2*len(x) + len(fl.charset()) + 12
 	case time.Time:
 		return 40
 	}
@@ -304,6 +336,11 @@ type mysqlCursor struct {
 	// failGate: an earlier operation of the batch may have failed an assertion or aborted, so every
 	// statement of this operation must also be gated on @sqlgen_f<0.
 	failGate bool
+	// keepResultSet: the statement is a DELETE ... RETURNING. MariaDB answers one whose WHERE is constantly
+	// false ("Impossible WHERE": a closed gate is a constant, @sqlgen_c1=1) with a bare OK packet and no
+	// (empty) result set, which would shift every later result set of the batch. A gate that the
+	// optimizer cannot fold keeps the result set.
+	keepResultSet bool
 }
 
 // forSub returns the cursor for a nested query: same arguments, but only the operation's own statement
@@ -328,6 +365,10 @@ func (m *mysqlCursor) writeArg(b *strings.Builder, idx int) {
 }
 
 func (m *mysqlCursor) writeGates(b *strings.Builder, gates []BranchGate, numBuf []byte) {
+	if m.keepResultSet && (m.failGate || len(gates) > 0) {
+		b.WriteByte('(')
+		defer b.WriteString(" OR RAND()<0)")
+	}
 	first := true
 	if m.failGate {
 		b.WriteString("@sqlgen_f<0")

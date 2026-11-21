@@ -92,6 +92,7 @@ func (r *mysqlBatchRender) renderOp(i int, op *PipelineOp, failGate bool) error 
 	}
 
 	cur := r.cursor(i, failGate)
+	cur.my.keepResultSet = hasRes && desc.StmtVerb == VerbDelete
 	streamCoreStatement(&r.b, cur, desc, &op.Input)
 	if counter {
 		r.b.WriteString(", (@sqlgen_k:=@sqlgen_k+1)")
