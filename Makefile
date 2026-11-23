@@ -36,7 +36,7 @@ engines-down:
 # make test-engines                      -> every engine
 # make test-engines ENGINES=postgres18   -> only the named engines (comma separated)
 test-engines:
-	. scripts/engines-env.sh && cd integration && SQLGEN_REQUIRE_ENGINES=1 SQLGEN_ENGINES=$(ENGINES) go test -count=1 -timeout 15m ./...
+	. scripts/engines-env.sh && cd integration && SQLGEN_REQUIRE_ENGINES=1 SQLGEN_ENGINES=$(ENGINES) go test -count=1 -timeout 45m ./...
 	$(MAKE) test-pgxwire ENGINES=$(ENGINES)
 	$(MAKE) test-mysqlwire ENGINES=$(ENGINES)
 

@@ -337,6 +337,7 @@ func TestRealEngineMySQLPipelineArgumentLiterals(t *testing.T) {
 		dsn := os.Getenv(e.env)
 		for _, v := range myArgVariants {
 			t.Run(v.name, func(t *testing.T) {
+				t.Parallel() // each variant has its own pools and its own (unique) tables
 				mutate := func(cfg *mysql.Config) {
 					if v.mutate != nil {
 						v.mutate(t, cfg)
