@@ -1983,6 +1983,10 @@ func TestGeneratorRejectsInputsThatCannotGenerateCorrectCode(t *testing.T) {
 		{"result_type collides with generated type", "  - name: Q\n    kind: many\n    result_type: Queries\n    sql: |\n      SELECT id:int64 FROM t\n", `result_type "Queries" collides`},
 		{"tuple struct collides with generated type", "  - name: Q\n    kind: exec\n    sql: |\n      INSERT INTO t(a) VALUES :rows:[]Pipeline(A:int64)\n", `tuple struct name "Pipeline" collides`},
 		{"statement named like a generated method", "  - name: Close\n    kind: exec\n    sql: DELETE FROM t\n", `statement name "Close" collides`},
+		// Unexported type names could collide with the file's own unexported declarations (sqlDialect,
+		// descQ, paramsQ, ...) and generate code that does not compile.
+		{"unexported result_type", "  - name: Q\n    kind: one\n    result_type: paramsQ\n    sql: |\n      SELECT id:int64, n:int64 FROM t\n", `result_type "paramsQ" must be an exported Go identifier`},
+		{"unexported tuple struct", "  - name: Q\n    kind: exec\n    sql: |\n      INSERT INTO t(a) VALUES :rows:[]sqlDialect(A:int64)\n", `tuple struct name "sqlDialect" must be an exported Go identifier`},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			if _, err := genYAML("postgres", tc.stmts); err == nil || !strings.Contains(err.Error(), tc.want) {

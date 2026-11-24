@@ -1114,6 +1114,9 @@ func parseTupleBody(structName, body string) (*tupleStructDef, error) {
 	if !isValidGoIdent(structName) {
 		return nil, fmt.Errorf("invalid tuple struct name %q", structName)
 	}
+	if !token.IsExported(structName) {
+		return nil, fmt.Errorf("tuple struct name %q must be an exported Go identifier (start with an upper-case letter): the generated file declares unexported names of its own", structName)
+	}
 	if reservedTypeNames[structName] {
 		return nil, fmt.Errorf("tuple struct name %q collides with a type or function declared in every generated file; rename it", structName)
 	}
@@ -2187,6 +2190,9 @@ func compileStatement(id uint32, spec StatementSpec, sd stmtDialect) (*compiledS
 		}
 		if types.Universe.Lookup(spec.ResultType) != nil {
 			return nil, fmt.Errorf("statement %s: result_type %q is a predeclared Go identifier; result_type names the generated row struct, so pick another name (a statement with a single output column and no result_type returns that column's value directly)", spec.Name, spec.ResultType)
+		}
+		if !token.IsExported(spec.ResultType) {
+			return nil, fmt.Errorf("statement %s: result_type %q must be an exported Go identifier (start with an upper-case letter): the generated file declares unexported names of its own", spec.Name, spec.ResultType)
 		}
 		if reservedTypeNames[spec.ResultType] {
 			return nil, fmt.Errorf("statement %s: result_type %q collides with a type or function declared in every generated file; rename it", spec.Name, spec.ResultType)

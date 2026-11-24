@@ -9,7 +9,7 @@
 Everything below is the whole surface; each item has one spelling and the sections that follow detail it.
 
 - **YAML file keys**: `package`, `out`, `dialect` (`postgres` | `cockroachdb` | `mysql` | `mariadb` | `sqlite`, required), `extra_imports`, `statements`.
-- **Statement keys**: `name`, `kind` (`exec` | `one` | `many` | `subquery`), `sql`, `result_type` (names the row struct; never a predeclared type), `args` (`auto` | `positional` | `struct`).
+- **Statement keys**: `name`, `kind` (`exec` | `one` | `many` | `subquery`), `sql`, `result_type` (names the row struct: an exported identifier, never a predeclared type), `args` (`auto` | `positional` | `struct`).
 - **Token grammar inside `sql`** (placeholders are never written by hand):
   - output column `col:Type`, `expr AS alias:Type`, nullable `*Type`; one unconditional column and no `result_type` returns the value itself.
   - parameter `:name:Type`, repeat of an earlier parameter `:name`, 1D slice `:name:[]Type` (optionally `ASC` / `DESC` to presort), tuple slice `:rows:[]Struct(Field:Type [ASC|DESC] [::cast], ...)`.
@@ -77,7 +77,7 @@ extra_imports:                                  # Optional extra Go import paths
 statements:
   - name: GetAccount                            # Exported Go identifier (required)
     kind: one                                   # Required: "exec" | "one" | "many" | "subquery"
-    result_type: Account                        # Optional row struct name for "one"/"many" (default: "<Name>Row"); never a predeclared type
+    result_type: Account                        # Optional exported row struct name for "one"/"many" (default: "<Name>Row"); never a predeclared type
     args: auto                                  # Optional argument style: auto (default) | positional | struct (section 2.2)
     sql: |                                      # Output columns and parameters are typed inline (section 2)
       SELECT id:int64, balance:int64, status:string
@@ -892,7 +892,7 @@ Inspect live cache telemetry at any time via `stats := q.CacheStats()`:
 
 ### 3.6. Reserved Identifiers
 
-Every generated file declares the same fixed set of top-level names in your package, so no statement, `result_type` or tuple struct may use them.
+Every generated file declares the same fixed set of exported top-level names in your package, so no statement, `result_type` or tuple struct may use them. Its other top-level names are unexported (`sqlDialect`, `desc<Name>`, `params<Name>`, ...), which is why statement names, `result_type`s and tuple struct names must be exported identifiers (an unexported one is a generate-time error).
 
 **Package-level names declared in every generated file** (`reservedTypeNames` in `generator.go`):
 
