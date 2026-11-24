@@ -131,6 +131,6 @@ func (w *InventoryWorker) ArchiveFulfilledOrders(
 		}
 		totalArchived = inserted
 		return nil
-	}, WithTxRetry(DefaultRetryPolicy()))
+	}, runtime.WithTxRetry(runtime.DefaultRetryPolicy()))
 	return totalArchived, err
 }

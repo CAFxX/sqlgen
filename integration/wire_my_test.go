@@ -139,13 +139,13 @@ var myWireScenarios = []myScenario{
 	}},
 	{"WhereCol predicate true -> then", func(p *myq.Pipeline) ([]*runtime.IfResult, func() string) {
 		get := p.GetItem(2) // score 20
-		return []*runtime.IfResult{p.If(myq.WhereCol(get, "score >= 20", func(it myq.Item) bool { return it.Score >= 20 }),
+		return []*runtime.IfResult{p.If(get.WhereCol("score >= 20", func(it myq.Item) bool { return it.Score >= 20 }),
 			func(p *myq.Pipeline) { p.AddScoreOne(1, 2).AssertRowsAffected(1) },
 			func(p *myq.Pipeline) { p.AddScoreOne(2, 3).AssertRowsAffected(1) })}, nil
 	}},
 	{"WhereCol predicate false -> else", func(p *myq.Pipeline) ([]*runtime.IfResult, func() string) {
 		get := p.GetItem(2)
-		return []*runtime.IfResult{p.If(myq.WhereCol(get, "score >= 21", func(it myq.Item) bool { return it.Score >= 21 }),
+		return []*runtime.IfResult{p.If(get.WhereCol("score >= 21", func(it myq.Item) bool { return it.Score >= 21 }),
 			func(p *myq.Pipeline) { p.AddScoreOne(1, 2).AssertRowsAffected(1) },
 			func(p *myq.Pipeline) { p.AddScoreOne(2, 3).AssertRowsAffected(1) })}, nil
 	}},

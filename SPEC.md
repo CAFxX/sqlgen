@@ -860,7 +860,7 @@ For each statement `<Name>` in `sqlgen.yaml`, `Generate` emits into a single `by
 3. Output row struct (`<RowType>`), `<RowType>Col` bitmask constants (`1 << iota`), and `<RowType>Order` / `<RowType>SortCol` / `<RowType>SortTerm` / `Order<RowType>(...)` helpers (`Order<RowType>` takes `<RowType>SortTerm`, so the sort tokens of another statement do not compile; a repeated or out-of-range term yields `runtime.ErrInvalidOrder`).
 4. `<Name>Params` struct (when `StructArgs == true`, i.e. `args: struct`, or `args: auto` with `{?Flag: ...}` blocks).
 5. Static `QueryDescriptor` (`<name>Desc`) and non-capturing `expand<Name>Args` function.
-6. Currying constructors: `func <Name>Query(...) Query` and `func (q *Queries) <Name>Query(...) Query`.
+6. Currying constructors: `func <Name>Query(...) runtime.Query` and `func (q *Queries) <Name>Query(...) runtime.Query`. The generated file never declares aliases or wrappers of runtime symbols (no `type Query = runtime.Query`, no `WhereCol` helper): signatures spell `runtime.X`, and applications import `runtime` for the user-facing API. The only package-level names it declares are `Queries`, `Pipeline`, `New`, `NewWithCache` and the per-statement names (`reservedTypeNames`).
 7. Direct execution methods on `*Queries`:
    - `kind: exec`: `<Name>` (chunked when `CanBatch`), `<Name>Stream` (if `CanStream`).
    - `kind: one`: `<Name>`.
@@ -883,7 +883,7 @@ Because the Clean-Room Dogfooding Protocol (Section 11) requires users/sub-agent
 3. **Generated Go API & Execution Modes Reference**:
    - Reading: `<Name>`, `<Name>Seq`, and the `runtime.Collect` / `AppendTo` / `Each` helpers.
    - Chunking & Streaming: automatic chunking of the plain `<Name>`, `<Name>Stream`, `<Name>StreamSeq`, and `runtime.Seq2` / `FromSeq` / `MapSeq2`; empty-collection rules (2.3).
-   - Transactions & Retries: `q.WithTx(tx)`, `q.InTx(ctx, txOpts, fn, WithTxRetry(runtime.DefaultRetryPolicy()))`.
+   - Transactions & Retries: `q.WithTx(tx)`, `q.InTx(ctx, txOpts, fn, runtime.WithTxRetry(runtime.DefaultRetryPolicy()))`.
    - Pipelining & Conditional Control Flow: `q.Pipeline(ctx)`, `q.PipelineTx(...)`, futures (`ExecFuture`, `RowFuture[T]`, `SliceFuture[T]`), `.AssertRowsAffected(n)`, `.AssertFound()`, `p.If(cond, thenFn, elseFn)`, `WhereCol`, `p.Abort(err)`, and `IfResult.Taken()`.
    - Cache Tuning & Observability: `WithMaxPreparedStmts`, `WithMaxSQLVariants`, `WithMaxPartialBytes`, `WithPromoteThreshold`, `WithMaxBatchParams`, and `q.CacheStats()`.
 
@@ -905,7 +905,7 @@ To validate ergonomics, documentation completeness, and end-to-end reliability u
 - **Features Road-Tested**:
   - `PipelineTx` with `.AssertRowsAffected(1)`, `.AssertFound()`, and `p.If(cond, thenFn, elseFn)` (on sufficient balance: debit sender, credit receiver, insert transfer receipt; on insufficient balance: `elseFn` records a `rejected_insufficient_funds` audit event and commits without moving funds; on frozen account via `WhereCol`: `thenP.Abort(ErrAccountFrozen)` rolls back the entire transaction).
   - Deadlock-free bulk settlement via `UpsertAccountBalances` using composite presorting (`OrgID:int64 ASC, AccountID:int64 ASC`).
-  - Contending concurrent transfers under `WithTxRetry(runtime.DefaultRetryPolicy())`.
+  - Contending concurrent transfers under `runtime.WithTxRetry(runtime.DefaultRetryPolicy())`.
 - **Mandatory End-to-End Test (`examples/fintech_ledger/service_test.go`)**:
   - Initialize 20 accounts with `$200,000` total supply (`$10,000` each).
   - Spawn 16 goroutines concurrently executing random bidirectional transfers (`A -> B` and `B -> A`), bulk settlements, and frozen-account attempts.

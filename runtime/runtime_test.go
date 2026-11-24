@@ -1682,7 +1682,7 @@ func TestPipelineWirePipelinerAndSequentialCoverage(t *testing.T) {
 	// Exercise all condition constructors and combinators (.And, .Or, .Not, WhereCol)
 	c1 := rowFut.Found().And(rowFut.RowsAffectedEq(1)).And(rowFut.RowsAffectedGe(1)).And(rowFut.RowsAffectedLe(1))
 	c2 := rowFut.NotFound().Or(rowFut.RowsAffectedGt(5)).Or(rowFut.RowsAffectedLt(0)).Not()
-	c3 := WhereCol(rowFut, "id = 42", func(v int64) bool { return v == 42 }).And(c1).And(c2)
+	c3 := rowFut.WhereCol("id = 42", func(v int64) bool { return v == 42 }).And(c1).And(c2)
 
 	sc1 := sliceFut.Found().And(sliceFut.RowsAffectedEq(1)).And(sliceFut.RowsAffectedGe(1)).And(sliceFut.RowsAffectedLe(1))
 	sc2 := sliceFut.NotFound().Or(sliceFut.RowsAffectedGt(5)).Or(sliceFut.RowsAffectedLt(0)).Not()
@@ -2188,8 +2188,8 @@ func TestPipelineWirePipelinerAndSequentialCoverage(t *testing.T) {
 		_, _ = qrc.QueryContext(ctx, "SELECT 1", nil)
 	}
 
-	_ = WhereCol(rfMulti, "score > 0", func(v int64) bool { return v > 0 })
-	_ = WhereCol[int64](nil, "score > 0", nil)
+	_ = rfMulti.WhereCol("score > 0", func(v int64) bool { return v > 0 })
+	_ = (*RowFuture[int64])(nil).WhereCol("score > 0", nil)
 	var nilCond *PipelineCond
 	_ = nilCond.EvalGoFn()
 	_ = (&PipelineCond{Kind: 99}).EvalGoFn()

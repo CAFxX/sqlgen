@@ -901,7 +901,7 @@ func exerciseRemainingExchangeVariants(t *testing.T, ctx context.Context, mode s
 		t.Fatalf("[%s] QueryRiskPositionsPageEach: %v", mode, err)
 	}
 	var dummyArgs []any
-	for _, cq := range []Query{
+	for _, cq := range []runtime.Query{
 		q.GetMarginAccountQuery(1, 1),
 		q.GetAccountCollateralCentsQuery(1, 1),
 		q.IngestOrdersQuery(smallOrders[:1], 920),

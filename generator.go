@@ -22,73 +22,6 @@ import (
 	"go.yaml.in/yaml/v3"
 )
 
-// Re-exported runtime types and helpers for convenience when importing the root sqlgen package.
-type (
-	Query           = runtime.Query
-	Order           = runtime.Order
-	Seek            = runtime.Seek
-	StmtCache       = runtime.StmtCache
-	TxStmtCache     = runtime.TxStmtCache
-	ManagedStmt     = runtime.ManagedStmt
-	CacheConfig     = runtime.CacheConfig
-	CacheOption     = runtime.CacheOption
-	CacheStats      = runtime.CacheStats
-	EntryState      = runtime.EntryState
-	VariantKey      = runtime.VariantKey
-	QueryDescriptor = runtime.QueryDescriptor
-	TupleDescriptor = runtime.TupleDescriptor
-	Slot            = runtime.Slot
-	SlotKind        = runtime.SlotKind
-	StmtVerb        = runtime.StmtVerb
-	RenderInput     = runtime.RenderInput
-	OpDecorators    = runtime.OpDecorators
-	BranchGate      = runtime.BranchGate
-	Pipeline        = runtime.Pipeline
-	PipelineOp      = runtime.PipelineOp
-	PipelineCond    = runtime.PipelineCond
-	ExecFuture      = runtime.ExecFuture
-	IfResult        = runtime.IfResult
-	WirePipeliner   = runtime.WirePipeliner
-	WireTxPipeliner = runtime.WireTxPipeliner
-	CommitError     = runtime.CommitError
-	TxRetryPolicy   = runtime.TxRetryPolicy
-	TxOption        = runtime.TxOption
-)
-
-const (
-	StateAbsent   = runtime.StateAbsent
-	StatePartial  = runtime.StatePartial
-	StatePrepared = runtime.StatePrepared
-)
-
-var (
-	ErrEmptySliceParam    = runtime.ErrEmptySliceParam
-	ErrUninitializedQuery = runtime.ErrUninitializedQuery
-	ErrAssertionFailed    = runtime.ErrAssertionFailed
-	ErrBranchNotTaken     = runtime.ErrBranchNotTaken
-	ErrFlushInPipelineTx  = runtime.ErrFlushInPipelineTx
-	ErrInvalidSeek        = runtime.ErrInvalidSeek
-	ErrInvalidOrder       = runtime.ErrInvalidOrder
-
-	NewStmtCache         = runtime.NewStmtCache
-	NewTxStmtCache       = runtime.NewTxStmtCache
-	WithMaxSQLVariants   = runtime.WithMaxSQLVariants
-	WithMaxPartialBytes  = runtime.WithMaxPartialBytes
-	WithMaxPreparedStmts = runtime.WithMaxPreparedStmts
-	WithPromoteThreshold = runtime.WithPromoteThreshold
-	WithMaxBatchParams   = runtime.WithMaxBatchParams
-	NewSeek              = runtime.NewSeek
-	ExpandOrder          = runtime.ExpandOrder
-	Asc                  = runtime.Asc
-	Desc                 = runtime.Desc
-	MakeVariantKey       = runtime.MakeVariantKey
-	ComputeSubqueryShape = runtime.ComputeSubqueryShape
-	DefaultRetryPolicy   = runtime.DefaultRetryPolicy
-	WithTxRetry          = runtime.WithTxRetry
-	WrapConnector        = runtime.WrapConnector
-	IsRetryableTxError   = runtime.IsRetryableTxError
-)
-
 // QueryKind specifies the execution and return cardinality of a SQL statement.
 type QueryKind string
 
@@ -637,8 +570,7 @@ var reservedParamNames = func() map[string]bool {
 // *Queries and *Pipeline (including those promoted from runtime.Pipeline).
 // TestReservedNamesCoverGeneratedDeclarations checks both against real generated output.
 var (
-	reservedTypeNames = setOf("DefaultRetryPolicy", "ExecFuture", "IfResult", "New", "NewSeek", "NewWithCache", "Order",
-		"Pipeline", "PipelineCond", "Queries", "Query", "Seek", "TxOption", "TxRetryPolicy", "WhereCol", "WithTxRetry")
+	reservedTypeNames      = setOf("New", "NewWithCache", "Pipeline", "Queries")
 	reservedStatementNames = setOf("Cache", "CacheStats", "Close", "If", "InTx", "Pipeline", "PipelineTx",
 		"WithPrepared", "WithTx", "SetBuildError", "QueueExec", "QueueExecNoop", "Abort", "Flush")
 )
@@ -2787,27 +2719,6 @@ func Generate(cfg Config) ([]byte, error) {
 		fmt.Fprintf(&b, "\t%s\n", strconv.Quote(imp))
 	}
 	b.WriteString(")\n\n")
-
-	b.WriteString("type (\n")
-	b.WriteString("\tQuery         = runtime.Query\n")
-	b.WriteString("\tOrder         = runtime.Order\n")
-	b.WriteString("\tSeek          = runtime.Seek\n")
-	b.WriteString("\tPipelineCond  = runtime.PipelineCond\n")
-	b.WriteString("\tExecFuture    = runtime.ExecFuture\n")
-	b.WriteString("\tIfResult      = runtime.IfResult\n")
-	b.WriteString("\tTxOption      = runtime.TxOption\n")
-	b.WriteString("\tTxRetryPolicy = runtime.TxRetryPolicy\n")
-	b.WriteString(")\n\n")
-
-	b.WriteString("var (\n")
-	b.WriteString("\tNewSeek            = runtime.NewSeek\n")
-	b.WriteString("\tWithTxRetry        = runtime.WithTxRetry\n")
-	b.WriteString("\tDefaultRetryPolicy = runtime.DefaultRetryPolicy\n")
-	b.WriteString(")\n\n")
-
-	b.WriteString("func WhereCol[T any](f *runtime.RowFuture[T], sqlPred string, goPred func(T) bool) runtime.PipelineCond {\n")
-	b.WriteString("\treturn runtime.WhereCol(f, sqlPred, goPred)\n")
-	b.WriteString("}\n\n")
 
 	dialectConst := "runtime.DialectDollar"
 	if dialect == runtime.DialectQuestion {

@@ -1469,10 +1469,10 @@ func TestPropertyPipelineWireVsSequentialParity(t *testing.T) {
 
 		runDAG := func(q *Queries) (User, error, bool, bool, error) {
 			var getFut *runtime.RowFuture[User]
-			var ifRes *IfResult
+			var ifRes *runtime.IfResult
 			err := q.PipelineTx(ctx, nil, func(p *Pipeline) error {
 				getFut = p.GetUserByID(targetID)
-				cond := WhereCol(getFut, fmt.Sprintf("score >= %d", minScore), func(u User) bool {
+				cond := getFut.WhereCol(fmt.Sprintf("score >= %d", minScore), func(u User) bool {
 					return u.Score >= minScore
 				}).And(getFut.Found())
 
@@ -1980,8 +1980,8 @@ func TestGeneratorRejectsInputsThatCannotGenerateCorrectCode(t *testing.T) {
 		{"result_type is a predeclared non-type", "  - name: Q\n    kind: one\n    result_type: nil\n    sql: |\n      SELECT id:int64 FROM t\n", `result_type "nil" is a predeclared Go identifier`},
 		{"result_type is any", "  - name: Q\n    kind: one\n    result_type: any\n    sql: |\n      SELECT id:int64 FROM t\n", `result_type "any" is a predeclared Go identifier`},
 		{"result_type is not an identifier", "  - name: Q\n    kind: one\n    result_type: time.Time\n    sql: |\n      SELECT id:int64 FROM t\n", `invalid result_type identifier`},
-		{"result_type collides with generated type", "  - name: Q\n    kind: many\n    result_type: Order\n    sql: |\n      SELECT id:int64 FROM t\n", `result_type "Order" collides`},
-		{"tuple struct collides with generated type", "  - name: Q\n    kind: exec\n    sql: |\n      INSERT INTO t(a) VALUES :rows:[]Query(A:int64)\n", `tuple struct name "Query" collides`},
+		{"result_type collides with generated type", "  - name: Q\n    kind: many\n    result_type: Queries\n    sql: |\n      SELECT id:int64 FROM t\n", `result_type "Queries" collides`},
+		{"tuple struct collides with generated type", "  - name: Q\n    kind: exec\n    sql: |\n      INSERT INTO t(a) VALUES :rows:[]Pipeline(A:int64)\n", `tuple struct name "Pipeline" collides`},
 		{"statement named like a generated method", "  - name: Close\n    kind: exec\n    sql: DELETE FROM t\n", `statement name "Close" collides`},
 		{"shared result_type with different Order lists", "  - name: A\n    kind: many\n    result_type: M\n    sql: |\n      SELECT name:string, age:int64 FROM t ORDER BY :Sort:sqlgen.Order(name, age)\n  - name: B\n    kind: many\n    result_type: M\n    sql: |\n      SELECT name:string, age:int64 FROM u ORDER BY :Sort:sqlgen.Order(age, name)\n", "different sqlgen.Order column lists"},
 	} {

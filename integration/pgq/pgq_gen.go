@@ -12,27 +12,6 @@ import (
 	"sync/atomic"
 )
 
-type (
-	Query         = runtime.Query
-	Order         = runtime.Order
-	Seek          = runtime.Seek
-	PipelineCond  = runtime.PipelineCond
-	ExecFuture    = runtime.ExecFuture
-	IfResult      = runtime.IfResult
-	TxOption      = runtime.TxOption
-	TxRetryPolicy = runtime.TxRetryPolicy
-)
-
-var (
-	NewSeek            = runtime.NewSeek
-	WithTxRetry        = runtime.WithTxRetry
-	DefaultRetryPolicy = runtime.DefaultRetryPolicy
-)
-
-func WhereCol[T any](f *runtime.RowFuture[T], sqlPred string, goPred func(T) bool) runtime.PipelineCond {
-	return runtime.WhereCol(f, sqlPred, goPred)
-}
-
 const sqlDialect = runtime.DialectDollar
 
 // Queries executes strongly-typed SQL statements backed by a two-tier adaptive statement cache.

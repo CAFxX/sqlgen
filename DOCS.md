@@ -560,10 +560,10 @@ defer txQ.Close() // deterministically releases transaction-scoped prepared stat
 err := q.InTx(ctx, nil, func(txQ *Queries) error {
     // All queries on txQ run inside the transaction and reuse q's Tier-2 prepared statements!
     return txQ.DebitAccount(ctx, senderID, amountCents)
-}, WithTxRetry(runtime.DefaultRetryPolicy()))
+}, runtime.WithTxRetry(runtime.DefaultRetryPolicy()))
 ```
 
-- `WithTxRetry(policy runtime.TxRetryPolicy)` automatically retries the entire transaction closure with exponential backoff + full jitter when the database returns a transient serialization failure (`SQLSTATE 40001`), deadlock (`SQLSTATE 40P01`, MySQL `1213`), or lock timeout (`SQLSTATE 55P03`, MySQL `1205`, SQLite `SQLITE_BUSY` / `SQLITE_LOCKED`).
+- `runtime.WithTxRetry(policy runtime.TxRetryPolicy)` automatically retries the entire transaction closure with exponential backoff + full jitter when the database returns a transient serialization failure (`SQLSTATE 40001`), deadlock (`SQLSTATE 40P01`, MySQL `1213`), or lock timeout (`SQLSTATE 55P03`, MySQL `1205`, SQLite `SQLITE_BUSY` / `SQLITE_LOCKED`).
 - **Ambiguous Commit Protection**: If a network drop (`driver.ErrBadConn`, `io.EOF`, `net.Error`) occurs *during* `tx.Commit()`, `InTx` **never** retries automatically because the transaction may have already committed on the server.
 
 ---
@@ -776,14 +776,14 @@ err := q.PipelineTx(ctx, nil, func(p *Pipeline) error {
     // 2. Branch on the future's result and columns:
     p.If(
         senderFut.Found().And(
-            WhereCol(senderFut, fmt.Sprintf("balance_cents >= %d", transferAmount), func(a Account) bool {
+            senderFut.WhereCol(fmt.Sprintf("balance_cents >= %d", transferAmount), func(a Account) bool {
                 return a.BalanceCents >= transferAmount
             }),
         ),
         func(thenP *Pipeline) {
             // Nested check: abort and roll back if account is frozen!
             thenP.If(
-                WhereCol(senderFut, "status = 'frozen'", func(a Account) bool {
+                senderFut.WhereCol("status = 'frozen'", func(a Account) bool {
                     return a.Status == "frozen"
                 }),
                 func(frozenP *Pipeline) {
@@ -802,7 +802,7 @@ err := q.PipelineTx(ctx, nil, func(p *Pipeline) error {
         },
     )
     return nil
-}, WithTxRetry(runtime.DefaultRetryPolicy()))
+}, runtime.WithTxRetry(runtime.DefaultRetryPolicy()))
 ```
 
 #### Pipeline Futures, Assertions & Branch Combinators
@@ -817,7 +817,7 @@ err := q.PipelineTx(ctx, nil, func(p *Pipeline) error {
      - `.AssertFound() *RowFuture[T]`: fails the pipeline with an error matching `runtime.ErrAssertionFailed` if the row count is not 1.
      - `.AssertRowsAffected(n int64) *RowFuture[T]`: fails the pipeline with an error matching `runtime.ErrAssertionFailed` if row count $\ne n$.
      - `.Found()`, `.NotFound()`, `.RowsAffectedEq(n)`, `.RowsAffectedGt(n)`, `.RowsAffectedGe(n)`, `.RowsAffectedLt(n)`, `.RowsAffectedLe(n)`: returns a `PipelineCond`.
-     - `.WhereCol(sqlPred string, goPred func(T) bool) PipelineCond` (or package helper `WhereCol(fut, sqlPred, goPred)`): evaluates `sqlPred` on the wire in `WirePipeliner` mode and `goPred(row)` in Go fallback mode.
+     - `.WhereCol(sqlPred string, goPred func(T) bool) PipelineCond`: evaluates `sqlPred` on the wire in `WirePipeliner` mode and `goPred(row)` in Go fallback mode.
      - `.Get() (T, error)` (valid after flush).
    - `*runtime.SliceFuture[T]`: returned by `kind: many` pipeline methods.
      - `.AssertRowsAffected(n int64) *SliceFuture[T]`, `.AssertFound() *SliceFuture[T]`
@@ -874,18 +874,16 @@ Every generated file declares the same fixed set of top-level names in your pack
 
 | Kind | Names |
 | :--- | :--- |
-| Type aliases | `Query`, `Order`, `Seek`, `PipelineCond`, `ExecFuture`, `IfResult`, `TxOption`, `TxRetryPolicy` |
-| Function values | `NewSeek`, `WithTxRetry`, `DefaultRetryPolicy` |
-| Functions | `WhereCol`, `New`, `NewWithCache` |
 | Types | `Queries`, `Pipeline` |
+| Functions | `New`, `NewWithCache` |
 
-**Why the unqualified aliases exist.** The aliases (`Query = runtime.Query`, `WithTxRetry = runtime.WithTxRetry`, and so on) re-export the runtime types and options that appear in generated signatures, so application code that only calls the generated API never has to import the `runtime` package. For example `q.InTx(ctx, nil, fn, WithTxRetry(DefaultRetryPolicy()))` and `After: NewSeek(...)` compile with just the generated package. They are aliases, not new types: a `Query` and a `runtime.Query` are identical and interchangeable.
+The generated file never re-declares runtime symbols: everything user-facing from the runtime (`runtime.Query`, `runtime.Order`, `runtime.Seek`, `runtime.NewSeek`, `runtime.WithTxRetry`, `runtime.DefaultRetryPolicy`, `runtime.PipelineCond`, `runtime.ExecFuture`, `runtime.IfResult`, ...) is spelled `runtime.X` in application code, which imports `github.com/CAFxX/sqlgen/runtime` itself. For example `q.InTx(ctx, nil, fn, runtime.WithTxRetry(runtime.DefaultRetryPolicy()))` and `After: runtime.NewSeek(...)`.
 
 **Method names generated on `*Queries` and `*Pipeline`** that a statement name must avoid (`reservedStatementNames`): `Cache`, `CacheStats`, `Close`, `If`, `InTx`, `Pipeline`, `PipelineTx`, `WithPrepared`, `WithTx`, plus `SetBuildError`, `QueueExec`, `QueueExecNoop`, `Abort` and `Flush`, which the generated `Pipeline` inherits from `runtime.Pipeline`. A statement becomes a method with its own name on both `*Queries` and `*Pipeline`, so it must not shadow any of them.
 
 **What happens on a clash.** Generation fails with a clear error instead of emitting code that does not compile:
 
 - a statement named like one of the methods above: `statement name "Close" collides with a method generated on *Queries / *Pipeline; rename it`;
-- a `result_type` (or a tuple struct name such as `[]Query(...)`) equal to a package-level name above: `statement Q: result_type "Order" collides with a type or function declared in every generated file; rename it`.
+- a `result_type` (or a tuple struct name such as `[]Queries(...)`) equal to a package-level name above: `statement Q: result_type "Queries" collides with a type or function declared in every generated file; rename it`.
 
-Rename the statement or `result_type` (for example `Order` to `OrderRecord`).
+Rename the statement or `result_type` (for example `Queries` to `QueryRecord`).

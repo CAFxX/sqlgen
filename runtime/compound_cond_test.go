@@ -83,7 +83,7 @@ func TestCompoundConditionBindingShapes(t *testing.T) {
 	// a WhereCol with a different predicate is a different leaf
 	p.If(g.WhereCol("id > 1", func(int64) bool { return true }).And(d.Found()).Not(), queueUpd, nil)
 	// a leaf without an operation is FALSE, as in Go
-	p.If(WhereCol[int64](nil, "id > 1", nil).Or(g.Found()), queueUpd, nil)
+	p.If((*RowFuture[int64])(nil).WhereCol("id > 1", nil).Or(g.Found()), queueUpd, nil)
 	p.syncOpsFromPtrs()
 	RenderPipelineBatch(DialectDollar, nil, p.ops)
 

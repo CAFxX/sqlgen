@@ -145,7 +145,7 @@ func (e *ClearingEngine) BatchSettleMargins(ctx context.Context, settlements []M
 		}
 		affected = n
 		return nil
-	}, WithTxRetry(DefaultRetryPolicy()))
+	}, runtime.WithTxRetry(runtime.DefaultRetryPolicy()))
 	return affected, err
 }
 
@@ -193,7 +193,7 @@ func (e *ClearingEngine) ExecuteMatchAndClear(ctx context.Context, req MatchRequ
 	}
 
 	notionalCents := req.PriceCents * req.Quantity
-	var clearBranch, complianceBranch *IfResult
+	var clearBranch, complianceBranch *runtime.IfResult
 
 	err := e.q.PipelineTx(ctx, nil, func(p *Pipeline) error {
 		// Acquire account reads in canonical (firm_id, account_id) order
@@ -220,15 +220,15 @@ func (e *ClearingEngine) ExecuteMatchAndClear(ctx context.Context, req MatchRequ
 		openSellsFut := p.ListOpenOrdersForSymbol(req.Symbol, "sell", 5)
 
 		// Condition 1: Either buyer or seller account is not active (e.g. frozen/halted)
-		eitherHaltedCond := WhereCol(buyerFut, "status != 'active'", func(a MarginAccount) bool {
+		eitherHaltedCond := buyerFut.WhereCol("status != 'active'", func(a MarginAccount) bool {
 			return a.Status != "active"
-		}).Or(WhereCol(sellerFut, "status != 'active'", func(a MarginAccount) bool {
+		}).Or(sellerFut.WhereCol("status != 'active'", func(a MarginAccount) bool {
 			return a.Status != "active"
 		}))
 
 		// Condition 2: Buyer has sufficient collateral AND open sell orders exist with limit_price_cents <= req.PriceCents
 		sufficientMarginCond := buyerFut.Found().And(sellerFut.Found()).And(
-			WhereCol(buyerCollatFut, fmt.Sprintf("collateral_cents >= %d", req.RequiredMarginCents), func(c int64) bool {
+			buyerCollatFut.WhereCol(fmt.Sprintf("collateral_cents >= %d", req.RequiredMarginCents), func(c int64) bool {
 				return c >= req.RequiredMarginCents
 			}),
 		)
@@ -278,7 +278,7 @@ func (e *ClearingEngine) ExecuteMatchAndClear(ctx context.Context, req MatchRequ
 
 						// Level 3 Nested If: Large-trader institutional KYC compliance filing vs. standard audit notice
 						isInstitutionalCond := fillFut.RowsAffectedEq(1).And(
-							WhereCol(buyerFut, "kyc_verified = 1 AND margin_ratio_bps >= 1500", func(a MarginAccount) bool {
+							buyerFut.WhereCol("kyc_verified = 1 AND margin_ratio_bps >= 1500", func(a MarginAccount) bool {
 								return a.KycVerified == 1 && a.MarginRatioBps >= 1500
 							}),
 						)
@@ -300,7 +300,7 @@ func (e *ClearingEngine) ExecuteMatchAndClear(ctx context.Context, req MatchRequ
 			},
 		)
 		return nil
-	}, WithTxRetry(DefaultRetryPolicy()))
+	}, runtime.WithTxRetry(runtime.DefaultRetryPolicy()))
 	if err != nil {
 		return MatchOutcome{}, err
 	}
@@ -332,7 +332,7 @@ type RiskQueryFilter struct {
 	IncludeGreeks    bool
 	IncludeFirmInfo  bool
 	SelectCols       uint64
-	Order            Order
+	Order            runtime.Order
 	PageSize         int64
 }
 
@@ -366,7 +366,7 @@ func (e *ClearingEngine) CollectAllRiskPositions(ctx context.Context, cfg RiskQu
 	}
 
 	var all []RiskPositionView
-	var cursor Seek
+	var cursor runtime.Seek
 	for {
 		page, err := e.q.QueryRiskPositionsPage(ctx, QueryRiskPositionsPageParams{
 			MatchingPositions: posSub,

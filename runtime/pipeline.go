@@ -119,14 +119,6 @@ func (c *PipelineCond) EvalGoFn() bool {
 	}
 }
 
-// WhereCol constructs a column-level PipelineCond over a RowFuture.
-func WhereCol[T any](f *RowFuture[T], sqlPred string, goPred func(T) bool) PipelineCond {
-	if f == nil {
-		return PipelineCond{Kind: CondColPred, SQLPred: sqlPred}
-	}
-	return f.WhereCol(sqlPred, goPred)
-}
-
 // ProducedCond represents an additional boolean condition evaluated after a PipelineOp completes.
 type ProducedCond struct {
 	CondID int
@@ -314,6 +306,9 @@ func (f *RowFuture[T]) NotFound() PipelineCond {
 
 // WhereCol constructs a column-level PipelineCond evaluated both in SQL and Go.
 func (f *RowFuture[T]) WhereCol(sqlPred string, goPred func(T) bool) PipelineCond {
+	if f == nil {
+		return PipelineCond{Kind: CondColPred, SQLPred: sqlPred}
+	}
 	return PipelineCond{
 		Kind:    CondColPred,
 		Op:      f.op,

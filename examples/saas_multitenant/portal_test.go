@@ -211,7 +211,7 @@ func TestSaaSMultitenantPortalEndToEnd(t *testing.T) {
 
 	sortConfigs := []struct {
 		name  string
-		order Order
+		order runtime.Order
 		cmpFn func(a, b MemberItem) int
 	}{
 		{
@@ -372,7 +372,7 @@ func TestSaaSMultitenantPortalEndToEnd(t *testing.T) {
 	}); !errors.Is(err, errStop) {
 		t.Fatalf("expected errStop from ListMembersPaginatedEach, got %v", err)
 	}
-	if err := runtime.Each(q.ListMembersPaginatedSeq(ctx, ListMembersPaginatedParams{OrgID: 1, After: NewSeek("bad"), Sort: sortConfigs[0].order, Limit: 5}), func(r MemberItem) error {
+	if err := runtime.Each(q.ListMembersPaginatedSeq(ctx, ListMembersPaginatedParams{OrgID: 1, After: runtime.NewSeek("bad"), Sort: sortConfigs[0].order, Limit: 5}), func(r MemberItem) error {
 		return nil
 	}); !errors.Is(err, runtime.ErrInvalidSeek) {
 		t.Fatalf("expected ErrInvalidSeek from ListMembersPaginatedEach, got %v", err)
@@ -416,7 +416,7 @@ func TestSaaSMultitenantPortalEndToEnd(t *testing.T) {
 	}
 	if _, err := q.ListMembersPaginated(ctx, ListMembersPaginatedParams{
 		OrgID: 1,
-		After: NewSeek("admin"), // wrong arity (1 instead of 4)
+		After: runtime.NewSeek("admin"), // wrong arity (1 instead of 4)
 		Sort:  sortConfigs[0].order,
 		Limit: 5,
 	}); !errors.Is(err, runtime.ErrInvalidSeek) {
@@ -431,7 +431,7 @@ func TestSaaSMultitenantPortalEndToEnd(t *testing.T) {
 	_ = NewWithCache(db, nil)
 	_ = q.Cache()
 	_ = q.CacheStats()
-	_ = WhereCol(&runtime.RowFuture[int]{}, "1=1", nil)
+	_ = (&runtime.RowFuture[int]{}).WhereCol("1=1", nil)
 	unprep := q.WithPrepared(false)
 	if _, err := unprep.SearchMembers(ctx, SearchMembersParams{OrgID: 1}); err != nil {
 		t.Fatalf("unprep.SearchMembers: %v", err)
@@ -453,7 +453,7 @@ func TestSaaSMultitenantPortalEndToEnd(t *testing.T) {
 		_ = f2
 		_ = f3
 		return nil
-	}, WithTxRetry(DefaultRetryPolicy())); err != nil {
+	}, runtime.WithTxRetry(runtime.DefaultRetryPolicy())); err != nil {
 		t.Fatalf("PipelineTx: %v", err)
 	}
 	if err := q.PipelineTx(ctx, nil, func(p *Pipeline) error {

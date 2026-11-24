@@ -68,7 +68,7 @@ func (g *fuzzGen) tr(depth int, f string, a ...any) {
 func (g *fuzzGen) leaf(f fuzzFut) runtime.PipelineCond {
 	n := int64(g.rnd.IntN(3))
 	if f.r != nil && g.rnd.IntN(5) == 0 {
-		return pgq.WhereCol(f.r, "score >= 50", func(it pgq.Item) bool { return it.Score >= 50 })
+		return f.r.WhereCol("score >= 50", func(it pgq.Item) bool { return it.Score >= 50 })
 	}
 	if f.s != nil && g.rnd.IntN(5) == 0 {
 		return f.s.WhereCol("score >= 20", func(it pgq.Item) bool { return it.Score >= 20 })

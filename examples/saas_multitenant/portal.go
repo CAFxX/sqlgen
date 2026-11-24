@@ -73,11 +73,11 @@ func (s *PortalService) SearchDirectoryCompact(ctx context.Context, p SearchMemb
 func (s *PortalService) FetchAllMembersPaginated(
 	ctx context.Context,
 	orgID int64,
-	sortOrder Order,
+	sortOrder runtime.Order,
 	pageSize int64,
 ) ([]MemberItem, error) {
 	var all []MemberItem
-	var cursor Seek
+	var cursor runtime.Seek
 	for {
 		page, err := s.q.ListMembersPaginated(ctx, ListMembersPaginatedParams{
 			OrgID: orgID,

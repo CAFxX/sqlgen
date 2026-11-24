@@ -85,7 +85,7 @@ func (s *LedgerService) Transfer(
 		return TransferResult{}, ErrSameAccount
 	}
 
-	var transferBranch *IfResult
+	var transferBranch *runtime.IfResult
 	err := s.q.PipelineTx(ctx, nil, func(p *Pipeline) error {
 		firstID, secondID := senderID, receiverID
 		if firstID > secondID {
@@ -101,14 +101,14 @@ func (s *LedgerService) Transfer(
 			receiverFut = firstFut
 		}
 
-		eitherFrozenCond := WhereCol(senderFut, "status = 'frozen'", func(a Account) bool {
+		eitherFrozenCond := senderFut.WhereCol("status = 'frozen'", func(a Account) bool {
 			return a.Status == "frozen"
-		}).Or(WhereCol(receiverFut, "status = 'frozen'", func(a Account) bool {
+		}).Or(receiverFut.WhereCol("status = 'frozen'", func(a Account) bool {
 			return a.Status == "frozen"
 		}))
 
 		sufficientCond := senderFut.Found().And(
-			WhereCol(senderFut, fmt.Sprintf("balance_cents >= %d", amountCents), func(a Account) bool {
+			senderFut.WhereCol(fmt.Sprintf("balance_cents >= %d", amountCents), func(a Account) bool {
 				return a.BalanceCents >= amountCents
 			}),
 		)
@@ -133,7 +133,7 @@ func (s *LedgerService) Transfer(
 			},
 		)
 		return nil
-	}, WithTxRetry(DefaultRetryPolicy()))
+	}, runtime.WithTxRetry(runtime.DefaultRetryPolicy()))
 	if err != nil {
 		return TransferResult{}, err
 	}
@@ -160,6 +160,6 @@ func (s *LedgerService) BulkSettle(ctx context.Context, items []AccountSettlemen
 		}
 		affected = n
 		return nil
-	}, WithTxRetry(DefaultRetryPolicy()))
+	}, runtime.WithTxRetry(runtime.DefaultRetryPolicy()))
 	return affected, err
 }
