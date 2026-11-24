@@ -4,6 +4,8 @@ import (
 	"context"
 	"database/sql"
 	"testing"
+
+	"github.com/CAFxX/sqlgen/runtime"
 )
 
 // Every way a generated call can fail on the database side reports the error and leaves nothing behind:
@@ -23,7 +25,7 @@ func TestDatabaseErrorsAreReportedByEveryCallShape(t *testing.T) {
 		} else {
 			t.Cleanup(func() { _ = db.Close() })
 		}
-		q := New(db)
+		q := New(db, runtime.WithMaxBatchParams(1)) // one row per statement: 3 rows are three chunks
 		t.Cleanup(func() { _ = q.Close() })
 		return q
 	}

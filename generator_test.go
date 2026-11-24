@@ -840,11 +840,16 @@ func TestE2EAdaptiveMultiRowBatchExecution(t *testing.T) {
 		}
 	}
 
-	c1 := q.Cache().PlanBatchChunk(stmtIDInsertUsersBatchReturning, 0, 0, 2900, 10000, false)
-	c2 := q.Cache().PlanBatchChunk(stmtIDInsertUsersBatchReturning, 0, 0, 2900-c1, 10000, false)
-	c3 := q.Cache().PlanBatchChunk(stmtIDInsertUsersBatchReturning, 0, 0, 2900-c1-c2, 10000, false)
+	// 2900 rows fit one statement under the limit: one chunk of exactly 2900, never a decomposition into the
+	// recurring 1000/900 sizes. Above the limit: full-limit chunks, the remainder last.
+	if c := q.Cache().PlanBatchChunk(stmtIDInsertUsersBatchReturning, 0, 0, 2900, 10000, false); c != 2900 {
+		t.Fatalf("expected a single 2900-row chunk, got %d", c)
+	}
+	c1 := q.Cache().PlanBatchChunk(stmtIDInsertUsersBatchReturning, 0, 0, 2900, 1000, false)
+	c2 := q.Cache().PlanBatchChunk(stmtIDInsertUsersBatchReturning, 0, 0, 2900-c1, 1000, false)
+	c3 := q.Cache().PlanBatchChunk(stmtIDInsertUsersBatchReturning, 0, 0, 2900-c1-c2, 1000, false)
 	if c1 != 1000 || c2 != 1000 || c3 != 900 {
-		t.Fatalf("expected greedy chunking 1000 + 1000 + 900 for 2900 rows, got %d + %d + %d", c1, c2, c3)
+		t.Fatalf("expected chunking 1000 + 1000 + 900 for 2900 rows above a 1000-row limit, got %d + %d + %d", c1, c2, c3)
 	}
 
 	if _, err := db.Exec(`DELETE FROM batch_users`); err != nil {
@@ -859,7 +864,12 @@ func TestE2EAdaptiveMultiRowBatchExecution(t *testing.T) {
 	for i := 0; i < 2900; i++ {
 		updates[i] = BatchBonusInput{ID: int64(i + 1), Bonus: 5}
 	}
-	updRes, err := q.UpdateUsersBatchFromValues(ctx, updates)
+	// SQLite plans UPDATE ... FROM (VALUES ...) in time quadratic in the statement's row count, so a single
+	// 2900-row statement costs seconds under -race: use a 256-rows-per-statement budget to exercise the
+	// presorted, chunked-in-a-transaction path (12 chunks) cheaply.
+	chunkedQ := New(db, runtime.WithMaxBatchParams(512))
+	defer func() { _ = chunkedQ.Close() }()
+	updRes, err := chunkedQ.UpdateUsersBatchFromValues(ctx, updates)
 	if err != nil {
 		t.Fatalf("UpdateUsersBatchFromValues(2900): %v", err)
 	}

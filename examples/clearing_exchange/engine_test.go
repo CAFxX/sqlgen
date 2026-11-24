@@ -768,6 +768,17 @@ func exerciseRemainingExchangeVariants(t *testing.T, ctx context.Context, mode s
 		t.Fatalf("[%s] IngestOrdersEach: %v", mode, err)
 	}
 
+	// More rows than fit one statement (one row per statement): chunked in an implicit transaction, by the plain
+	// method and by the iterator.
+	chunked := New(q.db, runtime.WithMaxBatchParams(1))
+	defer func() { _ = chunked.Close() }()
+	if _, err := chunked.IngestOrders(ctx, smallOrders[:3], 704); err != nil {
+		t.Fatalf("[%s] chunked IngestOrders: %v", mode, err)
+	}
+	if err := runtime.Each(chunked.IngestOrdersSeq(ctx, smallOrders[:3], 705), func(_ OrderAck) error { return nil }); err != nil {
+		t.Fatalf("[%s] chunked IngestOrdersSeq: %v", mode, err)
+	}
+
 	streamOrders := make([]OrderSubmission, 260)
 	for i := range streamOrders {
 		streamOrders[i] = OrderSubmission{

@@ -4,6 +4,8 @@ import (
 	"context"
 	"database/sql"
 	"testing"
+
+	"github.com/CAFxX/sqlgen/runtime"
 )
 
 // Database failures are reported by every call shape of a collection statement: a closed database fails
@@ -23,7 +25,7 @@ func TestDatabaseErrorsAreReportedByEveryCallShape(t *testing.T) {
 		} else {
 			t.Cleanup(func() { _ = db.Close() })
 		}
-		q := New(db)
+		q := New(db, runtime.WithMaxBatchParams(1)) // one row per statement: 3 rows are three chunks
 		t.Cleanup(func() { _ = q.Close() })
 		for _, n := range []int{1, 3} {
 			if _, err := q.UpsertAccountBalances(ctx, settlements[:n]); err == nil {

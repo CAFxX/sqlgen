@@ -418,14 +418,17 @@ func runFintechLedgerSuite(t *testing.T, mode string, db *sql.DB) {
 			t.Fatalf("[%s] 2-row UpsertAccountBalances: %v", mode, err)
 		}
 	}
-	if _, err := q.UpsertAccountBalances(ctx, []AccountSettlement{
+	// More rows than fit one statement (one row per statement): chunked in an implicit transaction.
+	chunked := New(q.db, runtime.WithMaxBatchParams(1))
+	defer func() { _ = chunked.Close() }()
+	if _, err := chunked.UpsertAccountBalances(ctx, []AccountSettlement{
 		{OrgID: orgID, AccountID: 1, Currency: "USD", DeltaCents: 0},
 		{OrgID: orgID, AccountID: 2, Currency: "USD", DeltaCents: 0},
 		{OrgID: orgID, AccountID: 3, Currency: "USD", DeltaCents: 0},
 	}); err != nil {
 		t.Fatalf("[%s] 3-row sorted multi-chunk UpsertAccountBalances: %v", mode, err)
 	}
-	if _, err := q.UpsertAccountBalances(ctx, []AccountSettlement{
+	if _, err := chunked.UpsertAccountBalances(ctx, []AccountSettlement{
 		{OrgID: orgID, AccountID: 3, Currency: "USD", DeltaCents: 0},
 		{OrgID: orgID, AccountID: 2, Currency: "USD", DeltaCents: 0},
 		{OrgID: orgID, AccountID: 1, Currency: "USD", DeltaCents: 0},

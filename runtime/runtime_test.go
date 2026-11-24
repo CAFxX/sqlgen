@@ -895,6 +895,48 @@ func TestPropertyEstimateOpBytesStrictUpperBound(t *testing.T) {
 	}
 }
 
+func TestPlanBatchChunkFitsOneStatement(t *testing.T) {
+	for _, c := range []*StmtCache{nil, NewStmtCache(WithPromoteThreshold(2))} {
+		for _, n := range []int{1, 2, 3, 5, 7, 100, 257, 1400, 5000} {
+			// Cold, then recurring (and promoted): always exactly n when it fits.
+			for call := 0; call < 4; call++ {
+				if got := c.PlanBatchChunk(9, 3, 1, n, 6000, true); got != n {
+					t.Fatalf("n=%d call=%d: first chunk = %d, want %d", n, call, got, n)
+				}
+			}
+		}
+		// Above the limit: full-limit chunks, then the remainder.
+		var got []int
+		for rem, first := 25, true; rem > 0; first = false {
+			ch := c.PlanBatchChunk(9, 3, 1, rem, 10, first)
+			got = append(got, ch)
+			rem -= ch
+		}
+		if !slices.Equal(got, []int{10, 10, 5}) {
+			t.Fatalf("chunks = %v, want [10 10 5]", got)
+		}
+		if got := c.PlanBatchChunk(9, 3, 1, 0, 10, true); got != 0 {
+			t.Fatalf("remaining=0: chunk = %d", got)
+		}
+		if got := c.PlanBatchChunk(9, 3, 1, MaxPowerOfTwoChunk+5, 0, true); got != MaxPowerOfTwoChunk {
+			t.Fatalf("no per-statement limit: chunk = %d, want %d", got, MaxPowerOfTwoChunk)
+		}
+	}
+	// A recurring size is promoted exactly at the threshold; a one-off size is not.
+	c := NewStmtCache(WithPromoteThreshold(2))
+	defer func() { _ = c.Close() }()
+	tag := ComputeBatchShapeTag(3, 1)
+	c.PlanBatchChunk(9, 3, 1, 7, 100, true)
+	c.PlanBatchChunk(9, 3, 1, 8, 100, true)
+	if c.isPromotedBatchSize(9, tag, 7) || c.isPromotedBatchSize(9, tag, 8) {
+		t.Fatal("one-off sizes must not be promoted")
+	}
+	c.PlanBatchChunk(9, 3, 1, 7, 100, true)
+	if !c.isPromotedBatchSize(9, tag, 7) {
+		t.Fatal("a recurring size must be promoted at the threshold")
+	}
+}
+
 func TestPropertyBatchChunkDecompositionConservation(t *testing.T) {
 	rng := rand.New(rand.NewPCG(0xabcdef0123456789, 0x9876543210fedcba))
 
@@ -910,7 +952,7 @@ func TestPropertyBatchChunkDecompositionConservation(t *testing.T) {
 		fieldsPerRow := rng.IntN(6) + 1
 		maxRows := cache.MaxRowsPerBatch(DialectQuestion, scalarParams, fieldsPerRow)
 
-		// Randomly promote 1..5 heavy-hitter chunk sizes into preparedSizes
+		// Randomly promote 1..5 heavy-hitter chunk sizes (they must not influence the plan)
 		shapeTag := ComputeBatchShapeTag(colMask, flagMask)
 		numPromoted := rng.IntN(5) + 1
 		for range numPromoted {
@@ -929,6 +971,9 @@ func TestPropertyBatchChunkDecompositionConservation(t *testing.T) {
 			steps := 0
 			for offset := 0; offset < totalRows; {
 				chunk := cache.PlanBatchChunk(stmtID, colMask, flagMask, totalRows-offset, maxRows, offset == 0)
+				if want := min(totalRows-offset, maxRows, MaxPowerOfTwoChunk); chunk != want {
+					t.Fatalf("trial %d totalRows=%d offset=%d: chunk=%d, want %d (one exact statement when it fits, else full-limit chunks)", trial, totalRows, offset, chunk, want)
+				}
 				if chunk <= 0 || chunk > totalRows-offset {
 					t.Fatalf("trial %d totalRows=%d: invalid chunk=%d (remaining=%d)", trial, totalRows, chunk, totalRows-offset)
 				}
@@ -2344,7 +2389,8 @@ func TestPipelineWirePipelinerAndSequentialCoverage(t *testing.T) {
 		return errors.New("SQLITE_BUSY")
 	})
 
-	// PlanBatchChunk greedy reuse of prepared Tier-2 batch size <= capRows (and exact prepared size hit)
+	// PlanBatchChunk never substitutes a prepared size for the real one: a collection that fits one statement is
+	// planned as exactly one chunk of its own size.
 	greedyCache := NewStmtCache(WithPromoteThreshold(2))
 	shapeGreedy := ComputeBatchShapeTag(1, 0)
 	for range 2 {
@@ -2353,10 +2399,9 @@ func TestPipelineWirePipelinerAndSequentialCoverage(t *testing.T) {
 			_ = msG.Release()
 		}
 	}
-	// Exact prepared size hit (when not in promotedSizes via PlanBatchChunk) and greedy <= capRows hit
 	_ = greedyCache.PlanBatchChunk(77, 1, 0, 16, 100, false)
-	if got := greedyCache.PlanBatchChunk(77, 1, 0, 20, 100, false); got != 16 {
-		t.Fatalf("expected greedy prepared batch size 16 for remaining=20, got %d", got)
+	if got := greedyCache.PlanBatchChunk(77, 1, 0, 20, 100, false); got != 20 {
+		t.Fatalf("expected one exact chunk of 20 rows (not the prepared 16), got %d", got)
 	}
 	_ = greedyCache.Close()
 }

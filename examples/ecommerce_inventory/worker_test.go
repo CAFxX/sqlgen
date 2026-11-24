@@ -136,15 +136,27 @@ func TestEcommerceInventoryWorkerEndToEnd(t *testing.T) {
 		t.Fatalf("expected 400-row batch shape to be StatePrepared, got %v", st)
 	}
 
-	// Now ingest a 1,400-row batch: PlanBatchChunk must decompose 1400 = 500 + 500 + 400
-	// without creating a 1,400-row cache entry!
+	// A 1,400-row batch fits one statement, so it runs as exactly one 1,400-row statement (never decomposed into
+	// the recurring 500/400 sizes); a one-off size must not be promoted to a prepared statement.
 	n1400, err := worker.IngestOrderItemsBatch(ctx, makeOrderItems(offset, 1400))
 	if err != nil || n1400 != 1400 {
 		t.Fatalf("IngestOrderItemsBatch(1400): n=%d, err=%v", n1400, err)
 	}
 	vk1400, _, _, _ := computeInsertOrderItemsKey(paramsInsertOrderItems{Items: make([]NewOrderItem, 1400)})
-	if st := q.Cache().LookupState(vk1400, ""); st != runtime.StateAbsent {
-		t.Fatalf("expected 1400-row shape to be decomposed into 500+500+400 (StateAbsent), got %v", st)
+	if st := q.Cache().LookupState(vk1400, ""); st == runtime.StatePrepared {
+		t.Fatalf("a one-off 1400-row shape must not be promoted to a prepared statement, got %v", st)
+	}
+	if st := q.Cache().LookupState(vk500, ""); st != runtime.StatePrepared {
+		t.Fatalf("the recurring 500-row shape must stay prepared, got %v", st)
+	}
+
+	// More rows than fit one statement (one row per statement): chunked in an implicit transaction.
+	chunked := New(db, runtime.WithMaxBatchParams(1))
+	defer func() { _ = chunked.Close() }()
+	if res, err := chunked.InsertOrderItems(ctx, makeOrderItems(offset+1400, 3)); err != nil {
+		t.Fatalf("chunked InsertOrderItems: %v", err)
+	} else if n, _ := res.RowsAffected(); n != 3 {
+		t.Fatalf("chunked InsertOrderItems affected %d rows, want 3", n)
 	}
 
 	// 3. Seed 2,000 fulfilled orders (<= cutoff) and 500 unfulfilled/future orders, then run ArchiveFulfilledOrders

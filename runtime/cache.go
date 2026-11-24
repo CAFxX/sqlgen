@@ -5,7 +5,6 @@ import (
 	"database/sql"
 	"errors"
 	stdruntime "runtime"
-	"slices"
 	"sync"
 	"sync/atomic"
 )
@@ -443,9 +442,6 @@ func (s *cacheShard) demoteToPartialLocked(victim *cacheEntry, c *StmtCache) *Ma
 	if victim.fastSlot != nil && demotedMS != nil {
 		victim.fastSlot.CompareAndSwap(demotedMS, nil)
 	}
-	if victim.batchSize > 0 {
-		c.removePreparedBatchSize(victim.stmtID, victim.shapeTag, victim.batchSize)
-	}
 	s.demotions++
 	c.totalPrepared.Add(-1)
 
@@ -575,7 +571,6 @@ type batchShapeKey struct {
 
 type batchShapeTracker struct {
 	sketch        tinyLFUSketch
-	preparedSizes []int // sorted ascending
 	promotedSizes map[int]struct{}
 }
 
@@ -727,30 +722,20 @@ func (c *StmtCache) recordPreparedBatchSize(stmtID uint32, shapeTag uint64, batc
 		c.batchTrackers[key] = tr
 	}
 	tr.promotedSizes[batchSize] = struct{}{}
-	idx, found := slices.BinarySearch(tr.preparedSizes, batchSize)
-	if !found {
-		tr.preparedSizes = slices.Insert(tr.preparedSizes, idx, batchSize)
-	}
 }
 
-func (c *StmtCache) removePreparedBatchSize(stmtID uint32, shapeTag uint64, batchSize int) {
-	c.batchMu.Lock()
-	defer c.batchMu.Unlock()
-	key := batchShapeKey{stmtID: stmtID, shapeTag: shapeTag}
-	tr := c.batchTrackers[key]
-	if tr == nil {
-		return
-	}
-	if idx, found := slices.BinarySearch(tr.preparedSizes, batchSize); found {
-		tr.preparedSizes = slices.Delete(tr.preparedSizes, idx, idx+1)
-	}
-}
-
-var fallbackPowerOf2 = [...]int{32768, 16384, 8192, 4096, 2048, 1024, 512, 256, 128, 64, 32, 16, 8, 4, 2, 1}
-
-// PlanBatchChunk selects the next batch chunk size for a collection-slice statement.
-// It combines exact-size heavy-hitter promotion, greedy reuse of Tier-2 prepared
-// batch sizes, and power-of-2 fallback chunking (32768..1).
+// PlanBatchChunk selects the next chunk size for a collection-slice statement.
+//
+// A collection that fits one statement under the wire limit (remainingRows <= maxRowsPerStmt, and at most
+// MaxPowerOfTwoChunk) is always planned as ONE chunk of exactly remainingRows rows, whether the size is new or
+// recurring: one round trip, statement-level atomicity, no implicit transaction. A larger collection is planned
+// as full-limit chunks (a single, bounded statement shape) followed by the remainder as one exact chunk.
+//
+// The cache is not consulted to pick a size; it only decides which sizes are worth preparing. For the first
+// chunk of a call the size is counted in a small per-shape sketch, and once it has recurred promoteThreshold
+// times it is marked promoted so the statement cache prepares it on its next miss. A size that never recurs
+// stays a Tier-1 SQL string subject to the usual admission filter, so arbitrary sizes cannot displace prepared
+// statements (Tier 2).
 func (c *StmtCache) PlanBatchChunk(stmtID uint32, colMask, flagMask uint64, remainingRows, maxRowsPerStmt int, isFirstChunk bool) int {
 	if remainingRows <= 0 {
 		return 0
@@ -762,19 +747,15 @@ func (c *StmtCache) PlanBatchChunk(stmtID uint32, colMask, flagMask uint64, rema
 	if capRows > MaxPowerOfTwoChunk {
 		capRows = MaxPowerOfTwoChunk
 	}
-	if c == nil {
-		for _, p2 := range fallbackPowerOf2 {
-			if p2 <= capRows {
-				return p2
-			}
-		}
-		return 1
+	if c == nil || !isFirstChunk {
+		return capRows
 	}
 
 	shapeTag := ComputeBatchShapeTag(colMask, flagMask)
 	key := batchShapeKey{stmtID: stmtID, shapeTag: shapeTag}
 
 	c.batchMu.Lock()
+	defer c.batchMu.Unlock()
 	tr := c.batchTrackers[key]
 	if tr == nil {
 		tr = &batchShapeTracker{
@@ -783,53 +764,13 @@ func (c *StmtCache) PlanBatchChunk(stmtID uint32, colMask, flagMask uint64, rema
 		tr.sketch.init(512)
 		c.batchTrackers[key] = tr
 	}
-
-	// 1. If capRows is already a prepared Tier-2 size or promoted heavy-hitter size, use it directly.
-	if _, ok := tr.promotedSizes[capRows]; ok {
-		c.batchMu.Unlock()
-		return capRows
-	}
-	if _, found := slices.BinarySearch(tr.preparedSizes, capRows); found {
-		c.batchMu.Unlock()
-		return capRows
-	}
-
-	// 2. If this is the initial chunk check for a recurring batch call, update the heavy-hitter sketch.
-	if isFirstChunk {
+	if _, ok := tr.promotedSizes[capRows]; !ok {
 		h := mix64(uint64(stmtID)<<32 ^ shapeTag ^ uint64(capRows)*0x9e3779b97f4a7c15)
-		freq := tr.sketch.increment(h)
-		if freq >= c.promoteThresh {
+		if tr.sketch.increment(h) >= c.promoteThresh {
 			tr.promotedSizes[capRows] = struct{}{}
-			c.batchMu.Unlock()
-			return capRows
 		}
 	}
-
-	// 3. Greedily reuse the largest prepared Tier-2 batch size <= capRows if available.
-	bestPrepared := 0
-	for i := len(tr.preparedSizes) - 1; i >= 0; i-- {
-		if tr.preparedSizes[i] <= capRows {
-			bestPrepared = tr.preparedSizes[i]
-			break
-		}
-	}
-	c.batchMu.Unlock()
-
-	if bestPrepared > 0 {
-		return bestPrepared
-	}
-
-	// 4. Cold fallback: largest power-of-2 chunk <= capRows (and <= 256 when cold unless capRows < 1).
-	coldCap := capRows
-	if coldCap > 256 {
-		coldCap = 256
-	}
-	for _, p2 := range fallbackPowerOf2 {
-		if p2 <= coldCap {
-			return p2
-		}
-	}
-	return 1
+	return capRows
 }
 
 // evictGlobalPreparedVictim demotes one prepared statement from another shard when globalMaxPrep < numCacheShards.
