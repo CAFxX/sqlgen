@@ -691,8 +691,8 @@ func (c *StmtCache) MaxRowsPerBatch(dialect Dialect, scalarCount, tupleFields in
 	if maxRows < 1 {
 		return 1
 	}
-	if maxRows > maxPowerOfTwoChunk {
-		maxRows = maxPowerOfTwoChunk
+	if maxRows > maxRowsPerChunk {
+		maxRows = maxRowsPerChunk
 	}
 	return maxRows
 }
@@ -741,7 +741,7 @@ func (c *StmtCache) recordPreparedBatchSize(stmtID uint32, shapeTag uint64, batc
 // PlanBatchChunk selects the next chunk size for a collection-slice statement.
 //
 // A collection that fits one statement under the wire limit (remainingRows <= maxRowsPerStmt, and at most
-// maxPowerOfTwoChunk) is always planned as ONE chunk of exactly remainingRows rows, whether the size is new or
+// maxRowsPerChunk) is always planned as ONE chunk of exactly remainingRows rows, whether the size is new or
 // recurring: one round trip, statement-level atomicity, no implicit transaction. A larger collection is planned
 // as full-limit chunks (a single, bounded statement shape) followed by the remainder as one exact chunk.
 //
@@ -758,8 +758,8 @@ func (c *StmtCache) PlanBatchChunk(stmtID uint32, colMask, flagMask uint64, rema
 	if maxRowsPerStmt > 0 && capRows > maxRowsPerStmt {
 		capRows = maxRowsPerStmt
 	}
-	if capRows > maxPowerOfTwoChunk {
-		capRows = maxPowerOfTwoChunk
+	if capRows > maxRowsPerChunk {
+		capRows = maxRowsPerChunk
 	}
 	if c == nil || !isFirstChunk {
 		return capRows

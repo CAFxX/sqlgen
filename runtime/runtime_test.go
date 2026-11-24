@@ -923,8 +923,8 @@ func TestPlanBatchChunkFitsOneStatement(t *testing.T) {
 		if got := c.PlanBatchChunk(9, 3, 1, 0, 10, true); got != 0 {
 			t.Fatalf("remaining=0: chunk = %d", got)
 		}
-		if got := c.PlanBatchChunk(9, 3, 1, maxPowerOfTwoChunk+5, 0, true); got != maxPowerOfTwoChunk {
-			t.Fatalf("no per-statement limit: chunk = %d, want %d", got, maxPowerOfTwoChunk)
+		if got := c.PlanBatchChunk(9, 3, 1, maxRowsPerChunk+5, 0, true); got != maxRowsPerChunk {
+			t.Fatalf("no per-statement limit: chunk = %d, want %d", got, maxRowsPerChunk)
 		}
 	}
 	// A recurring size is promoted exactly at the threshold; a one-off size is not.
@@ -976,7 +976,7 @@ func TestPropertyBatchChunkDecompositionConservation(t *testing.T) {
 			steps := 0
 			for offset := 0; offset < totalRows; {
 				chunk := cache.PlanBatchChunk(stmtID, colMask, flagMask, totalRows-offset, maxRows, offset == 0)
-				if want := min(totalRows-offset, maxRows, maxPowerOfTwoChunk); chunk != want {
+				if want := min(totalRows-offset, maxRows, maxRowsPerChunk); chunk != want {
 					t.Fatalf("trial %d totalRows=%d offset=%d: chunk=%d, want %d (one exact statement when it fits, else full-limit chunks)", trial, totalRows, offset, chunk, want)
 				}
 				if chunk <= 0 || chunk > totalRows-offset {

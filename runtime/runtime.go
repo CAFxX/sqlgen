@@ -56,7 +56,7 @@ const (
 	defaultMaxPartialBytes  = 16 << 20 // 16 MB
 	defaultPromoteThreshold = 2
 	defaultMaxBatchParams   = 16384
-	maxPowerOfTwoChunk      = 32768
+	maxRowsPerChunk         = 65535 // the largest wire limit of any placeholder style ($N): one row per parameter
 	inexactKeyBit           = uint64(1) << 63
 )
 
