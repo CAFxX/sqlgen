@@ -13,7 +13,6 @@ import (
 	"fmt"
 	"math/rand/v2"
 	"os"
-	"strconv"
 	"strings"
 	"testing"
 
@@ -265,12 +264,7 @@ func myFuzzRun(t *testing.T, e engine, pr myPair, wire bool, seed uint64, mode s
 }
 
 func TestRealEngineMySQLPipelineDifferentialFuzz(t *testing.T) {
-	perMode := 100
-	if v := os.Getenv("SQLGEN_FUZZ_SEEDS"); v != "" {
-		if n, err := strconv.Atoi(v); err == nil {
-			perMode = n
-		}
-	}
+	perMode := 100 * envFuzzScale()
 	forEachEngine(t, func(t *testing.T, e engine, db *sql.DB) {
 		if !e.isMySQL() {
 			t.Skip("MySQL-protocol engines only")

@@ -36,20 +36,28 @@ const (
 
 type engine struct {
 	name    string
-	env     string // DSN environment variable
+	env     string // DSN environment variable: SQLGEN_<NAME>_DSN (see dsnEnv)
 	driver  string
 	family  family
 	dialect runtime.Dialect
 }
 
 var engines = []engine{
-	{"postgres15", "SQLGEN_PG15_DSN", "pgx", famPostgres, runtime.DialectDollar},
-	{"postgres18", "SQLGEN_PG18_DSN", "pgx", famPostgres, runtime.DialectDollar},
-	{"cockroach", "SQLGEN_CRDB_DSN", "pgx", famCockroach, runtime.DialectDollar},
-	{"mysql84", "SQLGEN_MYSQL84_DSN", "mysql", famMySQL, runtime.DialectQuestion},
-	{"mysql97", "SQLGEN_MYSQL97_DSN", "mysql", famMySQL, runtime.DialectQuestion},
-	{"mariadb1011", "SQLGEN_MARIADB1011_DSN", "mysql", famMariaDB, runtime.DialectQuestion},
-	{"mariadb123", "SQLGEN_MARIADB123_DSN", "mysql", famMariaDB, runtime.DialectQuestion},
+	newEngine("postgres15", "pgx", famPostgres, runtime.DialectDollar),
+	newEngine("postgres18", "pgx", famPostgres, runtime.DialectDollar),
+	newEngine("cockroach", "pgx", famCockroach, runtime.DialectDollar),
+	newEngine("mysql84", "mysql", famMySQL, runtime.DialectQuestion),
+	newEngine("mysql97", "mysql", famMySQL, runtime.DialectQuestion),
+	newEngine("mariadb1011", "mysql", famMariaDB, runtime.DialectQuestion),
+	newEngine("mariadb123", "mysql", famMariaDB, runtime.DialectQuestion),
+}
+
+// dsnEnv is the DSN environment variable of an engine id: every engine is spelled the same way in the
+// compose file, SQLGEN_ENGINES, the CI matrix and here.
+func dsnEnv(name string) string { return "SQLGEN_" + strings.ToUpper(name) + "_DSN" }
+
+func newEngine(name, driver string, f family, d runtime.Dialect) engine {
+	return engine{name: name, env: dsnEnv(name), driver: driver, family: f, dialect: d}
 }
 
 func (e engine) isPG() bool    { return e.family == famPostgres || e.family == famCockroach }

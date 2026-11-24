@@ -290,10 +290,7 @@ func fuzzRun(t *testing.T, db *sql.DB, seed uint64, mode string) (outcome, trace
 }
 
 func TestRealEnginePipelineDifferentialFuzz(t *testing.T) {
-	perMode := 100
-	if v := os.Getenv("SQLGEN_FUZZ_SEEDS"); v != "" {
-		fmt.Sscan(v, &perMode)
-	}
+	perMode := 100 * envFuzzScale()
 	forEachEngine(t, func(t *testing.T, e engine, db *sql.DB) {
 		if !e.isPG() {
 			t.Skip("the single-round-trip pipeline SQL is only generated for the $N (PostgreSQL-protocol) dialect")

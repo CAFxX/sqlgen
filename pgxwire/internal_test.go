@@ -249,7 +249,7 @@ func TestFailClosesAConnectionThatCannotBeRolledBack(t *testing.T) {
 func firstDSN(t *testing.T) string {
 	t.Helper()
 	sel := strings.Split(strings.TrimSpace(os.Getenv("SQLGEN_ENGINES")), ",")
-	for _, e := range [][2]string{{"postgres15", "SQLGEN_PG15_DSN"}, {"postgres18", "SQLGEN_PG18_DSN"}, {"cockroach", "SQLGEN_CRDB_DSN"}} {
+	for _, e := range [][2]string{{"postgres15", "SQLGEN_POSTGRES15_DSN"}, {"postgres18", "SQLGEN_POSTGRES18_DSN"}, {"cockroach", "SQLGEN_COCKROACH_DSN"}} {
 		if sel[0] != "" && !slices.Contains(sel, e[0]) {
 			continue
 		}

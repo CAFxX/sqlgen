@@ -1,11 +1,21 @@
-# Developer entry points. The real-engine suite lives in the nested module ./integration so the root
-# module keeps only yaml + sqlite as dependencies.
+# Developer entry points (CI runs the same targets). The real-engine suite lives in the nested module
+# ./integration so the root module keeps only yaml + sqlite as dependencies.
 
 # `docker compose` where a daemon is reachable, otherwise the Lima wrapper used on this workstation.
 COMPOSE ?= $(shell docker info >/dev/null 2>&1 && echo "docker compose" || echo "docker.lima compose")
-ENGINES ?=
 
-.PHONY: all test check gen engines-up engines-down test-engines test-pgxwire test-mysqlwire bench-engines sync-adapters
+# Engines are named once, everywhere (docker-compose.yml service, SQLGEN_ENGINES, SQLGEN_<NAME>_DSN / _PORT,
+# CI matrix): postgres15 postgres18 cockroach mysql84 mysql97 mariadb1011 mariadb123 (plus the in-process
+# sqlite for the integration suite). ENGINES is a comma separated subset; empty means all of them.
+ENGINES ?=
+# Per-run knobs of test-integration: GOTESTFLAGS=-v, INTEG_TIMEOUT=15m.
+GOTESTFLAGS ?=
+INTEG_TIMEOUT ?= 45m
+
+comma := ,
+ENV := . scripts/engines-env.sh &&
+
+.PHONY: all test check gen engines-up engines-down test-engines test-integration test-pgxwire test-mysqlwire test-wire-hermetic test-fuzz-sqlite bench-engines
 
 all: check test
 
@@ -13,48 +23,55 @@ all: check test
 test:
 	go test -race -count=1 ./...
 
+# gofmt, vet of every module, the committed fixtures and generated code are up to date.
 check:
 	@out=$$(gofmt -l .); if [ -n "$$out" ]; then echo "needs gofmt:"; echo "$$out"; exit 1; fi
-	go vet ./...
-	cd integration && go vet ./...
-	cd pgxwire && go vet ./...
-	cd mysqlwire && go vet ./...
-	@for c in examples/*/sqlgen.yaml integration/*/sqlgen.yaml; do go run ./cmd/sqlgen -config $$c -check || exit 1; done
+	@for m in . integration pgxwire mysqlwire; do (cd $$m && go vet ./...) || exit 1; done
+	cd integration && go run ./fixtures -check
+	scripts/sqlgen-all.sh -check
 
+# Regenerate the engine fixtures from their templates (integration/fixtures), then every generated package.
 gen:
-	@for c in examples/*/sqlgen.yaml integration/*/sqlgen.yaml; do go run ./cmd/sqlgen -config $$c || exit 1; done
+	cd integration && go run ./fixtures
+	scripts/sqlgen-all.sh
 
 # Real engines: PostgreSQL 15/18, CockroachDB, MySQL 8.4/9.7, MariaDB 10.11/12.3. The integration module
 # also exercises pgxwire and mysqlwire (single-round-trip pipelines); `test-pgxwire` / `test-mysqlwire`
-# run the drivers' own tests.
+# run the drivers' own tests. ENGINES narrows engines-up and every test target.
 engines-up:
-	$(COMPOSE) up -d --wait
+	$(COMPOSE) up -d --wait $(subst $(comma), ,$(ENGINES))
 
 engines-down:
 	$(COMPOSE) down --volumes
 
 # make test-engines                      -> every engine
-# make test-engines ENGINES=postgres18   -> only the named engines (comma separated)
-test-engines:
-	. scripts/engines-env.sh && cd integration && SQLGEN_REQUIRE_ENGINES=1 SQLGEN_ENGINES=$(ENGINES) go test -count=1 -timeout 45m ./...
-	$(MAKE) test-pgxwire ENGINES=$(ENGINES)
-	$(MAKE) test-mysqlwire ENGINES=$(ENGINES)
+# make test-engines ENGINES=postgres18   -> only the named engines
+test-engines: test-integration test-pgxwire test-mysqlwire
 
-# The pgxwire driver's own tests (PostgreSQL / CockroachDB engines only; skipped when no DSN is set).
+# The integration module (every engine in ENGINES, or all; a missing DSN fails instead of skipping).
+test-integration:
+	$(ENV) cd integration && SQLGEN_REQUIRE_ENGINES=1 SQLGEN_ENGINES=$(ENGINES) go test -race -count=1 -timeout $(INTEG_TIMEOUT) $(GOTESTFLAGS) ./...
+
+# The pgxwire driver's own tests (PostgreSQL / CockroachDB engines only; skipped when no DSN is set). With
+# ENGINES set the driver's coverage must stay >= 90%.
 test-pgxwire:
-	. scripts/engines-env.sh && cd pgxwire && SQLGEN_ENGINES=$(ENGINES) go test -race -count=1 -cover ./...
+	$(ENV) cd pgxwire && SQLGEN_ENGINES=$(ENGINES) go test -race -count=1 -coverprofile=cover.out ./...
+	@if [ -n "$(ENGINES)" ]; then cd pgxwire && ../scripts/covgate.sh cover.out 90 pgxwire; fi
 
 # The mysqlwire driver's own tests (MySQL / MariaDB engines only; skipped when no DSN is set).
 test-mysqlwire:
-	. scripts/engines-env.sh && cd mysqlwire && SQLGEN_ENGINES=$(ENGINES) go test -race -count=1 -cover ./...
+	$(ENV) cd mysqlwire && SQLGEN_ENGINES=$(ENGINES) go test -race -count=1 -coverprofile=cover.out ./...
+	@if [ -n "$(ENGINES)" ]; then cd mysqlwire && ../scripts/covgate.sh cover.out 90 mysqlwire; fi
+
+# The wire drivers' hermetic tests (no engines; the engine tests are skipped without DSNs).
+test-wire-hermetic:
+	cd pgxwire && go test -race -count=1 ./...
+	cd mysqlwire && go test -race -count=1 ./...
+
+# The seeded differential suite against in-process SQLite (the engines run it as part of test-integration).
+test-fuzz-sqlite:
+	cd integration && SQLGEN_ENGINES=sqlite go test -race -count=1 -run 'TestFuzz' ./
 
 # Overhead of a generated call vs hand-written database/sql on real servers (ENGINES is required).
 bench-engines:
-	. scripts/engines-env.sh && cd integration && SQLGEN_ENGINES=$(ENGINES) go test -run '^$$' -bench . -benchtime=2s ./...
-
-# adapter_myq_test.go is adapter_pgq_test.go with the package name swapped (likewise the fuzz adapter).
-sync-adapters:
-	sed 's/pgq/myq/g; s/Pgq/Myq/g' integration/adapter_pgq_test.go > integration/adapter_myq_test.go
-	sed 's/fzpg/fzmy/g; s/Fzpg/Fzmy/g' integration/fuzz_adapter_fzpg_test.go > integration/fuzz_adapter_fzmy_test.go
-	sed 's/fzpg/fzsl/g; s/Fzpg/Fzsl/g' integration/fuzz_adapter_fzpg_test.go > integration/fuzz_adapter_fzsl_test.go
-	sed 's/fzpg/fzsl/g; s/Fzpg/Fzsl/g' integration/fuzz_bump_fzpg_test.go > integration/fuzz_bump_fzsl_test.go
+	$(ENV) cd integration && SQLGEN_ENGINES=$(ENGINES) go test -run '^$$' -bench . -benchtime=2s ./...

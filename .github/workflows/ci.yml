@@ -17,40 +17,22 @@ jobs:
         with:
           go-version-file: go.mod
 
-      - name: gofmt
-        run: |
-          out=$(gofmt -l .)
-          if [ -n "$out" ]; then echo "needs gofmt:"; echo "$out"; exit 1; fi
-
-      - name: go vet
-        run: |
-          go vet ./...
-          (cd integration && go vet ./...)
-          (cd pgxwire && go vet ./...)
-          (cd mysqlwire && go vet ./...)
-
-      - name: generated code is up to date (SPEC §13.1)
-        run: |
-          for cfg in examples/*/sqlgen.yaml integration/*/sqlgen.yaml; do
-            go run ./cmd/sqlgen -config "$cfg" -check
-          done
+      # gofmt, vet of every module, fixtures and generated code up to date (SPEC §13.1).
+      - name: make check
+        run: make check
 
       - name: tests (race) + coverage gate >= 95%
         run: |
           go test -race -count=1 -coverprofile=coverage.out ./...
-          total=$(go tool cover -func=coverage.out | awk '/^total:/ {gsub("%","",$3); print $3}')
-          echo "total coverage: ${total}%"
-          awk -v t="$total" 'BEGIN { exit !(t+0 >= 95.0) }' || { echo "coverage below 95%"; exit 1; }
+          scripts/covgate.sh coverage.out 95 total
 
       - name: pgxwire and mysqlwire build and their hermetic tests pass (engine tests run in the engines job)
-        run: |
-          cd pgxwire && go test -race -count=1 ./...
-          cd ../mysqlwire && go test -race -count=1 ./...
+        run: make test-wire-hermetic
 
       # The seeded differential suite (integration/fuzz_*_test.go) needs no server for SQLite; the engines
       # job below runs the same cases on every server engine.
       - name: differential fuzz against SQLite (race)
-        run: cd integration && SQLGEN_ENGINES=sqlite go test -race -count=1 -run 'TestFuzz' ./
+        run: make test-fuzz-sqlite
 
       - name: fuzz (short)
         run: |
@@ -85,34 +67,19 @@ jobs:
             pgxwire/go.sum
             mysqlwire/go.sum
       - name: start ${{ matrix.engine }}
-        run: docker compose up -d --wait ${{ matrix.engine }}
+        run: make engines-up ENGINES=${{ matrix.engine }}
       - name: integration tests against ${{ matrix.engine }}
-        run: |
-          . scripts/engines-env.sh
-          cd integration
-          SQLGEN_REQUIRE_ENGINES=1 SQLGEN_ENGINES=${{ matrix.engine }} go test -race -count=1 -timeout 15m -v ./...
+        run: make test-integration ENGINES=${{ matrix.engine }} INTEG_TIMEOUT=15m GOTESTFLAGS=-v
       # The pgxwire driver (single-round-trip pipelines) has its own tests against the PostgreSQL-protocol
       # engines; the integration module above additionally runs the wire-vs-sequential differential,
       # the network round-trip counts and the failure/concurrency tests through it.
       - name: pgxwire tests against ${{ matrix.engine }}
         if: startsWith(matrix.engine, 'postgres') || matrix.engine == 'cockroach'
-        run: |
-          . scripts/engines-env.sh
-          cd pgxwire
-          SQLGEN_ENGINES=${{ matrix.engine }} go test -race -count=1 -coverprofile=cover.out ./...
-          total=$(go tool cover -func=cover.out | awk '/^total:/ {gsub("%","",$3); print $3}')
-          echo "pgxwire coverage on ${{ matrix.engine }}: ${total}%"
-          awk -v t="$total" 'BEGIN { exit !(t+0 >= 90.0) }' || { echo "pgxwire coverage below 90%"; exit 1; }
+        run: make test-pgxwire ENGINES=${{ matrix.engine }}
       # Likewise the mysqlwire driver against the MySQL-protocol engines.
       - name: mysqlwire tests against ${{ matrix.engine }}
         if: startsWith(matrix.engine, 'mysql') || startsWith(matrix.engine, 'mariadb')
-        run: |
-          . scripts/engines-env.sh
-          cd mysqlwire
-          SQLGEN_ENGINES=${{ matrix.engine }} go test -race -count=1 -coverprofile=cover.out ./...
-          total=$(go tool cover -func=cover.out | awk '/^total:/ {gsub("%","",$3); print $3}')
-          echo "mysqlwire coverage on ${{ matrix.engine }}: ${total}%"
-          awk -v t="$total" 'BEGIN { exit !(t+0 >= 90.0) }' || { echo "mysqlwire coverage below 90%"; exit 1; }
+        run: make test-mysqlwire ENGINES=${{ matrix.engine }}
       - name: engine logs on failure
         if: failure()
         run: docker compose logs --no-color ${{ matrix.engine }} | tail -200

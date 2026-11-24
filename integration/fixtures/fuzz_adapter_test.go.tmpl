@@ -1,0 +1,348 @@
+package integration
+
+// This file adapts the generated fuzz package to the engine-agnostic fzAPI.
+
+import (
+	"context"
+	"database/sql"
+	"iter"
+
+	"github.com/CAFxX/sqlgen/integration/<%.Pkg%>"
+	"github.com/CAFxX/sqlgen/runtime"
+)
+
+type <%.Pkg%>API struct{ q *<%.Pkg%>.Queries }
+
+func new<%.Title%>API(db *sql.DB, opts ...runtime.CacheOption) *<%.Pkg%>API {
+	return &<%.Pkg%>API{q: <%.Pkg%>.New(db, opts...)}
+}
+
+func (a *<%.Pkg%>API) Close() error { return a.q.Close() }
+
+func (a *<%.Pkg%>API) Tx(tx *sql.Tx) fzAPI { return &<%.Pkg%>API{q: a.q.WithTx(tx)} }
+
+func toNew<%.Title%>(r fzRow) <%.Pkg%>.FzNew {
+	return <%.Pkg%>.FzNew{ID: r.ID, Grp: r.Grp, K1: r.K[0], K2: r.K[1], K3: r.K[2], K4: r.K[3], K5: r.K[4],
+		K6: r.K[5], K7: r.K[6], K8: r.K[7], Tag: r.Tag, Tag2: r.Tag2, Note: r.Note}
+}
+
+func toNews<%.Title%>(rows []fzRow) []<%.Pkg%>.FzNew {
+	out := make([]<%.Pkg%>.FzNew, len(rows))
+	for i, r := range rows {
+		out[i] = toNew<%.Title%>(r)
+	}
+	return out
+}
+
+func fromRow<%.Title%>(r <%.Pkg%>.FzRow) fzRow {
+	return fzRow{ID: r.ID, Grp: r.Grp, K: [8]int64{r.K1, r.K2, r.K3, r.K4, r.K5, r.K6, r.K7, r.K8},
+		Tag: r.Tag, Tag2: r.Tag2, Note: r.Note}
+}
+
+func fromRows<%.Title%>(rows []<%.Pkg%>.FzRow, err error) ([]fzRow, error) {
+	out := make([]fzRow, len(rows))
+	for i, r := range rows {
+		out[i] = fromRow<%.Title%>(r)
+	}
+	return out, err
+}
+
+func toRow<%.Title%>(r fzRow) <%.Pkg%>.FzRow {
+	return <%.Pkg%>.FzRow{ID: r.ID, Grp: r.Grp, K1: r.K[0], K2: r.K[1], K3: r.K[2], K4: r.K[3], K5: r.K[4],
+		K6: r.K[5], K7: r.K[6], K8: r.K[7], Tag: r.Tag, Tag2: r.Tag2, Note: r.Note}
+}
+
+func rowsAffected<%.Title%>(res sql.Result, err error) (int64, error) {
+	if err != nil {
+		return 0, err
+	}
+	return res.RowsAffected()
+}
+
+func outs<%.Title%>(rows []<%.Pkg%>.FzOut, err error) ([]fzOut, error) {
+	out := make([]fzOut, len(rows))
+	for i, r := range rows {
+		out[i] = fzOut{r.ID, r.K1}
+	}
+	return out, err
+}
+
+func var<%.Title%>(
+	into func(dst []<%.Pkg%>.FzRow) ([]<%.Pkg%>.FzRow, error),
+	seq iter.Seq2[<%.Pkg%>.FzRow, error],
+	each func(func(<%.Pkg%>.FzRow) error) error,
+) fzVar {
+	return fzVar{
+		Into: func(prefix, spare int) ([]fzRow, error) {
+			return fromRows<%.Title%>(into(make([]<%.Pkg%>.FzRow, prefix, prefix+spare)))
+		},
+		Seq: func() iter.Seq2[fzRow, error] {
+			return func(yield func(fzRow, error) bool) {
+				for r, err := range seq {
+					if !yield(fromRow<%.Title%>(r), err) {
+						return
+					}
+				}
+			}
+		},
+		Each: func(fn func(fzRow) error) error {
+			return each(func(r <%.Pkg%>.FzRow) error { return fn(fromRow<%.Title%>(r)) })
+		},
+	}
+}
+
+func searchParams<%.Title%>(s fzSearchArgs) <%.Pkg%>.FzSearchParams {
+	p := <%.Pkg%>.FzSearchParams{Lo: s.Lo, Grp: s.Grp, Grps: s.Grps, Tags: s.Tags, NoteLike: s.NoteLike, Hi: s.Hi,
+		ByGrp: s.ByGrp, ByGrps: s.ByGrps, ByTags: s.ByTags, FilterNote: s.FilterNote, NoteNull: s.NoteNull,
+		ByPairs: s.ByPairs, Narrow: s.Narrow, HiK4: s.HiK4, SelectCols: s.SelectCols}
+	for _, pr := range s.Pairs {
+		p.Pairs = append(p.Pairs, <%.Pkg%>.FzPair{Grp: pr[0], K2: pr[1]})
+	}
+	return p
+}
+
+func pageParams<%.Title%>(s fzPageArgs) <%.Pkg%>.FzPageParams {
+	var terms []<%.Pkg%>.FzPageSortTerm
+	for _, t := range s.Terms {
+		if t.Desc {
+			terms = append(terms, <%.Pkg%>.FzPageSortCol(t.Col).Desc())
+		} else {
+			terms = append(terms, <%.Pkg%>.FzPageSortCol(t.Col).Asc())
+		}
+	}
+	return <%.Pkg%>.FzPageParams{Lo: s.Lo, Grps: s.Grps, After: s.After, Sub: buildSub<%.Title%>(s.Sub), ExTag: s.ExTag,
+		Sort: <%.Pkg%>.OrderFzPage(terms...), Limit: s.Limit, ByGrps: s.ByGrps, InSub: s.InSub, SkipTag: s.SkipTag,
+		SelectCols: s.Cols}
+}
+
+func (a *<%.Pkg%>API) SearchV(ctx context.Context, s fzSearchArgs) fzVar {
+	p := searchParams<%.Title%>(s)
+	return var<%.Title%>(func(dst []<%.Pkg%>.FzRow) ([]<%.Pkg%>.FzRow, error) { return runtime.AppendTo(dst, a.q.FzSearchSeq(ctx, p)) },
+		a.q.FzSearchSeq(ctx, p), func(fn func(<%.Pkg%>.FzRow) error) error { return runtime.Each(a.q.FzSearchSeq(ctx, p), fn) })
+}
+
+func (a *<%.Pkg%>API) PageV(ctx context.Context, s fzPageArgs) fzVar {
+	p := pageParams<%.Title%>(s)
+	return var<%.Title%>(func(dst []<%.Pkg%>.FzRow) ([]<%.Pkg%>.FzRow, error) { return runtime.AppendTo(dst, a.q.FzPageSeq(ctx, p)) },
+		a.q.FzPageSeq(ctx, p), func(fn func(<%.Pkg%>.FzRow) error) error { return runtime.Each(a.q.FzPageSeq(ctx, p), fn) })
+}
+
+func (a *<%.Pkg%>API) ByIDsV(ctx context.Context, ids []int64) fzVar {
+	return var<%.Title%>(func(dst []<%.Pkg%>.FzRow) ([]<%.Pkg%>.FzRow, error) { return runtime.AppendTo(dst, a.q.FzByIDsSeq(ctx, ids)) },
+		a.q.FzByIDsSeq(ctx, ids), func(fn func(<%.Pkg%>.FzRow) error) error { return runtime.Each(a.q.FzByIDsSeq(ctx, ids), fn) })
+}
+
+func (a *<%.Pkg%>API) ByKeysV(ctx context.Context, keys [][2]int64) fzVar {
+	ks := make([]<%.Pkg%>.FzKey, len(keys))
+	for i, k := range keys {
+		ks[i] = <%.Pkg%>.FzKey{Grp: k[0], K1: k[1]}
+	}
+	return var<%.Title%>(func(dst []<%.Pkg%>.FzRow) ([]<%.Pkg%>.FzRow, error) { return runtime.AppendTo(dst, a.q.FzByKeysSeq(ctx, ks)) },
+		a.q.FzByKeysSeq(ctx, ks), func(fn func(<%.Pkg%>.FzRow) error) error { return runtime.Each(a.q.FzByKeysSeq(ctx, ks), fn) })
+}
+
+func fromTRows<%.Title%>(rows []<%.Pkg%>.FzTypedRow, err error) ([]fzTRow, error) {
+	out := make([]fzTRow, len(rows))
+	for i, r := range rows {
+		out[i] = fzTRow{r.ID, r.I32, r.F64, r.Flag, r.Bin, r.Ni}
+	}
+	return out, err
+}
+
+func (a *<%.Pkg%>API) TypedInsert(ctx context.Context, rows []fzTRow) (int64, error) {
+	in := make([]<%.Pkg%>.FzTypedNew, len(rows))
+	for i, r := range rows {
+		in[i] = <%.Pkg%>.FzTypedNew{ID: r.ID, I32: r.I32, F64: r.F64, Flag: r.Flag, Bin: r.Blob, Ni: r.NI}
+	}
+	return rowsAffected<%.Title%>(a.q.FzTypedInsert(ctx, in))
+}
+
+func (a *<%.Pkg%>API) TypedSearch(ctx context.Context, s fzTSearch) ([]fzTRow, error) {
+	return fromTRows<%.Title%>(a.q.FzTypedSearch(ctx, <%.Pkg%>.FzTypedSearchParams{Lo: s.Lo, I32s: s.I32s, F64s: s.F64s,
+		Flag: s.Flag, Bin: s.Blob, NiMin: s.NiMin, ByI32s: s.ByI32s, ByF64s: s.ByF64s, ByFlag: s.ByFlag,
+		ByBin: s.ByBlob, NiAtLeast: s.NiAtLeast}))
+}
+
+func (a *<%.Pkg%>API) TypedPage(ctx context.Context, terms []fzTerm, after runtime.Seek, limit int64) ([]fzTRow, error) {
+	var ts []<%.Pkg%>.FzTypedPageSortTerm
+	for _, t := range terms {
+		if t.Desc {
+			ts = append(ts, <%.Pkg%>.FzTypedPageSortCol(t.Col).Desc())
+		} else {
+			ts = append(ts, <%.Pkg%>.FzTypedPageSortCol(t.Col).Asc())
+		}
+	}
+	return fromTRows<%.Title%>(a.q.FzTypedPage(ctx, after, <%.Pkg%>.OrderFzTypedPage(ts...), limit))
+}
+
+func (a *<%.Pkg%>API) TypedCursor(r fzTRow) runtime.Seek {
+	return <%.Pkg%>.SeekFzTypedPage(<%.Pkg%>.FzTypedRow{ID: r.ID, I32: r.I32, F64: r.F64, Flag: r.Flag, Bin: r.Blob, Ni: r.NI})
+}
+
+func (a *<%.Pkg%>API) Insert(ctx context.Context, v fzIns, rows []fzRow) (int64, error) {
+	if v.Order == 3 { // FzInsertLit: only id, grp, k1 and tag are parameters; the rest are literals in the template
+		in := make([]<%.Pkg%>.FzLit, len(rows))
+		for i, r := range rows {
+			in[i] = <%.Pkg%>.FzLit{ID: r.ID, Grp: r.Grp, K1: r.K[0], Tag: r.Tag}
+		}
+		if v.Path == 0 {
+			return rowsAffected<%.Title%>(a.q.FzInsertLit(ctx, in))
+		}
+		return rowsAffected<%.Title%>(a.q.FzInsertLitStream(ctx, func(yield func(<%.Pkg%>.FzLit, error) bool) {
+			for _, r := range in {
+				if !yield(r, nil) {
+					return
+				}
+			}
+		}))
+	}
+	in := toNews<%.Title%>(rows)
+	seq := func() iter.Seq2[<%.Pkg%>.FzNew, error] {
+		return func(yield func(<%.Pkg%>.FzNew, error) bool) {
+			for _, r := range in {
+				if !yield(r, nil) {
+					return
+				}
+			}
+		}
+	}
+	type fn func(context.Context, []<%.Pkg%>.FzNew) (sql.Result, error)
+	type sfn func(context.Context, iter.Seq2[<%.Pkg%>.FzNew, error]) (sql.Result, error)
+	var plain fn
+	var stream sfn
+	switch v.Order {
+	case 0:
+		plain, stream = a.q.FzInsertAsc, a.q.FzInsertAscStream
+	case 1:
+		plain, stream = a.q.FzInsertDesc, a.q.FzInsertDescStream
+	default:
+		plain, stream = a.q.FzInsertRaw, a.q.FzInsertRawStream
+	}
+	if v.Path == 0 {
+		return rowsAffected<%.Title%>(plain(ctx, in))
+	}
+	return rowsAffected<%.Title%>(stream(ctx, seq()))
+}
+
+// InsertStreamErr streams rows then fails with err after the first n: the error must come back unchanged.
+func (a *<%.Pkg%>API) InsertStreamErr(ctx context.Context, rows []fzRow, n int, err error) error {
+	_, e := a.q.FzInsertRawStream(ctx, func(yield func(<%.Pkg%>.FzNew, error) bool) {
+		for i, r := range rows {
+			if i == n {
+				yield(<%.Pkg%>.FzNew{}, err)
+				return
+			}
+			if !yield(toNew<%.Title%>(r), nil) {
+				return
+			}
+		}
+	})
+	return e
+}
+
+func (a *<%.Pkg%>API) Search(ctx context.Context, s fzSearchArgs) ([]fzRow, error) {
+	return fromRows<%.Title%>(a.q.FzSearch(ctx, searchParams<%.Title%>(s)))
+}
+
+func (a *<%.Pkg%>API) Narrow(ctx context.Context, minID int64, byGrp bool, grp int64, cols uint64) ([]fzRow, error) {
+	rows, err := a.q.FzNarrow(ctx, <%.Pkg%>.FzNarrowParams{MinID: minID, Grp: grp, ByGrp: byGrp, SelectCols: cols})
+	out := make([]fzRow, len(rows))
+	for i, r := range rows {
+		out[i] = fzRow{ID: r.ID, Grp: r.Grp, Tag: r.Tag, Note: r.Note}
+		out[i].K[0], out[i].K[1] = r.K1, r.K2
+	}
+	return out, err
+}
+
+func buildSub<%.Title%>(s *fzSub) runtime.Query {
+	if s == nil {
+		return runtime.Query{}
+	}
+	if s.Note {
+		return <%.Pkg%>.FzSubNoteQuery(<%.Pkg%>.FzSubNoteParams{Inner: buildSub<%.Title%>(s.Inner), K3max: s.K3Max, MaxK3: s.MaxK3})
+	}
+	return <%.Pkg%>.FzSubGrpsQuery(<%.Pkg%>.FzSubGrpsParams{Grps: s.Grps, K2min: s.K2Min, MinK2: s.MinK2})
+}
+
+func (a *<%.Pkg%>API) Page(ctx context.Context, s fzPageArgs) ([]fzRow, error) {
+	return fromRows<%.Title%>(a.q.FzPage(ctx, pageParams<%.Title%>(s)))
+}
+
+func (a *<%.Pkg%>API) Cursor(r fzRow) runtime.Seek { return <%.Pkg%>.SeekFzPage(toRow<%.Title%>(r)) }
+
+func (a *<%.Pkg%>API) Agg(ctx context.Context, pick *fzSub, byTag bool, tag string) ([]fzAggRow, error) {
+	rows, err := a.q.FzAgg(ctx, <%.Pkg%>.FzAggParams{Pick: buildSub<%.Title%>(pick), Tag: tag, ByTag: byTag})
+	out := make([]fzAggRow, len(rows))
+	for i, r := range rows {
+		out[i] = fzAggRow{r.Grp, r.N, r.Total}
+	}
+	return out, err
+}
+
+func (a *<%.Pkg%>API) Subs(ctx context.Context, sa, sb *fzSub, lo int64, excludeB, againA bool) ([]fzRow, error) {
+	return fromRows<%.Title%>(a.q.FzSubs(ctx, <%.Pkg%>.FzSubsParams{A: buildSub<%.Title%>(sa), Lo: lo, B: buildSub<%.Title%>(sb),
+		ExcludeB: excludeB, AgainA: againA}))
+}
+
+func (a *<%.Pkg%>API) Join(ctx context.Context, peerOff, minID int64, withPeer, byGrp bool, grp int64, cols uint64) ([]fzJoinRow, error) {
+	rows, err := a.q.FzJoin(ctx, <%.Pkg%>.FzJoinParams{PeerOff: peerOff, MinID: minID, Grp: grp, WithPeer: withPeer,
+		ByGrp: byGrp, SelectCols: cols})
+	out := make([]fzJoinRow, len(rows))
+	for i, r := range rows {
+		out[i] = fzJoinRow{r.ID, r.Grp, r.K1, r.PeerID, r.PeerTag}
+	}
+	return out, err
+}
+
+func (a *<%.Pkg%>API) ByKeys(ctx context.Context, keys [][2]int64) ([]fzRow, error) {
+	ks := make([]<%.Pkg%>.FzKey, len(keys))
+	for i, k := range keys {
+		ks[i] = <%.Pkg%>.FzKey{Grp: k[0], K1: k[1]}
+	}
+	return fromRows<%.Title%>(a.q.FzByKeys(ctx, ks))
+}
+
+func (a *<%.Pkg%>API) ByIDs(ctx context.Context, ids []int64) ([]fzRow, error) {
+	return fromRows<%.Title%>(a.q.FzByIDs(ctx, ids))
+}
+
+func (a *<%.Pkg%>API) Bump(ctx context.Context, delta int64, ids []int64, grp *int64) (int64, error) {
+	p := <%.Pkg%>.FzBumpParams{Delta: delta, IDs: ids}
+	if grp != nil {
+		p.OnlyGrp, p.Grp = true, *grp
+	}
+	return rowsAffected<%.Title%>(a.q.FzBump(ctx, p))
+}
+
+func (a *<%.Pkg%>API) Delete(ctx context.Context, ids []int64, tag *string) (int64, error) {
+	p := <%.Pkg%>.FzDeleteParams{IDs: ids}
+	if tag != nil {
+		p.OnlyTag, p.Tag = true, *tag
+	}
+	return rowsAffected<%.Title%>(a.q.FzDelete(ctx, p))
+}
+
+func (a *<%.Pkg%>API) InsertRet(ctx context.Context, rows []fzRow, mode int) ([]fzOut, error) {
+	src := func(yield func(<%.Pkg%>.FzNew, error) bool) {
+		for _, r := range rows {
+			if !yield(toNew<%.Title%>(r), nil) {
+				return
+			}
+		}
+	}
+	switch mode {
+	case 1:
+		return outs<%.Title%>(a.q.FzInsertRetStream(ctx, src))
+	case 2:
+		return outs<%.Title%>(runtime.Collect(a.q.FzInsertRetStreamSeq(ctx, src)))
+	}
+	return outs<%.Title%>(a.q.FzInsertRet(ctx, toNews<%.Title%>(rows)))
+}
+
+func (a *<%.Pkg%>API) DeleteRet(ctx context.Context, ids []int64, tag *string) ([]fzOut, error) {
+	p := <%.Pkg%>.FzDeleteRetParams{IDs: ids}
+	if tag != nil {
+		p.OnlyTag, p.Tag = true, *tag
+	}
+	return outs<%.Title%>(a.q.FzDeleteRet(ctx, p))
+}

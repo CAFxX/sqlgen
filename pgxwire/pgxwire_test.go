@@ -36,9 +36,9 @@ type testEngine struct {
 }
 
 var testEngines = []testEngine{
-	{"postgres15", "SQLGEN_PG15_DSN", false},
-	{"postgres18", "SQLGEN_PG18_DSN", false},
-	{"cockroach", "SQLGEN_CRDB_DSN", true},
+	{"postgres15", "SQLGEN_POSTGRES15_DSN", false},
+	{"postgres18", "SQLGEN_POSTGRES18_DSN", false},
+	{"cockroach", "SQLGEN_COCKROACH_DSN", true},
 }
 
 // dsnFor returns the DSN of e unless SQLGEN_ENGINES (comma separated, like the integration module) excludes it.
@@ -78,7 +78,7 @@ func forEachEngine(t *testing.T, fn func(t *testing.T, e testEngine, db *sql.DB,
 		})
 	}
 	if !ran {
-		t.Skip("no SQLGEN_PG15_DSN / SQLGEN_PG18_DSN / SQLGEN_CRDB_DSN configured")
+		t.Skip("no SQLGEN_POSTGRES15_DSN / SQLGEN_POSTGRES18_DSN / SQLGEN_COCKROACH_DSN configured")
 	}
 }
 

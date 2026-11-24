@@ -1,0 +1,167 @@
+package integration
+
+// This file adapts the generated package to the engine-agnostic api used by the shared suite.
+
+import (
+	"context"
+	"database/sql"
+	"iter"
+
+	"github.com/CAFxX/sqlgen/integration/<%.Pkg%>"
+	"github.com/CAFxX/sqlgen/runtime"
+)
+
+type <%.Pkg%>API struct{ q *<%.Pkg%>.Queries }
+
+func new<%.Title%>API(db *sql.DB, opts ...runtime.CacheOption) api { return &<%.Pkg%>API{q: <%.Pkg%>.New(db, opts...)} }
+
+func toNew<%.Title%>(rows []item) []<%.Pkg%>.NewItem {
+	out := make([]<%.Pkg%>.NewItem, len(rows))
+	for i, r := range rows {
+		out[i] = <%.Pkg%>.NewItem{ID: r.ID, OrgID: r.OrgID, Name: r.Name, Score: r.Score, Status: r.Status}
+	}
+	return out
+}
+
+func fromItems<%.Title%>(rows []<%.Pkg%>.Item) []item {
+	out := make([]item, len(rows))
+	for i, r := range rows {
+		out[i] = item{r.ID, r.OrgID, r.Name, r.Score, r.Status}
+	}
+	return out
+}
+
+func (a *<%.Pkg%>API) Insert(ctx context.Context, rows []item) error {
+	_, err := a.q.InsertItems(ctx, toNew<%.Title%>(rows))
+	return err
+}
+func (a *<%.Pkg%>API) InsertStream(ctx context.Context, rows iter.Seq[item]) error {
+	_, err := a.q.InsertItemsStream(ctx, func(yield func(<%.Pkg%>.NewItem, error) bool) {
+		for r := range rows {
+			if !yield(<%.Pkg%>.NewItem{ID: r.ID, OrgID: r.OrgID, Name: r.Name, Score: r.Score, Status: r.Status}, nil) {
+				return
+			}
+		}
+	})
+	return err
+}
+func (a *<%.Pkg%>API) Get(ctx context.Context, id int64) (item, error) {
+	r, err := a.q.GetItem(ctx, id)
+	return item{r.ID, r.OrgID, r.Name, r.Score, r.Status}, err
+}
+func (a *<%.Pkg%>API) ByIDs(ctx context.Context, ids []int64) ([]item, error) {
+	r, err := a.q.ItemsByIDs(ctx, ids)
+	return fromItems<%.Title%>(r), err
+}
+func toSearchParams<%.Title%>(s searchArgs) <%.Pkg%>.SearchItemsParams {
+	p := <%.Pkg%>.SearchItemsParams{MinScore: s.MinScore}
+	if s.OrgID != nil {
+		p.FilterOrg, p.OrgID = true, *s.OrgID
+	}
+	if s.Statuses != nil {
+		p.FilterStatuses, p.Statuses = true, s.Statuses
+	}
+	if s.NamePrefix != nil {
+		p.FilterNamePrefix, p.NameLike = true, *s.NamePrefix+"%"
+	}
+	return p
+}
+
+func (a *<%.Pkg%>API) Search(ctx context.Context, s searchArgs) ([]item, error) {
+	r, err := a.q.SearchItems(ctx, toSearchParams<%.Title%>(s))
+	return fromItems<%.Title%>(r), err
+}
+
+// ReadInTx runs a search and a bulk lookup inside one transaction (so both go through the
+// transaction-scoped statement cache).
+func (a *<%.Pkg%>API) ReadInTx(ctx context.Context, s searchArgs, idl []int64) (found, byID []item, err error) {
+	err = a.q.InTx(ctx, nil, func(q *<%.Pkg%>.Queries) error {
+		r1, err := q.SearchItems(ctx, toSearchParams<%.Title%>(s))
+		if err != nil {
+			return err
+		}
+		r2, err := q.ItemsByIDs(ctx, idl)
+		if err != nil {
+			return err
+		}
+		found, byID = fromItems<%.Title%>(r1), fromItems<%.Title%>(r2)
+		return nil
+	})
+	return
+}
+func (a *<%.Pkg%>API) Page(ctx context.Context, orgID int64, scoreDesc, idDesc bool, limit int64) ([]item, error) {
+	sc, id := <%.Pkg%>.PageItemsOrderByScore.Asc(), <%.Pkg%>.PageItemsOrderByID.Asc()
+	if scoreDesc {
+		sc = <%.Pkg%>.PageItemsOrderByScore.Desc()
+	}
+	if idDesc {
+		id = <%.Pkg%>.PageItemsOrderByID.Desc()
+	}
+	order := <%.Pkg%>.OrderPageItems(sc, id)
+	var all []item
+	var cursor runtime.Seek
+	for {
+		page, err := a.q.PageItems(ctx, <%.Pkg%>.PageItemsParams{OrgID: orgID, After: cursor, Sort: order, Limit: limit})
+		if err != nil {
+			return nil, err
+		}
+		for _, r := range page {
+			all = append(all, item{r.ID, r.OrgID, r.Name, r.Score, r.Status})
+		}
+		if int64(len(page)) < limit {
+			return all, nil
+		}
+		cursor = <%.Pkg%>.SeekPageItems(page[len(page)-1])
+	}
+}
+func (a *<%.Pkg%>API) AddScore(ctx context.Context, orgID, delta int64, ids []int64) (int64, error) {
+	res, err := a.q.AddScore(ctx, delta, ids, orgID)
+	if err != nil {
+		return 0, err
+	}
+	return res.RowsAffected()
+}
+func (a *<%.Pkg%>API) Delete(ctx context.Context, ids []int64) (int64, error) {
+	res, err := a.q.DeleteItems(ctx, ids)
+	if err != nil {
+		return 0, err
+	}
+	return res.RowsAffected()
+}
+func (a *<%.Pkg%>API) Transfer(ctx context.Context, first, second, amount int64, pol runtime.TxRetryPolicy) error {
+	return a.q.InTx(ctx, nil, func(q *<%.Pkg%>.Queries) error {
+		if _, err := q.AddScoreOne(ctx, -amount, first); err != nil {
+			return err
+		}
+		_, err := q.AddScoreOne(ctx, amount, second)
+		return err
+	}, runtime.WithTxRetry(pol))
+}
+func (a *<%.Pkg%>API) PipelineTransfer(ctx context.Context, from, to, amount int64, pol runtime.TxRetryPolicy) error {
+	return a.q.PipelineTx(ctx, nil, func(p *<%.Pkg%>.Pipeline) error {
+		p.AddScoreOne(-amount, from).AssertRows(1)
+		p.AddScoreOne(amount, to).AssertRows(1)
+		return nil
+	}, runtime.WithTxRetry(pol))
+}
+func (a *<%.Pkg%>API) OrgStats(ctx context.Context, minItems int64, status string) ([]orgStat, error) {
+	rows, err := a.q.OrgStats(ctx, <%.Pkg%>.TopOrgsQuery(minItems), status)
+	out := make([]orgStat, len(rows))
+	for i, r := range rows {
+		out[i] = orgStat{r.OrgID, r.N, r.Total}
+	}
+	return out, err
+}
+func (a *<%.Pkg%>API) EachByIDs(ctx context.Context, ids []int64, fn func(item) bool) error {
+	for r, err := range a.q.ItemsByIDsSeq(ctx, ids) {
+		if err != nil {
+			return err
+		}
+		if !fn(item{r.ID, r.OrgID, r.Name, r.Score, r.Status}) {
+			return nil
+		}
+	}
+	return nil
+}
+func (a *<%.Pkg%>API) CacheStats() runtime.CacheStats { return a.q.CacheStats() }
+func (a *<%.Pkg%>API) Close() error                   { return a.q.Close() }

@@ -25,10 +25,16 @@ func (f *fz) scale() int {
 	if f.e.family == famSQLite {
 		n = 2
 	}
+	return n * envFuzzScale()
+}
+
+// envFuzzScale is SQLGEN_FUZZ_SCALE (default 1): the one knob that grows every fuzz suite, the wire-vs-sequential
+// pipeline fuzzers included (SQLGEN_FUZZ_SEED is the other one: it replays one failing seed).
+func envFuzzScale() int {
 	if v, err := strconv.Atoi(os.Getenv("SQLGEN_FUZZ_SCALE")); err == nil && v > 0 {
-		n *= v
+		return v
 	}
-	return n
+	return 1
 }
 
 // a + e: every one of the 256 combinations of FzSearch's eight {?Flag:} blocks (two passes: the default

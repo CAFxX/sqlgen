@@ -15,14 +15,14 @@ services:
     image: postgres:15
     environment: { POSTGRES_USER: postgres, POSTGRES_PASSWORD: password, POSTGRES_DB: sqlgen_test }
     command: ["postgres", "-c", "fsync=off", "-c", "max_connections=200"]
-    ports: ["${SQLGEN_PG15_PORT:-54315}:5432"]
+    ports: ["${SQLGEN_POSTGRES15_PORT:-54315}:5432"]
     healthcheck: { test: ["CMD-SHELL", "pg_isready -U postgres -d sqlgen_test"], interval: 3s, timeout: 5s, retries: 30 }
 
   postgres18:
     image: postgres:18
     environment: { POSTGRES_USER: postgres, POSTGRES_PASSWORD: password, POSTGRES_DB: sqlgen_test }
     command: ["postgres", "-c", "fsync=off", "-c", "max_connections=200"]
-    ports: ["${SQLGEN_PG18_PORT:-54318}:5432"]
+    ports: ["${SQLGEN_POSTGRES18_PORT:-54318}:5432"]
     healthcheck: { test: ["CMD-SHELL", "pg_isready -U postgres -d sqlgen_test"], interval: 3s, timeout: 5s, retries: 30 }
 
   cockroach:
@@ -33,7 +33,7 @@ services:
     # larger store, explicit cache / SQL memory budgets, and a 10 minute GC TTL, which the healthcheck sets
     # once (idempotent marker file) as soon as the node answers.
     command: ["start-single-node", "--insecure", "--store=type=mem,size=4GiB", "--cache=512MiB", "--max-sql-memory=512MiB"]
-    ports: ["${SQLGEN_CRDB_PORT:-54326}:26257"]
+    ports: ["${SQLGEN_COCKROACH_PORT:-54326}:26257"]
     healthcheck:
       test: ["CMD-SHELL", "[ -f /tmp/.sqlgen-gc ] || { cockroach sql --insecure -e 'ALTER RANGE default CONFIGURE ZONE USING gc.ttlseconds = 600' && touch /tmp/.sqlgen-gc; }; cockroach sql --insecure -e 'select 1'"]
       interval: 3s
