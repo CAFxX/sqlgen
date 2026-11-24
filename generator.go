@@ -3948,7 +3948,9 @@ func emitManyChunkedCollect(b *bytes.Buffer, cs *compiledStmt, paramsStructName,
 	emitArgsInit(b, cs, "\t", paramsStructName)
 	fmt.Fprintf(b, "\t_, colMask, flagMask, _ := compute%sKey(p)\n", cs.Name)
 	fmt.Fprintf(b, "\tmaxRows := q.cache.MaxRowsPerBatch(sqlDialect, %d, %d)\n", cs.ScalarParamCnt, cs.BatchArity)
-	fmt.Fprintf(b, "\tfirstChunk := q.cache.PlanBatchChunk(stmtID%s, colMask, flagMask, totalRows, maxRows, true)\n", cs.Name)
+	// isFirstChunk false: this call only decides whether an implicit transaction is needed (the size does not
+	// depend on it); the iterator collected below plans and counts the first chunk, so the size is counted once.
+	fmt.Fprintf(b, "\tfirstChunk := q.cache.PlanBatchChunk(stmtID%s, colMask, flagMask, totalRows, maxRows, false)\n", cs.Name)
 	b.WriteString("\ttargetQ := q\n")
 	b.WriteString("\tvar autoTx *sql.Tx\n")
 	b.WriteString("\tif q.txCache == nil && firstChunk < totalRows {\n")

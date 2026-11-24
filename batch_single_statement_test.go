@@ -228,3 +228,42 @@ func TestBatchOverTheLimitChunksInOneTransaction(t *testing.T) {
 		t.Fatalf("rows stored = %d, want %d", count, want)
 	}
 }
+
+// A size is counted once per call: the first call with a size runs it as a plain (unprepared) statement and only a
+// size that recurs is promoted and prepared. The slice form of a many statement used to plan its first chunk twice
+// (once to decide on the implicit transaction, once in the iterator it collects), so a one-off size was promoted
+// and prepared by its first and only call.
+func TestBatchOneOffSizeIsNotPrepared(t *testing.T) {
+	ctx := context.Background()
+	q, tr := setupTraceDB(t)
+	const n = 37
+	quads := make([]QuadInput, n)
+	users := make([]BatchUserInput, n)
+	ids := make([]int64, n)
+	for i := range quads {
+		quads[i] = QuadInput{ID: int64(i + 1), GroupKey: "g", Priority: 1, CreatedTs: 2}
+		users[i] = BatchUserInput{ID: int64(i + 1_000_001), Name: "n", Points: 3}
+		ids[i] = users[i].ID
+	}
+	for _, c := range []struct {
+		name string
+		run  func() error
+	}{
+		{"exec", func() error { _, err := q.InsertQuadBatch(ctx, quads); return err }},
+		{"many RETURNING", func() error { _, err := q.InsertUsersBatchReturning(ctx, users); return err }},
+		{"many IN list", func() error { _, err := q.ListUsersByIDs(ctx, ids); return err }},
+		{"many IN list again", func() error { _, err := q.ListUsersByIDs(ctx, ids); return err }},
+	} {
+		tr.reset()
+		if err := c.run(); err != nil {
+			t.Fatalf("%s: %v", c.name, err)
+		}
+		want := 0
+		if c.name == "many IN list again" {
+			want = 1 // the size recurred: promoted, prepared on this miss
+		}
+		if got := tr.get("prepare"); got != want {
+			t.Errorf("%s: %d prepares, want %d", c.name, got, want)
+		}
+	}
+}

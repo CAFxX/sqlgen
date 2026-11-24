@@ -748,7 +748,7 @@ func (q *Queries) ItemsByIDs(ctx context.Context, ids []int64, selectCols ...uin
 	}
 	_, colMask, flagMask, _ := computeItemsByIDsKey(p)
 	maxRows := q.cache.MaxRowsPerBatch(sqlDialect, 0, 1)
-	firstChunk := q.cache.PlanBatchChunk(stmtIDItemsByIDs, colMask, flagMask, totalRows, maxRows, true)
+	firstChunk := q.cache.PlanBatchChunk(stmtIDItemsByIDs, colMask, flagMask, totalRows, maxRows, false)
 	targetQ := q
 	var autoTx *sql.Tx
 	if q.txCache == nil && firstChunk < totalRows {
@@ -2734,7 +2734,7 @@ func (q *Queries) InsertItemsReturning(ctx context.Context, rows []NewItem, sele
 	}
 	_, colMask, flagMask, _ := computeInsertItemsReturningKey(p)
 	maxRows := q.cache.MaxRowsPerBatch(sqlDialect, 0, 5)
-	firstChunk := q.cache.PlanBatchChunk(stmtIDInsertItemsReturning, colMask, flagMask, totalRows, maxRows, true)
+	firstChunk := q.cache.PlanBatchChunk(stmtIDInsertItemsReturning, colMask, flagMask, totalRows, maxRows, false)
 	targetQ := q
 	var autoTx *sql.Tx
 	if q.txCache == nil && firstChunk < totalRows {
@@ -3051,7 +3051,7 @@ func (q *Queries) DeleteReturning(ctx context.Context, ids []int64, selectCols .
 	}
 	_, colMask, flagMask, _ := computeDeleteReturningKey(p)
 	maxRows := q.cache.MaxRowsPerBatch(sqlDialect, 0, 1)
-	firstChunk := q.cache.PlanBatchChunk(stmtIDDeleteReturning, colMask, flagMask, totalRows, maxRows, true)
+	firstChunk := q.cache.PlanBatchChunk(stmtIDDeleteReturning, colMask, flagMask, totalRows, maxRows, false)
 	targetQ := q
 	var autoTx *sql.Tx
 	if q.txCache == nil && firstChunk < totalRows {
@@ -3560,7 +3560,7 @@ func (q *Queries) NamesByIDs(ctx context.Context, ids []int64) ([]string, error)
 	}
 	_, colMask, flagMask, _ := computeNamesByIDsKey(p)
 	maxRows := q.cache.MaxRowsPerBatch(sqlDialect, 0, 1)
-	firstChunk := q.cache.PlanBatchChunk(stmtIDNamesByIDs, colMask, flagMask, totalRows, maxRows, true)
+	firstChunk := q.cache.PlanBatchChunk(stmtIDNamesByIDs, colMask, flagMask, totalRows, maxRows, false)
 	targetQ := q
 	var autoTx *sql.Tx
 	if q.txCache == nil && firstChunk < totalRows {
@@ -3806,7 +3806,7 @@ func (q *Queries) InsertedIDs(ctx context.Context, rows []NewItem) ([]int64, err
 	}
 	_, colMask, flagMask, _ := computeInsertedIDsKey(p)
 	maxRows := q.cache.MaxRowsPerBatch(sqlDialect, 0, 5)
-	firstChunk := q.cache.PlanBatchChunk(stmtIDInsertedIDs, colMask, flagMask, totalRows, maxRows, true)
+	firstChunk := q.cache.PlanBatchChunk(stmtIDInsertedIDs, colMask, flagMask, totalRows, maxRows, false)
 	targetQ := q
 	var autoTx *sql.Tx
 	if q.txCache == nil && firstChunk < totalRows {

@@ -362,7 +362,7 @@ func (q *Queries) GetInventoryBySKUs(ctx context.Context, keys []SKUKey, selectC
 	}
 	_, colMask, flagMask, _ := computeGetInventoryBySKUsKey(p)
 	maxRows := q.cache.MaxRowsPerBatch(sqlDialect, 0, 2)
-	firstChunk := q.cache.PlanBatchChunk(stmtIDGetInventoryBySKUs, colMask, flagMask, totalRows, maxRows, true)
+	firstChunk := q.cache.PlanBatchChunk(stmtIDGetInventoryBySKUs, colMask, flagMask, totalRows, maxRows, false)
 	targetQ := q
 	var autoTx *sql.Tx
 	if q.txCache == nil && firstChunk < totalRows {

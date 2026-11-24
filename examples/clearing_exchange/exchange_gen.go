@@ -1273,7 +1273,7 @@ func (q *Queries) IngestOrders(ctx context.Context, rows []OrderSubmission, epoc
 	}
 	_, colMask, flagMask, _ := computeIngestOrdersKey(p)
 	maxRows := q.cache.MaxRowsPerBatch(sqlDialect, 1, 9)
-	firstChunk := q.cache.PlanBatchChunk(stmtIDIngestOrders, colMask, flagMask, totalRows, maxRows, true)
+	firstChunk := q.cache.PlanBatchChunk(stmtIDIngestOrders, colMask, flagMask, totalRows, maxRows, false)
 	targetQ := q
 	var autoTx *sql.Tx
 	if q.txCache == nil && firstChunk < totalRows {
@@ -1627,7 +1627,7 @@ func (q *Queries) CancelOrdersByIDs(ctx context.Context, cancelSeq int64, firmID
 	}
 	_, colMask, flagMask, _ := computeCancelOrdersByIDsKey(p)
 	maxRows := q.cache.MaxRowsPerBatch(sqlDialect, 2, 1)
-	firstChunk := q.cache.PlanBatchChunk(stmtIDCancelOrdersByIDs, colMask, flagMask, totalRows, maxRows, true)
+	firstChunk := q.cache.PlanBatchChunk(stmtIDCancelOrdersByIDs, colMask, flagMask, totalRows, maxRows, false)
 	targetQ := q
 	var autoTx *sql.Tx
 	if q.txCache == nil && firstChunk < totalRows {

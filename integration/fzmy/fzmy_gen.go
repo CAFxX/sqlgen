@@ -2710,7 +2710,7 @@ func (q *Queries) FzByKeys(ctx context.Context, keys []FzKey, selectCols ...uint
 	}
 	_, colMask, flagMask, _ := computeFzByKeysKey(p)
 	maxRows := q.cache.MaxRowsPerBatch(sqlDialect, 0, 2)
-	firstChunk := q.cache.PlanBatchChunk(stmtIDFzByKeys, colMask, flagMask, totalRows, maxRows, true)
+	firstChunk := q.cache.PlanBatchChunk(stmtIDFzByKeys, colMask, flagMask, totalRows, maxRows, false)
 	targetQ := q
 	var autoTx *sql.Tx
 	if q.txCache == nil && firstChunk < totalRows {
@@ -3064,7 +3064,7 @@ func (q *Queries) FzByIDs(ctx context.Context, ids []int64, selectCols ...uint64
 	}
 	_, colMask, flagMask, _ := computeFzByIDsKey(p)
 	maxRows := q.cache.MaxRowsPerBatch(sqlDialect, 0, 1)
-	firstChunk := q.cache.PlanBatchChunk(stmtIDFzByIDs, colMask, flagMask, totalRows, maxRows, true)
+	firstChunk := q.cache.PlanBatchChunk(stmtIDFzByIDs, colMask, flagMask, totalRows, maxRows, false)
 	targetQ := q
 	var autoTx *sql.Tx
 	if q.txCache == nil && firstChunk < totalRows {
@@ -4912,7 +4912,7 @@ func (q *Queries) FzInsertRet(ctx context.Context, rows []FzNew, selectCols ...u
 	}
 	_, colMask, flagMask, _ := computeFzInsertRetKey(p)
 	maxRows := q.cache.MaxRowsPerBatch(sqlDialect, 0, 13)
-	firstChunk := q.cache.PlanBatchChunk(stmtIDFzInsertRet, colMask, flagMask, totalRows, maxRows, true)
+	firstChunk := q.cache.PlanBatchChunk(stmtIDFzInsertRet, colMask, flagMask, totalRows, maxRows, false)
 	targetQ := q
 	var autoTx *sql.Tx
 	if q.txCache == nil && firstChunk < totalRows {
@@ -5243,7 +5243,7 @@ func (q *Queries) FzDeleteRet(ctx context.Context, p FzDeleteRetParams) ([]FzOut
 	totalRows := len(p.IDs)
 	_, colMask, flagMask, _ := computeFzDeleteRetKey(p)
 	maxRows := q.cache.MaxRowsPerBatch(sqlDialect, 1, 1)
-	firstChunk := q.cache.PlanBatchChunk(stmtIDFzDeleteRet, colMask, flagMask, totalRows, maxRows, true)
+	firstChunk := q.cache.PlanBatchChunk(stmtIDFzDeleteRet, colMask, flagMask, totalRows, maxRows, false)
 	targetQ := q
 	var autoTx *sql.Tx
 	if q.txCache == nil && firstChunk < totalRows {

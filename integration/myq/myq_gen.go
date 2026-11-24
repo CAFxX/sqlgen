@@ -724,7 +724,7 @@ func (q *Queries) ItemsByIDs(ctx context.Context, ids []int64, selectCols ...uin
 	}
 	_, colMask, flagMask, _ := computeItemsByIDsKey(p)
 	maxRows := q.cache.MaxRowsPerBatch(sqlDialect, 0, 1)
-	firstChunk := q.cache.PlanBatchChunk(stmtIDItemsByIDs, colMask, flagMask, totalRows, maxRows, true)
+	firstChunk := q.cache.PlanBatchChunk(stmtIDItemsByIDs, colMask, flagMask, totalRows, maxRows, false)
 	targetQ := q
 	var autoTx *sql.Tx
 	if q.txCache == nil && firstChunk < totalRows {
@@ -2616,7 +2616,7 @@ func (q *Queries) NamesByIDs(ctx context.Context, ids []int64) ([]string, error)
 	}
 	_, colMask, flagMask, _ := computeNamesByIDsKey(p)
 	maxRows := q.cache.MaxRowsPerBatch(sqlDialect, 0, 1)
-	firstChunk := q.cache.PlanBatchChunk(stmtIDNamesByIDs, colMask, flagMask, totalRows, maxRows, true)
+	firstChunk := q.cache.PlanBatchChunk(stmtIDNamesByIDs, colMask, flagMask, totalRows, maxRows, false)
 	targetQ := q
 	var autoTx *sql.Tx
 	if q.txCache == nil && firstChunk < totalRows {

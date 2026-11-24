@@ -700,7 +700,7 @@ func (q *Queries) ListUsersByIDs(ctx context.Context, ids []int64, selectCols ..
 	}
 	_, colMask, flagMask, _ := computeListUsersByIDsKey(p)
 	maxRows := q.cache.MaxRowsPerBatch(sqlDialect, 0, 1)
-	firstChunk := q.cache.PlanBatchChunk(stmtIDListUsersByIDs, colMask, flagMask, totalRows, maxRows, true)
+	firstChunk := q.cache.PlanBatchChunk(stmtIDListUsersByIDs, colMask, flagMask, totalRows, maxRows, false)
 	targetQ := q
 	var autoTx *sql.Tx
 	if q.txCache == nil && firstChunk < totalRows {
@@ -2012,7 +2012,7 @@ func (q *Queries) InsertUsersBatchReturning(ctx context.Context, rows []BatchUse
 	}
 	_, colMask, flagMask, _ := computeInsertUsersBatchReturningKey(p)
 	maxRows := q.cache.MaxRowsPerBatch(sqlDialect, 0, 3)
-	firstChunk := q.cache.PlanBatchChunk(stmtIDInsertUsersBatchReturning, colMask, flagMask, totalRows, maxRows, true)
+	firstChunk := q.cache.PlanBatchChunk(stmtIDInsertUsersBatchReturning, colMask, flagMask, totalRows, maxRows, false)
 	targetQ := q
 	var autoTx *sql.Tx
 	if q.txCache == nil && firstChunk < totalRows {
@@ -2695,7 +2695,7 @@ func (q *Queries) UserIDsNearScore(ctx context.Context, score int64, ids []int64
 	}
 	_, colMask, flagMask, _ := computeUserIDsNearScoreKey(p)
 	maxRows := q.cache.MaxRowsPerBatch(sqlDialect, 3, 1)
-	firstChunk := q.cache.PlanBatchChunk(stmtIDUserIDsNearScore, colMask, flagMask, totalRows, maxRows, true)
+	firstChunk := q.cache.PlanBatchChunk(stmtIDUserIDsNearScore, colMask, flagMask, totalRows, maxRows, false)
 	targetQ := q
 	var autoTx *sql.Tx
 	if q.txCache == nil && firstChunk < totalRows {
