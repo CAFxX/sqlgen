@@ -2,6 +2,7 @@ package runtime
 
 import (
 	"errors"
+	"fmt"
 	"iter"
 	"slices"
 	"testing"
@@ -87,6 +88,22 @@ func TestCollectAppendToEach(t *testing.T) {
 		return nil
 	}); err != nil || !slices.Equal(seen, []int{1, 2, 3}) {
 		t.Fatalf("Each with ErrStop = %v, %v", seen, err)
+	}
+	// A wrapped ErrStop stops just as cleanly.
+	seen = nil
+	if err := Each(seqOf(rows, -1, nil), func(v int) error {
+		seen = append(seen, v)
+		if v == 2 {
+			return fmt.Errorf("done early: %w", ErrStop)
+		}
+		return nil
+	}); err != nil || !slices.Equal(seen, []int{1, 2}) {
+		t.Fatalf("Each with wrapped ErrStop = %v, %v", seen, err)
+	}
+	// ErrStop is a callback-only signal: a sequence error wrapping it is still returned.
+	seqStop := fmt.Errorf("driver: %w", ErrStop)
+	if err := Each(seqOf(rows, 1, seqStop), func(int) error { return nil }); err != seqStop {
+		t.Fatalf("Each on a sequence failing with a wrapped ErrStop = %v", err)
 	}
 	// An error from the sequence is returned and the callback is not called for it.
 	seen = nil

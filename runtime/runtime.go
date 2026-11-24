@@ -683,8 +683,9 @@ func MapSeq[In, Out any](seq iter.Seq2[In, error], fn func(In) Out) iter.Seq2[Ou
 	}
 }
 
-// ErrStop is returned by the callback of Each to end the iteration early without an error: Each then
-// returns nil. It is never returned by Each itself.
+// ErrStop is returned by the callback of Each (as is or wrapped) to end the iteration early without an
+// error: Each then returns nil. Only the callback can stop this way: a sequence error wrapping ErrStop is
+// returned as is. It is never returned by Each itself.
 var ErrStop = errors.New("sqlgen: stop iteration")
 
 // Collect gathers every row of seq into a new slice. It returns (nil, err) at the first error, so a
@@ -721,8 +722,8 @@ func AppendTo[T any](dst []T, seq iter.Seq2[T, error]) ([]T, error) {
 }
 
 // Each calls fn for every row of seq in order and stops at the first error: the one seq reported, or the
-// one fn returned (returned unchanged). A nil seq or fn is ErrNilArgument. fn may return ErrStop to end the iteration early; Each then
-// returns nil. A panic in fn propagates after the rows of the iteration have been released. Each is the
+// one fn returned (returned unchanged). A nil seq or fn is ErrNilArgument. fn may return ErrStop (or an
+// error wrapping it) to end the iteration early; Each then returns nil. A panic in fn propagates after the rows of the iteration have been released. Each is the
 // callback form of ranging over the sequence; it allocates nothing of its own.
 func Each[T any](seq iter.Seq2[T, error], fn func(T) error) error {
 	if seq == nil || fn == nil {
@@ -731,7 +732,9 @@ func Each[T any](seq iter.Seq2[T, error], fn func(T) error) error {
 	var failure error
 	seq(func(v T, err error) bool {
 		if err == nil {
-			err = fn(v)
+			if err = fn(v); errors.Is(err, ErrStop) {
+				return false
+			}
 		}
 		if err != nil {
 			failure = err
@@ -739,9 +742,6 @@ func Each[T any](seq iter.Seq2[T, error], fn func(T) error) error {
 		}
 		return true
 	})
-	if failure == ErrStop {
-		return nil
-	}
 	return failure
 }
 

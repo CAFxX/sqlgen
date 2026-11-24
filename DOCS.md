@@ -488,7 +488,7 @@ For a `kind: many` statement `<Name>` there are exactly two methods:
 The other consumption styles are helpers over the iterator, in `runtime`, and work for every `iter.Seq2[T, error]` (every `<Name>Seq`, `<Name>StreamSeq`, `runtime.MapSeq2(...)`):
 - `runtime.Collect(seq) ([]T, error)` — the rows as a new slice (what `q.<Name>` does). On an error it returns `(nil, err)`, never a partial slice.
 - `runtime.AppendTo(dst []T, seq) ([]T, error)` — appends the rows to the caller's slice (like `append`: use the returned slice, which reuses `dst`'s backing array while its capacity suffices; pass `buf[:0]` to reuse a buffer across calls and avoid growing a new slice per call). On an error it returns `(dst, err)` with `dst` exactly as you passed it, so the data you already held is never dropped. It allocates nothing beyond what `append` grows.
-- `runtime.Each(seq, fn func(T) error) error` — invokes `fn` for each row, in order. The first error of the sequence or of `fn` stops the iteration and is returned unchanged; `fn` returns `runtime.ErrStop` to end the iteration early without an error (`Each` then returns `nil`). A nil `seq` or `fn` is `runtime.ErrNilArgument`. A panic in `fn` still releases the rows.
+- `runtime.Each(seq, fn func(T) error) error` — invokes `fn` for each row, in order. The first error of the sequence or of `fn` stops the iteration and is returned unchanged; `fn` returns `runtime.ErrStop` (or an error wrapping it) to end the iteration early without an error (`Each` then returns `nil`). A nil `seq` or `fn` is `runtime.ErrNilArgument`. A panic in `fn` still releases the rows.
 
 ```go
 rows, err := runtime.AppendTo(buf[:0], q.ListOpenOrdersSeq(ctx, symbol))        // reuse a buffer
