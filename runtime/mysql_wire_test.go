@@ -140,6 +140,35 @@ func TestMySQLArgumentsThatCannotBeInlined(t *testing.T) {
 	}
 }
 
+// On a server that reads _charset 0x... as a number (TiDB) a string that needs that form is not inlined;
+// every other string, and bytes, still are.
+func TestMySQLNormalizeHexLiteralIsNumber(t *testing.T) {
+	for _, c := range []struct {
+		charset string
+		arg     any
+		inline  bool
+	}{
+		{"", "plain", true},
+		{"", "", true},
+		{"", "it's", true},
+		{"", `a\b`, false},
+		{"", []byte(`a\b`), true},
+		{"gbk", "plain", false},
+		{"gbk", "", true},
+		{"latin1", `\`, false},
+	} {
+		fl := &MySQLFlavor{Charset: c.charset, HexLiteralIsNumber: true}
+		_, err := fl.normalize([]any{c.arg})
+		if got := err == nil; got != c.inline || (err != nil && !errors.Is(err, ErrWireNotApplicable)) {
+			t.Errorf("%s %q: normalize err = %v, want inlined=%v", c.charset, c.arg, err, c.inline)
+		}
+		fl.HexLiteralIsNumber = false
+		if _, err := fl.normalize([]any{c.arg}); err != nil {
+			t.Errorf("%s %q without HexLiteralIsNumber: %v", c.charset, c.arg, err)
+		}
+	}
+}
+
 func TestMySQLNormalizeAllocatesOnlyWhenNeeded(t *testing.T) {
 	fl := &MySQLFlavor{}
 	args := []any{int64(1), "x", []byte("b"), nil, true, 2.5, time.Time{}, uint64(3)}

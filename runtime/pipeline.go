@@ -1653,7 +1653,7 @@ func IsRetryableTxError(err error, duringCommit bool) bool {
 	var cd interface{ Code() int }
 	if errors.As(err, &cd) {
 		code := cd.Code()
-		if code == 1213 || code == 1205 {
+		if retryableMySQLNumber(code) {
 			return true
 		}
 		if lowByte := code & 0xFF; lowByte == 5 || lowByte == 6 { // SQLITE_BUSY / SQLITE_LOCKED (+ extended codes)
@@ -1662,7 +1662,7 @@ func IsRetryableTxError(err error, duringCommit bool) bool {
 	}
 	var num interface{ Number() uint16 }
 	if errors.As(err, &num) {
-		if n := num.Number(); n == 1213 || n == 1205 {
+		if retryableMySQLNumber(int(num.Number())) {
 			return true
 		}
 	}
@@ -1681,10 +1681,22 @@ func IsRetryableTxError(err error, duringCommit bool) bool {
 	return false
 }
 
+// retryableMySQLNumber: MySQL/MariaDB error numbers that are transient and safe to retry: 1213 deadlock,
+// 1205 lock wait timeout, and TiDB's 9007 (write conflict, "try again later") and 8022 ("KV error safe to
+// retry", raised at commit).
+func retryableMySQLNumber(n int) bool {
+	switch n {
+	case 1213, 1205, 9007, 8022:
+		return true
+	}
+	return false
+}
+
 var transientErrorMarkers = []string{
 	"sqlstate 40001", "sqlstate 40p01", "sqlstate 55p03", // PostgreSQL / CockroachDB
 	"deadlock detected", "could not serialize access", "restart transaction", // PostgreSQL / CockroachDB
 	"error 1213 (", "error 1205 (", // MySQL / MariaDB: deadlock, lock wait timeout
+	"error 9007 (", "error 8022 (", "[try again later]", // TiDB: write conflict, KV error safe to retry
 	"deadlock found when trying to get lock", "lock wait timeout exceeded",
 	"record has changed since last read",                                             // MariaDB 11.6+ (innodb_snapshot_isolation): error 1020, "try restarting transaction"
 	"sqlite_busy", "sqlite_locked", "database is locked", "database table is locked", // SQLite

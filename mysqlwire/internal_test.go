@@ -259,6 +259,21 @@ func TestHasReturning(t *testing.T) {
 	}
 }
 
+func TestIsTiDB(t *testing.T) {
+	for v, want := range map[string]bool{
+		"8.0.11-TiDB-v8.5.8":            true,
+		"5.7.25-TiDB-v6.5.0-serverless": true,
+		"8.4.0":                         false,
+		"10.11.2-MariaDB":               false,
+		"tidb":                          false,
+		"":                              false,
+	} {
+		if got := isTiDB(v); got != want {
+			t.Errorf("isTiDB(%q) = %v, want %v", v, got, want)
+		}
+	}
+}
+
 func TestSummaryIntAndAsString(t *testing.T) {
 	for _, tc := range []struct {
 		in   driver.Value
@@ -353,7 +368,7 @@ func TestProbeVerdicts(t *testing.T) {
 			if (err != nil) != tc.wantErr {
 				t.Fatalf("probe err = %v, want error: %v", err, tc.wantErr)
 			}
-			ok, ret := c.capable()
+			ok, ret, _ := c.capable()
 			if c.state != tc.wantState || ok != (tc.wantState == capYes) || ret != tc.returning {
 				t.Fatalf("state = %v capable = %v returning = %v", c.state, ok, ret)
 			}
@@ -394,7 +409,7 @@ func TestProbeIsRunOncePerConnectorUnderConcurrency(t *testing.T) {
 	if n.Load() != 1 {
 		t.Fatalf("the probe ran %d times", n.Load())
 	}
-	if ok, ret := c.capable(); !ok || !ret {
+	if ok, ret, _ := c.capable(); !ok || !ret {
 		t.Fatalf("capable = %v, %v", ok, ret)
 	}
 }

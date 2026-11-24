@@ -101,6 +101,7 @@ type connector struct {
 	mu        sync.Mutex
 	state     capState
 	returning bool // the server has INSERT/DELETE ... RETURNING (MariaDB 10.5+)
+	tidb      bool // the server is TiDB (runtime.MySQLFlavor.HexLiteralIsNumber)
 }
 
 func (c *connector) Driver() driver.Driver { return c.base.Driver() }
@@ -166,14 +167,18 @@ func (c *connector) probe(ctx context.Context, cn *conn, version string) error {
 	}
 	c.state = capYes
 	c.returning = hasReturning(version)
+	c.tidb = isTiDB(version)
 	return nil
 }
 
-func (c *connector) capable() (ok, returning bool) {
+func (c *connector) capable() (ok, returning, tidb bool) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	return c.state == capYes, c.returning
+	return c.state == capYes, c.returning, c.tidb
 }
+
+// isTiDB reports whether the server version string names TiDB (e.g. "8.0.11-TiDB-v8.5.8").
+func isTiDB(version string) bool { return strings.Contains(strings.ToLower(version), "-tidb-") }
 
 // hasReturning reports whether the server version string names a MariaDB that has INSERT/DELETE ...
 // RETURNING (10.5 and later). MySQL has none.
@@ -386,14 +391,14 @@ func (c *conn) ExecTxPipeline(ctx context.Context, txOpts *sql.TxOptions, ops []
 }
 
 func (c *conn) exec(ctx context.Context, txOpts *sql.TxOptions, ops []runtime.PipelineOp) error {
-	ok, returning := c.c.capable()
+	ok, returning, tidb := c.c.capable()
 	if !c.pipelining || !ok {
 		return fmt.Errorf("mysqlwire: the server does not run the pipeline statement sequences: %w", runtime.ErrWireNotApplicable)
 	}
 	if mc, isMy := c.Conn.(interface{ IsValid() bool }); isMy && !mc.IsValid() {
 		return driver.ErrBadConn
 	}
-	flavor := runtime.MySQLFlavor{Loc: c.c.loc, Charset: c.charset, Returning: returning}
+	flavor := runtime.MySQLFlavor{Loc: c.c.loc, Charset: c.charset, Returning: returning, HexLiteralIsNumber: tidb}
 	batch, err := runtime.RenderMySQLBatch(ops, runtime.MySQLRenderOptions{Flavor: &flavor, InTx: c.inTx, TxOpts: txOpts})
 	if err != nil {
 		return err

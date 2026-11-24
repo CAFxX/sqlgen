@@ -49,6 +49,11 @@ type MySQLFlavor struct {
 	// Returning reports that INSERT / DELETE ... RETURNING exists (MariaDB 10.5+). Without it an
 	// operation with result columns that is not a SELECT is not applicable to this flavor.
 	Returning bool
+	// HexLiteralIsNumber reports that the server reads an introduced hex string literal (_utf8mb4 0x...) as
+	// a number in a numeric, temporal or JSON context (TiDB ignores the introducer there, where MySQL and
+	// MariaDB convert the string). A string that would need that form (see WriteLiteral) is then not
+	// inlined: normalize fails with ErrWireNotApplicable and the pipeline runs sequentially.
+	HexLiteralIsNumber bool
 }
 
 const unsafeBackslashCharsets = "big5 cp932 gb2312 gbk sjis gb18030"
@@ -163,6 +168,10 @@ func (fl *MySQLFlavor) normalize(args []any) ([]any, error) {
 				}
 				if y := x.In(loc).Year(); !x.IsZero() && (y < 0 || y > 9999) {
 					err = errors.New("year out of range")
+				}
+			case string:
+				if fl.HexLiteralIsNumber && x != "" && !fl.plainQuotable(x) {
+					err = errors.New("the string needs a hex literal, which this server reads as a number")
 				}
 			}
 		}
