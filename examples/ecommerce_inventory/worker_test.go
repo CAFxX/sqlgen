@@ -62,7 +62,7 @@ func TestEcommerceInventoryWorkerEndToEnd(t *testing.T) {
 	if lookupKeys[0].WarehouseID != 3 || lookupKeys[0].SKU != "SKU-0050" {
 		t.Fatalf("caller lookupKeys slice was mutated: %+v", lookupKeys)
 	}
-	// Promote 2-key batch shape then run a 5-key batch (sorted and unsorted) to exercise multi-chunk BatchInto/BatchSeq
+	// Promote 2-key batch shape then run a 5-key batch (sorted and unsorted) to exercise multi-chunk reads through the base method and Seq
 	for range 2 {
 		if _, err := worker.LookupInventoryBatch(ctx, lookupKeys[:2]); err != nil {
 			t.Fatalf("2-key LookupInventoryBatch: %v", err)
@@ -200,7 +200,7 @@ func TestEcommerceInventoryWorkerEndToEnd(t *testing.T) {
 		t.Fatalf("total archived_orders = %d (want 2000), err=%v", totalArchivedRows, err)
 	}
 
-	// 4. Exercise remaining generated methods, Stream/StreamSeq, BatchEach, Pipeline, and error paths
+	// 4. Exercise remaining generated methods, Stream/StreamSeq, Pipeline, and error paths
 	if _, err := q.GetInventoryBySKUs(ctx, sortedKeys[:2]); err != nil {
 		t.Fatalf("GetInventoryBySKUs(sorted): %v", err)
 	}

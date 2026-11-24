@@ -934,7 +934,7 @@ func exerciseRemainingExchangeVariants(t *testing.T, ctx context.Context, mode s
 		_ = p.CountComplianceNotices("audit_ping")
 		return p.Flush()
 	}); err != nil {
-		t.Fatalf("[%s] InTxOpts pipeline: %v", mode, err)
+		t.Fatalf("[%s] InTx(opts) pipeline: %v", mode, err)
 	}
 
 	errStop := errors.New("stop-iter")

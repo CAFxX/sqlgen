@@ -427,7 +427,7 @@ func TestSaaSMultitenantPortalEndToEnd(t *testing.T) {
 		t.Fatalf("expected ErrEmptySliceParam from nested subquery, got %v", err)
 	}
 
-	// Pipeline, PipelineTx, InTxOpts, WithPrepared, WithTx, Cache, CacheStats
+	// Pipeline, PipelineTx, InTx with options, WithPrepared, WithTx, Cache, CacheStats
 	_ = New(db, runtime.WithCache(nil))
 	_ = q.Cache()
 	_ = q.CacheStats()

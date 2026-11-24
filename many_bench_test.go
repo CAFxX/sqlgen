@@ -89,7 +89,7 @@ func repeatComma(n int) []byte {
 
 // Pins the allocation budget of the generated read path: reading 50 rows through AppendTo over <Name>Seq into
 // a reused buffer costs about one allocation per row more than hand-written database/sql (425 vs 374 at the
-// time of writing, identical to the former <Name>Into), and the slice form only adds the result slice.
+// time of writing), and the slice form only adds the result slice.
 func TestManyCallAllocationBudget(t *testing.T) {
 	db, q := setupE2EDB(t)
 	ctx := context.Background()

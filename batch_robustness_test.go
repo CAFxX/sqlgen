@@ -28,14 +28,6 @@ func TestRowIteratorsReleaseResourcesWhenUserCodePanics(t *testing.T) {
 		{"Each", func(q *Queries) {
 			_ = runtime.Each(q.ListUsersByIDsSeq(ctx, ids), func(User) error { panic("boom") })
 		}},
-		{"BatchSeq", func(q *Queries) {
-			for range q.ListUsersByIDsSeq(ctx, ids) {
-				panic("boom")
-			}
-		}},
-		{"BatchEach", func(q *Queries) {
-			_ = runtime.Each(q.ListUsersByIDsSeq(ctx, ids), func(User) error { panic("boom") })
-		}},
 		{"StreamSeq", func(q *Queries) {
 			rows := []BatchUserInput{{ID: 10, Name: "a", Points: 1}, {ID: 11, Name: "b", Points: 2}}
 			for range q.InsertUsersBatchReturningStreamSeq(ctx, runtime.FromSlice(rows)) {

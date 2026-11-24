@@ -888,13 +888,13 @@ func TestE2EAdaptiveMultiRowBatchExecution(t *testing.T) {
 	yielded := 0
 	for row, err := range q.InsertUsersBatchReturningSeq(ctx, makeInsertBatch(1, 300)) {
 		if err != nil {
-			t.Fatalf("BatchSeq error: %v", err)
+			t.Fatalf("Seq error: %v", err)
 		}
 		yielded++
 		if yielded == 260 {
 			var cnt int
 			if err := db.QueryRowContext(ctx, `SELECT COUNT(*) FROM batch_users WHERE id = ?`, row.ID).Scan(&cnt); err != nil {
-				t.Fatalf("nested query inside BatchSeq loop failed: %v", err)
+				t.Fatalf("nested query inside Seq loop failed: %v", err)
 			}
 			break
 		}
@@ -904,7 +904,7 @@ func TestE2EAdaptiveMultiRowBatchExecution(t *testing.T) {
 		t.Fatal(err)
 	}
 	if countAfterBreak < 256 {
-		t.Fatalf("expected at least 256 already-executed chunk rows to persist after early break in BatchSeq, got %d", countAfterBreak)
+		t.Fatalf("expected at least 256 already-executed chunk rows to persist after early break in Seq, got %d", countAfterBreak)
 	}
 
 	errBoom := errors.New("rollback test")

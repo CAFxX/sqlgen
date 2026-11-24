@@ -80,15 +80,23 @@ larger than MySQL's `max_allowed_packet`).
 ## Development
 
 ```sh
-make check            # gofmt, go vet, generated code up to date
+make check            # gofmt, go vet (every module), fixtures and generated code up to date
+make gen              # regenerate the engine fixtures (integration/fixtures templates), then every generated package
 make test             # hermetic tests (SQLite + mock driver), race detector
-make engines-up       # start every real engine in containers (docker compose)
-make test-engines     # integration suite against all of them (ENGINES=postgres18,mysql84 to select)
-make test-pgxwire ENGINES=postgres18   # the pgxwire driver's own tests (PostgreSQL / CockroachDB)
-make test-mysqlwire ENGINES=mysql84    # the mysqlwire driver's own tests (MySQL / MariaDB)
-make bench-engines ENGINES=postgres18   # generated call vs hand-written database/sql, PipelineTx wire vs sequential
+make engines-up       # start every real engine in containers (docker compose); ENGINES=postgres18,mysql84 to select
+make test-engines     # integration suite + both wire drivers against all of them (same ENGINES selection)
+make test-integration ENGINES=postgres18   # only the integration module (also what each CI engine job runs)
+make test-pgxwire ENGINES=postgres18       # the pgxwire driver's own tests (PostgreSQL / CockroachDB)
+make test-mysqlwire ENGINES=mysql84        # the mysqlwire driver's own tests (MySQL / MariaDB)
+make bench-engines ENGINES=postgres18      # generated call vs hand-written database/sql, PipelineTx wire vs sequential
 make engines-down
 ```
+
+Engines are named once everywhere (compose service, `ENGINES`/`SQLGEN_ENGINES`, CI matrix, `SQLGEN_<NAME>_DSN` / `_PORT`
+variables): `postgres15 postgres18 cockroach mysql84 mysql97 mariadb1011 mariadb123`, plus the in-process `sqlite`.
+The per-engine fixtures (`integration/{pgq,myq,mdbq,fzpg,fzmy,fzsl}/sqlgen.yaml` and their Go adapters) are rendered from
+one template each by `make gen`; never edit them by hand. `SQLGEN_FUZZ_SCALE=<n>` grows every fuzz suite and
+`SQLGEN_FUZZ_SEED=<n>` replays one failing seed.
 
 The real-engine suite lives in the nested module `integration/` and the pipeline drivers in `pgxwire/` (pgx) and
 `mysqlwire/` (go-sql-driver/mysql), so the main module depends only on `yaml` and (for its tests) `sqlite`.

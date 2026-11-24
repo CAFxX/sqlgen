@@ -385,7 +385,7 @@ func runFintechLedgerSuite(t *testing.T, mode string, db *sql.DB) {
 		t.Fatalf("[%s] individual account sum = %d, want %d", mode, sumIndividual, expectedSupply)
 	}
 
-	// Exercise Stream, StreamSeq, Query currying, WithPrepared, WithTx, InTxOpts, CacheStats
+	// Exercise Stream, StreamSeq, Query currying, WithPrepared, WithTx, InTx with options, CacheStats
 	// First, test empty slice error paths and not-found GetAccount error path
 	if res, err := q.UpsertAccountBalances(ctx, nil); err != nil {
 		t.Fatalf("[%s] UpsertAccountBalances(nil): %v", mode, err)
@@ -494,7 +494,7 @@ func runFintechLedgerSuite(t *testing.T, mode string, db *sql.DB) {
 		})
 		return p.Flush()
 	}); err != nil {
-		t.Fatalf("[%s] InTxOpts pipeline: %v", mode, err)
+		t.Fatalf("[%s] InTx(opts) pipeline: %v", mode, err)
 	}
 	tx, err := db.BeginTx(ctx, nil)
 	if err != nil {

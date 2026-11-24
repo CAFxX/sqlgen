@@ -1,7 +1,7 @@
 package sqlgen_test
 
-// Row counts and results at chunk boundaries (1, 255..257, 4096..4097, 8192.., 20000) through Batch, Stream,
-// BatchSeq and RETURNING variants with shuffled input (global presort).
+// Row counts and results at chunk boundaries (1, 255..257, 4096..4097, 8192.., 20000) through the base method, Stream,
+// Seq and RETURNING variants with shuffled input (global presort).
 
 import (
 	"context"

@@ -4,6 +4,31 @@
 
 ---
 
+## Surface at a glance
+
+Everything below is the whole surface; each item has one spelling and the sections that follow detail it.
+
+- **YAML file keys**: `package`, `out`, `dialect` (`postgres` | `cockroachdb` | `mysql` | `mariadb` | `sqlite`, required), `extra_imports`, `statements`.
+- **Statement keys**: `name`, `kind` (`exec` | `one` | `many` | `subquery`), `sql`, `result_type` (names the row struct; never a predeclared type), `args` (`auto` | `positional` | `struct`).
+- **Token grammar inside `sql`** (placeholders are never written by hand):
+  - output column `col:Type`, `expr AS alias:Type`, nullable `*Type`; one unconditional column and no `result_type` returns the value itself.
+  - parameter `:name:Type`, repeat of an earlier parameter `:name`, 1D slice `:name:[]Type` (optionally `ASC` / `DESC` to presort), tuple slice `:rows:[]Struct(Field:Type [ASC|DESC] [::cast], ...)`.
+  - directives `:name:sqlgen.Seek`, `:name:sqlgen.Order(col, ...)`, `:name:sqlgen.Query`; optional block `{?Flag: ... }` (switched by a `Flag` bool; its columns and parameters join the statement).
+- **Generated per statement kind** (`q` is a `*Queries`, `p` a `*Pipeline`):
+  - `exec`: `q.Name(ctx, ...) (sql.Result, error)`; with a tuple slice also `q.NameStream(ctx, seq, ...)`. A one-collection statement is chunked by the base method.
+  - `one`: `q.Name(ctx, ...) (Row, error)`. `many`: `q.Name(ctx, ...) ([]Row, error)` and `q.NameSeq(ctx, ...) iter.Seq2[Row, error]`; with a tuple slice also `NameStream` / `NameStreamSeq`.
+  - every kind except `exec`: package-level `NameQuery(...) runtime.Query` (compose into `:sub:sqlgen.Query` slots); every non-`subquery` kind: `p.Name(...)` returning a future (`ExecFuture`, `RowFuture[T]`, `SliceFuture[T]`).
+  - types and helpers: `Row` struct, `NameParams` (struct style), `<Row>Col<X>` / `<Row>ColsAll` projection masks (trailing `selectCols ...uint64`, or a `SelectCols` field), and per statement with `sqlgen.Order`: `NameOrderBy<Col>.Asc()/.Desc()`, `OrderName(...)`, `SeekName(row)`.
+  - on every `*Queries`: `WithTx(tx)`, `InTx(ctx, opts, fn, ...runtime.TxOption)`, `Pipeline(ctx)`, `PipelineTx(ctx, opts, fn, ...)`, `WithPrepared(bool)`, `Cache()`, `CacheStats()`, `Close()`; package-level `New(db, ...runtime.CacheOption)`.
+- **Runtime user API** (import `github.com/CAFxX/sqlgen/runtime`; the generated file declares no aliases):
+  - reading: `Collect`, `AppendTo`, `Each` (+ `ErrStop`), `FromSlice`, `FromSeq`, `MapSeq2`.
+  - values: `Query`, `Order`, `Seek`, `NewSeek`, `OrCols`.
+  - transactions: `WithTxRetry`, `DefaultRetryPolicy`, `TxRetryPolicy`.
+  - pipelines: futures (`ExecFuture`, `RowFuture`, `SliceFuture`: `Rows{Eq,Gt,Ge,Lt,Le}`, `Found`, `NotFound`, `AssertRows`, `AssertFound`, `WhereCol`, `Result`, `Get`), `PipelineCond` (`And`, `Or`, `Not`), `p.If`, `p.Abort`, `p.Flush`, `AssertionError`.
+  - cache: `WithMaxPreparedStmts`, `WithMaxSQLVariants`, `WithMaxBatchParams`, `WithCache`, `StmtCache`, `CacheStats`; drivers: `WrapConnector` and the `pgxwire` / `mysqlwire` modules.
+
+---
+
 ## 1. Quickstart & CLI Reference
 
 ### Running the CLI
@@ -52,7 +77,7 @@ extra_imports:                                  # Optional extra Go import paths
 statements:
   - name: GetAccount                            # Exported Go identifier (required)
     kind: one                                   # Required: "exec" | "one" | "many" | "subquery"
-    result_type: Account                        # Optional custom struct name (or scalar type like "int64") for "one"/"many" (default: "<Name>Row")
+    result_type: Account                        # Optional row struct name for "one"/"many" (default: "<Name>Row"); never a predeclared type
     args: auto                                  # Optional argument style: auto (default) | positional | struct (section 2.2)
     sql: |                                      # Output columns and parameters are typed inline (section 2)
       SELECT id:int64, balance:int64, status:string
@@ -328,7 +353,7 @@ statements:
    - `Seek<Stmt>(row)` $\rightarrow$ returns a `runtime.Seek` cursor populated from `row` (a `<RowType>`) for the next page.
    - `Order<Stmt>(ListMembersPaginatedOrderByScore.Desc(), ListMembersPaginatedOrderByID.Asc())` $\rightarrow$ builds the `runtime.Order` value.
 
-   **One set per statement.** Every statement with a `sqlgen.Order` gets `Order<Stmt>`, `<Stmt>OrderBy<Col>`, `<Stmt>SortCol` / `<Stmt>SortTerm` and (with a `sqlgen.Seek`) `Seek<Stmt>`; nothing is keyed by the row type. Statements that share one `result_type` may therefore declare different `sqlgen.Order` lists, each with its own tokens and its own `Seek<Stmt>` (there is no `row.Seek()`: a row type shared by statements with different sort lists has no single cursor).
+   **One set per statement.** Every statement with a `sqlgen.Order` gets `Order<Stmt>`, `<Stmt>OrderBy<Col>`, `<Stmt>SortCol` / `<Stmt>SortTerm` and (with a `sqlgen.Seek`) `Seek<Stmt>`; nothing is keyed by the row type. Statements that share one `result_type` may therefore declare different `sqlgen.Order` lists, each with its own tokens and its own `Seek<Stmt>` (there is no cursor method on the row type: a row type shared by statements with different sort lists has no single cursor).
 
    **Misuse is caught.** `Order<Stmt>` takes `<Stmt>SortTerm` values, a type of its own per statement, so passing the tokens of another statement, a column without a direction, or a plain `uint8`, does not compile. A term list that repeats a column, or contains a term for a column the statement does not have (only reachable by converting an arbitrary number, `<Stmt>SortCol(40).Asc()`), makes the statement method return `runtime.ErrInvalidOrder` instead of running a different sort. A cursor (`Seek<Stmt>(row)`) always carries every `sqlgen.Order` column of its statement, so it cannot disagree with the sort; a hand-built `runtime.NewSeek(...)` with the wrong number of values returns `runtime.ErrInvalidSeek`.
 3. **First Page vs. Subsequent Pages**:
@@ -502,7 +527,7 @@ When a statement is chunked **and** its collection parameter is a tuple slice (`
   - `q.<Name>Stream(ctx, ..., seq iter.Seq2[<TupleType>, error], ...) ([]<RowType>, error)`
   - `q.<Name>StreamSeq(ctx, ..., seq iter.Seq2[<TupleType>, error], ...) iter.Seq2[<RowType>, error]`
 
-**Atomicity.** `<Name>` of more than one chunk runs in its own transaction (all or nothing, unless called on a `WithTx`/`InTx` query, which uses the caller's): when a later chunk fails, the earlier ones are rolled back. A stream is not one transaction: every flush (up to `256` items) is atomic, but an error or a cancelled context part-way leaves the earlier flushes committed. Run the stream inside `q.InTx` for all-or-nothing ingestion. An error yielded by `seq` stops the stream and is returned (or yielded) as-is. A nil `seq` (and a nil callback passed to `runtime.Each`, `InTx` or `PipelineTx`) returns `runtime.ErrNilArgument` instead of panicking. A stream of an empty iterator inserts nothing (section 2.3). `runtime.Seq2[T]` is a convenience alias for `iter.Seq2[T, error]`, so values of either spelling are accepted.
+**Atomicity.** `<Name>` of more than one chunk runs in its own transaction (all or nothing, unless called on a `WithTx`/`InTx` query, which uses the caller's): when a later chunk fails, the earlier ones are rolled back. A stream is not one transaction: every flush (up to `256` items) is atomic, but an error or a cancelled context part-way leaves the earlier flushes committed. Run the stream inside `q.InTx` for all-or-nothing ingestion. An error yielded by `seq` stops the stream and is returned (or yielded) as-is. A nil `seq` (and a nil callback passed to `runtime.Each`, `InTx` or `PipelineTx`) returns `runtime.ErrNilArgument` instead of panicking. A stream of an empty iterator inserts nothing (section 2.3).
 
 **Iterator Adapters in `runtime`** (all return plain `iter.Seq2[T, error]`):
 - `runtime.FromSlice(items []T) iter.Seq2[T, error]` — wraps an in-memory slice.
@@ -819,7 +844,7 @@ err := q.PipelineTx(ctx, nil, func(p *Pipeline) error {
      - `.AssertRows(n int64) *SliceFuture[T]`, `.AssertFound() *SliceFuture[T]`
      - `.Found()`, `.NotFound()`, `.RowsEq(n)`, `.RowsGt(n)`, `.RowsGe(n)`, `.RowsLt(n)`, `.RowsLe(n)`, `.WhereCol(sqlPred, goPred func(T) bool)`
      - `.Get() ([]T, error)` (valid after flush; no rows is an empty slice, not an error).
-   - Reading any future's result (`Result`, `RowsAffected`, `Get`, `Value`, `Values`) before its pipeline has flushed (`Flush`, or the end of `PipelineTx`) returns `runtime.ErrFutureNotReady`, never a result that could be mistaken for a real one; after the flush a `*RowFuture` whose statement matched no row returns `sql.ErrNoRows`.
+   - Reading any future's result (`Result`, `RowsAffected`, `Get`) before its pipeline has flushed (`Flush`, or the end of `PipelineTx`) returns `runtime.ErrFutureNotReady`, never a result that could be mistaken for a real one; after the flush a `*RowFuture` whose statement matched no row returns `sql.ErrNoRows`.
 2. **Boolean Combinators & Control Flow**:
    - `condA.And(condB)`, `condA.Or(condB)`, `condA.Not()` combine `PipelineCond` values.
      The operands may come from different futures (`del.NotFound().And(get.Found())`): every leaf is evaluated over its own operation's rows, also on the single-round-trip path, where each earlier operation records its leaf server-side and the latest one combines the records, still in one network round-trip. A leaf over an operation that did not run (its branch was not taken) is false, so `Not` of it is true, identically on both paths.
