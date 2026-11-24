@@ -376,16 +376,6 @@ func (pl *Pipeline) CreateUser(id int64, orgID int64, email string, role string,
 const stmtIDGetUserByID uint32 = 2
 
 const (
-	UserColID    uint64 = 1 << 0
-	UserColOrgID uint64 = 1 << 1
-	UserColEmail uint64 = 1 << 2
-	UserColRole  uint64 = 1 << 3
-	UserColScore uint64 = 1 << 4
-	UserColBio   uint64 = 1 << 5
-	UserColsAll  uint64 = (1 << 6) - 1
-)
-
-const (
 	GetUserByIDColID    uint64 = 1 << 0
 	GetUserByIDColOrgID uint64 = 1 << 1
 	GetUserByIDColEmail uint64 = 1 << 2
@@ -831,14 +821,6 @@ func (pl *Pipeline) ListUsersByIDs(ids []int64, selectCols ...uint64) *runtime.S
 const stmtIDSelectUserProfileSubset uint32 = 4
 
 const (
-	SelectUserProfileSubsetRowColID    uint64 = 1 << 0
-	SelectUserProfileSubsetRowColEmail uint64 = 1 << 1
-	SelectUserProfileSubsetRowColRole  uint64 = 1 << 2
-	SelectUserProfileSubsetRowColScore uint64 = 1 << 3
-	SelectUserProfileSubsetRowColsAll  uint64 = (1 << 4) - 1
-)
-
-const (
 	SelectUserProfileSubsetColID    uint64 = 1 << 0
 	SelectUserProfileSubsetColEmail uint64 = 1 << 1
 	SelectUserProfileSubsetColRole  uint64 = 1 << 2
@@ -1013,12 +995,6 @@ func (pl *Pipeline) SelectUserProfileSubset(p SelectUserProfileSubsetParams) *ru
 }
 
 const stmtIDSearchUsersCoupled uint32 = 5
-
-const (
-	SearchUsersCoupledRowColID    uint64 = 1 << 0
-	SearchUsersCoupledRowColEmail uint64 = 1 << 1
-	SearchUsersCoupledRowColsAll  uint64 = (1 << 2) - 1
-)
 
 const (
 	SearchUsersCoupledColID    uint64 = 1 << 0
@@ -1366,14 +1342,6 @@ func SubOrgsByMinIDQuery(p SubOrgsByMinIDParams) runtime.Query {
 const stmtIDPageUsers uint32 = 7
 
 const (
-	PageUsersRowColID    uint64 = 1 << 0
-	PageUsersRowColRole  uint64 = 1 << 1
-	PageUsersRowColScore uint64 = 1 << 2
-	PageUsersRowColEmail uint64 = 1 << 3
-	PageUsersRowColsAll  uint64 = (1 << 4) - 1
-)
-
-const (
 	PageUsersColID    uint64 = 1 << 0
 	PageUsersColRole  uint64 = 1 << 1
 	PageUsersColScore uint64 = 1 << 2
@@ -1595,12 +1563,6 @@ func (pl *Pipeline) PageUsers(p PageUsersParams) *runtime.SliceFuture[PageUsersR
 }
 
 const stmtIDUsersFromCTEAndInSubquery uint32 = 8
-
-const (
-	UsersFromCTEAndInSubqueryRowColID    uint64 = 1 << 0
-	UsersFromCTEAndInSubqueryRowColEmail uint64 = 1 << 1
-	UsersFromCTEAndInSubqueryRowColsAll  uint64 = (1 << 2) - 1
-)
 
 const (
 	UsersFromCTEAndInSubqueryColID    uint64 = 1 << 0
@@ -1862,13 +1824,6 @@ func SubUserIDsByScoreQuery(minScore int64) runtime.Query {
 }
 
 const stmtIDInsertUsersBatchReturning uint32 = 10
-
-const (
-	InsertUsersBatchReturningRowColID     uint64 = 1 << 0
-	InsertUsersBatchReturningRowColName   uint64 = 1 << 1
-	InsertUsersBatchReturningRowColPoints uint64 = 1 << 2
-	InsertUsersBatchReturningRowColsAll   uint64 = (1 << 3) - 1
-)
 
 const (
 	InsertUsersBatchReturningColID     uint64 = 1 << 0
@@ -3066,11 +3021,6 @@ func (pl *Pipeline) UserBioIfSet() *runtime.SliceFuture[*string] {
 const stmtIDUserEmailOnly uint32 = 16
 
 const (
-	EmailOnlyColEmail uint64 = 1 << 0
-	EmailOnlyColsAll  uint64 = (1 << 1) - 1
-)
-
-const (
 	UserEmailOnlyColEmail uint64 = 1 << 0
 	UserEmailOnlyColsAll  uint64 = (1 << 1) - 1
 )
@@ -3194,14 +3144,6 @@ func (pl *Pipeline) UserEmailOnly(id int64) *runtime.RowFuture[EmailOnly] {
 }
 
 const stmtIDPageQuad uint32 = 17
-
-const (
-	QuadItemColID        uint64 = 1 << 0
-	QuadItemColGroupKey  uint64 = 1 << 1
-	QuadItemColPriority  uint64 = 1 << 2
-	QuadItemColCreatedTs uint64 = 1 << 3
-	QuadItemColsAll      uint64 = (1 << 4) - 1
-)
 
 const (
 	PageQuadColID        uint64 = 1 << 0

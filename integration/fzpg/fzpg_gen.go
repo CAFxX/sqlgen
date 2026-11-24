@@ -1189,23 +1189,6 @@ func (q *Queries) FzInsertLitStream(ctx context.Context, seq iter.Seq2[FzLit, er
 const stmtIDFzSearch uint32 = 5
 
 const (
-	FzRowColID   uint64 = 1 << 0
-	FzRowColGrp  uint64 = 1 << 1
-	FzRowColK1   uint64 = 1 << 2
-	FzRowColK2   uint64 = 1 << 3
-	FzRowColK3   uint64 = 1 << 4
-	FzRowColK4   uint64 = 1 << 5
-	FzRowColK5   uint64 = 1 << 6
-	FzRowColK6   uint64 = 1 << 7
-	FzRowColK7   uint64 = 1 << 8
-	FzRowColK8   uint64 = 1 << 9
-	FzRowColTag  uint64 = 1 << 10
-	FzRowColTag2 uint64 = 1 << 11
-	FzRowColNote uint64 = 1 << 12
-	FzRowColsAll uint64 = (1 << 13) - 1
-)
-
-const (
 	FzSearchColID   uint64 = 1 << 0
 	FzSearchColGrp  uint64 = 1 << 1
 	FzSearchColK1   uint64 = 1 << 2
@@ -1599,16 +1582,6 @@ func (pl *Pipeline) FzSearch(p FzSearchParams) *runtime.SliceFuture[FzRow] {
 }
 
 const stmtIDFzNarrow uint32 = 6
-
-const (
-	FzNarrowRowColID   uint64 = 1 << 0
-	FzNarrowRowColGrp  uint64 = 1 << 1
-	FzNarrowRowColK1   uint64 = 1 << 2
-	FzNarrowRowColK2   uint64 = 1 << 3
-	FzNarrowRowColTag  uint64 = 1 << 4
-	FzNarrowRowColNote uint64 = 1 << 5
-	FzNarrowRowColsAll uint64 = (1 << 6) - 1
-)
 
 const (
 	FzNarrowColID   uint64 = 1 << 0
@@ -2327,13 +2300,6 @@ func FzSubNoteQuery(p FzSubNoteParams) runtime.Query {
 }
 
 const stmtIDFzAgg uint32 = 10
-
-const (
-	FzAggRowColGrp   uint64 = 1 << 0
-	FzAggRowColN     uint64 = 1 << 1
-	FzAggRowColTotal uint64 = 1 << 2
-	FzAggRowColsAll  uint64 = (1 << 3) - 1
-)
 
 const (
 	FzAggColGrp   uint64 = 1 << 0
@@ -3794,13 +3760,6 @@ func (pl *Pipeline) FzSubs(p FzSubsParams) *runtime.SliceFuture[FzRow] {
 const stmtIDFzJoin uint32 = 16
 
 const (
-	FzJoinRowColID   uint64 = 1 << 0
-	FzJoinRowColGrp  uint64 = 1 << 1
-	FzJoinRowColK1   uint64 = 1 << 2
-	FzJoinRowColsAll uint64 = (1 << 3) - 1
-)
-
-const (
 	FzJoinColID   uint64 = 1 << 0
 	FzJoinColGrp  uint64 = 1 << 1
 	FzJoinColK1   uint64 = 1 << 2
@@ -4203,16 +4162,6 @@ func (q *Queries) FzTypedInsertStream(ctx context.Context, seq iter.Seq2[FzTyped
 }
 
 const stmtIDFzTypedSearch uint32 = 18
-
-const (
-	FzTypedRowColID   uint64 = 1 << 0
-	FzTypedRowColI32  uint64 = 1 << 1
-	FzTypedRowColF64  uint64 = 1 << 2
-	FzTypedRowColFlag uint64 = 1 << 3
-	FzTypedRowColBin  uint64 = 1 << 4
-	FzTypedRowColNi   uint64 = 1 << 5
-	FzTypedRowColsAll uint64 = (1 << 6) - 1
-)
 
 const (
 	FzTypedSearchColID   uint64 = 1 << 0
@@ -4748,12 +4697,6 @@ func (pl *Pipeline) FzTypedPage(after runtime.Seek, sort runtime.Order, limit in
 }
 
 const stmtIDFzInsertRet uint32 = 20
-
-const (
-	FzOutColID   uint64 = 1 << 0
-	FzOutColK1   uint64 = 1 << 1
-	FzOutColsAll uint64 = (1 << 2) - 1
-)
 
 const (
 	FzInsertRetColID   uint64 = 1 << 0

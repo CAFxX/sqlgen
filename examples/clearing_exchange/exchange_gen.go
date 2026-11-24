@@ -682,18 +682,6 @@ func (q *Queries) ApplyMarginSettlementsStream(ctx context.Context, seq iter.Seq
 const stmtIDGetMarginAccount uint32 = 4
 
 const (
-	MarginAccountColFirmID           uint64 = 1 << 0
-	MarginAccountColAccountID        uint64 = 1 << 1
-	MarginAccountColStatus           uint64 = 1 << 2
-	MarginAccountColCollateralCents  uint64 = 1 << 3
-	MarginAccountColRealizedPnlCents uint64 = 1 << 4
-	MarginAccountColMarginRatioBps   uint64 = 1 << 5
-	MarginAccountColKycVerified      uint64 = 1 << 6
-	MarginAccountColUpdatedSeq       uint64 = 1 << 7
-	MarginAccountColsAll             uint64 = (1 << 8) - 1
-)
-
-const (
 	GetMarginAccountColFirmID           uint64 = 1 << 0
 	GetMarginAccountColAccountID        uint64 = 1 << 1
 	GetMarginAccountColStatus           uint64 = 1 << 2
@@ -1088,16 +1076,6 @@ func (pl *Pipeline) SetAccountStatus(status string, seqParam int64, firmID int64
 }
 
 const stmtIDIngestOrders uint32 = 7
-
-const (
-	OrderAckColOrderID    uint64 = 1 << 0
-	OrderAckColFirmID     uint64 = 1 << 1
-	OrderAckColAccountID  uint64 = 1 << 2
-	OrderAckColSymbol     uint64 = 1 << 3
-	OrderAckColStatus     uint64 = 1 << 4
-	OrderAckColUpdatedSeq uint64 = 1 << 5
-	OrderAckColsAll       uint64 = (1 << 6) - 1
-)
 
 const (
 	IngestOrdersColOrderID    uint64 = 1 << 0
@@ -1762,18 +1740,6 @@ func (pl *Pipeline) CancelOrdersByIDs(cancelSeq int64, firmID int64, orderIDs []
 }
 
 const stmtIDListOpenOrdersForSymbol uint32 = 9
-
-const (
-	OpenOrderRowColOrderID         uint64 = 1 << 0
-	OpenOrderRowColFirmID          uint64 = 1 << 1
-	OpenOrderRowColAccountID       uint64 = 1 << 2
-	OpenOrderRowColSymbol          uint64 = 1 << 3
-	OpenOrderRowColSide            uint64 = 1 << 4
-	OpenOrderRowColLimitPriceCents uint64 = 1 << 5
-	OpenOrderRowColQuantity        uint64 = 1 << 6
-	OpenOrderRowColStatus          uint64 = 1 << 7
-	OpenOrderRowColsAll            uint64 = (1 << 8) - 1
-)
 
 const (
 	ListOpenOrdersForSymbolColOrderID         uint64 = 1 << 0
@@ -2902,18 +2868,6 @@ func FilteredPositionsSubqueryQuery(p FilteredPositionsSubqueryParams) runtime.Q
 }
 
 const stmtIDQueryRiskPositionsPage uint32 = 20
-
-const (
-	RiskPositionViewColPositionID         uint64 = 1 << 0
-	RiskPositionViewColFirmID             uint64 = 1 << 1
-	RiskPositionViewColAccountID          uint64 = 1 << 2
-	RiskPositionViewColSymbol             uint64 = 1 << 3
-	RiskPositionViewColNetQuantity        uint64 = 1 << 4
-	RiskPositionViewColNotionalCents      uint64 = 1 << 5
-	RiskPositionViewColUnrealizedPnlCents uint64 = 1 << 6
-	RiskPositionViewColUpdatedSeq         uint64 = 1 << 7
-	RiskPositionViewColsAll               uint64 = (1 << 8) - 1
-)
 
 const (
 	QueryRiskPositionsPageColPositionID         uint64 = 1 << 0

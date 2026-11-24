@@ -140,17 +140,6 @@ type CohortInvoiceSummary struct {
 const stmtIDSearchMembers uint32 = 1
 
 const (
-	MemberRowColID        uint64 = 1 << 0
-	MemberRowColOrgID     uint64 = 1 << 1
-	MemberRowColEmail     uint64 = 1 << 2
-	MemberRowColRole      uint64 = 1 << 3
-	MemberRowColStatus    uint64 = 1 << 4
-	MemberRowColScore     uint64 = 1 << 5
-	MemberRowColCreatedAt uint64 = 1 << 6
-	MemberRowColsAll      uint64 = (1 << 7) - 1
-)
-
-const (
 	SearchMembersColID        uint64 = 1 << 0
 	SearchMembersColOrgID     uint64 = 1 << 1
 	SearchMembersColEmail     uint64 = 1 << 2
@@ -421,16 +410,6 @@ func (pl *Pipeline) SearchMembers(p SearchMembersParams) *runtime.SliceFuture[Me
 }
 
 const stmtIDListMembersPaginated uint32 = 2
-
-const (
-	MemberItemColID        uint64 = 1 << 0
-	MemberItemColOrgID     uint64 = 1 << 1
-	MemberItemColEmail     uint64 = 1 << 2
-	MemberItemColRole      uint64 = 1 << 3
-	MemberItemColScore     uint64 = 1 << 4
-	MemberItemColCreatedAt uint64 = 1 << 5
-	MemberItemColsAll      uint64 = (1 << 6) - 1
-)
 
 const (
 	ListMembersPaginatedColID        uint64 = 1 << 0
@@ -810,14 +789,6 @@ func CohortMemberIDsQuery(activeOrgs runtime.Query, minScore int64) runtime.Quer
 }
 
 const stmtIDAggregateCohortInvoices uint32 = 5
-
-const (
-	CohortInvoiceSummaryColOrgID        uint64 = 1 << 0
-	CohortInvoiceSummaryColRole         uint64 = 1 << 1
-	CohortInvoiceSummaryColInvoiceCount uint64 = 1 << 2
-	CohortInvoiceSummaryColTotalCents   uint64 = 1 << 3
-	CohortInvoiceSummaryColsAll         uint64 = (1 << 4) - 1
-)
 
 const (
 	AggregateCohortInvoicesColOrgID        uint64 = 1 << 0

@@ -2889,10 +2889,8 @@ func Generate(cfg Config) ([]byte, error) {
 		b.WriteString("}\n\n")
 	}
 
-	emittedRowCols := make(map[string]bool)
-
 	for _, cs := range compiled {
-		emitStatementCode(&b, cs, staticIdxByStmt, emittedRowCols)
+		emitStatementCode(&b, cs, staticIdxByStmt)
 	}
 
 	formatted, err := format.Source(b.Bytes())
@@ -3152,20 +3150,13 @@ func emitStatementCode(
 	b *bytes.Buffer,
 	cs *compiledStmt,
 	staticIdxByStmt map[uint32]int,
-	emittedRowCols map[string]bool,
 ) {
 	fmt.Fprintf(b, "const stmtID%s uint32 = %d\n\n", cs.Name, cs.ID)
 
-	// Emit SelectCols bitmask constants on both <RowType> and <StmtName>
+	// SelectCols bitmask constants: one set per statement, <Stmt>Col<X> (a result type shared by several
+	// statements does not share them: each statement projects its own columns).
 	if len(cs.UncondCols) > 0 {
-		if !cs.ScalarResult && cs.RowTypeName != "" && !emittedRowCols[cs.RowTypeName] {
-			emittedRowCols[cs.RowTypeName] = true
-			emitColMaskConstants(b, cs.RowTypeName, cs.UncondCols)
-		}
-		if cs.RowTypeName != cs.Name && !emittedRowCols[cs.Name] {
-			emittedRowCols[cs.Name] = true
-			emitColMaskConstants(b, cs.Name, cs.UncondCols)
-		}
+		emitColMaskConstants(b, cs.Name, cs.UncondCols)
 	}
 
 	// Order and Seek helpers: one set per statement (a result type shared by several statements does not

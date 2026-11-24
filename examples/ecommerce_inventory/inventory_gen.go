@@ -216,14 +216,6 @@ type FulfilledOrder struct {
 const stmtIDGetInventoryBySKUs uint32 = 1
 
 const (
-	InventoryItemColWarehouseID uint64 = 1 << 0
-	InventoryItemColSKU         uint64 = 1 << 1
-	InventoryItemColQuantity    uint64 = 1 << 2
-	InventoryItemColUpdatedAt   uint64 = 1 << 3
-	InventoryItemColsAll        uint64 = (1 << 4) - 1
-)
-
-const (
 	GetInventoryBySKUsColWarehouseID uint64 = 1 << 0
 	GetInventoryBySKUsColSKU         uint64 = 1 << 1
 	GetInventoryBySKUsColQuantity    uint64 = 1 << 2
@@ -715,14 +707,6 @@ func (q *Queries) InsertOrderItemsStream(ctx context.Context, seq iter.Seq2[NewO
 }
 
 const stmtIDStreamFulfilledOrders uint32 = 3
-
-const (
-	FulfilledOrderColID          uint64 = 1 << 0
-	FulfilledOrderColCustomerID  uint64 = 1 << 1
-	FulfilledOrderColTotalCents  uint64 = 1 << 2
-	FulfilledOrderColFulfilledAt uint64 = 1 << 3
-	FulfilledOrderColsAll        uint64 = (1 << 4) - 1
-)
 
 const (
 	StreamFulfilledOrdersColID          uint64 = 1 << 0

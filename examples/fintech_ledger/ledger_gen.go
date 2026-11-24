@@ -164,15 +164,6 @@ type Account struct {
 const stmtIDGetAccount uint32 = 1
 
 const (
-	AccountColOrgID        uint64 = 1 << 0
-	AccountColID           uint64 = 1 << 1
-	AccountColCurrency     uint64 = 1 << 2
-	AccountColBalanceCents uint64 = 1 << 3
-	AccountColStatus       uint64 = 1 << 4
-	AccountColsAll         uint64 = (1 << 5) - 1
-)
-
-const (
 	GetAccountColOrgID        uint64 = 1 << 0
 	GetAccountColID           uint64 = 1 << 1
 	GetAccountColCurrency     uint64 = 1 << 2

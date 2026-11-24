@@ -355,7 +355,7 @@ func TestSaaSMultitenantPortalEndToEnd(t *testing.T) {
 		OrgID:      1,
 		Sort:       sortConfigs[0].order,
 		Limit:      10,
-		SelectCols: MemberItemColID | MemberItemColEmail | MemberItemColRole,
+		SelectCols: ListMembersPaginatedColID | ListMembersPaginatedColEmail | ListMembersPaginatedColRole,
 	}), func(r MemberItem) error {
 		eachPaged++
 		_ = SeekListMembersPaginated(r)

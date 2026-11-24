@@ -35,7 +35,7 @@ CREATE TABLE IF NOT EXISTS invoices (
 );
 `
 
-const CompactMemberCols = MemberRowColID | MemberRowColEmail | MemberRowColRole | MemberRowColStatus
+const CompactMemberCols = SearchMembersColID | SearchMembersColEmail | SearchMembersColRole | SearchMembersColStatus
 
 type PortalService struct {
 	q *Queries

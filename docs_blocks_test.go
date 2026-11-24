@@ -182,7 +182,7 @@ func TestDocsGoBlocksParseAndRuntimeNamesExist(t *testing.T) {
 }
 
 // removedNames are spellings that no longer exist; the user documentation must not teach them.
-var removedNames = regexp.MustCompile(`NewWithCache|WithMaxPartialBytes|WithPromoteThreshold|InTxOpts|params_struct|runtime\.Seq2|StatementKind|ErrNilQuery|RowsAffected(Eq|Gt|Ge|Lt|Le)|AssertRowsAffected|kind: *query|\.Into\(|BatchInto|BatchEach|\.Seek\(\)|\bq\.[A-Z]\w*Query\(|SQLGEN_FUZZ_SEEDS|sync-adapters`)
+var removedNames = regexp.MustCompile(`NewWithCache|WithMaxPartialBytes|WithPromoteThreshold|InTxOpts|params_struct|runtime\.Seq2|StatementKind|ErrNilQuery|RowsAffected(Eq|Gt|Ge|Lt|Le)|AssertRowsAffected|kind: *query|\.Into\(|BatchInto|BatchEach|\.Seek\(\)|\bq\.[A-Z]\w*Query\(|SQLGEN_FUZZ_SEEDS|sync-adapters|\w+RowCols?(All|[A-Z])|<Row>Col`)
 
 func TestDocsDoNotMentionRemovedNames(t *testing.T) {
 	for _, f := range []string{"DOCS.md", "README.md"} {

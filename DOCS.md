@@ -18,7 +18,7 @@ Everything below is the whole surface; each item has one spelling and the sectio
   - `exec`: `q.Name(ctx, ...) (sql.Result, error)`; with a tuple slice also `q.NameStream(ctx, seq, ...)`. A one-collection statement is chunked by the base method.
   - `one`: `q.Name(ctx, ...) (Row, error)`. `many`: `q.Name(ctx, ...) ([]Row, error)` and `q.NameSeq(ctx, ...) iter.Seq2[Row, error]`; with a tuple slice also `NameStream` / `NameStreamSeq`.
   - every kind except `exec`: package-level `NameQuery(...) runtime.Query` (compose into `:sub:sqlgen.Query` slots); every non-`subquery` kind: `p.Name(...)` returning a future (`ExecFuture`, `RowFuture[T]`, `SliceFuture[T]`).
-  - types and helpers: `Row` struct, `NameParams` (struct style), `<Row>Col<X>` / `<Row>ColsAll` projection masks (trailing `selectCols ...uint64`, or a `SelectCols` field), and per statement with `sqlgen.Order`: `NameOrderBy<Col>.Asc()/.Desc()`, `OrderName(...)`, `SeekName(row)`.
+  - types and helpers: `Row` struct, `NameParams` (struct style), `NameCol<X>` / `NameColsAll` projection masks (trailing `selectCols ...uint64`, or a `SelectCols` field), and per statement with `sqlgen.Order`: `NameOrderBy<Col>.Asc()/.Desc()`, `OrderName(...)`, `SeekName(row)`.
   - on every `*Queries`: `WithTx(tx)`, `InTx(ctx, opts, fn, ...runtime.TxOption)`, `Pipeline(ctx)`, `PipelineTx(ctx, opts, fn, ...)`, `WithPrepared(bool)`, `Cache()`, `CacheStats()`, `Close()`; package-level `New(db, ...runtime.CacheOption)`.
 - **Runtime user API** (import `github.com/CAFxX/sqlgen/runtime`; the generated file declares no aliases):
   - reading: `Collect`, `AppendTo`, `Each` (+ `ErrStop`), `FromSlice`, `FromSeq`, `MapSeq2`.
@@ -298,26 +298,26 @@ statements:
 
 #### Runtime Column Projection (`SelectCols`)
 
-Every `kind: one` or `kind: many` statement with at least two unconditional output columns can return a subset of them, in either argument style. The column constants are generated per row type:
+Every `kind: one` or `kind: many` statement with at least two unconditional output columns can return a subset of them, in either argument style. The column constants are generated per statement, `<Name>Col<X>` and `<Name>ColsAll` (statements sharing a `result_type` each get their own set, since each projects its own columns):
 
 ```go
-// Generated bitmask constants for MemberRow (and SearchMembers):
-// MemberRowColID, MemberRowColOrgID, MemberRowColEmail, MemberRowColRole,
-// MemberRowColStatus, MemberRowColScore, MemberRowColsAll
+// Generated bitmask constants for SearchMembers (returning MemberRow):
+// SearchMembersColID, SearchMembersColOrgID, SearchMembersColEmail, SearchMembersColRole,
+// SearchMembersColStatus, SearchMembersColScore, SearchMembersColsAll
 
 // Struct style (SearchMembers has {?Flag: ...} blocks): the SelectCols field of <Name>Params.
 // Compact list view: only fetch ID, Email, and Role over the wire!
 rows, err := q.SearchMembers(ctx, SearchMembersParams{
     OrgID:      orgID,
-    SelectCols: MemberRowColID | MemberRowColEmail | MemberRowColRole,
+    SelectCols: SearchMembersColID | SearchMembersColEmail | SearchMembersColRole,
 })
 
 // Positional style (a kind: one statement GetMember returning MemberRow): a trailing variadic argument, selectCols ...uint64. Several constants are
 // combined (an already OR-ed mask works too); no argument returns every column.
-m, err := q.GetMember(ctx, memberID, MemberRowColID, MemberRowColEmail)
+m, err := q.GetMember(ctx, memberID, GetMemberColID, GetMemberColEmail)
 ```
 
-- Selecting nothing (`SelectCols: 0`, or no variadic argument) or `MemberRowColsAll` selects all unconditional columns.
+- Selecting nothing (`SelectCols: 0`, or no variadic argument) or `SearchMembersColsAll` selects all unconditional columns.
 - Setting specific bits omits unselected unconditional columns from the rendered `SELECT` list and skips scanning them, saving network bandwidth and allocation for wide rows; unselected fields keep their zero values.
 - The projection exists whenever the statement has two or more unconditional output columns whose list is a plain span of the `SELECT` / `RETURNING` clause; it does not depend on the argument style. The variadic is the same final parameter of `<Name>`, `<Name>Query`, the `Pipeline` method, `<Name>Seq` and `<Name>Stream`, costs no allocation (the arguments live on the caller's stack), and never changes the default path: the call without it uses the same cached statement and fast slot as before. A positional parameter that maps to the Go field `SelectCols` (`:select_cols:...`) is rejected, as in the struct style.
 - Why a trailing variadic: it keeps every existing positional call valid, keeps the parameters in the order of the SQL, and needs no second method per statement; the alternative (a leading mask argument) would make the common call carry a meaningless `0`.

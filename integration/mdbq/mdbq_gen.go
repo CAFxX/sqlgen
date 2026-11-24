@@ -435,15 +435,6 @@ func (q *Queries) InsertItemsStream(ctx context.Context, seq iter.Seq2[NewItem, 
 const stmtIDGetItem uint32 = 2
 
 const (
-	ItemColID     uint64 = 1 << 0
-	ItemColOrgID  uint64 = 1 << 1
-	ItemColName   uint64 = 1 << 2
-	ItemColScore  uint64 = 1 << 3
-	ItemColStatus uint64 = 1 << 4
-	ItemColsAll   uint64 = (1 << 5) - 1
-)
-
-const (
 	GetItemColID     uint64 = 1 << 0
 	GetItemColOrgID  uint64 = 1 << 1
 	GetItemColName   uint64 = 1 << 2
@@ -1119,15 +1110,6 @@ func (pl *Pipeline) SearchItems(p SearchItemsParams) *runtime.SliceFuture[Item] 
 const stmtIDPageItems uint32 = 5
 
 const (
-	PagedItemColID     uint64 = 1 << 0
-	PagedItemColOrgID  uint64 = 1 << 1
-	PagedItemColName   uint64 = 1 << 2
-	PagedItemColScore  uint64 = 1 << 3
-	PagedItemColStatus uint64 = 1 << 4
-	PagedItemColsAll   uint64 = (1 << 5) - 1
-)
-
-const (
 	PageItemsColID     uint64 = 1 << 0
 	PageItemsColOrgID  uint64 = 1 << 1
 	PageItemsColName   uint64 = 1 << 2
@@ -1342,22 +1324,6 @@ func (pl *Pipeline) PageItems(p PageItemsParams) *runtime.SliceFuture[PagedItem]
 }
 
 const stmtIDWideRows uint32 = 6
-
-const (
-	WideColC1   uint64 = 1 << 0
-	WideColC2   uint64 = 1 << 1
-	WideColC3   uint64 = 1 << 2
-	WideColC4   uint64 = 1 << 3
-	WideColC5   uint64 = 1 << 4
-	WideColC6   uint64 = 1 << 5
-	WideColC7   uint64 = 1 << 6
-	WideColC8   uint64 = 1 << 7
-	WideColC9   uint64 = 1 << 8
-	WideColC10  uint64 = 1 << 9
-	WideColC11  uint64 = 1 << 10
-	WideColID   uint64 = 1 << 11
-	WideColsAll uint64 = (1 << 12) - 1
-)
 
 const (
 	WideRowsColC1   uint64 = 1 << 0
@@ -2058,13 +2024,6 @@ func TopOrgsQuery(minItems int64) runtime.Query {
 const stmtIDOrgStats uint32 = 11
 
 const (
-	OrgStatColOrgID uint64 = 1 << 0
-	OrgStatColN     uint64 = 1 << 1
-	OrgStatColTotal uint64 = 1 << 2
-	OrgStatColsAll  uint64 = (1 << 3) - 1
-)
-
-const (
 	OrgStatsColOrgID uint64 = 1 << 0
 	OrgStatsColN     uint64 = 1 << 1
 	OrgStatsColTotal uint64 = 1 << 2
@@ -2411,12 +2370,6 @@ func (pl *Pipeline) SetAllStatus(status string) *runtime.ExecFuture {
 }
 
 const stmtIDInsertItemReturning uint32 = 14
-
-const (
-	WrittenColID    uint64 = 1 << 0
-	WrittenColScore uint64 = 1 << 1
-	WrittenColsAll  uint64 = (1 << 2) - 1
-)
 
 const (
 	InsertItemReturningColID    uint64 = 1 << 0
