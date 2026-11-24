@@ -15,6 +15,7 @@ package integration
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"os"
 	"slices"
@@ -71,8 +72,8 @@ type myQueries interface {
 	Close() error
 }
 
-func myDescribe(skipped bool, v any, err error) string {
-	return fmt.Sprintf("%v|%s|sk=%v", v, myErrKind(err), skipped)
+func myDescribe(v any, err error) string {
+	return fmt.Sprintf("%v|%s|sk=%v", v, myErrKind(err), errors.Is(err, runtime.ErrBranchNotTaken))
 }
 
 func myExecFut(f *runtime.ExecFuture) myFut {
@@ -82,7 +83,7 @@ func myExecFut(f *runtime.ExecFuture) myFut {
 		assertFound: func() { f.AssertFound() },
 		desc: func() string {
 			n, err := f.RowsAffected()
-			return myDescribe(f.Skipped(), n, err)
+			return myDescribe(n, err)
 		},
 	}
 }
@@ -94,7 +95,7 @@ func myRowFut[T any](f *runtime.RowFuture[T], score func(T) int64) myFut {
 		assertFound: func() { f.AssertFound() },
 		desc: func() string {
 			v, err := f.Get()
-			return myDescribe(f.Skipped(), v, err)
+			return myDescribe(v, err)
 		},
 	}
 	if score != nil {
@@ -112,7 +113,7 @@ func mySliceFut[T any](f *runtime.SliceFuture[T], score func(T) int64) myFut {
 		assertFound: func() { f.AssertFound() },
 		desc: func() string {
 			v, err := f.Get()
-			return myDescribe(f.Skipped(), v, err)
+			return myDescribe(v, err)
 		},
 	}
 	if score != nil {

@@ -239,7 +239,7 @@ func runFintechLedgerSuite(t *testing.T, mode string, db *sql.DB) {
 		expectedSupply int64 = int64(numAccounts) * initialBalance
 	)
 
-	// 1. Seed 20 accounts in reverse order to verify non-mutating presort in UpsertAccountBalancesBatch
+	// 1. Seed 20 accounts in reverse order to verify non-mutating presort in UpsertAccountBalances
 	seedItems := make([]AccountSettlement, numAccounts)
 	for i := 0; i < numAccounts; i++ {
 		seedItems[i] = AccountSettlement{
@@ -386,16 +386,15 @@ func runFintechLedgerSuite(t *testing.T, mode string, db *sql.DB) {
 
 	// Exercise Stream, StreamSeq, Query currying, WithPrepared, WithTx, InTxOpts, CacheStats
 	// First, test empty slice error paths and not-found GetAccount error path
-	if _, err := q.UpsertAccountBalances(ctx, nil); !errors.Is(err, runtime.ErrEmptySliceParam) {
-		t.Fatalf("[%s] expected ErrEmptySliceParam from UpsertAccountBalances(nil), got %v", mode, err)
-	}
-	if _, err := q.UpsertAccountBalancesBatch(ctx, nil); !errors.Is(err, runtime.ErrEmptySliceParam) {
-		t.Fatalf("[%s] expected ErrEmptySliceParam from UpsertAccountBalancesBatch(nil), got %v", mode, err)
+	if res, err := q.UpsertAccountBalances(ctx, nil); err != nil {
+		t.Fatalf("[%s] UpsertAccountBalances(nil): %v", mode, err)
+	} else if n, _ := res.RowsAffected(); n != 0 {
+		t.Fatalf("[%s] UpsertAccountBalances(nil) affected %d rows", mode, n)
 	}
 	if _, err := q.GetAccount(ctx, orgID, 999999); !errors.Is(err, sql.ErrNoRows) {
 		t.Fatalf("[%s] expected sql.ErrNoRows from GetAccount(999999), got %v", mode, err)
 	}
-	// Test already-sorted and multi-org UpsertAccountBalances & multi-chunk UpsertAccountBalancesBatch
+	// Test already-sorted and multi-org UpsertAccountBalances & multi-chunk UpsertAccountBalances
 	if _, err := q.UpsertAccountBalances(ctx, []AccountSettlement{
 		{OrgID: orgID + 1, AccountID: 2, Currency: "USD", DeltaCents: 0},
 		{OrgID: orgID, AccountID: 2, Currency: "USD", DeltaCents: 10},
@@ -412,26 +411,26 @@ func runFintechLedgerSuite(t *testing.T, mode string, db *sql.DB) {
 	}
 	// Promote 2-row batch shape (threshold=2) then execute a 3-row sorted batch to exercise multi-chunk autoTx decomposition
 	for range 2 {
-		if _, err := q.UpsertAccountBalancesBatch(ctx, []AccountSettlement{
+		if _, err := q.UpsertAccountBalances(ctx, []AccountSettlement{
 			{OrgID: orgID, AccountID: 1, Currency: "USD", DeltaCents: 0},
 			{OrgID: orgID, AccountID: 2, Currency: "USD", DeltaCents: 0},
 		}); err != nil {
-			t.Fatalf("[%s] 2-row UpsertAccountBalancesBatch: %v", mode, err)
+			t.Fatalf("[%s] 2-row UpsertAccountBalances: %v", mode, err)
 		}
 	}
-	if _, err := q.UpsertAccountBalancesBatch(ctx, []AccountSettlement{
+	if _, err := q.UpsertAccountBalances(ctx, []AccountSettlement{
 		{OrgID: orgID, AccountID: 1, Currency: "USD", DeltaCents: 0},
 		{OrgID: orgID, AccountID: 2, Currency: "USD", DeltaCents: 0},
 		{OrgID: orgID, AccountID: 3, Currency: "USD", DeltaCents: 0},
 	}); err != nil {
-		t.Fatalf("[%s] 3-row sorted multi-chunk UpsertAccountBalancesBatch: %v", mode, err)
+		t.Fatalf("[%s] 3-row sorted multi-chunk UpsertAccountBalances: %v", mode, err)
 	}
-	if _, err := q.UpsertAccountBalancesBatch(ctx, []AccountSettlement{
+	if _, err := q.UpsertAccountBalances(ctx, []AccountSettlement{
 		{OrgID: orgID, AccountID: 3, Currency: "USD", DeltaCents: 0},
 		{OrgID: orgID, AccountID: 2, Currency: "USD", DeltaCents: 0},
 		{OrgID: orgID, AccountID: 1, Currency: "USD", DeltaCents: 0},
 	}); err != nil {
-		t.Fatalf("[%s] 3-row unsorted multi-chunk UpsertAccountBalancesBatch: %v", mode, err)
+		t.Fatalf("[%s] 3-row unsorted multi-chunk UpsertAccountBalances: %v", mode, err)
 	}
 
 	zeroSumStream := runtime.FromSlice([]AccountSettlement{

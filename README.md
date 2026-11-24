@@ -26,6 +26,16 @@ statements:
         {?FilterOrg: AND org_id = :org_id:int64}
         {?FilterStatuses: AND status IN (:statuses:[]string)}
       ORDER BY id
+
+  - name: CountItems            # one output column, no result_type: returns the int64 itself
+    kind: one
+    sql: SELECT COUNT(*) AS n:int64 FROM items
+
+  - name: InsertItems           # multi-row insert: any size, chunked to fit the wire limit
+    kind: exec
+    sql: |
+      INSERT INTO items (id, name, score)
+      VALUES :items:[]NewItem(ID:int64 ASC, Name:string, Score:int64)
 ```
 
 ```go
@@ -33,7 +43,13 @@ statements:
 q := store.New(db)
 item, err := q.GetItem(ctx, 42)
 rows, err := q.SearchItems(ctx, store.SearchItemsParams{MinScore: 10, FilterOrg: true, OrgID: 7})
+for row, err := range q.SearchItemsSeq(ctx, params) { /* stream rows in O(1) memory */ }
+n, err := q.CountItems(ctx)                 // (int64, error)
+res, err := q.InsertItems(ctx, newItems)    // chunked automatically; an empty slice is a no-op
 ```
+
+A `many` statement has two forms, `X` (a slice) and `XSeq` (an iterator); `runtime.Collect`, `runtime.AppendTo`
+and `runtime.Each` consume any iterator as a new slice, appended to yours, or through a callback.
 
 Typed output columns and parameters, slices (`IN (:ids:[]int64)`), multi-row tuple inserts with automatic
 wire-limit-aware batching and streaming, optional `{?Flag: ...}` blocks, keyset pagination (`Seek`/`Order`),

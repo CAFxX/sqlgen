@@ -58,7 +58,7 @@ func TestFuzzInTransaction(t *testing.T) {
 					for j := range fresh {
 						fresh[j].ID += int64(1000 * (step + 1))
 					}
-					v := fzIns{Order: f.intn(4), Path: f.intn(3)}
+					v := fzIns{Order: f.intn(4), Path: f.intn(2)}
 					if v.Order == 3 {
 						fresh = litRows(fresh)
 					}
@@ -70,7 +70,7 @@ func TestFuzzInTransaction(t *testing.T) {
 				case 1:
 					ids := f.distinctInts(f.rangeI(1, 20), func() int64 { return f.pickID(cur) })
 					d := int64(f.rangeI(1, 4))
-					aff, err := ta.Bump(f.ctx, d, ids, nil, f.chance(0.5))
+					aff, err := ta.Bump(f.ctx, d, ids, nil)
 					var want int64
 					for j := range cur {
 						if slices.Contains(ids, cur[j].ID) {
@@ -85,7 +85,7 @@ func TestFuzzInTransaction(t *testing.T) {
 					check("bump")
 				default:
 					ids := f.distinctInts(f.rangeI(1, 20), func() int64 { return f.pickID(cur) })
-					aff, err := ta.Delete(f.ctx, ids, nil, f.chance(0.5))
+					aff, err := ta.Delete(f.ctx, ids, nil)
 					var keep []fzRow
 					for _, r := range cur {
 						if !slices.Contains(ids, r.ID) {
@@ -208,10 +208,36 @@ func (f *fz) checkVariants(label string, v fzVar, ref []fzRow) {
 			f.failf("%s: Each stopped after %d rows: %s", label, k, d)
 		}
 		f.connsIdle(label + ": after Each error")
+
+		// runtime.ErrStop ends the iteration early WITHOUT an error.
+		part = part[:0]
+		if err := v.Each(func(r fzRow) error {
+			part = append(part, r)
+			if len(part) == k {
+				return runtime.ErrStop
+			}
+			return nil
+		}); err != nil {
+			f.failf("%s: Each stopped with ErrStop after %d rows: err = %v, want nil", label, k, err)
+		} else if d := diffRows(part, ref[:k]); d != "" {
+			f.failf("%s: Each stopped with ErrStop after %d rows: %s", label, k, d)
+		}
+		f.connsIdle(label + ": after Each ErrStop")
+
+		// A panicking callback still releases the rows (and the connection).
+		func() {
+			defer func() {
+				if r := recover(); r != "fz-callback-panic" {
+					f.failf("%s: Each callback panic: recovered %v", label, r)
+				}
+			}()
+			_ = v.Each(func(fzRow) error { panic("fz-callback-panic") })
+		}()
+		f.connsIdle(label + ": after Each panic")
 	}
 }
 
-// Every flavour (slice, Into, Seq, Each; and for the Batch lookups BatchInto / BatchSeq / BatchEach) of a call
+// Every flavour (slice, AppendTo, Seq, Each; the IN lookups chunk) of a call
 // returns the same rows, also across chunks and when the consumer stops early.
 func TestFuzzIterationVariants(t *testing.T) {
 	seed := fuzzSeed(t)
@@ -251,17 +277,17 @@ func TestFuzzIterationVariants(t *testing.T) {
 							want = append(want, r)
 						}
 					}
-					v := a.ByIDsBatchV(f.ctx, ids)
-					// Batch concatenates chunks (each ordered by id), so compare against the slice flavour.
-					ref, err := a.ByIDs(f.ctx, ids, true)
+					v := a.ByIDsV(f.ctx, ids)
+					// The chunked call concatenates chunks (each ordered by id), so compare against the slice flavour.
+					ref, err := a.ByIDs(f.ctx, ids)
 					if err != nil {
-						f.failf("ds %d ByIDs batch: %v", ds, err)
+						f.failf("ds %d ByIDs: %v", ds, err)
 						continue
 					}
 					if d := diffRows(sortByID(ref), sortByID(want)); d != "" {
-						f.failf("ds %d ByIDs batch %d ids: %s", ds, len(ids), d)
+						f.failf("ds %d ByIDs %d ids: %s", ds, len(ids), d)
 					}
-					f.checkVariants(fmt.Sprintf("ds %d ByIDsBatch %d ids", ds, len(ids)), v, ref)
+					f.checkVariants(fmt.Sprintf("ds %d ByIDs %d ids", ds, len(ids)), v, ref)
 				default:
 					seen := map[[2]int64]bool{}
 					var keys [][2]int64
@@ -272,12 +298,12 @@ func TestFuzzIterationVariants(t *testing.T) {
 							keys = append(keys, k)
 						}
 					}
-					ref, err := a.ByKeys(f.ctx, keys, true)
+					ref, err := a.ByKeys(f.ctx, keys)
 					if err != nil {
-						f.failf("ds %d ByKeys batch: %v", ds, err)
+						f.failf("ds %d ByKeys: %v", ds, err)
 						continue
 					}
-					f.checkVariants(fmt.Sprintf("ds %d ByKeysBatch %d keys", ds, len(keys)), a.ByKeysBatchV(f.ctx, keys), ref)
+					f.checkVariants(fmt.Sprintf("ds %d ByKeys %d keys", ds, len(keys)), a.ByKeysV(f.ctx, keys), ref)
 				}
 			}
 			a.Close()
@@ -288,8 +314,8 @@ func TestFuzzIterationVariants(t *testing.T) {
 		cctx, cancel := context.WithCancel(f.ctx)
 		cancel()
 		for name, v := range map[string]fzVar{"Search": a.SearchV(cctx, fzSearchArgs{}),
-			"Page": a.PageV(cctx, fzPageArgs{Limit: 5}), "ByIDsBatch": a.ByIDsBatchV(cctx, []int64{1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11}),
-			"ByKeysBatch": a.ByKeysBatchV(cctx, [][2]int64{{0, 0}, {1, 1}, {2, 2}, {0, 3}, {1, 4}})} {
+			"Page": a.PageV(cctx, fzPageArgs{Limit: 5}), "ByIDs": a.ByIDsV(cctx, []int64{1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11}),
+			"ByKeys": a.ByKeysV(cctx, [][2]int64{{0, 0}, {1, 1}, {2, 2}, {0, 3}, {1, 4}})} {
 			if _, err := v.Into(0, 0); !errors.Is(err, context.Canceled) {
 				f.failf("%s Into on a cancelled context: err = %v", name, err)
 			}
@@ -538,13 +564,12 @@ func TestFuzzColumnTypes(t *testing.T) {
 					f.failf("ds %d order %s limit %d: %s", ds, fmtTerms(terms), limit, d)
 				}
 			}
-			// Bulk insert round trip (plain and Batch), including NULL *int32, empty and binary []byte.
+			// Bulk insert round trip (auto-chunking), including NULL *int32, empty and binary []byte.
 			f.resetTyped(nil)
-			batch := f.chance(0.5)
-			if aff, err := a.TypedInsert(f.ctx, rows, batch); err != nil || aff != int64(len(rows)) {
-				f.failf("ds %d typed insert batch=%v: affected %d, err %v", ds, batch, aff, err)
+			if aff, err := a.TypedInsert(f.ctx, rows); err != nil || aff != int64(len(rows)) {
+				f.failf("ds %d typed insert: affected %d, err %v", ds, aff, err)
 			} else if d := diffTRows(f.dumpTyped(), sortTByID(rows)); d != "" {
-				f.failf("ds %d typed insert batch=%v: %s", ds, batch, d)
+				f.failf("ds %d typed insert: %s", ds, d)
 			}
 			a.Close()
 		}

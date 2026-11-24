@@ -130,12 +130,12 @@ func (e *ClearingEngine) Close() error {
 }
 
 // BatchSettleMargins applies a batch of margin settlements inside a retryable transaction.
-// ApplyMarginSettlementsBatch automatically presorts by (FirmID ASC, AccountID ASC)
+// ApplyMarginSettlements automatically presorts by (FirmID ASC, AccountID ASC)
 // without mutating caller memory.
 func (e *ClearingEngine) BatchSettleMargins(ctx context.Context, settlements []MarginSettlement) (int64, error) {
 	var affected int64
 	err := e.q.InTx(ctx, nil, func(txQ *Queries) error {
-		res, err := txQ.ApplyMarginSettlementsBatch(ctx, settlements)
+		res, err := txQ.ApplyMarginSettlements(ctx, settlements)
 		if err != nil {
 			return err
 		}

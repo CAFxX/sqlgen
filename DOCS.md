@@ -79,7 +79,7 @@ Write parameters as `:name:type` and let `sqlgen` emit the engine's placeholders
 | Placeholders | `$N` | `$N` | `?` | `?` | `?` |
 | `RETURNING` (`kind: many` on `INSERT` / `UPDATE` / `DELETE`) | yes | yes | yes | **no** (generate-time error) | `INSERT` and `DELETE` only (no `UPDATE ... RETURNING`) |
 | Tested versions | 15, 18 | v25.2 | `modernc.org/sqlite` | 8.4, 9.7 | 10.11, 12.3 |
-| Keyset `Seek` / `Order`, `SelectCols`, `{?Flag:}` blocks, `Batch` / `Stream`, `InTx` | yes | yes | yes | yes | yes |
+| Keyset `Seek` / `Order`, `SelectCols`, `{?Flag:}` blocks, automatic chunking / `Stream`, `InTx` | yes | yes | yes | yes | yes |
 | Single-round-trip pipelines | yes (`pgxwire`) | yes (`pgxwire`) | no (sequential) | yes (`mysqlwire`) | yes (`mysqlwire`) |
 | Typed `::type` placeholder casts in gated inserts | yes | yes | n/a | n/a | n/a |
 | Batch chunk limit (parameters per statement, see `WithMaxBatchParams`) | 16384 default, at most 65535 | same | 16384 default, at most 32766 | same as SQLite | same as SQLite |
@@ -99,10 +99,9 @@ In `kind: one` and `kind: many` queries, annotate top-level `SELECT` (or `RETURN
 
 ```yaml
 statements:
-  # Single output column with result_type: int64 -> returns the scalar type directly (int64, not a struct!)
+  # Single output column and no result_type -> returns the column's value directly ((int64, error), not a struct)
   - name: GetAccountBalance
     kind: one
-    result_type: int64
     sql: |
       SELECT balance:int64
       FROM accounts
@@ -130,8 +129,9 @@ statements:
   - Conditional output columns must come after all unconditional ones, and a statement may have at most 64 unconditional output columns; `sqlgen` rejects anything else.
   - A parameter whose Go name would shadow a generated local (e.g. `:in:string`) is renamed with a `Param` suffix (`inParam`).
 - **Single-Column vs. Struct Return Types**:
-  - By default (`result_type: ""`), `sqlgen` generates a struct `<Name>Row` (or your custom `result_type: MyStruct` name, which can be shared across multiple statements that return the same columns).
-  - When a `kind: one` or `kind: many` statement has **1 output column** and sets `result_type` to a predeclared Go scalar type (e.g., `result_type: int64` or `result_type: string`), the generated methods return the scalar type directly (`(int64, error)` or `([]int64, error)`).
+  - A `kind: one` or `kind: many` statement with **exactly 1 output column and no `result_type`** returns that column's value directly: `(T, error)` for `one`, `([]T, error)` and `iter.Seq2[T, error]` for `many`, and `*runtime.RowFuture[T]` / `*runtime.SliceFuture[T]` in a pipeline. `T` is whatever the column is declared as: `int64`, `time.Time`, `[]byte`, a pointer or nullable type (`*string`), a named type from another package.
+  - With several output columns (and no `result_type`) `sqlgen` generates a struct `<Name>Row`.
+  - `result_type: MyStruct` only ever **names a row struct**, one that can be shared across statements that return the same columns, and it makes even a single column a struct (`MyStruct{ID int64}`). It must be a valid Go identifier that is not predeclared: `result_type: int64` (or `string`, `any`, ...) is rejected with an error, because it used to mean "the scalar" and now never does.
 
 ---
 
@@ -160,7 +160,9 @@ statements:
 
 - **Parameter Deduplication**: If `:actor_id:int64` appears twice in the SQL query, the generated Go function accepts `actorID int64` **once** and binds its value to both SQL placeholders automatically.
 - **Byte Slices**: `[]byte` (and `json.RawMessage`) is always treated as a **scalar** binary/JSON parameter, never expanded into comma-separated placeholders.
-- **Empty 1D Slice Protection**: Passing an empty slice (`len(userIDs) == 0`) to an active 1D slice or tuple slice parameter returns `runtime.ErrEmptySliceParam` before hitting the database, preventing invalid `IN ()` SQL syntax errors.
+- **Empty collections** (the rule is structural: it depends on what the collection is used for, not on the statement kind):
+  - An empty 1D slice (`len(userIDs) == 0`) in an active `IN (...)`/`NOT IN (...)`, and an empty tuple slice anywhere but as the row source of an `INSERT`, returns `runtime.ErrEmptySliceParam` before hitting the database: `IN ()` is invalid SQL, and what an empty list *means* (`NOT IN ()` is true for every row) is a decision for the caller, not the generator.
+  - The one exception is the multi-row `VALUES` list of an `INSERT` (section 2.3): inserting nothing is a **successful no-op** (details there).
 - **Function Signature Arity (`params_struct`)**:
   - By default, if a statement has no `{?Flag: ...}` conditional blocks and `params_struct` is not `true`, parameters are passed inline as positional arguments: `q.GetUsersByIDs(ctx, orgID, userIDs)`.
   - If a statement has any `{?Flag: ...}` conditional blocks or sets `params_struct: true`, a `<Name>Params` struct is generated (including `SelectCols uint64` for multi-column `SELECT` statements): `q.SearchUsers(ctx, SearchUsersParams{...})`.
@@ -189,8 +191,8 @@ statements:
 ```
 
 - Literal SQL expressions inside the tuple template (such as `CURRENT_TIMESTAMP`, `NOW()`, `'active'`, or `0`) are preserved verbatim in every expanded tuple row, while `FieldName:GoType` slots are extracted into the generated `NewOrderItem` struct and bound as positional parameters.
-- Statements with **exactly 1 tuple slice parameter** and **0 1D slice parameters** automatically gain `*Batch` and `*Stream` methods (`CanBatch == true`, `CanStream == true`).
-- Statements with **0 tuple slice parameters** and **1 1D slice parameter** automatically gain `*Batch` methods (`CanBatch == true`).
+- Statements with **exactly 1 collection parameter** (a tuple slice or a 1D slice, at the top level of the statement, no `sqlgen.Order` / `sqlgen.Seek` / composed `sqlgen.Query`) are **chunked automatically**: the plain method splits the collection into wire-safe chunks and runs them in an implicit transaction (section 3.2). A tuple-slice statement also gains `*Stream` (and, for `many`, `*StreamSeq`).
+- **An empty `VALUES` list is a no-op.** For `INSERT ... VALUES :items:[]NewOrderItem(...)` (an `exec` statement, or a `many` one with `RETURNING`), `len(items) == 0` inserts nothing: `exec` returns a `sql.Result` with `RowsAffected() == 0` and a nil error, `many` returns no rows (`len(rows) == 0`; the slice is `nil`), `*Stream` of an empty iterator likewise. No SQL is sent and no transaction is opened. In a `Pipeline` / `PipelineTx` the future resolves to zero rows / an empty slice (not an error), the empty operation is never handed to a wire driver (`pgxwire`, `mysqlwire`), and a pipeline made only of such operations sends nothing, not even `BEGIN`. A tuple slice inside `IN (...)`, or a `VALUES` list that feeds a CTE or derived table rather than an `INSERT`, is not covered by this rule and stays `runtime.ErrEmptySliceParam` (what an empty list means there depends on how the rows are used).
 
 ---
 
@@ -225,7 +227,7 @@ VALUES :items:[]AccountPatch(ID:int64::bigint ASC, Delta:int64::bigint)
 
 **Important Presorting Guarantees**:
 1. **Caller Slice Immutability**: `sqlgen` never mutates the caller's input slice! It sorts a pooled index permutation (`[]int`) in $O(N \log N)$ (or $O(N)$ fast-path when already sorted).
-2. **Global Sort Before Batch Chunking**: In `<Name>Batch`, `sqlgen` sorts the entire $N$-item batch globally *before* splitting it into wire-safe chunks, guaranteeing globally monotonic lock acquisition across all chunks.
+2. **Global Sort Before Chunking**: In the plain `<Name>` method of a chunked statement, `sqlgen` sorts the entire $N$-item batch globally *before* splitting it into wire-safe chunks, guaranteeing globally monotonic lock acquisition across all chunks.
 3. **`RETURNING` Row Order**: For `INSERT ... VALUES` / upserts driven by a presorted tuple slice, the database processes and returns rows in the **presorted order** (verified on PostgreSQL and CockroachDB, including across batch chunks), while your input slice remains in its original order. For `UPDATE` / `DELETE ... WHERE col IN (:ids ASC|DESC) ... RETURNING` the presort fixes the order of the *bound parameters* only: the database visits, locks and returns rows in the order its query plan chooses (PostgreSQL turns an `IN` list into a sorted index scan, so a `DESC` list has no effect). Treat the returned order of such statements as unspecified; if you need one, wrap the statement in a CTE and `ORDER BY` the result.
 4. **What presorting does and does not buy you**: it makes lock acquisition monotonic where the engine processes keys in the order they are bound (multi-row `INSERT`/upsert `VALUES`). For `IN` lists the engine decides, so prefer `ASC` there (it matches the ascending index order engines use) and use `SELECT ... FOR UPDATE ... ORDER BY` first if you need a guaranteed lock order.
 
@@ -442,43 +444,57 @@ For a `kind: exec` statement `<Name>`:
 For a `kind: one` statement `<Name>`:
 - `q.<Name>(ctx, ...) (<RowType>, error)` — returns `sql.ErrNoRows` if no row matches.
 
-For a `kind: many` statement `<Name>`:
-- `q.<Name>(ctx, ...) ([]<RowType>, error)` — returns all matching rows as a slice.
-- `q.<Name>Into(ctx, dst []<RowType>, ...) ([]<RowType>, error)` — appends matching rows to the caller-provided slice `dst` (like `append`: use the returned slice, which reuses `dst`'s backing array while its capacity suffices). Pass `buf[:0]` to reuse a buffer across calls.
-- `q.<Name>Seq(ctx, ...) iter.Seq2[<RowType>, error]` — Go 1.23+ range-over-func iterator that streams rows in $O(1)$ memory and automatically closes `*sql.Rows` (and releases the cached `*ManagedStmt`) even if the caller exits the `for range` loop early with `break` or `return`.
-- `q.<Name>Each(ctx, ..., fn func(<RowType>) error) error` — invokes `fn` for each row.
+For a `kind: many` statement `<Name>` there are exactly two methods:
+- `q.<Name>(ctx, ...) ([]<RowType>, error)` — returns all matching rows as a slice. A query that matches nothing returns a `nil` slice and no error: test `len(rows) == 0`, not `rows == nil`.
+- `q.<Name>Seq(ctx, ...) iter.Seq2[<RowType>, error]` — Go 1.23+ range-over-func iterator that streams rows in $O(1)$ memory and automatically closes `*sql.Rows` (and releases the cached `*ManagedStmt`) even if the caller exits the `for range` loop early with `break` or `return`, and when the loop body panics.
+
+`<RowType>` is the row struct (`<Name>Row`, or your `result_type`), or, for a statement with a single output column and no `result_type`, the column's own type (`int64`, `time.Time`, `[]byte`, `*string`, ...): `q.CountUsers(ctx) (int64, error)`, `q.UserEmails(ctx) ([]string, error)`.
+
+The other consumption styles are helpers over the iterator, in `runtime`, and work for every `iter.Seq2[T, error]` (every `<Name>Seq`, `<Name>StreamSeq`, `runtime.MapSeq2(...)`):
+- `runtime.Collect(seq) ([]T, error)` — the rows as a new slice (what `q.<Name>` does). On an error it returns `(nil, err)`, never a partial slice.
+- `runtime.AppendTo(dst []T, seq) ([]T, error)` — appends the rows to the caller's slice (like `append`: use the returned slice, which reuses `dst`'s backing array while its capacity suffices; pass `buf[:0]` to reuse a buffer across calls and avoid growing a new slice per call). On an error it returns `(dst, err)` with `dst` exactly as you passed it, so the data you already held is never dropped. It allocates nothing beyond what `append` grows.
+- `runtime.Each(seq, fn func(T) error) error` — invokes `fn` for each row, in order. The first error of the sequence or of `fn` stops the iteration and is returned unchanged; `fn` returns `runtime.ErrStop` to end the iteration early without an error (`Each` then returns `nil`). A nil `seq` or `fn` is `runtime.ErrNilArgument`. A panic in `fn` still releases the rows.
+
+```go
+rows, err := runtime.AppendTo(buf[:0], q.ListOpenOrdersSeq(ctx, symbol))        // reuse a buffer
+err = runtime.Each(q.ListOpenOrdersSeq(ctx, symbol), func(o OpenOrderRow) error { // callback style
+    return process(o)
+})
+```
 
 ---
 
-### 3.2. Batching & $O(1)$-Memory Streaming (`*Batch`, `*Stream`, `MapSeq2`)
+### 3.2. Automatic Chunking & $O(1)$-Memory Streaming (`<Name>`, `*Stream`, `MapSeq2`)
 
-#### Automatic Wire-Safe Batching (`*Batch`)
+#### Automatic Wire-Safe Chunking (the plain `<Name>` method)
 
-Database drivers enforce hard limits on parameters per statement (e.g., 65,535 in PostgreSQL, 32,766 in SQLite). `sqlgen` starts a chunk at no more than `16384` parameters by default (see `WithMaxBatchParams`). When a `kind: exec` or `kind: many` statement has exactly one collection parameter (a tuple slice `[]Tuple` or a 1D slice `[]T`) and no `sqlgen.Order`, `sqlgen.Seek` or composed `sqlgen.Query` parameter, `sqlgen` generates `*Batch` methods:
+Database drivers enforce hard limits on parameters per statement (e.g., 65,535 in PostgreSQL, 32,766 in SQLite). `sqlgen` starts a chunk at no more than `16384` parameters by default (see `WithMaxBatchParams`). When a `kind: exec` or `kind: many` statement has exactly one collection parameter (a tuple slice `[]Tuple` or a 1D slice `[]T`) and no `sqlgen.Order`, `sqlgen.Seek` or composed `sqlgen.Query` parameter, the plain method `<Name>` (and, for `many`, `<Name>Seq`) splits the collection into chunks that fit; there is no separate "batch" method to remember to call:
 
 - `kind: exec`:
-  - `q.<Name>Batch(ctx, ...) (sql.Result, error)` — the result sums `RowsAffected()` over all chunks (its concrete type is `runtime.BatchExecResult`; `LastInsertId()` is the one of the final chunk).
+  - `q.<Name>(ctx, ...) (sql.Result, error)` — the result sums `RowsAffected()` over all chunks (its concrete type is `runtime.BatchExecResult`; `LastInsertId()` is the one of the final chunk).
 - `kind: many`:
-  - `q.<Name>Batch(ctx, ...) ([]<RowType>, error)`
-  - `q.<Name>BatchInto(ctx, dst []<RowType>, ...) ([]<RowType>, error)`
-  - `q.<Name>BatchSeq(ctx, ...) iter.Seq2[<RowType>, error]`
-  - `q.<Name>BatchEach(ctx, ..., fn func(<RowType>) error) error`
+  - `q.<Name>(ctx, ...) ([]<RowType>, error)` — the rows of all chunks, concatenated in chunk order (so `RETURNING` rows keep the presorted order across chunks).
+  - `q.<Name>Seq(ctx, ...) iter.Seq2[<RowType>, error]` — the same rows as an iterator. It runs the chunks one after the other but does not open a transaction of its own (a lazily consumed iterator cannot own one): run it on a `WithTx`/`InTx` query when a multi-chunk `INSERT ... RETURNING` must be all or nothing.
 
-**How Adaptive Batch Chunking (`PlanBatchChunk`) Works**:
-- When a batch size $N$ exceeds the driver's wire parameter limit (`MaxRowsPerBatch`), `sqlgen` automatically splits the slice into wire-safe chunks.
+The pipeline method (`pl.<Name>(...)`) queues the statement as one operation: it does not chunk, so split the collection yourself if it can exceed the parameter limit.
+
+**How Adaptive Chunking (`PlanBatchChunk`) Works**:
+- When a collection of size $N$ exceeds the driver's wire parameter limit (`MaxRowsPerBatch`), `sqlgen` automatically splits the slice into wire-safe chunks.
+- **Repeated values in an `IN` list.** The chunks are separate statements, so a value repeated in a collection that spans several chunks is matched once per chunk: an idempotent statement (`DELETE ... WHERE id IN (...)`, a `SELECT`) is unaffected, but `UPDATE ... SET n = n + 1 WHERE id IN (...)` applies the increment once per chunk that contains the id (and the collection is split below the wire limit while a size is cold, see below). De-duplicate the ids first when that matters.
+- **Cold sizes.** A size that has not recurred yet is planned as power-of-2 chunks, so the first call with a new size $N$ that is not a power of two (e.g. `3` rows as `2 + 1`) runs several statements inside the implicit transaction instead of one. After `promoteThreshold` calls (default `2`) the exact size is promoted and runs as a single statement of $N$ rows.
 - **Heavy-Hitter Promotion & Greedy Reuse**: When recurring batch sizes (e.g., `500` rows or `400` rows) execute repeatedly (`>= promoteThreshold`), `StmtCache` promotes those exact batch sizes to Tier-2 prepared statements. If a larger spike arrives (e.g., `1400` rows), `PlanBatchChunk` greedily decomposes it into your already-prepared Tier-2 statement sizes (`500 + 500 + 400`) before falling back to cold power-of-2 chunks (`512, 256, ...`)!
 
 #### $O(1)$-Memory Streaming Ingestion (`*Stream` & `*StreamSeq`)
 
-When a statement qualifies for `*Batch` **and** its collection parameter is a tuple slice (`[]Tuple`; 1D slices get `*Batch` only), `sqlgen` also generates `<Name>Stream` (and, for `many` statements, `<Name>StreamSeq`). They take the lazy `iter.Seq2[<TupleType>, error]` **in place of** the tuple-slice parameter (same position in the argument list), so an arbitrarily large or lazy source is ingested in $O(1)$ memory:
+When a statement is chunked **and** its collection parameter is a tuple slice (`[]Tuple`; 1D slices are chunked but not streamed), `sqlgen` also generates `<Name>Stream` (and, for `many` statements, `<Name>StreamSeq`). They take the lazy `iter.Seq2[<TupleType>, error]` **in place of** the tuple-slice parameter (same position in the argument list), so an arbitrarily large or lazy source is ingested in $O(1)$ memory:
 
 - `kind: exec`:
-  - `q.<Name>Stream(ctx, ..., seq iter.Seq2[<TupleType>, error], ...) (sql.Result, error)` — pulls items from `seq` into a pooled chunk buffer (`256` items or `MaxRowsPerBatch`, whichever is smaller), flushes each chunk via `<Name>Batch`, and returns the summed result (`res.RowsAffected()` is the total).
+  - `q.<Name>Stream(ctx, ..., seq iter.Seq2[<TupleType>, error], ...) (sql.Result, error)` — pulls items from `seq` into a pooled chunk buffer (`256` items or `MaxRowsPerBatch`, whichever is smaller), flushes each chunk via `<Name>`, and returns the summed result (`res.RowsAffected()` is the total).
 - `kind: many`:
   - `q.<Name>Stream(ctx, ..., seq iter.Seq2[<TupleType>, error], ...) ([]<RowType>, error)`
   - `q.<Name>StreamSeq(ctx, ..., seq iter.Seq2[<TupleType>, error], ...) iter.Seq2[<RowType>, error]`
 
-**Atomicity.** `<Name>Batch` of more than one chunk runs in its own transaction (all or nothing, unless called on a `WithTx`/`InTx` query, which uses the caller's). A stream is not one transaction: every flush (up to `256` items) is atomic, but an error or a cancelled context part-way leaves the earlier flushes committed. Run the stream inside `q.InTx` for all-or-nothing ingestion. An error yielded by `seq` stops the stream and is returned (or yielded) as-is. A nil `seq` (and a nil callback passed to `<Name>Each`, `<Name>BatchEach`, `InTx` or `PipelineTx`) returns `runtime.ErrNilArgument` instead of panicking. `runtime.Seq2[T]` is a convenience alias for `iter.Seq2[T, error]`, so values of either spelling are accepted.
+**Atomicity.** `<Name>` of more than one chunk runs in its own transaction (all or nothing, unless called on a `WithTx`/`InTx` query, which uses the caller's): when a later chunk fails, the earlier ones are rolled back. A stream is not one transaction: every flush (up to `256` items) is atomic, but an error or a cancelled context part-way leaves the earlier flushes committed. Run the stream inside `q.InTx` for all-or-nothing ingestion. An error yielded by `seq` stops the stream and is returned (or yielded) as-is. A nil `seq` (and a nil callback passed to `runtime.Each`, `InTx` or `PipelineTx`) returns `runtime.ErrNilArgument` instead of panicking. A stream of an empty iterator inserts nothing (section 2.3). `runtime.Seq2[T]` is a convenience alias for `iter.Seq2[T, error]`, so values of either spelling are accepted.
 
 **Iterator Adapters in `runtime`** (all return plain `iter.Seq2[T, error]`):
 - `runtime.FromSlice(items []T) iter.Seq2[T, error]` — wraps an in-memory slice.
@@ -783,22 +799,24 @@ err := q.PipelineTx(ctx, nil, func(p *Pipeline) error {
      - `.AssertRowsAffected(n int64) *ExecFuture`: fails the pipeline with an error matching `runtime.ErrAssertionFailed` if rows affected $\ne n$.
      - `.AssertFound() *ExecFuture`: fails the pipeline with an error matching `runtime.ErrAssertionFailed` if rows affected $\ne 1$.
      - `.RowsAffectedEq(n)`, `.RowsAffectedGt(n)`, `.RowsAffectedGe(n)`, `.RowsAffectedLt(n)`, `.RowsAffectedLe(n)`, `.Found()`, `.NotFound()`: returns a `PipelineCond` for `p.If(...)`.
-     - `.Result() (sql.Result, error)`, `.RowsAffected() (int64, error)`, and `.Skipped() bool` (valid after `Flush` / `PipelineTx` completes).
+     - `.Result() (sql.Result, error)` and `.RowsAffected() (int64, error)` (valid after `Flush` / `PipelineTx` completes).
    - `*runtime.RowFuture[T]`: returned by `kind: one` pipeline methods.
      - `.AssertFound() *RowFuture[T]`: fails the pipeline with an error matching `runtime.ErrAssertionFailed` if the row count is not 1.
      - `.AssertRowsAffected(n int64) *RowFuture[T]`: fails the pipeline with an error matching `runtime.ErrAssertionFailed` if row count $\ne n$.
      - `.Found()`, `.NotFound()`, `.RowsAffectedEq(n)`, `.RowsAffectedGt(n)`, `.RowsAffectedGe(n)`, `.RowsAffectedLt(n)`, `.RowsAffectedLe(n)`: returns a `PipelineCond`.
      - `.WhereCol(sqlPred string, goPred func(T) bool) PipelineCond` (or package helper `WhereCol(fut, sqlPred, goPred)`): evaluates `sqlPred` on the wire in `WirePipeliner` mode and `goPred(row)` in Go fallback mode.
-     - `.Get() (T, error)` and `.Skipped() bool` (valid after flush).
+     - `.Get() (T, error)` (valid after flush).
    - `*runtime.SliceFuture[T]`: returned by `kind: many` pipeline methods.
      - `.AssertRowsAffected(n int64) *SliceFuture[T]`, `.AssertFound() *SliceFuture[T]`
      - `.Found()`, `.NotFound()`, `.RowsAffectedEq(n)`, `.RowsAffectedGt(n)`, `.RowsAffectedGe(n)`, `.RowsAffectedLt(n)`, `.RowsAffectedLe(n)`, `.WhereCol(sqlPred, goPred func(T) bool)`
-     - `.Get() ([]T, error)` and `.Skipped() bool` (valid after flush).
+     - `.Get() ([]T, error)` (valid after flush; no rows is an empty slice, not an error).
    - Reading any future's result (`Result`, `RowsAffected`, `Get`, `Value`, `Values`) before its pipeline has flushed (`Flush`, or the end of `PipelineTx`) returns `runtime.ErrFutureNotReady`, never a result that could be mistaken for a real one; after the flush a `*RowFuture` whose statement matched no row returns `sql.ErrNoRows`.
 2. **Boolean Combinators & Control Flow**:
    - `condA.And(condB)`, `condA.Or(condB)`, `condA.Not()` combine `PipelineCond` values.
      The operands may come from different futures (`del.NotFound().And(get.Found())`): every leaf is evaluated over its own operation's rows, also on the single-round-trip path, where each earlier operation records its leaf server-side and the latest one combines the records, still in one network round-trip. A leaf over an operation that did not run (its branch was not taken) is false, so `Not` of it is true, identically on both paths.
    - `ifRes := p.If(cond, thenFn, elseFn)`: `ifRes.Taken()` and `ifRes.Skipped()` report whether the `then` branch was taken after flush.
+   - **One mechanism for "this operation did not run"**: reading a future whose operation sits in an untaken `If`/`Else` branch returns `runtime.ErrBranchNotTaken` (test it with `errors.Is`); there is no separate `Skipped()` on futures. `ifRes.Skipped()` is about the block (it is inside an outer untaken branch), which has no error to carry the answer.
+   - **Empty `VALUES` operations**: queuing an `INSERT ... VALUES` statement with an empty collection (section 2.3) queues an operation that sends no SQL: its future reports zero rows affected / no rows (a `Found()`/`RowsAffectedGt(0)` condition over it is false, `NotFound()` is true; `AssertRowsAffected(0)` holds), it is never handed to `pgxwire` / `mysqlwire`, and the other operations of the pipeline still run in one round trip. A pipeline in which an empty operation carries an assertion or a condition runs on the sequential path (counted in `CacheStats.SequentialPipelines`) so that the assertion and condition are evaluated in order; a pipeline made only of empty operations sends nothing at all.
    - `p.Abort(err)`: when reached inside an active branch, aborts the pipeline, returning `err` from `PipelineTx` / `Flush` (the transaction is rolled back only inside `PipelineTx` or a standalone `Pipeline`; see below).
 3. **Assertion errors**: a failed assertion returns a `*runtime.AssertionError` (`errors.Is(err, runtime.ErrAssertionFailed)` is true; use `errors.As` to read the fields `Statement`, `Want`, `Got`, `GotKnown`). The message names the statement and the expected count, for example `sqlgen: pipeline assertion failed on statement "InsertAudit": expected 5 rows affected, got 3`. On the single-roundtrip wire path the guard's error carries the actual row count too, so `Got` / `GotKnown` and the message are the same on both paths. Only the guard's own, marked error is translated: a genuine database error of one of your statements (an integer overflow, a unique violation, ...) that happens to carry an assertion is returned as that database error, identically on both paths.
 4. **Who rolls back**:
@@ -850,7 +868,7 @@ Every generated file declares the same fixed set of top-level names in your pack
 
 **Why the unqualified aliases exist.** The aliases (`Query = runtime.Query`, `WithTxRetry = runtime.WithTxRetry`, and so on) re-export the runtime types and options that appear in generated signatures, so application code that only calls the generated API never has to import the `runtime` package. For example `q.InTx(ctx, nil, fn, WithTxRetry(DefaultRetryPolicy()))` and `After: NewSeek(...)` compile with just the generated package. They are aliases, not new types: a `Query` and a `runtime.Query` are identical and interchangeable.
 
-**Method names generated on `*Queries` and `*Pipeline`** that a statement name must avoid (`reservedStatementNames`): `Cache`, `CacheStats`, `Close`, `If`, `InTx`, `Pipeline`, `PipelineTx`, `WithPrepared`, `WithTx`, plus `SetBuildError`, `QueueExec`, `Abort` and `Flush`, which the generated `Pipeline` inherits from `runtime.Pipeline`. A statement becomes a method with its own name on both `*Queries` and `*Pipeline`, so it must not shadow any of them.
+**Method names generated on `*Queries` and `*Pipeline`** that a statement name must avoid (`reservedStatementNames`): `Cache`, `CacheStats`, `Close`, `If`, `InTx`, `Pipeline`, `PipelineTx`, `WithPrepared`, `WithTx`, plus `SetBuildError`, `QueueExec`, `QueueExecNoop`, `Abort` and `Flush`, which the generated `Pipeline` inherits from `runtime.Pipeline`. A statement becomes a method with its own name on both `*Queries` and `*Pipeline`, so it must not shadow any of them.
 
 **What happens on a clash.** Generation fails with a clear error instead of emitting code that does not compile:
 

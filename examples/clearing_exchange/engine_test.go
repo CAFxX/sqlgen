@@ -277,7 +277,7 @@ func runClearingExchangeStressSuite(t *testing.T, mode string, db *sql.DB) {
 		t.Fatalf("[%s] BatchSettleMargins: affected=%d err=%v", mode, affected, err)
 	}
 	if !slices.Equal(seedSettlements, snapshotSeed) {
-		t.Fatalf("[%s] caller slice was mutated by ApplyMarginSettlementsBatch!", mode)
+		t.Fatalf("[%s] caller slice was mutated by ApplyMarginSettlements!", mode)
 	}
 
 	eq0, err := q.TotalExchangeEquityCents(ctx)
@@ -285,7 +285,7 @@ func runClearingExchangeStressSuite(t *testing.T, mode string, db *sql.DB) {
 		t.Fatalf("[%s] initial TotalExchangeEquityCents = %d, want %d (err=%v)", mode, eq0, expectedEquity, err)
 	}
 
-	// 3. Ingest orders via IngestOrdersBatch and IngestOrdersStream (testing mixed ASC/DESC presorting + EpochSeq + RETURNING)
+	// 3. Ingest orders via IngestOrders and IngestOrdersStream (testing mixed ASC/DESC presorting + EpochSeq + RETURNING)
 	rawOrders := []OrderSubmission{
 		{FirmID: 2, AccountID: 2, Symbol: "BTC-PERP", Side: "sell", LimitPriceCents: 49_500_00, Quantity: 5, Status: "open", ClientOrderID: "sell-btc-1", UpdatedSeq: 2},
 		{FirmID: 1, AccountID: 1, Symbol: "BTC-PERP", Side: "buy", LimitPriceCents: 50_000_00, Quantity: 5, Status: "open", ClientOrderID: "buy-btc-1", UpdatedSeq: 2},
@@ -294,12 +294,12 @@ func runClearingExchangeStressSuite(t *testing.T, mode string, db *sql.DB) {
 		{FirmID: 3, AccountID: 3, Symbol: "ETH-PERP", Side: "sell", LimitPriceCents: 2_950_00, Quantity: 10, Status: "open", ClientOrderID: "sell-eth-1", UpdatedSeq: 2},
 	}
 	rawOrdersSnap := slices.Clone(rawOrders)
-	acks, err := q.IngestOrdersBatch(ctx, rawOrders, 10)
+	acks, err := q.IngestOrders(ctx, rawOrders, 10)
 	if err != nil || len(acks) != len(rawOrders) {
-		t.Fatalf("[%s] IngestOrdersBatch: len=%d err=%v", mode, len(acks), err)
+		t.Fatalf("[%s] IngestOrders: len=%d err=%v", mode, len(acks), err)
 	}
 	if !slices.Equal(rawOrders, rawOrdersSnap) {
-		t.Fatalf("[%s] caller slice was mutated by IngestOrdersBatch!", mode)
+		t.Fatalf("[%s] caller slice was mutated by IngestOrders!", mode)
 	}
 	// Verify DESC price presorting within same (FirmID=1, AccountID=1 vs 5) and upsert conflict resolution
 	reAcks, err := q.IngestOrders(ctx, rawOrders, 11)
@@ -472,9 +472,9 @@ func runClearingExchangeStressSuite(t *testing.T, mode string, db *sql.DB) {
 						ClientOrderID: fmt.Sprintf("%s-buy-w%d-i%d-%d", mode, workerID, iter, seq), UpdatedSeq: seq,
 					},
 				}
-				pairAcks, err := q.IngestOrdersBatch(ctx, pairOrders, seq)
+				pairAcks, err := q.IngestOrders(ctx, pairOrders, seq)
 				if err != nil || len(pairAcks) != 2 {
-					errCh <- fmt.Errorf("worker %d IngestOrdersBatch: %w", workerID, err)
+					errCh <- fmt.Errorf("worker %d IngestOrders: %w", workerID, err)
 					return
 				}
 
@@ -635,23 +635,16 @@ func runClearingExchangeStressSuite(t *testing.T, mode string, db *sql.DB) {
 func exerciseRemainingExchangeVariants(t *testing.T, ctx context.Context, mode string, db *sql.DB, eng *ClearingEngine, q *Queries) {
 	t.Helper()
 
-	// Empty slice error checks
-	if _, err := q.ApplyMarginSettlements(ctx, nil); !errors.Is(err, runtime.ErrEmptySliceParam) {
-		t.Fatalf("[%s] expected ErrEmptySliceParam, got %v", mode, err)
+	// An empty VALUES collection is a successful no-op (nothing sent, nothing affected); an empty IN list is an error.
+	if res, err := q.ApplyMarginSettlements(ctx, nil); err != nil {
+		t.Fatalf("[%s] ApplyMarginSettlements(nil): %v", mode, err)
+	} else if n, _ := res.RowsAffected(); n != 0 {
+		t.Fatalf("[%s] ApplyMarginSettlements(nil) affected %d rows", mode, n)
 	}
-	if _, err := q.ApplyMarginSettlementsBatch(ctx, nil); !errors.Is(err, runtime.ErrEmptySliceParam) {
-		t.Fatalf("[%s] expected ErrEmptySliceParam, got %v", mode, err)
-	}
-	if _, err := q.IngestOrders(ctx, nil, 1); !errors.Is(err, runtime.ErrEmptySliceParam) {
-		t.Fatalf("[%s] expected ErrEmptySliceParam, got %v", mode, err)
-	}
-	if _, err := q.IngestOrdersBatch(ctx, nil, 1); !errors.Is(err, runtime.ErrEmptySliceParam) {
-		t.Fatalf("[%s] expected ErrEmptySliceParam, got %v", mode, err)
+	if acks, err := q.IngestOrders(ctx, nil, 1); err != nil || len(acks) != 0 {
+		t.Fatalf("[%s] IngestOrders(nil) = %v, %v; want no rows and no error", mode, acks, err)
 	}
 	if _, err := q.CancelOrdersByIDs(ctx, 1, 1, nil); !errors.Is(err, runtime.ErrEmptySliceParam) {
-		t.Fatalf("[%s] expected ErrEmptySliceParam, got %v", mode, err)
-	}
-	if _, err := q.CancelOrdersByIDsBatch(ctx, 1, 1, nil); !errors.Is(err, runtime.ErrEmptySliceParam) {
 		t.Fatalf("[%s] expected ErrEmptySliceParam, got %v", mode, err)
 	}
 	if _, err := q.GetMarginAccount(ctx, 9999, 9999); !errors.Is(err, sql.ErrNoRows) {
@@ -660,8 +653,8 @@ func exerciseRemainingExchangeVariants(t *testing.T, ctx context.Context, mode s
 	if _, err := q.GetAccountCollateralCents(ctx, 9999, 9999); !errors.Is(err, sql.ErrNoRows) {
 		t.Fatalf("[%s] expected sql.ErrNoRows from GetAccountCollateralCents, got %v", mode, err)
 	}
-	if _, err := eng.BatchSettleMargins(ctx, nil); !errors.Is(err, runtime.ErrEmptySliceParam) {
-		t.Fatalf("[%s] expected ErrEmptySliceParam from BatchSettleMargins(nil), got %v", mode, err)
+	if n, err := eng.BatchSettleMargins(ctx, nil); err != nil || n != 0 {
+		t.Fatalf("[%s] BatchSettleMargins(nil) = %d, %v; want 0 and no error", mode, n, err)
 	}
 	// Empty slice inside nested subqueries and parent QueryRiskPositionsPage
 	if _, err := eng.CollectAllRiskPositions(ctx, RiskQueryFilter{FirmIDs: nil, AssetClasses: []string{"crypto"}}); !errors.Is(err, runtime.ErrEmptySliceParam) {
@@ -689,28 +682,28 @@ func exerciseRemainingExchangeVariants(t *testing.T, ctx context.Context, mode s
 		t.Fatalf("[%s] unsorted ApplyMarginSettlements: %v", mode, err)
 	}
 
-	// Multi-chunk ApplyMarginSettlementsBatch (sorted & unsorted) and >256-row StreamSettleMargins
+	// Multi-chunk ApplyMarginSettlements (sorted & unsorted) and >256-row StreamSettleMargins
 	for range 2 {
-		if _, err := q.ApplyMarginSettlementsBatch(ctx, []MarginSettlement{
+		if _, err := q.ApplyMarginSettlements(ctx, []MarginSettlement{
 			{FirmID: 1, AccountID: 1, Status: "active", CollateralCents: 0, RealizedPnlCents: 0, MarginRatioBps: 2000, KycVerified: 1, UpdatedSeq: 500},
 			{FirmID: 1, AccountID: 5, Status: "active", CollateralCents: 0, RealizedPnlCents: 0, MarginRatioBps: 2000, KycVerified: 1, UpdatedSeq: 500},
 		}); err != nil {
-			t.Fatalf("[%s] 2-row ApplyMarginSettlementsBatch: %v", mode, err)
+			t.Fatalf("[%s] 2-row ApplyMarginSettlements: %v", mode, err)
 		}
 	}
-	if _, err := q.ApplyMarginSettlementsBatch(ctx, []MarginSettlement{
+	if _, err := q.ApplyMarginSettlements(ctx, []MarginSettlement{
 		{FirmID: 1, AccountID: 1, Status: "active", CollateralCents: 0, RealizedPnlCents: 0, MarginRatioBps: 2000, KycVerified: 1, UpdatedSeq: 501},
 		{FirmID: 1, AccountID: 5, Status: "active", CollateralCents: 0, RealizedPnlCents: 0, MarginRatioBps: 2000, KycVerified: 1, UpdatedSeq: 501},
 		{FirmID: 2, AccountID: 2, Status: "active", CollateralCents: 0, RealizedPnlCents: 0, MarginRatioBps: 2000, KycVerified: 1, UpdatedSeq: 501},
 	}); err != nil {
-		t.Fatalf("[%s] 3-row sorted ApplyMarginSettlementsBatch: %v", mode, err)
+		t.Fatalf("[%s] 3-row sorted ApplyMarginSettlements: %v", mode, err)
 	}
-	if _, err := q.ApplyMarginSettlementsBatch(ctx, []MarginSettlement{
+	if _, err := q.ApplyMarginSettlements(ctx, []MarginSettlement{
 		{FirmID: 2, AccountID: 2, Status: "active", CollateralCents: 0, RealizedPnlCents: 0, MarginRatioBps: 2000, KycVerified: 1, UpdatedSeq: 502},
 		{FirmID: 1, AccountID: 5, Status: "active", CollateralCents: 0, RealizedPnlCents: 0, MarginRatioBps: 2000, KycVerified: 1, UpdatedSeq: 502},
 		{FirmID: 1, AccountID: 1, Status: "active", CollateralCents: 0, RealizedPnlCents: 0, MarginRatioBps: 2000, KycVerified: 1, UpdatedSeq: 502},
 	}); err != nil {
-		t.Fatalf("[%s] 3-row unsorted ApplyMarginSettlementsBatch: %v", mode, err)
+		t.Fatalf("[%s] 3-row unsorted ApplyMarginSettlements: %v", mode, err)
 	}
 
 	streamZeroSettlements := make([]MarginSettlement, 260)
@@ -726,7 +719,7 @@ func exerciseRemainingExchangeVariants(t *testing.T, ctx context.Context, mode s
 		t.Fatalf("[%s] empty ApplyMarginSettlementsStream: %v", mode, err)
 	}
 
-	// Exercise IngestOrdersSeq, IngestOrdersBatchSeq, IngestOrdersStream, IngestOrdersStreamSeq (including >256 rows)
+	// Exercise IngestOrdersSeq, IngestOrdersSeq, IngestOrdersStream, IngestOrdersStreamSeq (including >256 rows)
 	smallOrders := []OrderSubmission{
 		{FirmID: 1, AccountID: 1, Symbol: "ETH-PERP", Side: "buy", LimitPriceCents: 150_00, Quantity: 2, Status: "open", ClientOrderID: "eth-b1-" + mode, UpdatedSeq: 700},
 		{FirmID: 1, AccountID: 1, Symbol: "SOL-PERP", Side: "buy", LimitPriceCents: 150_00, Quantity: 2, Status: "open", ClientOrderID: "sol-b1-" + mode, UpdatedSeq: 700},
@@ -747,32 +740,32 @@ func exerciseRemainingExchangeVariants(t *testing.T, ctx context.Context, mode s
 		}
 		break
 	}
-	if err := q.IngestOrdersEach(ctx, smallOrders[:2], 700, func(_ OrderAck) error { return nil }); err != nil {
+	if err := runtime.Each(q.IngestOrdersSeq(ctx, smallOrders[:2], 700), func(_ OrderAck) error { return nil }); err != nil {
 		t.Fatalf("[%s] IngestOrdersEach: %v", mode, err)
 	}
 	for range 2 {
-		if _, err := q.IngestOrdersBatch(ctx, smallOrders[:2], 701); err != nil {
-			t.Fatalf("[%s] 2-row IngestOrdersBatch: %v", mode, err)
+		if _, err := q.IngestOrders(ctx, smallOrders[:2], 701); err != nil {
+			t.Fatalf("[%s] 2-row IngestOrders: %v", mode, err)
 		}
 	}
-	// 3-row sorted & unsorted IngestOrdersBatch, IngestOrdersBatchSeq, IngestOrdersBatchEach
-	if _, err := q.IngestOrdersBatch(ctx, smallOrders[:3], 702); err != nil {
-		t.Fatalf("[%s] 3-row sorted IngestOrdersBatch: %v", mode, err)
+	// 3-row sorted & unsorted IngestOrders, IngestOrdersSeq, IngestOrdersEach
+	if _, err := q.IngestOrders(ctx, smallOrders[:3], 702); err != nil {
+		t.Fatalf("[%s] 3-row sorted IngestOrders: %v", mode, err)
 	}
 	unsortedOrders := []OrderSubmission{smallOrders[3], smallOrders[1], smallOrders[0], smallOrders[2]}
-	for _, err := range q.IngestOrdersBatchSeq(ctx, unsortedOrders[:3], 703) {
+	for _, err := range q.IngestOrdersSeq(ctx, unsortedOrders[:3], 703) {
 		if err != nil {
-			t.Fatalf("[%s] 3-row unsorted IngestOrdersBatchSeq: %v", mode, err)
+			t.Fatalf("[%s] 3-row unsorted IngestOrdersSeq: %v", mode, err)
 		}
 	}
-	for _, err := range q.IngestOrdersBatchSeq(ctx, smallOrders[:3], 703) {
+	for _, err := range q.IngestOrdersSeq(ctx, smallOrders[:3], 703) {
 		if err != nil {
-			t.Fatalf("[%s] IngestOrdersBatchSeq break: %v", mode, err)
+			t.Fatalf("[%s] IngestOrdersSeq break: %v", mode, err)
 		}
 		break
 	}
-	if err := q.IngestOrdersBatchEach(ctx, smallOrders[:3], 703, func(_ OrderAck) error { return nil }); err != nil {
-		t.Fatalf("[%s] IngestOrdersBatchEach: %v", mode, err)
+	if err := runtime.Each(q.IngestOrdersSeq(ctx, smallOrders[:3], 703), func(_ OrderAck) error { return nil }); err != nil {
+		t.Fatalf("[%s] IngestOrdersEach: %v", mode, err)
 	}
 
 	streamOrders := make([]OrderSubmission, 260)
@@ -803,7 +796,7 @@ func exerciseRemainingExchangeVariants(t *testing.T, ctx context.Context, mode s
 		cancelIDs = append(cancelIDs, a.OrderID)
 	}
 
-	// CancelOrdersByIDs, CancelOrdersByIDsSeq, CancelOrdersByIDsEach, CancelOrdersByIDsBatch, CancelOrdersByIDsBatchSeq, CancelOrdersByIDsBatchEach
+	// CancelOrdersByIDs, CancelOrdersByIDsSeq, CancelOrdersByIDsEach, CancelOrdersByIDs, CancelOrdersByIDsSeq, CancelOrdersByIDsEach
 	if _, err := q.CancelOrdersByIDs(ctx, 900, 1, []int64{cancelIDs[0], cancelIDs[1]}); err != nil {
 		t.Fatalf("[%s] sorted CancelOrdersByIDs: %v", mode, err)
 	}
@@ -816,30 +809,30 @@ func exerciseRemainingExchangeVariants(t *testing.T, ctx context.Context, mode s
 		}
 		break
 	}
-	if err := q.CancelOrdersByIDsEach(ctx, 901, 1, []int64{cancelIDs[5]}, func(_ OrderAck) error { return nil }); err != nil {
+	if err := runtime.Each(q.CancelOrdersByIDsSeq(ctx, 901, 1, []int64{cancelIDs[5]}), func(_ OrderAck) error { return nil }); err != nil {
 		t.Fatalf("[%s] CancelOrdersByIDsEach: %v", mode, err)
 	}
 	for range 2 {
-		if _, err := q.CancelOrdersByIDsBatch(ctx, 902, 1, []int64{cancelIDs[6], cancelIDs[7]}); err != nil {
-			t.Fatalf("[%s] 2-row CancelOrdersByIDsBatch: %v", mode, err)
+		if _, err := q.CancelOrdersByIDs(ctx, 902, 1, []int64{cancelIDs[6], cancelIDs[7]}); err != nil {
+			t.Fatalf("[%s] 2-row CancelOrdersByIDs: %v", mode, err)
 		}
 	}
-	if _, err := q.CancelOrdersByIDsBatch(ctx, 903, 1, []int64{cancelIDs[6], cancelIDs[7], cancelIDs[8]}); err != nil {
-		t.Fatalf("[%s] 3-row sorted CancelOrdersByIDsBatch: %v", mode, err)
+	if _, err := q.CancelOrdersByIDs(ctx, 903, 1, []int64{cancelIDs[6], cancelIDs[7], cancelIDs[8]}); err != nil {
+		t.Fatalf("[%s] 3-row sorted CancelOrdersByIDs: %v", mode, err)
 	}
-	for _, err := range q.CancelOrdersByIDsBatchSeq(ctx, 904, 1, []int64{cancelIDs[10], cancelIDs[9], cancelIDs[8]}) {
+	for _, err := range q.CancelOrdersByIDsSeq(ctx, 904, 1, []int64{cancelIDs[10], cancelIDs[9], cancelIDs[8]}) {
 		if err != nil {
-			t.Fatalf("[%s] 3-row unsorted CancelOrdersByIDsBatchSeq: %v", mode, err)
+			t.Fatalf("[%s] 3-row unsorted CancelOrdersByIDsSeq: %v", mode, err)
 		}
 	}
-	for _, err := range q.CancelOrdersByIDsBatchSeq(ctx, 904, 1, []int64{cancelIDs[8], cancelIDs[9], cancelIDs[10]}) {
+	for _, err := range q.CancelOrdersByIDsSeq(ctx, 904, 1, []int64{cancelIDs[8], cancelIDs[9], cancelIDs[10]}) {
 		if err != nil {
-			t.Fatalf("[%s] CancelOrdersByIDsBatchSeq break: %v", mode, err)
+			t.Fatalf("[%s] CancelOrdersByIDsSeq break: %v", mode, err)
 		}
 		break
 	}
-	if err := q.CancelOrdersByIDsBatchEach(ctx, 905, 1, []int64{cancelIDs[11], cancelIDs[12], cancelIDs[13]}, func(_ OrderAck) error { return nil }); err != nil {
-		t.Fatalf("[%s] CancelOrdersByIDsBatchEach: %v", mode, err)
+	if err := runtime.Each(q.CancelOrdersByIDsSeq(ctx, 905, 1, []int64{cancelIDs[11], cancelIDs[12], cancelIDs[13]}), func(_ OrderAck) error { return nil }); err != nil {
+		t.Fatalf("[%s] CancelOrdersByIDsEach: %v", mode, err)
 	}
 
 	// Direct execution of remaining statements + curried Query + Pipeline wrappers
@@ -852,7 +845,7 @@ func exerciseRemainingExchangeVariants(t *testing.T, ctx context.Context, mode s
 		}
 		break
 	}
-	if err := q.ListOpenOrdersForSymbolEach(ctx, "SOL-PERP", "buy", 2, func(_ OpenOrderRow) error { return nil }); err != nil {
+	if err := runtime.Each(q.ListOpenOrdersForSymbolSeq(ctx, "SOL-PERP", "buy", 2), func(_ OpenOrderRow) error { return nil }); err != nil {
 		t.Fatalf("[%s] ListOpenOrdersForSymbolEach: %v", mode, err)
 	}
 	if _, err := q.AdjustAccountMarginAndPnl(ctx, 0, 0, 910, 1, 1); err != nil {
@@ -893,7 +886,7 @@ func exerciseRemainingExchangeVariants(t *testing.T, ctx context.Context, mode s
 		Seek:              SeekQueryRiskPositionsPage(RiskPositionView{PositionID: 0}),
 		Limit:             5,
 	}
-	if err := q.QueryRiskPositionsPageEach(ctx, riskParams, func(_ RiskPositionView) error { return nil }); err != nil {
+	if err := runtime.Each(q.QueryRiskPositionsPageSeq(ctx, riskParams), func(_ RiskPositionView) error { return nil }); err != nil {
 		t.Fatalf("[%s] QueryRiskPositionsPageEach: %v", mode, err)
 	}
 	var dummyArgs []any
@@ -936,16 +929,12 @@ func exerciseRemainingExchangeVariants(t *testing.T, ctx context.Context, mode s
 	_ = q.PipelineTx(ctx, nil, func(_ *Pipeline) error { return errStop })
 	_, _ = eng.StreamSettleMargins(ctx, func(yield func(MarginSettlement, error) bool) { yield(MarginSettlement{}, errStop) })
 	_, _ = q.IngestOrdersStream(ctx, func(yield func(OrderSubmission, error) bool) { yield(OrderSubmission{}, errStop) }, 940)
-	_ = q.IngestOrdersEach(ctx, nil, 940, func(_ OrderAck) error { return nil })
-	_ = q.IngestOrdersEach(ctx, smallOrders[:1], 940, func(_ OrderAck) error { return errStop })
-	_ = q.IngestOrdersBatchEach(ctx, nil, 940, func(_ OrderAck) error { return nil })
-	_ = q.IngestOrdersBatchEach(ctx, smallOrders[:1], 940, func(_ OrderAck) error { return errStop })
-	_ = q.CancelOrdersByIDsEach(ctx, 940, 1, nil, func(_ OrderAck) error { return nil })
-	_ = q.CancelOrdersByIDsEach(ctx, 940, 1, []int64{cancelIDs[0]}, func(_ OrderAck) error { return errStop })
-	_ = q.CancelOrdersByIDsBatchEach(ctx, 940, 1, nil, func(_ OrderAck) error { return nil })
-	_ = q.CancelOrdersByIDsBatchEach(ctx, 940, 1, []int64{cancelIDs[0]}, func(_ OrderAck) error { return errStop })
-	_ = q.ListOpenOrdersForSymbolEach(ctx, "SOL-PERP", "buy", 2, func(_ OpenOrderRow) error { return errStop })
-	_ = q.QueryRiskPositionsPageEach(ctx, riskParams, func(_ RiskPositionView) error { return errStop })
+	_ = runtime.Each(q.IngestOrdersSeq(ctx, nil, 940), func(_ OrderAck) error { return nil })
+	_ = runtime.Each(q.IngestOrdersSeq(ctx, smallOrders[:1], 940), func(_ OrderAck) error { return errStop })
+	_ = runtime.Each(q.CancelOrdersByIDsSeq(ctx, 940, 1, nil), func(_ OrderAck) error { return nil })
+	_ = runtime.Each(q.CancelOrdersByIDsSeq(ctx, 940, 1, []int64{cancelIDs[0]}), func(_ OrderAck) error { return errStop })
+	_ = runtime.Each(q.ListOpenOrdersForSymbolSeq(ctx, "SOL-PERP", "buy", 2), func(_ OpenOrderRow) error { return errStop })
+	_ = runtime.Each(q.QueryRiskPositionsPageSeq(ctx, riskParams), func(_ RiskPositionView) error { return errStop })
 	_, _ = q.CancelOrdersByIDs(ctx, 941, 1, []int64{cancelIDs[1], cancelIDs[0], cancelIDs[0]})
 	instDup := q.ActiveInstrumentsSubqueryQuery(ActiveInstrumentsSubqueryParams{AssetClasses: []string{"equity", "crypto", "crypto"}})
 	_ = instDup.Expand(&dummyArgs, runtime.DialectQuestion, &instDup)
@@ -954,6 +943,37 @@ func exerciseRemainingExchangeVariants(t *testing.T, ctx context.Context, mode s
 		{FirmID: 1, AccountID: 1, Symbol: "SOL-PERP", Side: "buy", LimitPriceCents: 150_00, Quantity: 1, Status: "open", ClientOrderID: "dup-2-" + mode, UpdatedSeq: 942},
 		{FirmID: 1, AccountID: 1, Symbol: "SOL-PERP", Side: "buy", LimitPriceCents: 150_00, Quantity: 1, Status: "open", ClientOrderID: "dup-3-" + mode, UpdatedSeq: 942},
 	}, 942)
+
+	// Pipeline path: collections are presorted before they are queued, and an empty VALUES collection queues
+	// nothing (its future is zero/empty) without disturbing the operations around it.
+	pl := q.Pipeline(ctx)
+	fSettle := pl.ApplyMarginSettlements([]MarginSettlement{
+		{FirmID: 2, AccountID: 2, Status: "active", MarginRatioBps: 2000, KycVerified: 1, UpdatedSeq: 950},
+		{FirmID: 1, AccountID: 5, Status: "active", MarginRatioBps: 2000, KycVerified: 1, UpdatedSeq: 950},
+		{FirmID: 1, AccountID: 1, Status: "active", MarginRatioBps: 2000, KycVerified: 1, UpdatedSeq: 950},
+	})
+	fNoSettle := pl.ApplyMarginSettlements(nil)
+	fIngest := pl.IngestOrders([]OrderSubmission{smallOrders[3], smallOrders[1], smallOrders[0]}, 950)
+	fNoIngest := pl.IngestOrders(nil, 950)
+	fCancel := pl.CancelOrdersByIDs(950, 1, []int64{cancelIDs[1], cancelIDs[0]})
+	if err := pl.Flush(); err != nil {
+		t.Fatalf("[%s] pipeline of collection statements: %v", mode, err)
+	}
+	if n, err := fSettle.RowsAffected(); err != nil || n != 3 {
+		t.Fatalf("[%s] pipelined ApplyMarginSettlements = %d, %v", mode, n, err)
+	}
+	if n, err := fNoSettle.RowsAffected(); err != nil || n != 0 {
+		t.Fatalf("[%s] pipelined empty ApplyMarginSettlements = %d, %v", mode, n, err)
+	}
+	if acks, err := fIngest.Get(); err != nil || len(acks) != 3 {
+		t.Fatalf("[%s] pipelined IngestOrders = %v, %v", mode, acks, err)
+	}
+	if acks, err := fNoIngest.Get(); err != nil || len(acks) != 0 {
+		t.Fatalf("[%s] pipelined empty IngestOrders = %v, %v", mode, acks, err)
+	}
+	if _, err := fCancel.Get(); err != nil {
+		t.Fatalf("[%s] pipelined CancelOrdersByIDs: %v", mode, err)
+	}
 
 	_ = NewWithCache(db, nil)
 	_ = q.Cache()

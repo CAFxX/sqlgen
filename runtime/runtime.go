@@ -68,8 +68,8 @@ var (
 	// ErrAssertionFailed is matched (errors.Is) by every pipeline row-count assertion failure. The returned
 	// error is an *AssertionError naming the statement and the expected count.
 	ErrAssertionFailed = errors.New("sqlgen: pipeline row-count assertion failed")
-	// ErrNilArgument is returned by generated entry points that take an iterator or a callback (the
-	// <Name>Stream / <Name>StreamSeq sequence, the Each callbacks, InTx and PipelineTx) when it is nil.
+	// ErrNilArgument is returned by the entry points that take an iterator or a callback (the generated
+	// <Name>Stream / <Name>StreamSeq sequence, InTx and PipelineTx, and runtime.Each / AppendTo) when it is nil.
 	ErrNilArgument = errors.New("sqlgen: nil iterator or callback argument")
 	// ErrFutureNotReady is returned when a future (ExecFuture, RowFuture, SliceFuture) is read before the
 	// pipeline that queued it has been flushed (Flush, or the end of PipelineTx). It is distinct from
@@ -674,6 +674,68 @@ func MapSeq[In, Out any](seq iter.Seq2[In, error], fn func(In) Out) iter.Seq2[Ou
 			}
 		}
 	}
+}
+
+// ErrStop is returned by the callback of Each to end the iteration early without an error: Each then
+// returns nil. It is never returned by Each itself.
+var ErrStop = errors.New("sqlgen: stop iteration")
+
+// Collect gathers every row of seq into a new slice. It returns (nil, err) at the first error, so a
+// failed iteration never hands out a partial result; an iteration that yields no rows returns a nil slice
+// (test len(rows) == 0, not rows == nil).
+func Collect[T any](seq iter.Seq2[T, error]) ([]T, error) {
+	return AppendTo[T](nil, seq)
+}
+
+// AppendTo appends every row of seq to dst and returns the extended slice: the usual append contract, so
+// reuse a slice to avoid growing a new one per call (dst = dst[:0] keeps its capacity). It allocates
+// nothing beyond what append itself grows. At the first error it returns (dst, err) with dst exactly as
+// the caller passed it: the rows already read are not appended and the caller's data is never dropped
+// (elements of dst past len(dst) may have been overwritten, as with any append that fits the capacity).
+// A nil seq is ErrNilArgument.
+func AppendTo[T any](dst []T, seq iter.Seq2[T, error]) ([]T, error) {
+	if seq == nil {
+		return dst, ErrNilArgument
+	}
+	out := dst
+	var failure error
+	seq(func(v T, err error) bool {
+		if err != nil {
+			failure = err
+			return false
+		}
+		out = append(out, v)
+		return true
+	})
+	if failure != nil {
+		return dst, failure
+	}
+	return out, nil
+}
+
+// Each calls fn for every row of seq in order and stops at the first error: the one seq reported, or the
+// one fn returned (returned unchanged). A nil seq or fn is ErrNilArgument. fn may return ErrStop to end the iteration early; Each then
+// returns nil. A panic in fn propagates after the rows of the iteration have been released. Each is the
+// callback form of ranging over the sequence; it allocates nothing of its own.
+func Each[T any](seq iter.Seq2[T, error], fn func(T) error) error {
+	if seq == nil || fn == nil {
+		return ErrNilArgument
+	}
+	var failure error
+	seq(func(v T, err error) bool {
+		if err == nil {
+			err = fn(v)
+		}
+		if err != nil {
+			failure = err
+			return false
+		}
+		return true
+	})
+	if failure == ErrStop {
+		return nil
+	}
+	return failure
 }
 
 // BatchExecResult aggregates sql.Result across multiple batch chunks.

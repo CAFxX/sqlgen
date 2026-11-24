@@ -37,11 +37,9 @@ type searchArgs struct {
 
 type api interface {
 	Insert(ctx context.Context, rows []item) error
-	InsertBatch(ctx context.Context, rows []item) error
 	InsertStream(ctx context.Context, rows iter.Seq[item]) error
 	Get(ctx context.Context, id int64) (item, error)
 	ByIDs(ctx context.Context, ids []int64) ([]item, error)
-	ByIDsBatch(ctx context.Context, ids []int64) ([]item, error)
 	EachByIDs(ctx context.Context, ids []int64, fn func(item) bool) error
 	Search(ctx context.Context, s searchArgs) ([]item, error)
 	ReadInTx(ctx context.Context, s searchArgs, ids []int64) (found, byID []item, err error)
@@ -149,30 +147,23 @@ func TestRealEngineBatchInsertAndLookup(t *testing.T) {
 		all := genItems(1, 30000)
 		in := shuffled(all, 1)
 		before := slices.Clone(in)
-		if err := a.InsertBatch(ctx, in); err != nil {
-			t.Fatalf("InsertBatch: %v", err)
+		if err := a.Insert(ctx, in); err != nil {
+			t.Fatalf("Insert: %v", err)
 		}
 		if !slices.Equal(in, before) {
-			t.Fatal("InsertBatch mutated the caller's slice")
+			t.Fatal("Insert mutated the caller's slice")
 		}
 		if n := countRows(t, db); n != 30000 {
 			t.Fatalf("rows = %d, want 30000", n)
 		}
 
-		// A bulk lookup larger than one statement may carry (> chunk size) must still return everything.
-		got, err := a.ByIDsBatch(ctx, ids(shuffled(all, 2)))
+		// A bulk lookup larger than one statement may carry (> chunk size) is chunked and must still return everything.
+		got, err := a.ByIDs(ctx, ids(shuffled(all, 2)))
 		if err != nil {
-			t.Fatalf("ByIDsBatch: %v", err)
+			t.Fatalf("ByIDs: %v", err)
 		}
 		slices.SortFunc(got, func(x, y item) int { return int(x.ID - y.ID) })
-		sameItems(t, "ByIDsBatch", got, all)
-
-		// A single statement with ~20k placeholders (the wire-limit case) in one round trip.
-		got, err = a.ByIDs(ctx, ids(all[:20000]))
-		if err != nil {
-			t.Fatalf("ByIDs(20000): %v", err)
-		}
-		sameItems(t, "ByIDs(20000)", got, all[:20000])
+		sameItems(t, "ByIDs", got, all)
 
 		// Streaming ingestion in O(1) memory.
 		more := genItems(30001, 5000)

@@ -380,17 +380,7 @@ func scanSearchMembersRow(scanner interface{ Scan(...any) error }, dst *MemberRo
 }
 
 func (q *Queries) SearchMembers(ctx context.Context, p SearchMembersParams) ([]MemberRow, error) {
-	return q.SearchMembersInto(ctx, nil, p)
-}
-
-func (q *Queries) SearchMembersInto(ctx context.Context, dst []MemberRow, p SearchMembersParams) ([]MemberRow, error) {
-	for row, err := range q.SearchMembersSeq(ctx, p) {
-		if err != nil {
-			return nil, err
-		}
-		dst = append(dst, row)
-	}
-	return dst, nil
+	return runtime.Collect(q.SearchMembersSeq(ctx, p))
 }
 
 func (q *Queries) SearchMembersSeq(ctx context.Context, p SearchMembersParams) iter.Seq2[MemberRow, error] {
@@ -436,21 +426,6 @@ func (q *Queries) SearchMembersSeq(ctx context.Context, p SearchMembersParams) i
 			yield(zero, err)
 		}
 	}
-}
-
-func (q *Queries) SearchMembersEach(ctx context.Context, p SearchMembersParams, fn func(MemberRow) error) error {
-	if fn == nil {
-		return runtime.ErrNilArgument
-	}
-	for row, err := range q.SearchMembersSeq(ctx, p) {
-		if err != nil {
-			return err
-		}
-		if err := fn(row); err != nil {
-			return err
-		}
-	}
-	return nil
 }
 
 func (pl *Pipeline) SearchMembers(p SearchMembersParams) *runtime.SliceFuture[MemberRow] {
@@ -710,17 +685,7 @@ func scanListMembersPaginatedRow(scanner interface{ Scan(...any) error }, dst *M
 }
 
 func (q *Queries) ListMembersPaginated(ctx context.Context, p ListMembersPaginatedParams) ([]MemberItem, error) {
-	return q.ListMembersPaginatedInto(ctx, nil, p)
-}
-
-func (q *Queries) ListMembersPaginatedInto(ctx context.Context, dst []MemberItem, p ListMembersPaginatedParams) ([]MemberItem, error) {
-	for row, err := range q.ListMembersPaginatedSeq(ctx, p) {
-		if err != nil {
-			return nil, err
-		}
-		dst = append(dst, row)
-	}
-	return dst, nil
+	return runtime.Collect(q.ListMembersPaginatedSeq(ctx, p))
 }
 
 func (q *Queries) ListMembersPaginatedSeq(ctx context.Context, p ListMembersPaginatedParams) iter.Seq2[MemberItem, error] {
@@ -763,21 +728,6 @@ func (q *Queries) ListMembersPaginatedSeq(ctx context.Context, p ListMembersPagi
 			yield(zero, err)
 		}
 	}
-}
-
-func (q *Queries) ListMembersPaginatedEach(ctx context.Context, p ListMembersPaginatedParams, fn func(MemberItem) error) error {
-	if fn == nil {
-		return runtime.ErrNilArgument
-	}
-	for row, err := range q.ListMembersPaginatedSeq(ctx, p) {
-		if err != nil {
-			return err
-		}
-		if err := fn(row); err != nil {
-			return err
-		}
-	}
-	return nil
 }
 
 func (pl *Pipeline) ListMembersPaginated(p ListMembersPaginatedParams) *runtime.SliceFuture[MemberItem] {
@@ -1075,17 +1025,7 @@ func scanAggregateCohortInvoicesRow(scanner interface{ Scan(...any) error }, dst
 }
 
 func (q *Queries) AggregateCohortInvoices(ctx context.Context, memberQuery runtime.Query, invoiceStatus string) ([]CohortInvoiceSummary, error) {
-	return q.AggregateCohortInvoicesInto(ctx, nil, memberQuery, invoiceStatus)
-}
-
-func (q *Queries) AggregateCohortInvoicesInto(ctx context.Context, dst []CohortInvoiceSummary, memberQuery runtime.Query, invoiceStatus string) ([]CohortInvoiceSummary, error) {
-	for row, err := range q.AggregateCohortInvoicesSeq(ctx, memberQuery, invoiceStatus) {
-		if err != nil {
-			return nil, err
-		}
-		dst = append(dst, row)
-	}
-	return dst, nil
+	return runtime.Collect(q.AggregateCohortInvoicesSeq(ctx, memberQuery, invoiceStatus))
 }
 
 func (q *Queries) AggregateCohortInvoicesSeq(ctx context.Context, memberQuery runtime.Query, invoiceStatus string) iter.Seq2[CohortInvoiceSummary, error] {
@@ -1133,21 +1073,6 @@ func (q *Queries) AggregateCohortInvoicesSeq(ctx context.Context, memberQuery ru
 			yield(zero, err)
 		}
 	}
-}
-
-func (q *Queries) AggregateCohortInvoicesEach(ctx context.Context, memberQuery runtime.Query, invoiceStatus string, fn func(CohortInvoiceSummary) error) error {
-	if fn == nil {
-		return runtime.ErrNilArgument
-	}
-	for row, err := range q.AggregateCohortInvoicesSeq(ctx, memberQuery, invoiceStatus) {
-		if err != nil {
-			return err
-		}
-		if err := fn(row); err != nil {
-			return err
-		}
-	}
-	return nil
 }
 
 func (pl *Pipeline) AggregateCohortInvoices(memberQuery runtime.Query, invoiceStatus string) *runtime.SliceFuture[CohortInvoiceSummary] {

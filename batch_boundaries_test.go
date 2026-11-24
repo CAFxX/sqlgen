@@ -24,7 +24,7 @@ func TestBatchAndStreamBoundarySizesAllModes(t *testing.T) {
 			var cnt int
 			switch mode {
 			case "batch":
-				res, err := q.InsertQuadBatchBatch(ctx, rows)
+				res, err := q.InsertQuadBatch(ctx, rows)
 				if err != nil {
 					t.Fatalf("n=%d %s: %v", n, mode, err)
 				}
@@ -51,11 +51,11 @@ func TestBatchAndStreamBoundarySizesAllModes(t *testing.T) {
 				var err error
 				switch mode {
 				case "ret":
-					got, err = q.InsertUsersBatchReturningBatch(ctx, bu)
+					got, err = q.InsertUsersBatchReturning(ctx, bu)
 				case "retstream":
 					got, err = q.InsertUsersBatchReturningStream(ctx, runtime.FromSlice(bu))
 				case "retbatchseq":
-					for r, e := range q.InsertUsersBatchReturningBatchSeq(ctx, bu) {
+					for r, e := range q.InsertUsersBatchReturningSeq(ctx, bu) {
 						if e != nil {
 							err = e
 							break

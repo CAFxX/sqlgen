@@ -130,7 +130,7 @@ func TestFuzzSelectCols(t *testing.T) {
 	})
 }
 
-// b: multi-row inserts (presorted ASC / DESC / unsorted; plain, Batch, Stream) and IN / tuple-IN lookups at
+// b: multi-row inserts (presorted ASC / DESC / unsorted; auto-chunking base method and Stream) and IN / tuple-IN lookups at
 // sizes around the chunk boundary, using small WithMaxBatchParams budgets so many chunks are exercised.
 func TestFuzzBatchChunking(t *testing.T) {
 	seed := fuzzSeed(t)
@@ -147,7 +147,7 @@ func TestFuzzBatchChunking(t *testing.T) {
 			n = max(1, min(n, 150))
 			rows := f.genRows(n)
 			in := slices.Clone(rows)
-			v := fzIns{Order: f.intn(4), Path: f.intn(3)}
+			v := fzIns{Order: f.intn(4), Path: f.intn(2)}
 			if v.Order == 3 {
 				rows = litRows(rows)
 			}
@@ -173,7 +173,7 @@ func TestFuzzBatchChunking(t *testing.T) {
 				f.failf("budget %d n %d %+v: table after insert: %s", budget, n, v, d)
 			}
 
-			// IN-list lookup, plain and Batch: ids = a random subset of the table padded with unknown ids
+			// IN-list lookup (auto-chunking): ids = a random subset of the table padded with unknown ids
 			// to a size around the 1D chunk size (= budget).
 			sz := f.pick(1, budget-1, budget, budget+1, 2*budget+1, f.rangeI(1, 60))
 			sz = max(1, min(sz, 600))
@@ -190,15 +190,11 @@ func TestFuzzBatchChunking(t *testing.T) {
 						want = append(want, r)
 					}
 				}
-				for _, batch := range []bool{false, true} {
-					got, err := a.ByIDs(f.ctx, idSet, batch)
-					if err != nil {
-						f.failf("budget %d ByIDs(%d ids, batch=%v): %v", budget, len(idSet), batch, err)
-						continue
-					}
-					if d := diffRows(sortByID(got), sortByID(want)); d != "" {
-						f.failf("budget %d ByIDs(%d ids, batch=%v): %s", budget, len(idSet), batch, d)
-					}
+				got, err := a.ByIDs(f.ctx, idSet)
+				if err != nil {
+					f.failf("budget %d ByIDs(%d ids): %v", budget, len(idSet), err)
+				} else if d := diffRows(sortByID(got), sortByID(want)); d != "" {
+					f.failf("budget %d ByIDs(%d ids): %s", budget, len(idSet), d)
 				}
 			}
 
@@ -227,15 +223,10 @@ func TestFuzzBatchChunking(t *testing.T) {
 					want = append(want, r)
 				}
 			}
-			for _, batch := range []bool{false, true} {
-				got, err := a.ByKeys(f.ctx, keys, batch)
-				if err != nil {
-					f.failf("budget %d ByKeys(%d keys, batch=%v): %v", budget, len(keys), batch, err)
-					continue
-				}
-				if d := diffRows(sortByID(got), sortByID(want)); d != "" {
-					f.failf("budget %d ByKeys(%d keys, batch=%v): %s", budget, len(keys), batch, d)
-				}
+			if got, err := a.ByKeys(f.ctx, keys); err != nil {
+				f.failf("budget %d ByKeys(%d keys): %v", budget, len(keys), err)
+			} else if d := diffRows(sortByID(got), sortByID(want)); d != "" {
+				f.failf("budget %d ByKeys(%d keys): %s", budget, len(keys), d)
 			}
 			a.Close()
 		}
@@ -245,7 +236,7 @@ func TestFuzzBatchChunking(t *testing.T) {
 			cases++
 			a, _ := newFzAPI(e, db)
 			rows := f.genRows(n)
-			v := fzIns{Order: f.intn(4), Path: 2}
+			v := fzIns{Order: f.intn(4), Path: 1}
 			if v.Order == 3 {
 				rows = litRows(rows)
 			}
@@ -438,7 +429,7 @@ func TestFuzzComposedQueries(t *testing.T) {
 	})
 }
 
-// f: UPDATE / DELETE ... WHERE id IN (presorted) with optional flags, plain and Batch with tiny chunk budgets,
+// f: UPDATE / DELETE ... WHERE id IN (presorted) with optional flags, through the auto-chunking base methods with tiny chunk budgets,
 // and the RETURNING forms the engine supports; affected counts, returned rows and the whole table afterwards
 // must match the oracle exactly.
 func TestFuzzWritesAndReturning(t *testing.T) {
@@ -453,12 +444,14 @@ func TestFuzzWritesAndReturning(t *testing.T) {
 			a, ret := newFzAPI(e, db, runtime.WithMaxBatchParams(budget))
 			rows := f.genRows(f.rangeI(10, 60))
 			f.reset(rows)
-			batch := f.chance(0.5)
-			// ids: existing and unknown ones; duplicates only on the plain path (a Batch with a repeated id
-			// may legitimately hit it in two chunks).
+			// ids: existing and unknown ones. The base methods chunk (the planner may split even a short list), so
+			// a repeated id may be hit once per chunk: duplicates are only used for the idempotent DELETEs, where
+			// the row is removed once and later chunks affect nothing.
+			op := f.intn(6)
+			dup := (op == 2 || op == 3) && f.chance(0.5)
 			n := f.rangeI(1, 40)
 			var ids []int64
-			if batch {
+			if !dup {
 				ids = f.distinctInts(n, func() int64 { return f.pickID(rows) })
 			} else {
 				for len(ids) < n {
@@ -479,9 +472,8 @@ func TestFuzzWritesAndReturning(t *testing.T) {
 			if f.chance(0.5) {
 				delta = -delta
 			}
-			op := f.intn(6)
 			cases++
-			label := fmt.Sprintf("case %d op %d budget %d batch=%v ids=%v grp=%v tag=%v", i, op, budget, batch, ids, ptrStr(grp), ptrStr(tag))
+			label := fmt.Sprintf("case %d op %d budget %d dup=%v ids=%v grp=%v tag=%v", i, op, budget, dup, ids, ptrStr(grp), ptrStr(tag))
 			inIDs := func(id int64) bool { return slices.Contains(ids, id) }
 			var wantAff int64
 			var wantOut []fzOut
@@ -505,12 +497,12 @@ func TestFuzzWritesAndReturning(t *testing.T) {
 				var err error
 				if op == 0 {
 					var aff int64
-					aff, err = a.Bump(f.ctx, delta, ids, grp, batch)
+					aff, err = a.Bump(f.ctx, delta, ids, grp)
 					if aff != wantAff && err == nil {
 						f.failf("%s: Bump RowsAffected = %d, want %d", label, aff, wantAff)
 					}
 				} else {
-					got, err = ret.BumpRet(f.ctx, delta, ids, grp, batch)
+					got, err = ret.BumpRet(f.ctx, delta, ids, grp)
 				}
 				if err != nil {
 					f.failf("%s: %v", label, err)
@@ -534,12 +526,12 @@ func TestFuzzWritesAndReturning(t *testing.T) {
 				var err error
 				if op == 2 {
 					var aff int64
-					aff, err = a.Delete(f.ctx, ids, tag, batch)
+					aff, err = a.Delete(f.ctx, ids, tag)
 					if aff != wantAff && err == nil {
 						f.failf("%s: Delete RowsAffected = %d, want %d", label, aff, wantAff)
 					}
 				} else {
-					got, err = ret.DeleteRet(f.ctx, ids, tag, batch)
+					got, err = ret.DeleteRet(f.ctx, ids, tag)
 				}
 				if err != nil {
 					f.failf("%s: %v", label, err)
@@ -568,9 +560,9 @@ func TestFuzzWritesAndReturning(t *testing.T) {
 				for j, r := range add {
 					want[j] = fzOut{r.ID, r.K[0]}
 				}
-				if e.isPG() && mode != 2 {
+				if e.isPG() && mode == 0 {
 					// DOCS 2.4: rows come back in presorted order on PostgreSQL / CockroachDB, also across the
-					// chunks of Batch. (Stream cannot sort globally: each chunk is sorted on its own.)
+					// chunks of the base method. (Stream cannot sort globally: each chunk is sorted on its own.)
 					slices.SortFunc(want, func(x, y fzOut) int { return cmp.Compare(x.ID, y.ID) })
 					if !slices.Equal(got, want) {
 						f.failf("%s: InsertRet order: got %v want %v", label, got, want)
@@ -752,7 +744,7 @@ func TestFuzzConcurrentReaders(t *testing.T) {
 						g.randomAccess(a, args, want, fmt.Sprintf("worker %d order %s limit %d", w, fmtTerms(args.Terms), args.Limit))
 					default:
 						ids := g.distinctInts(g.rangeI(1, 120), func() int64 { return g.pickID(rows) })
-						got, err := a.ByIDs(g.ctx, ids, true)
+						got, err := a.ByIDs(g.ctx, ids)
 						var want []fzRow
 						for _, r := range rows {
 							if slices.Contains(ids, r.ID) {
@@ -760,9 +752,9 @@ func TestFuzzConcurrentReaders(t *testing.T) {
 							}
 						}
 						if err != nil {
-							g.failf("ByIDs batch %d ids: %v", len(ids), err)
+							g.failf("ByIDs %d ids: %v", len(ids), err)
 						} else if d := diffRows(sortByID(got), sortByID(want)); d != "" {
-							g.failf("ByIDs batch %d ids: %s", len(ids), d)
+							g.failf("ByIDs %d ids: %s", len(ids), d)
 						}
 					}
 				}
@@ -795,7 +787,7 @@ func TestFuzzStringRoundTrip(t *testing.T) {
 				}
 			}
 			f.reset(nil)
-			v := fzIns{Order: f.intn(4), Path: f.intn(3)}
+			v := fzIns{Order: f.intn(4), Path: f.intn(2)}
 			if v.Order == 3 {
 				rows = litRows(rows)
 			}

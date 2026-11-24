@@ -64,13 +64,13 @@ func (w *InventoryWorker) Close() error {
 // LookupInventoryBatch fetches inventory records for a composite slice of (warehouse_id, sku) keys
 // with automatic deadlock-free presorting and heavy-hitter chunk decomposition.
 func (w *InventoryWorker) LookupInventoryBatch(ctx context.Context, keys []SKUKey) ([]InventoryItem, error) {
-	return w.q.GetInventoryBySKUsBatch(ctx, keys)
+	return w.q.GetInventoryBySKUs(ctx, keys)
 }
 
 // IngestOrderItemsBatch inserts a slice of order items using adaptive chunk decomposition
 // across promoted heavy-hitter statement shapes.
 func (w *InventoryWorker) IngestOrderItemsBatch(ctx context.Context, items []NewOrderItem) (int64, error) {
-	res, err := w.q.InsertOrderItemsBatch(ctx, items)
+	res, err := w.q.InsertOrderItems(ctx, items)
 	if err != nil {
 		return 0, err
 	}
@@ -79,7 +79,7 @@ func (w *InventoryWorker) IngestOrderItemsBatch(ctx context.Context, items []New
 
 // ArchiveFulfilledOrders streams fulfilled orders up to cutoffTS using iter.Seq2, transforms
 // them via runtime.MapSeq2 into ArchivedOrderRow chunks, bulk-inserts them via InsertArchivedOrdersStream,
-// and deletes the source rows via DeleteFulfilledOrdersByIDsBatch inside a single transaction.
+// and deletes the source rows via DeleteFulfilledOrdersByIDs inside a single transaction.
 func (w *InventoryWorker) ArchiveFulfilledOrders(
 	ctx context.Context,
 	cutoffTS int64,
@@ -118,7 +118,7 @@ func (w *InventoryWorker) ArchiveFulfilledOrders(
 			return err
 		}
 
-		delRes, err := txQ.DeleteFulfilledOrdersByIDsBatch(ctx, idsToDelete)
+		delRes, err := txQ.DeleteFulfilledOrdersByIDs(ctx, idsToDelete)
 		if err != nil {
 			return err
 		}

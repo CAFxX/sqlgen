@@ -25,15 +25,15 @@ func TestRowIteratorsReleaseResourcesWhenUserCodePanics(t *testing.T) {
 			}
 		}},
 		{"Each", func(q *Queries) {
-			_ = q.ListUsersByIDsEach(ctx, ids, func(User) error { panic("boom") })
+			_ = runtime.Each(q.ListUsersByIDsSeq(ctx, ids), func(User) error { panic("boom") })
 		}},
 		{"BatchSeq", func(q *Queries) {
-			for range q.ListUsersByIDsBatchSeq(ctx, ids) {
+			for range q.ListUsersByIDsSeq(ctx, ids) {
 				panic("boom")
 			}
 		}},
 		{"BatchEach", func(q *Queries) {
-			_ = q.ListUsersByIDsBatchEach(ctx, ids, func(User) error { panic("boom") })
+			_ = runtime.Each(q.ListUsersByIDsSeq(ctx, ids), func(User) error { panic("boom") })
 		}},
 		{"StreamSeq", func(q *Queries) {
 			rows := []BatchUserInput{{ID: 10, Name: "a", Points: 1}, {ID: 11, Name: "b", Points: 2}}
@@ -87,11 +87,11 @@ func TestBatchChunkBudgetCountsRepeatedParameterOccurrences(t *testing.T) {
 	}
 	// Repeat so the exact-size chunk is promoted and planned at the largest size the budget allows.
 	for i := 0; i < 3; i++ {
-		got, err := q.UserIDsNearScoreBatch(ctx, 10, ids)
+		got, err := q.UserIDsNearScore(ctx, 10, ids)
 		if err != nil {
 			t.Fatalf("call %d: %v", i, err)
 		}
-		if len(got) != 1 || got[0].ID != 7 {
+		if len(got) != 1 || got[0] != 7 {
 			t.Fatalf("call %d: got %+v, want the single user 7", i, got)
 		}
 	}

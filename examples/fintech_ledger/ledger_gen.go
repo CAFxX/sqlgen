@@ -932,47 +932,10 @@ func computeUpsertAccountBalancesKey(p paramsUpsertAccountBalances) (runtime.Var
 }
 
 func (q *Queries) UpsertAccountBalances(ctx context.Context, items []AccountSettlement) (sql.Result, error) {
-	p := paramsUpsertAccountBalances{
-		Items: items,
+	if len(items) == 0 {
+		return runtime.BatchExecResult{}, nil
 	}
-	vk, colMask, flagMask, approxArgs := computeUpsertAccountBalancesKey(p)
-	argBuf := runtime.AcquireArgsCap(approxArgs)
-	defer runtime.ReleaseArgs(argBuf)
-	if err := expandUpsertAccountBalancesParams(argBuf, sqlDialect, p); err != nil {
-		return nil, err
-	}
-	var tupleLensBuf [1]int
-	tupleLensBuf[0] = len(p.Items)
-	in := runtime.RenderInput{
-		ColMask:   colMask,
-		FlagMask:  flagMask,
-		TupleLens: tupleLensBuf[:],
-	}
-	return q.cache.Exec(ctx, q.db, q.txCache, q.usePrepared, vk, stmtIDUpsertAccountBalances, runtime.ComputeBatchShapeTag(colMask, flagMask), 0, nil, sqlDialect, descUpsertAccountBalances, &in, (*argBuf)...)
-}
-
-func (pl *Pipeline) UpsertAccountBalances(items []AccountSettlement) *runtime.ExecFuture {
-	p := paramsUpsertAccountBalances{
-		Items: items,
-	}
-	vk, colMask, flagMask, approxArgs := computeUpsertAccountBalancesKey(p)
-	argBuf := runtime.AcquireArgsCap(approxArgs)
-	expandErr := expandUpsertAccountBalancesParams(argBuf, sqlDialect, p)
-	var tupleLensBuf [1]int
-	tupleLensBuf[0] = len(p.Items)
-	in := runtime.RenderInput{
-		ColMask:   colMask,
-		FlagMask:  flagMask,
-		TupleLens: tupleLensBuf[:],
-	}
-	return pl.Pipeline.QueueExec(stmtIDUpsertAccountBalances, descUpsertAccountBalances, in, vk, nil, argBuf, expandErr)
-}
-
-func (q *Queries) UpsertAccountBalancesBatch(ctx context.Context, items []AccountSettlement) (sql.Result, error) {
 	totalRows := len(items)
-	if totalRows == 0 {
-		return nil, runtime.ErrEmptySliceParam
-	}
 	p := paramsUpsertAccountBalances{
 		Items: items,
 	}
@@ -1045,6 +1008,26 @@ func (q *Queries) UpsertAccountBalancesBatch(ctx context.Context, items []Accoun
 	return batchRes, nil
 }
 
+func (pl *Pipeline) UpsertAccountBalances(items []AccountSettlement) *runtime.ExecFuture {
+	if len(items) == 0 {
+		return pl.Pipeline.QueueExecNoop()
+	}
+	p := paramsUpsertAccountBalances{
+		Items: items,
+	}
+	vk, colMask, flagMask, approxArgs := computeUpsertAccountBalancesKey(p)
+	argBuf := runtime.AcquireArgsCap(approxArgs)
+	expandErr := expandUpsertAccountBalancesParams(argBuf, sqlDialect, p)
+	var tupleLensBuf [1]int
+	tupleLensBuf[0] = len(p.Items)
+	in := runtime.RenderInput{
+		ColMask:   colMask,
+		FlagMask:  flagMask,
+		TupleLens: tupleLensBuf[:],
+	}
+	return pl.Pipeline.QueueExec(stmtIDUpsertAccountBalances, descUpsertAccountBalances, in, vk, nil, argBuf, expandErr)
+}
+
 func (q *Queries) UpsertAccountBalancesStream(ctx context.Context, seq iter.Seq2[AccountSettlement, error]) (sql.Result, error) {
 	if seq == nil {
 		return nil, runtime.ErrNilArgument
@@ -1062,7 +1045,7 @@ func (q *Queries) UpsertAccountBalancesStream(ctx context.Context, seq iter.Seq2
 		if len(chunk) == 0 {
 			return nil
 		}
-		res, err := q.UpsertAccountBalancesBatch(ctx, chunk)
+		res, err := q.UpsertAccountBalances(ctx, chunk)
 		if err != nil {
 			return err
 		}

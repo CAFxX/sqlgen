@@ -233,16 +233,16 @@ func (g *fuzzGen) describe(err error) string {
 		switch {
 		case f.e != nil:
 			n, e := f.e.RowsAffected()
-			fmt.Fprintf(&sb, " %s[%d,%s,sk=%v]", f.kind, n, fuzzClassify(e), f.e.Skipped())
+			fmt.Fprintf(&sb, " %s[%d,%s,sk=%v]", f.kind, n, fuzzClassify(e), errors.Is(e, runtime.ErrBranchNotTaken))
 		case f.r != nil:
 			v, e := f.r.Get()
-			fmt.Fprintf(&sb, " get[%v,%s,sk=%v]", v, fuzzClassify(e), f.r.Skipped())
+			fmt.Fprintf(&sb, " get[%v,%s,sk=%v]", v, fuzzClassify(e), errors.Is(e, runtime.ErrBranchNotTaken))
 		case f.s != nil:
 			v, e := f.s.Get()
-			fmt.Fprintf(&sb, " many[%v,%s,sk=%v]", v, fuzzClassify(e), f.s.Skipped())
+			fmt.Fprintf(&sb, " many[%v,%s,sk=%v]", v, fuzzClassify(e), errors.Is(e, runtime.ErrBranchNotTaken))
 		case f.w != nil:
 			v, e := f.w.Get()
-			fmt.Fprintf(&sb, " bump[%v,%s,sk=%v]", v, fuzzClassify(e), f.w.Skipped())
+			fmt.Fprintf(&sb, " bump[%v,%s,sk=%v]", v, fuzzClassify(e), errors.Is(e, runtime.ErrBranchNotTaken))
 		}
 	}
 	return sb.String()

@@ -453,47 +453,10 @@ func computeFzInsertAscKey(p paramsFzInsertAsc) (runtime.VariantKey, uint64, uin
 }
 
 func (q *Queries) FzInsertAsc(ctx context.Context, rows []FzNew) (sql.Result, error) {
-	p := paramsFzInsertAsc{
-		Rows: rows,
+	if len(rows) == 0 {
+		return runtime.BatchExecResult{}, nil
 	}
-	vk, colMask, flagMask, approxArgs := computeFzInsertAscKey(p)
-	argBuf := runtime.AcquireArgsCap(approxArgs)
-	defer runtime.ReleaseArgs(argBuf)
-	if err := expandFzInsertAscParams(argBuf, sqlDialect, p); err != nil {
-		return nil, err
-	}
-	var tupleLensBuf [1]int
-	tupleLensBuf[0] = len(p.Rows)
-	in := runtime.RenderInput{
-		ColMask:   colMask,
-		FlagMask:  flagMask,
-		TupleLens: tupleLensBuf[:],
-	}
-	return q.cache.Exec(ctx, q.db, q.txCache, q.usePrepared, vk, stmtIDFzInsertAsc, runtime.ComputeBatchShapeTag(colMask, flagMask), 0, nil, sqlDialect, descFzInsertAsc, &in, (*argBuf)...)
-}
-
-func (pl *Pipeline) FzInsertAsc(rows []FzNew) *runtime.ExecFuture {
-	p := paramsFzInsertAsc{
-		Rows: rows,
-	}
-	vk, colMask, flagMask, approxArgs := computeFzInsertAscKey(p)
-	argBuf := runtime.AcquireArgsCap(approxArgs)
-	expandErr := expandFzInsertAscParams(argBuf, sqlDialect, p)
-	var tupleLensBuf [1]int
-	tupleLensBuf[0] = len(p.Rows)
-	in := runtime.RenderInput{
-		ColMask:   colMask,
-		FlagMask:  flagMask,
-		TupleLens: tupleLensBuf[:],
-	}
-	return pl.Pipeline.QueueExec(stmtIDFzInsertAsc, descFzInsertAsc, in, vk, nil, argBuf, expandErr)
-}
-
-func (q *Queries) FzInsertAscBatch(ctx context.Context, rows []FzNew) (sql.Result, error) {
 	totalRows := len(rows)
-	if totalRows == 0 {
-		return nil, runtime.ErrEmptySliceParam
-	}
 	p := paramsFzInsertAsc{
 		Rows: rows,
 	}
@@ -575,6 +538,26 @@ func (q *Queries) FzInsertAscBatch(ctx context.Context, rows []FzNew) (sql.Resul
 	return batchRes, nil
 }
 
+func (pl *Pipeline) FzInsertAsc(rows []FzNew) *runtime.ExecFuture {
+	if len(rows) == 0 {
+		return pl.Pipeline.QueueExecNoop()
+	}
+	p := paramsFzInsertAsc{
+		Rows: rows,
+	}
+	vk, colMask, flagMask, approxArgs := computeFzInsertAscKey(p)
+	argBuf := runtime.AcquireArgsCap(approxArgs)
+	expandErr := expandFzInsertAscParams(argBuf, sqlDialect, p)
+	var tupleLensBuf [1]int
+	tupleLensBuf[0] = len(p.Rows)
+	in := runtime.RenderInput{
+		ColMask:   colMask,
+		FlagMask:  flagMask,
+		TupleLens: tupleLensBuf[:],
+	}
+	return pl.Pipeline.QueueExec(stmtIDFzInsertAsc, descFzInsertAsc, in, vk, nil, argBuf, expandErr)
+}
+
 func (q *Queries) FzInsertAscStream(ctx context.Context, seq iter.Seq2[FzNew, error]) (sql.Result, error) {
 	if seq == nil {
 		return nil, runtime.ErrNilArgument
@@ -592,7 +575,7 @@ func (q *Queries) FzInsertAscStream(ctx context.Context, seq iter.Seq2[FzNew, er
 		if len(chunk) == 0 {
 			return nil
 		}
-		res, err := q.FzInsertAscBatch(ctx, chunk)
+		res, err := q.FzInsertAsc(ctx, chunk)
 		if err != nil {
 			return err
 		}
@@ -698,47 +681,10 @@ func computeFzInsertDescKey(p paramsFzInsertDesc) (runtime.VariantKey, uint64, u
 }
 
 func (q *Queries) FzInsertDesc(ctx context.Context, rows []FzNew) (sql.Result, error) {
-	p := paramsFzInsertDesc{
-		Rows: rows,
+	if len(rows) == 0 {
+		return runtime.BatchExecResult{}, nil
 	}
-	vk, colMask, flagMask, approxArgs := computeFzInsertDescKey(p)
-	argBuf := runtime.AcquireArgsCap(approxArgs)
-	defer runtime.ReleaseArgs(argBuf)
-	if err := expandFzInsertDescParams(argBuf, sqlDialect, p); err != nil {
-		return nil, err
-	}
-	var tupleLensBuf [1]int
-	tupleLensBuf[0] = len(p.Rows)
-	in := runtime.RenderInput{
-		ColMask:   colMask,
-		FlagMask:  flagMask,
-		TupleLens: tupleLensBuf[:],
-	}
-	return q.cache.Exec(ctx, q.db, q.txCache, q.usePrepared, vk, stmtIDFzInsertDesc, runtime.ComputeBatchShapeTag(colMask, flagMask), 0, nil, sqlDialect, descFzInsertDesc, &in, (*argBuf)...)
-}
-
-func (pl *Pipeline) FzInsertDesc(rows []FzNew) *runtime.ExecFuture {
-	p := paramsFzInsertDesc{
-		Rows: rows,
-	}
-	vk, colMask, flagMask, approxArgs := computeFzInsertDescKey(p)
-	argBuf := runtime.AcquireArgsCap(approxArgs)
-	expandErr := expandFzInsertDescParams(argBuf, sqlDialect, p)
-	var tupleLensBuf [1]int
-	tupleLensBuf[0] = len(p.Rows)
-	in := runtime.RenderInput{
-		ColMask:   colMask,
-		FlagMask:  flagMask,
-		TupleLens: tupleLensBuf[:],
-	}
-	return pl.Pipeline.QueueExec(stmtIDFzInsertDesc, descFzInsertDesc, in, vk, nil, argBuf, expandErr)
-}
-
-func (q *Queries) FzInsertDescBatch(ctx context.Context, rows []FzNew) (sql.Result, error) {
 	totalRows := len(rows)
-	if totalRows == 0 {
-		return nil, runtime.ErrEmptySliceParam
-	}
 	p := paramsFzInsertDesc{
 		Rows: rows,
 	}
@@ -820,6 +766,26 @@ func (q *Queries) FzInsertDescBatch(ctx context.Context, rows []FzNew) (sql.Resu
 	return batchRes, nil
 }
 
+func (pl *Pipeline) FzInsertDesc(rows []FzNew) *runtime.ExecFuture {
+	if len(rows) == 0 {
+		return pl.Pipeline.QueueExecNoop()
+	}
+	p := paramsFzInsertDesc{
+		Rows: rows,
+	}
+	vk, colMask, flagMask, approxArgs := computeFzInsertDescKey(p)
+	argBuf := runtime.AcquireArgsCap(approxArgs)
+	expandErr := expandFzInsertDescParams(argBuf, sqlDialect, p)
+	var tupleLensBuf [1]int
+	tupleLensBuf[0] = len(p.Rows)
+	in := runtime.RenderInput{
+		ColMask:   colMask,
+		FlagMask:  flagMask,
+		TupleLens: tupleLensBuf[:],
+	}
+	return pl.Pipeline.QueueExec(stmtIDFzInsertDesc, descFzInsertDesc, in, vk, nil, argBuf, expandErr)
+}
+
 func (q *Queries) FzInsertDescStream(ctx context.Context, seq iter.Seq2[FzNew, error]) (sql.Result, error) {
 	if seq == nil {
 		return nil, runtime.ErrNilArgument
@@ -837,7 +803,7 @@ func (q *Queries) FzInsertDescStream(ctx context.Context, seq iter.Seq2[FzNew, e
 		if len(chunk) == 0 {
 			return nil
 		}
-		res, err := q.FzInsertDescBatch(ctx, chunk)
+		res, err := q.FzInsertDesc(ctx, chunk)
 		if err != nil {
 			return err
 		}
@@ -921,47 +887,10 @@ func computeFzInsertRawKey(p paramsFzInsertRaw) (runtime.VariantKey, uint64, uin
 }
 
 func (q *Queries) FzInsertRaw(ctx context.Context, rows []FzNew) (sql.Result, error) {
-	p := paramsFzInsertRaw{
-		Rows: rows,
+	if len(rows) == 0 {
+		return runtime.BatchExecResult{}, nil
 	}
-	vk, colMask, flagMask, approxArgs := computeFzInsertRawKey(p)
-	argBuf := runtime.AcquireArgsCap(approxArgs)
-	defer runtime.ReleaseArgs(argBuf)
-	if err := expandFzInsertRawParams(argBuf, sqlDialect, p); err != nil {
-		return nil, err
-	}
-	var tupleLensBuf [1]int
-	tupleLensBuf[0] = len(p.Rows)
-	in := runtime.RenderInput{
-		ColMask:   colMask,
-		FlagMask:  flagMask,
-		TupleLens: tupleLensBuf[:],
-	}
-	return q.cache.Exec(ctx, q.db, q.txCache, q.usePrepared, vk, stmtIDFzInsertRaw, runtime.ComputeBatchShapeTag(colMask, flagMask), 0, nil, sqlDialect, descFzInsertRaw, &in, (*argBuf)...)
-}
-
-func (pl *Pipeline) FzInsertRaw(rows []FzNew) *runtime.ExecFuture {
-	p := paramsFzInsertRaw{
-		Rows: rows,
-	}
-	vk, colMask, flagMask, approxArgs := computeFzInsertRawKey(p)
-	argBuf := runtime.AcquireArgsCap(approxArgs)
-	expandErr := expandFzInsertRawParams(argBuf, sqlDialect, p)
-	var tupleLensBuf [1]int
-	tupleLensBuf[0] = len(p.Rows)
-	in := runtime.RenderInput{
-		ColMask:   colMask,
-		FlagMask:  flagMask,
-		TupleLens: tupleLensBuf[:],
-	}
-	return pl.Pipeline.QueueExec(stmtIDFzInsertRaw, descFzInsertRaw, in, vk, nil, argBuf, expandErr)
-}
-
-func (q *Queries) FzInsertRawBatch(ctx context.Context, rows []FzNew) (sql.Result, error) {
 	totalRows := len(rows)
-	if totalRows == 0 {
-		return nil, runtime.ErrEmptySliceParam
-	}
 	p := paramsFzInsertRaw{
 		Rows: rows,
 	}
@@ -1018,6 +947,26 @@ func (q *Queries) FzInsertRawBatch(ctx context.Context, rows []FzNew) (sql.Resul
 	return batchRes, nil
 }
 
+func (pl *Pipeline) FzInsertRaw(rows []FzNew) *runtime.ExecFuture {
+	if len(rows) == 0 {
+		return pl.Pipeline.QueueExecNoop()
+	}
+	p := paramsFzInsertRaw{
+		Rows: rows,
+	}
+	vk, colMask, flagMask, approxArgs := computeFzInsertRawKey(p)
+	argBuf := runtime.AcquireArgsCap(approxArgs)
+	expandErr := expandFzInsertRawParams(argBuf, sqlDialect, p)
+	var tupleLensBuf [1]int
+	tupleLensBuf[0] = len(p.Rows)
+	in := runtime.RenderInput{
+		ColMask:   colMask,
+		FlagMask:  flagMask,
+		TupleLens: tupleLensBuf[:],
+	}
+	return pl.Pipeline.QueueExec(stmtIDFzInsertRaw, descFzInsertRaw, in, vk, nil, argBuf, expandErr)
+}
+
 func (q *Queries) FzInsertRawStream(ctx context.Context, seq iter.Seq2[FzNew, error]) (sql.Result, error) {
 	if seq == nil {
 		return nil, runtime.ErrNilArgument
@@ -1035,7 +984,7 @@ func (q *Queries) FzInsertRawStream(ctx context.Context, seq iter.Seq2[FzNew, er
 		if len(chunk) == 0 {
 			return nil
 		}
-		res, err := q.FzInsertRawBatch(ctx, chunk)
+		res, err := q.FzInsertRaw(ctx, chunk)
 		if err != nil {
 			return err
 		}
@@ -1123,47 +1072,10 @@ func computeFzInsertLitKey(p paramsFzInsertLit) (runtime.VariantKey, uint64, uin
 }
 
 func (q *Queries) FzInsertLit(ctx context.Context, rows []FzLit) (sql.Result, error) {
-	p := paramsFzInsertLit{
-		Rows: rows,
+	if len(rows) == 0 {
+		return runtime.BatchExecResult{}, nil
 	}
-	vk, colMask, flagMask, approxArgs := computeFzInsertLitKey(p)
-	argBuf := runtime.AcquireArgsCap(approxArgs)
-	defer runtime.ReleaseArgs(argBuf)
-	if err := expandFzInsertLitParams(argBuf, sqlDialect, p); err != nil {
-		return nil, err
-	}
-	var tupleLensBuf [1]int
-	tupleLensBuf[0] = len(p.Rows)
-	in := runtime.RenderInput{
-		ColMask:   colMask,
-		FlagMask:  flagMask,
-		TupleLens: tupleLensBuf[:],
-	}
-	return q.cache.Exec(ctx, q.db, q.txCache, q.usePrepared, vk, stmtIDFzInsertLit, runtime.ComputeBatchShapeTag(colMask, flagMask), 0, nil, sqlDialect, descFzInsertLit, &in, (*argBuf)...)
-}
-
-func (pl *Pipeline) FzInsertLit(rows []FzLit) *runtime.ExecFuture {
-	p := paramsFzInsertLit{
-		Rows: rows,
-	}
-	vk, colMask, flagMask, approxArgs := computeFzInsertLitKey(p)
-	argBuf := runtime.AcquireArgsCap(approxArgs)
-	expandErr := expandFzInsertLitParams(argBuf, sqlDialect, p)
-	var tupleLensBuf [1]int
-	tupleLensBuf[0] = len(p.Rows)
-	in := runtime.RenderInput{
-		ColMask:   colMask,
-		FlagMask:  flagMask,
-		TupleLens: tupleLensBuf[:],
-	}
-	return pl.Pipeline.QueueExec(stmtIDFzInsertLit, descFzInsertLit, in, vk, nil, argBuf, expandErr)
-}
-
-func (q *Queries) FzInsertLitBatch(ctx context.Context, rows []FzLit) (sql.Result, error) {
 	totalRows := len(rows)
-	if totalRows == 0 {
-		return nil, runtime.ErrEmptySliceParam
-	}
 	p := paramsFzInsertLit{
 		Rows: rows,
 	}
@@ -1236,6 +1148,26 @@ func (q *Queries) FzInsertLitBatch(ctx context.Context, rows []FzLit) (sql.Resul
 	return batchRes, nil
 }
 
+func (pl *Pipeline) FzInsertLit(rows []FzLit) *runtime.ExecFuture {
+	if len(rows) == 0 {
+		return pl.Pipeline.QueueExecNoop()
+	}
+	p := paramsFzInsertLit{
+		Rows: rows,
+	}
+	vk, colMask, flagMask, approxArgs := computeFzInsertLitKey(p)
+	argBuf := runtime.AcquireArgsCap(approxArgs)
+	expandErr := expandFzInsertLitParams(argBuf, sqlDialect, p)
+	var tupleLensBuf [1]int
+	tupleLensBuf[0] = len(p.Rows)
+	in := runtime.RenderInput{
+		ColMask:   colMask,
+		FlagMask:  flagMask,
+		TupleLens: tupleLensBuf[:],
+	}
+	return pl.Pipeline.QueueExec(stmtIDFzInsertLit, descFzInsertLit, in, vk, nil, argBuf, expandErr)
+}
+
 func (q *Queries) FzInsertLitStream(ctx context.Context, seq iter.Seq2[FzLit, error]) (sql.Result, error) {
 	if seq == nil {
 		return nil, runtime.ErrNilArgument
@@ -1253,7 +1185,7 @@ func (q *Queries) FzInsertLitStream(ctx context.Context, seq iter.Seq2[FzLit, er
 		if len(chunk) == 0 {
 			return nil
 		}
-		res, err := q.FzInsertLitBatch(ctx, chunk)
+		res, err := q.FzInsertLit(ctx, chunk)
 		if err != nil {
 			return err
 		}
@@ -1610,17 +1542,7 @@ func scanFzSearchRow(scanner interface{ Scan(...any) error }, dst *FzRow, colMas
 }
 
 func (q *Queries) FzSearch(ctx context.Context, p FzSearchParams) ([]FzRow, error) {
-	return q.FzSearchInto(ctx, nil, p)
-}
-
-func (q *Queries) FzSearchInto(ctx context.Context, dst []FzRow, p FzSearchParams) ([]FzRow, error) {
-	for row, err := range q.FzSearchSeq(ctx, p) {
-		if err != nil {
-			return nil, err
-		}
-		dst = append(dst, row)
-	}
-	return dst, nil
+	return runtime.Collect(q.FzSearchSeq(ctx, p))
 }
 
 func (q *Queries) FzSearchSeq(ctx context.Context, p FzSearchParams) iter.Seq2[FzRow, error] {
@@ -1674,21 +1596,6 @@ func (q *Queries) FzSearchSeq(ctx context.Context, p FzSearchParams) iter.Seq2[F
 			yield(zero, err)
 		}
 	}
-}
-
-func (q *Queries) FzSearchEach(ctx context.Context, p FzSearchParams, fn func(FzRow) error) error {
-	if fn == nil {
-		return runtime.ErrNilArgument
-	}
-	for row, err := range q.FzSearchSeq(ctx, p) {
-		if err != nil {
-			return err
-		}
-		if err := fn(row); err != nil {
-			return err
-		}
-	}
-	return nil
 }
 
 func (pl *Pipeline) FzSearch(p FzSearchParams) *runtime.SliceFuture[FzRow] {
@@ -1861,17 +1768,7 @@ func scanFzNarrowRow(scanner interface{ Scan(...any) error }, dst *FzNarrowRow, 
 }
 
 func (q *Queries) FzNarrow(ctx context.Context, p FzNarrowParams) ([]FzNarrowRow, error) {
-	return q.FzNarrowInto(ctx, nil, p)
-}
-
-func (q *Queries) FzNarrowInto(ctx context.Context, dst []FzNarrowRow, p FzNarrowParams) ([]FzNarrowRow, error) {
-	for row, err := range q.FzNarrowSeq(ctx, p) {
-		if err != nil {
-			return nil, err
-		}
-		dst = append(dst, row)
-	}
-	return dst, nil
+	return runtime.Collect(q.FzNarrowSeq(ctx, p))
 }
 
 func (q *Queries) FzNarrowSeq(ctx context.Context, p FzNarrowParams) iter.Seq2[FzNarrowRow, error] {
@@ -1909,21 +1806,6 @@ func (q *Queries) FzNarrowSeq(ctx context.Context, p FzNarrowParams) iter.Seq2[F
 			yield(zero, err)
 		}
 	}
-}
-
-func (q *Queries) FzNarrowEach(ctx context.Context, p FzNarrowParams, fn func(FzNarrowRow) error) error {
-	if fn == nil {
-		return runtime.ErrNilArgument
-	}
-	for row, err := range q.FzNarrowSeq(ctx, p) {
-		if err != nil {
-			return err
-		}
-		if err := fn(row); err != nil {
-			return err
-		}
-	}
-	return nil
 }
 
 func (pl *Pipeline) FzNarrow(p FzNarrowParams) *runtime.SliceFuture[FzNarrowRow] {
@@ -2354,17 +2236,7 @@ func scanFzPageRow(scanner interface{ Scan(...any) error }, dst *FzRow, colMask 
 }
 
 func (q *Queries) FzPage(ctx context.Context, p FzPageParams) ([]FzRow, error) {
-	return q.FzPageInto(ctx, nil, p)
-}
-
-func (q *Queries) FzPageInto(ctx context.Context, dst []FzRow, p FzPageParams) ([]FzRow, error) {
-	for row, err := range q.FzPageSeq(ctx, p) {
-		if err != nil {
-			return nil, err
-		}
-		dst = append(dst, row)
-	}
-	return dst, nil
+	return runtime.Collect(q.FzPageSeq(ctx, p))
 }
 
 func (q *Queries) FzPageSeq(ctx context.Context, p FzPageParams) iter.Seq2[FzRow, error] {
@@ -2417,21 +2289,6 @@ func (q *Queries) FzPageSeq(ctx context.Context, p FzPageParams) iter.Seq2[FzRow
 			yield(zero, err)
 		}
 	}
-}
-
-func (q *Queries) FzPageEach(ctx context.Context, p FzPageParams, fn func(FzRow) error) error {
-	if fn == nil {
-		return runtime.ErrNilArgument
-	}
-	for row, err := range q.FzPageSeq(ctx, p) {
-		if err != nil {
-			return err
-		}
-		if err := fn(row); err != nil {
-			return err
-		}
-	}
-	return nil
 }
 
 func (pl *Pipeline) FzPage(p FzPageParams) *runtime.SliceFuture[FzRow] {
@@ -2777,17 +2634,7 @@ func scanFzAggRow(scanner interface{ Scan(...any) error }, dst *FzAggRow, colMas
 }
 
 func (q *Queries) FzAgg(ctx context.Context, p FzAggParams) ([]FzAggRow, error) {
-	return q.FzAggInto(ctx, nil, p)
-}
-
-func (q *Queries) FzAggInto(ctx context.Context, dst []FzAggRow, p FzAggParams) ([]FzAggRow, error) {
-	for row, err := range q.FzAggSeq(ctx, p) {
-		if err != nil {
-			return nil, err
-		}
-		dst = append(dst, row)
-	}
-	return dst, nil
+	return runtime.Collect(q.FzAggSeq(ctx, p))
 }
 
 func (q *Queries) FzAggSeq(ctx context.Context, p FzAggParams) iter.Seq2[FzAggRow, error] {
@@ -2831,21 +2678,6 @@ func (q *Queries) FzAggSeq(ctx context.Context, p FzAggParams) iter.Seq2[FzAggRo
 			yield(zero, err)
 		}
 	}
-}
-
-func (q *Queries) FzAggEach(ctx context.Context, p FzAggParams, fn func(FzAggRow) error) error {
-	if fn == nil {
-		return runtime.ErrNilArgument
-	}
-	for row, err := range q.FzAggSeq(ctx, p) {
-		if err != nil {
-			return err
-		}
-		if err := fn(row); err != nil {
-			return err
-		}
-	}
-	return nil
 }
 
 func (pl *Pipeline) FzAgg(p FzAggParams) *runtime.SliceFuture[FzAggRow] {
@@ -3002,108 +2834,7 @@ func scanFzByKeysRow(scanner interface{ Scan(...any) error }, dst *FzRow, colMas
 }
 
 func (q *Queries) FzByKeys(ctx context.Context, keys []FzKey) ([]FzRow, error) {
-	return q.FzByKeysInto(ctx, nil, keys)
-}
-
-func (q *Queries) FzByKeysInto(ctx context.Context, dst []FzRow, keys []FzKey) ([]FzRow, error) {
-	for row, err := range q.FzByKeysSeq(ctx, keys) {
-		if err != nil {
-			return nil, err
-		}
-		dst = append(dst, row)
-	}
-	return dst, nil
-}
-
-func (q *Queries) FzByKeysSeq(ctx context.Context, keys []FzKey) iter.Seq2[FzRow, error] {
-	return func(yield func(FzRow, error) bool) {
-		var zero FzRow
-		p := paramsFzByKeys{
-			Keys: keys,
-		}
-		vk, colMask, flagMask, approxArgs := computeFzByKeysKey(p)
-		_ = colMask
-		argBuf := runtime.AcquireArgsCap(approxArgs)
-		defer runtime.ReleaseArgs(argBuf)
-		if err := expandFzByKeysParams(argBuf, sqlDialect, p); err != nil {
-			yield(zero, err)
-			return
-		}
-		var tupleLensBuf [1]int
-		tupleLensBuf[0] = len(p.Keys)
-		in := runtime.RenderInput{
-			ColMask:   colMask,
-			FlagMask:  flagMask,
-			TupleLens: tupleLensBuf[:],
-		}
-		sqlRows, ms, err := q.cache.Query(ctx, q.db, q.txCache, q.usePrepared, vk, stmtIDFzByKeys, runtime.ComputeBatchShapeTag(colMask, flagMask), 0, nil, sqlDialect, descFzByKeys, &in, (*argBuf)...)
-		if err != nil {
-			yield(zero, err)
-			return
-		}
-		defer runtime.ReleaseRows(&sqlRows, &ms)
-		var item FzRow
-		for sqlRows.Next() {
-			if err := scanFzByKeysRow(sqlRows, &item, colMask, p); err != nil {
-				runtime.ReleaseRows(&sqlRows, &ms)
-				yield(zero, err)
-				return
-			}
-			if !yield(item, nil) {
-				return
-			}
-		}
-		err = sqlRows.Err()
-		runtime.ReleaseRows(&sqlRows, &ms)
-		if err != nil {
-			yield(zero, err)
-		}
-	}
-}
-
-func (q *Queries) FzByKeysEach(ctx context.Context, keys []FzKey, fn func(FzRow) error) error {
-	if fn == nil {
-		return runtime.ErrNilArgument
-	}
-	for row, err := range q.FzByKeysSeq(ctx, keys) {
-		if err != nil {
-			return err
-		}
-		if err := fn(row); err != nil {
-			return err
-		}
-	}
-	return nil
-}
-
-func (pl *Pipeline) FzByKeys(keys []FzKey) *runtime.SliceFuture[FzRow] {
-	p := paramsFzByKeys{
-		Keys: keys,
-	}
-	vk, colMask, flagMask, approxArgs := computeFzByKeysKey(p)
-	argBuf := runtime.AcquireArgsCap(approxArgs)
-	expandErr := expandFzByKeysParams(argBuf, sqlDialect, p)
-	var tupleLensBuf [1]int
-	tupleLensBuf[0] = len(p.Keys)
-	in := runtime.RenderInput{
-		ColMask:   colMask,
-		FlagMask:  flagMask,
-		TupleLens: tupleLensBuf[:],
-	}
-	return runtime.QueueSlice(pl.Pipeline, stmtIDFzByKeys, descFzByKeys, in, vk, nil, argBuf, expandErr,
-		func(rs *sql.Rows, dst *FzRow) error { return scanFzByKeysRow(rs, dst, colMask, p) },
-	)
-}
-
-func (q *Queries) FzByKeysBatch(ctx context.Context, keys []FzKey) ([]FzRow, error) {
-	return q.FzByKeysBatchInto(ctx, nil, keys)
-}
-
-func (q *Queries) FzByKeysBatchInto(ctx context.Context, dst []FzRow, keys []FzKey) ([]FzRow, error) {
 	totalRows := len(keys)
-	if totalRows == 0 {
-		return nil, runtime.ErrEmptySliceParam
-	}
 	p := paramsFzByKeys{
 		Keys: keys,
 	}
@@ -3121,24 +2852,20 @@ func (q *Queries) FzByKeysBatchInto(ctx context.Context, dst []FzRow, keys []FzK
 		targetQ = q.WithTx(autoTx)
 		defer func() { _ = targetQ.Close() }()
 	}
-	for row, err := range targetQ.FzByKeysBatchSeq(ctx, keys) {
+	out, err := runtime.Collect(targetQ.FzByKeysSeq(ctx, keys))
+	if autoTx != nil {
 		if err != nil {
-			if autoTx != nil {
-				_ = autoTx.Rollback()
-			}
+			_ = autoTx.Rollback()
 			return nil, err
 		}
-		dst = append(dst, row)
-	}
-	if autoTx != nil {
 		if err := autoTx.Commit(); err != nil {
 			return nil, err
 		}
 	}
-	return dst, nil
+	return out, err
 }
 
-func (q *Queries) FzByKeysBatchSeq(ctx context.Context, keys []FzKey) iter.Seq2[FzRow, error] {
+func (q *Queries) FzByKeysSeq(ctx context.Context, keys []FzKey) iter.Seq2[FzRow, error] {
 	return func(yield func(FzRow, error) bool) {
 		var zero FzRow
 		totalRows := len(keys)
@@ -3217,19 +2944,23 @@ func (q *Queries) FzByKeysBatchSeq(ctx context.Context, keys []FzKey) iter.Seq2[
 	}
 }
 
-func (q *Queries) FzByKeysBatchEach(ctx context.Context, keys []FzKey, fn func(FzRow) error) error {
-	if fn == nil {
-		return runtime.ErrNilArgument
+func (pl *Pipeline) FzByKeys(keys []FzKey) *runtime.SliceFuture[FzRow] {
+	p := paramsFzByKeys{
+		Keys: keys,
 	}
-	for row, err := range q.FzByKeysBatchSeq(ctx, keys) {
-		if err != nil {
-			return err
-		}
-		if err := fn(row); err != nil {
-			return err
-		}
+	vk, colMask, flagMask, approxArgs := computeFzByKeysKey(p)
+	argBuf := runtime.AcquireArgsCap(approxArgs)
+	expandErr := expandFzByKeysParams(argBuf, sqlDialect, p)
+	var tupleLensBuf [1]int
+	tupleLensBuf[0] = len(p.Keys)
+	in := runtime.RenderInput{
+		ColMask:   colMask,
+		FlagMask:  flagMask,
+		TupleLens: tupleLensBuf[:],
 	}
-	return nil
+	return runtime.QueueSlice(pl.Pipeline, stmtIDFzByKeys, descFzByKeys, in, vk, nil, argBuf, expandErr,
+		func(rs *sql.Rows, dst *FzRow) error { return scanFzByKeysRow(rs, dst, colMask, p) },
+	)
 }
 
 func (q *Queries) FzByKeysStreamSeq(ctx context.Context, seq iter.Seq2[FzKey, error]) iter.Seq2[FzRow, error] {
@@ -3251,7 +2982,7 @@ func (q *Queries) FzByKeysStreamSeq(ctx context.Context, seq iter.Seq2[FzKey, er
 			if len(chunk) == 0 {
 				return true
 			}
-			for r, err := range q.FzByKeysBatchSeq(ctx, chunk) {
+			for r, err := range q.FzByKeysSeq(ctx, chunk) {
 				if err != nil {
 					yield(zero, err)
 					return false
@@ -3280,14 +3011,7 @@ func (q *Queries) FzByKeysStreamSeq(ctx context.Context, seq iter.Seq2[FzKey, er
 }
 
 func (q *Queries) FzByKeysStream(ctx context.Context, seq iter.Seq2[FzKey, error]) ([]FzRow, error) {
-	var out []FzRow
-	for r, err := range q.FzByKeysStreamSeq(ctx, seq) {
-		if err != nil {
-			return nil, err
-		}
-		out = append(out, r)
-	}
-	return out, nil
+	return runtime.Collect(q.FzByKeysStreamSeq(ctx, seq))
 }
 
 const stmtIDFzByIDs uint32 = 12
@@ -3416,108 +3140,7 @@ func scanFzByIDsRow(scanner interface{ Scan(...any) error }, dst *FzRow, colMask
 }
 
 func (q *Queries) FzByIDs(ctx context.Context, ids []int64) ([]FzRow, error) {
-	return q.FzByIDsInto(ctx, nil, ids)
-}
-
-func (q *Queries) FzByIDsInto(ctx context.Context, dst []FzRow, ids []int64) ([]FzRow, error) {
-	for row, err := range q.FzByIDsSeq(ctx, ids) {
-		if err != nil {
-			return nil, err
-		}
-		dst = append(dst, row)
-	}
-	return dst, nil
-}
-
-func (q *Queries) FzByIDsSeq(ctx context.Context, ids []int64) iter.Seq2[FzRow, error] {
-	return func(yield func(FzRow, error) bool) {
-		var zero FzRow
-		p := paramsFzByIDs{
-			IDs: ids,
-		}
-		vk, colMask, flagMask, approxArgs := computeFzByIDsKey(p)
-		_ = colMask
-		argBuf := runtime.AcquireArgsCap(approxArgs)
-		defer runtime.ReleaseArgs(argBuf)
-		if err := expandFzByIDsParams(argBuf, sqlDialect, p); err != nil {
-			yield(zero, err)
-			return
-		}
-		var sliceLensBuf [1]int
-		sliceLensBuf[0] = len(p.IDs)
-		in := runtime.RenderInput{
-			ColMask:   colMask,
-			FlagMask:  flagMask,
-			SliceLens: sliceLensBuf[:],
-		}
-		sqlRows, ms, err := q.cache.Query(ctx, q.db, q.txCache, q.usePrepared, vk, stmtIDFzByIDs, runtime.ComputeBatchShapeTag(colMask, flagMask), 0, nil, sqlDialect, descFzByIDs, &in, (*argBuf)...)
-		if err != nil {
-			yield(zero, err)
-			return
-		}
-		defer runtime.ReleaseRows(&sqlRows, &ms)
-		var item FzRow
-		for sqlRows.Next() {
-			if err := scanFzByIDsRow(sqlRows, &item, colMask, p); err != nil {
-				runtime.ReleaseRows(&sqlRows, &ms)
-				yield(zero, err)
-				return
-			}
-			if !yield(item, nil) {
-				return
-			}
-		}
-		err = sqlRows.Err()
-		runtime.ReleaseRows(&sqlRows, &ms)
-		if err != nil {
-			yield(zero, err)
-		}
-	}
-}
-
-func (q *Queries) FzByIDsEach(ctx context.Context, ids []int64, fn func(FzRow) error) error {
-	if fn == nil {
-		return runtime.ErrNilArgument
-	}
-	for row, err := range q.FzByIDsSeq(ctx, ids) {
-		if err != nil {
-			return err
-		}
-		if err := fn(row); err != nil {
-			return err
-		}
-	}
-	return nil
-}
-
-func (pl *Pipeline) FzByIDs(ids []int64) *runtime.SliceFuture[FzRow] {
-	p := paramsFzByIDs{
-		IDs: ids,
-	}
-	vk, colMask, flagMask, approxArgs := computeFzByIDsKey(p)
-	argBuf := runtime.AcquireArgsCap(approxArgs)
-	expandErr := expandFzByIDsParams(argBuf, sqlDialect, p)
-	var sliceLensBuf [1]int
-	sliceLensBuf[0] = len(p.IDs)
-	in := runtime.RenderInput{
-		ColMask:   colMask,
-		FlagMask:  flagMask,
-		SliceLens: sliceLensBuf[:],
-	}
-	return runtime.QueueSlice(pl.Pipeline, stmtIDFzByIDs, descFzByIDs, in, vk, nil, argBuf, expandErr,
-		func(rs *sql.Rows, dst *FzRow) error { return scanFzByIDsRow(rs, dst, colMask, p) },
-	)
-}
-
-func (q *Queries) FzByIDsBatch(ctx context.Context, ids []int64) ([]FzRow, error) {
-	return q.FzByIDsBatchInto(ctx, nil, ids)
-}
-
-func (q *Queries) FzByIDsBatchInto(ctx context.Context, dst []FzRow, ids []int64) ([]FzRow, error) {
 	totalRows := len(ids)
-	if totalRows == 0 {
-		return nil, runtime.ErrEmptySliceParam
-	}
 	p := paramsFzByIDs{
 		IDs: ids,
 	}
@@ -3535,24 +3158,20 @@ func (q *Queries) FzByIDsBatchInto(ctx context.Context, dst []FzRow, ids []int64
 		targetQ = q.WithTx(autoTx)
 		defer func() { _ = targetQ.Close() }()
 	}
-	for row, err := range targetQ.FzByIDsBatchSeq(ctx, ids) {
+	out, err := runtime.Collect(targetQ.FzByIDsSeq(ctx, ids))
+	if autoTx != nil {
 		if err != nil {
-			if autoTx != nil {
-				_ = autoTx.Rollback()
-			}
+			_ = autoTx.Rollback()
 			return nil, err
 		}
-		dst = append(dst, row)
-	}
-	if autoTx != nil {
 		if err := autoTx.Commit(); err != nil {
 			return nil, err
 		}
 	}
-	return dst, nil
+	return out, err
 }
 
-func (q *Queries) FzByIDsBatchSeq(ctx context.Context, ids []int64) iter.Seq2[FzRow, error] {
+func (q *Queries) FzByIDsSeq(ctx context.Context, ids []int64) iter.Seq2[FzRow, error] {
 	return func(yield func(FzRow, error) bool) {
 		var zero FzRow
 		totalRows := len(ids)
@@ -3617,19 +3236,23 @@ func (q *Queries) FzByIDsBatchSeq(ctx context.Context, ids []int64) iter.Seq2[Fz
 	}
 }
 
-func (q *Queries) FzByIDsBatchEach(ctx context.Context, ids []int64, fn func(FzRow) error) error {
-	if fn == nil {
-		return runtime.ErrNilArgument
+func (pl *Pipeline) FzByIDs(ids []int64) *runtime.SliceFuture[FzRow] {
+	p := paramsFzByIDs{
+		IDs: ids,
 	}
-	for row, err := range q.FzByIDsBatchSeq(ctx, ids) {
-		if err != nil {
-			return err
-		}
-		if err := fn(row); err != nil {
-			return err
-		}
+	vk, colMask, flagMask, approxArgs := computeFzByIDsKey(p)
+	argBuf := runtime.AcquireArgsCap(approxArgs)
+	expandErr := expandFzByIDsParams(argBuf, sqlDialect, p)
+	var sliceLensBuf [1]int
+	sliceLensBuf[0] = len(p.IDs)
+	in := runtime.RenderInput{
+		ColMask:   colMask,
+		FlagMask:  flagMask,
+		SliceLens: sliceLensBuf[:],
 	}
-	return nil
+	return runtime.QueueSlice(pl.Pipeline, stmtIDFzByIDs, descFzByIDs, in, vk, nil, argBuf, expandErr,
+		func(rs *sql.Rows, dst *FzRow) error { return scanFzByIDsRow(rs, dst, colMask, p) },
+	)
 }
 
 const stmtIDFzBump uint32 = 13
@@ -3708,37 +3331,6 @@ func computeFzBumpKey(p FzBumpParams) (runtime.VariantKey, uint64, uint64, int) 
 }
 
 func (q *Queries) FzBump(ctx context.Context, p FzBumpParams) (sql.Result, error) {
-	vk, colMask, flagMask, approxArgs := computeFzBumpKey(p)
-	argBuf := runtime.AcquireArgsCap(approxArgs)
-	defer runtime.ReleaseArgs(argBuf)
-	if err := expandFzBumpParams(argBuf, sqlDialect, p); err != nil {
-		return nil, err
-	}
-	var sliceLensBuf [1]int
-	sliceLensBuf[0] = len(p.IDs)
-	in := runtime.RenderInput{
-		ColMask:   colMask,
-		FlagMask:  flagMask,
-		SliceLens: sliceLensBuf[:],
-	}
-	return q.cache.Exec(ctx, q.db, q.txCache, q.usePrepared, vk, stmtIDFzBump, runtime.ComputeBatchShapeTag(colMask, flagMask), 0, nil, sqlDialect, descFzBump, &in, (*argBuf)...)
-}
-
-func (pl *Pipeline) FzBump(p FzBumpParams) *runtime.ExecFuture {
-	vk, colMask, flagMask, approxArgs := computeFzBumpKey(p)
-	argBuf := runtime.AcquireArgsCap(approxArgs)
-	expandErr := expandFzBumpParams(argBuf, sqlDialect, p)
-	var sliceLensBuf [1]int
-	sliceLensBuf[0] = len(p.IDs)
-	in := runtime.RenderInput{
-		ColMask:   colMask,
-		FlagMask:  flagMask,
-		SliceLens: sliceLensBuf[:],
-	}
-	return pl.Pipeline.QueueExec(stmtIDFzBump, descFzBump, in, vk, nil, argBuf, expandErr)
-}
-
-func (q *Queries) FzBumpBatch(ctx context.Context, p FzBumpParams) (sql.Result, error) {
 	totalRows := len(p.IDs)
 	if totalRows == 0 {
 		return nil, runtime.ErrEmptySliceParam
@@ -3814,6 +3406,20 @@ func (q *Queries) FzBumpBatch(ctx context.Context, p FzBumpParams) (sql.Result, 
 	return batchRes, nil
 }
 
+func (pl *Pipeline) FzBump(p FzBumpParams) *runtime.ExecFuture {
+	vk, colMask, flagMask, approxArgs := computeFzBumpKey(p)
+	argBuf := runtime.AcquireArgsCap(approxArgs)
+	expandErr := expandFzBumpParams(argBuf, sqlDialect, p)
+	var sliceLensBuf [1]int
+	sliceLensBuf[0] = len(p.IDs)
+	in := runtime.RenderInput{
+		ColMask:   colMask,
+		FlagMask:  flagMask,
+		SliceLens: sliceLensBuf[:],
+	}
+	return pl.Pipeline.QueueExec(stmtIDFzBump, descFzBump, in, vk, nil, argBuf, expandErr)
+}
+
 const stmtIDFzDelete uint32 = 14
 
 type FzDeleteParams struct {
@@ -3885,37 +3491,6 @@ func computeFzDeleteKey(p FzDeleteParams) (runtime.VariantKey, uint64, uint64, i
 }
 
 func (q *Queries) FzDelete(ctx context.Context, p FzDeleteParams) (sql.Result, error) {
-	vk, colMask, flagMask, approxArgs := computeFzDeleteKey(p)
-	argBuf := runtime.AcquireArgsCap(approxArgs)
-	defer runtime.ReleaseArgs(argBuf)
-	if err := expandFzDeleteParams(argBuf, sqlDialect, p); err != nil {
-		return nil, err
-	}
-	var sliceLensBuf [1]int
-	sliceLensBuf[0] = len(p.IDs)
-	in := runtime.RenderInput{
-		ColMask:   colMask,
-		FlagMask:  flagMask,
-		SliceLens: sliceLensBuf[:],
-	}
-	return q.cache.Exec(ctx, q.db, q.txCache, q.usePrepared, vk, stmtIDFzDelete, runtime.ComputeBatchShapeTag(colMask, flagMask), 0, nil, sqlDialect, descFzDelete, &in, (*argBuf)...)
-}
-
-func (pl *Pipeline) FzDelete(p FzDeleteParams) *runtime.ExecFuture {
-	vk, colMask, flagMask, approxArgs := computeFzDeleteKey(p)
-	argBuf := runtime.AcquireArgsCap(approxArgs)
-	expandErr := expandFzDeleteParams(argBuf, sqlDialect, p)
-	var sliceLensBuf [1]int
-	sliceLensBuf[0] = len(p.IDs)
-	in := runtime.RenderInput{
-		ColMask:   colMask,
-		FlagMask:  flagMask,
-		SliceLens: sliceLensBuf[:],
-	}
-	return pl.Pipeline.QueueExec(stmtIDFzDelete, descFzDelete, in, vk, nil, argBuf, expandErr)
-}
-
-func (q *Queries) FzDeleteBatch(ctx context.Context, p FzDeleteParams) (sql.Result, error) {
 	totalRows := len(p.IDs)
 	if totalRows == 0 {
 		return nil, runtime.ErrEmptySliceParam
@@ -3987,6 +3562,20 @@ func (q *Queries) FzDeleteBatch(ctx context.Context, p FzDeleteParams) (sql.Resu
 		}
 	}
 	return batchRes, nil
+}
+
+func (pl *Pipeline) FzDelete(p FzDeleteParams) *runtime.ExecFuture {
+	vk, colMask, flagMask, approxArgs := computeFzDeleteKey(p)
+	argBuf := runtime.AcquireArgsCap(approxArgs)
+	expandErr := expandFzDeleteParams(argBuf, sqlDialect, p)
+	var sliceLensBuf [1]int
+	sliceLensBuf[0] = len(p.IDs)
+	in := runtime.RenderInput{
+		ColMask:   colMask,
+		FlagMask:  flagMask,
+		SliceLens: sliceLensBuf[:],
+	}
+	return pl.Pipeline.QueueExec(stmtIDFzDelete, descFzDelete, in, vk, nil, argBuf, expandErr)
 }
 
 const stmtIDFzSubs uint32 = 15
@@ -4206,17 +3795,7 @@ func scanFzSubsRow(scanner interface{ Scan(...any) error }, dst *FzRow, colMask 
 }
 
 func (q *Queries) FzSubs(ctx context.Context, p FzSubsParams) ([]FzRow, error) {
-	return q.FzSubsInto(ctx, nil, p)
-}
-
-func (q *Queries) FzSubsInto(ctx context.Context, dst []FzRow, p FzSubsParams) ([]FzRow, error) {
-	for row, err := range q.FzSubsSeq(ctx, p) {
-		if err != nil {
-			return nil, err
-		}
-		dst = append(dst, row)
-	}
-	return dst, nil
+	return runtime.Collect(q.FzSubsSeq(ctx, p))
 }
 
 func (q *Queries) FzSubsSeq(ctx context.Context, p FzSubsParams) iter.Seq2[FzRow, error] {
@@ -4266,21 +3845,6 @@ func (q *Queries) FzSubsSeq(ctx context.Context, p FzSubsParams) iter.Seq2[FzRow
 			yield(zero, err)
 		}
 	}
-}
-
-func (q *Queries) FzSubsEach(ctx context.Context, p FzSubsParams, fn func(FzRow) error) error {
-	if fn == nil {
-		return runtime.ErrNilArgument
-	}
-	for row, err := range q.FzSubsSeq(ctx, p) {
-		if err != nil {
-			return err
-		}
-		if err := fn(row); err != nil {
-			return err
-		}
-	}
-	return nil
 }
 
 func (pl *Pipeline) FzSubs(p FzSubsParams) *runtime.SliceFuture[FzRow] {
@@ -4458,17 +4022,7 @@ func scanFzJoinRow(scanner interface{ Scan(...any) error }, dst *FzJoinRow, colM
 }
 
 func (q *Queries) FzJoin(ctx context.Context, p FzJoinParams) ([]FzJoinRow, error) {
-	return q.FzJoinInto(ctx, nil, p)
-}
-
-func (q *Queries) FzJoinInto(ctx context.Context, dst []FzJoinRow, p FzJoinParams) ([]FzJoinRow, error) {
-	for row, err := range q.FzJoinSeq(ctx, p) {
-		if err != nil {
-			return nil, err
-		}
-		dst = append(dst, row)
-	}
-	return dst, nil
+	return runtime.Collect(q.FzJoinSeq(ctx, p))
 }
 
 func (q *Queries) FzJoinSeq(ctx context.Context, p FzJoinParams) iter.Seq2[FzJoinRow, error] {
@@ -4506,21 +4060,6 @@ func (q *Queries) FzJoinSeq(ctx context.Context, p FzJoinParams) iter.Seq2[FzJoi
 			yield(zero, err)
 		}
 	}
-}
-
-func (q *Queries) FzJoinEach(ctx context.Context, p FzJoinParams, fn func(FzJoinRow) error) error {
-	if fn == nil {
-		return runtime.ErrNilArgument
-	}
-	for row, err := range q.FzJoinSeq(ctx, p) {
-		if err != nil {
-			return err
-		}
-		if err := fn(row); err != nil {
-			return err
-		}
-	}
-	return nil
 }
 
 func (pl *Pipeline) FzJoin(p FzJoinParams) *runtime.SliceFuture[FzJoinRow] {
@@ -4603,47 +4142,10 @@ func computeFzTypedInsertKey(p paramsFzTypedInsert) (runtime.VariantKey, uint64,
 }
 
 func (q *Queries) FzTypedInsert(ctx context.Context, rows []FzTypedNew) (sql.Result, error) {
-	p := paramsFzTypedInsert{
-		Rows: rows,
+	if len(rows) == 0 {
+		return runtime.BatchExecResult{}, nil
 	}
-	vk, colMask, flagMask, approxArgs := computeFzTypedInsertKey(p)
-	argBuf := runtime.AcquireArgsCap(approxArgs)
-	defer runtime.ReleaseArgs(argBuf)
-	if err := expandFzTypedInsertParams(argBuf, sqlDialect, p); err != nil {
-		return nil, err
-	}
-	var tupleLensBuf [1]int
-	tupleLensBuf[0] = len(p.Rows)
-	in := runtime.RenderInput{
-		ColMask:   colMask,
-		FlagMask:  flagMask,
-		TupleLens: tupleLensBuf[:],
-	}
-	return q.cache.Exec(ctx, q.db, q.txCache, q.usePrepared, vk, stmtIDFzTypedInsert, runtime.ComputeBatchShapeTag(colMask, flagMask), 0, nil, sqlDialect, descFzTypedInsert, &in, (*argBuf)...)
-}
-
-func (pl *Pipeline) FzTypedInsert(rows []FzTypedNew) *runtime.ExecFuture {
-	p := paramsFzTypedInsert{
-		Rows: rows,
-	}
-	vk, colMask, flagMask, approxArgs := computeFzTypedInsertKey(p)
-	argBuf := runtime.AcquireArgsCap(approxArgs)
-	expandErr := expandFzTypedInsertParams(argBuf, sqlDialect, p)
-	var tupleLensBuf [1]int
-	tupleLensBuf[0] = len(p.Rows)
-	in := runtime.RenderInput{
-		ColMask:   colMask,
-		FlagMask:  flagMask,
-		TupleLens: tupleLensBuf[:],
-	}
-	return pl.Pipeline.QueueExec(stmtIDFzTypedInsert, descFzTypedInsert, in, vk, nil, argBuf, expandErr)
-}
-
-func (q *Queries) FzTypedInsertBatch(ctx context.Context, rows []FzTypedNew) (sql.Result, error) {
 	totalRows := len(rows)
-	if totalRows == 0 {
-		return nil, runtime.ErrEmptySliceParam
-	}
 	p := paramsFzTypedInsert{
 		Rows: rows,
 	}
@@ -4718,6 +4220,26 @@ func (q *Queries) FzTypedInsertBatch(ctx context.Context, rows []FzTypedNew) (sq
 	return batchRes, nil
 }
 
+func (pl *Pipeline) FzTypedInsert(rows []FzTypedNew) *runtime.ExecFuture {
+	if len(rows) == 0 {
+		return pl.Pipeline.QueueExecNoop()
+	}
+	p := paramsFzTypedInsert{
+		Rows: rows,
+	}
+	vk, colMask, flagMask, approxArgs := computeFzTypedInsertKey(p)
+	argBuf := runtime.AcquireArgsCap(approxArgs)
+	expandErr := expandFzTypedInsertParams(argBuf, sqlDialect, p)
+	var tupleLensBuf [1]int
+	tupleLensBuf[0] = len(p.Rows)
+	in := runtime.RenderInput{
+		ColMask:   colMask,
+		FlagMask:  flagMask,
+		TupleLens: tupleLensBuf[:],
+	}
+	return pl.Pipeline.QueueExec(stmtIDFzTypedInsert, descFzTypedInsert, in, vk, nil, argBuf, expandErr)
+}
+
 func (q *Queries) FzTypedInsertStream(ctx context.Context, seq iter.Seq2[FzTypedNew, error]) (sql.Result, error) {
 	if seq == nil {
 		return nil, runtime.ErrNilArgument
@@ -4735,7 +4257,7 @@ func (q *Queries) FzTypedInsertStream(ctx context.Context, seq iter.Seq2[FzTyped
 		if len(chunk) == 0 {
 			return nil
 		}
-		res, err := q.FzTypedInsertBatch(ctx, chunk)
+		res, err := q.FzTypedInsert(ctx, chunk)
 		if err != nil {
 			return err
 		}
@@ -4993,17 +4515,7 @@ func scanFzTypedSearchRow(scanner interface{ Scan(...any) error }, dst *FzTypedR
 }
 
 func (q *Queries) FzTypedSearch(ctx context.Context, p FzTypedSearchParams) ([]FzTypedRow, error) {
-	return q.FzTypedSearchInto(ctx, nil, p)
-}
-
-func (q *Queries) FzTypedSearchInto(ctx context.Context, dst []FzTypedRow, p FzTypedSearchParams) ([]FzTypedRow, error) {
-	for row, err := range q.FzTypedSearchSeq(ctx, p) {
-		if err != nil {
-			return nil, err
-		}
-		dst = append(dst, row)
-	}
-	return dst, nil
+	return runtime.Collect(q.FzTypedSearchSeq(ctx, p))
 }
 
 func (q *Queries) FzTypedSearchSeq(ctx context.Context, p FzTypedSearchParams) iter.Seq2[FzTypedRow, error] {
@@ -5052,21 +4564,6 @@ func (q *Queries) FzTypedSearchSeq(ctx context.Context, p FzTypedSearchParams) i
 			yield(zero, err)
 		}
 	}
-}
-
-func (q *Queries) FzTypedSearchEach(ctx context.Context, p FzTypedSearchParams, fn func(FzTypedRow) error) error {
-	if fn == nil {
-		return runtime.ErrNilArgument
-	}
-	for row, err := range q.FzTypedSearchSeq(ctx, p) {
-		if err != nil {
-			return err
-		}
-		if err := fn(row); err != nil {
-			return err
-		}
-	}
-	return nil
 }
 
 func (pl *Pipeline) FzTypedSearch(p FzTypedSearchParams) *runtime.SliceFuture[FzTypedRow] {
@@ -5296,17 +4793,7 @@ func scanFzTypedPageRow(scanner interface{ Scan(...any) error }, dst *FzTypedRow
 }
 
 func (q *Queries) FzTypedPage(ctx context.Context, after runtime.Seek, sort runtime.Order, limit int64) ([]FzTypedRow, error) {
-	return q.FzTypedPageInto(ctx, nil, after, sort, limit)
-}
-
-func (q *Queries) FzTypedPageInto(ctx context.Context, dst []FzTypedRow, after runtime.Seek, sort runtime.Order, limit int64) ([]FzTypedRow, error) {
-	for row, err := range q.FzTypedPageSeq(ctx, after, sort, limit) {
-		if err != nil {
-			return nil, err
-		}
-		dst = append(dst, row)
-	}
-	return dst, nil
+	return runtime.Collect(q.FzTypedPageSeq(ctx, after, sort, limit))
 }
 
 func (q *Queries) FzTypedPageSeq(ctx context.Context, after runtime.Seek, sort runtime.Order, limit int64) iter.Seq2[FzTypedRow, error] {
@@ -5354,21 +4841,6 @@ func (q *Queries) FzTypedPageSeq(ctx context.Context, after runtime.Seek, sort r
 			yield(zero, err)
 		}
 	}
-}
-
-func (q *Queries) FzTypedPageEach(ctx context.Context, after runtime.Seek, sort runtime.Order, limit int64, fn func(FzTypedRow) error) error {
-	if fn == nil {
-		return runtime.ErrNilArgument
-	}
-	for row, err := range q.FzTypedPageSeq(ctx, after, sort, limit) {
-		if err != nil {
-			return err
-		}
-		if err := fn(row); err != nil {
-			return err
-		}
-	}
-	return nil
 }
 
 func (pl *Pipeline) FzTypedPage(after runtime.Seek, sort runtime.Order, limit int64) *runtime.SliceFuture[FzTypedRow] {
@@ -5538,108 +5010,10 @@ func scanFzInsertRetRow(scanner interface{ Scan(...any) error }, dst *FzOut, col
 }
 
 func (q *Queries) FzInsertRet(ctx context.Context, rows []FzNew) ([]FzOut, error) {
-	return q.FzInsertRetInto(ctx, nil, rows)
-}
-
-func (q *Queries) FzInsertRetInto(ctx context.Context, dst []FzOut, rows []FzNew) ([]FzOut, error) {
-	for row, err := range q.FzInsertRetSeq(ctx, rows) {
-		if err != nil {
-			return nil, err
-		}
-		dst = append(dst, row)
+	if len(rows) == 0 {
+		return nil, nil
 	}
-	return dst, nil
-}
-
-func (q *Queries) FzInsertRetSeq(ctx context.Context, rows []FzNew) iter.Seq2[FzOut, error] {
-	return func(yield func(FzOut, error) bool) {
-		var zero FzOut
-		p := paramsFzInsertRet{
-			Rows: rows,
-		}
-		vk, colMask, flagMask, approxArgs := computeFzInsertRetKey(p)
-		_ = colMask
-		argBuf := runtime.AcquireArgsCap(approxArgs)
-		defer runtime.ReleaseArgs(argBuf)
-		if err := expandFzInsertRetParams(argBuf, sqlDialect, p); err != nil {
-			yield(zero, err)
-			return
-		}
-		var tupleLensBuf [1]int
-		tupleLensBuf[0] = len(p.Rows)
-		in := runtime.RenderInput{
-			ColMask:   colMask,
-			FlagMask:  flagMask,
-			TupleLens: tupleLensBuf[:],
-		}
-		sqlRows, ms, err := q.cache.Query(ctx, q.db, q.txCache, q.usePrepared, vk, stmtIDFzInsertRet, runtime.ComputeBatchShapeTag(colMask, flagMask), 0, nil, sqlDialect, descFzInsertRet, &in, (*argBuf)...)
-		if err != nil {
-			yield(zero, err)
-			return
-		}
-		defer runtime.ReleaseRows(&sqlRows, &ms)
-		var item FzOut
-		for sqlRows.Next() {
-			if err := scanFzInsertRetRow(sqlRows, &item, colMask, p); err != nil {
-				runtime.ReleaseRows(&sqlRows, &ms)
-				yield(zero, err)
-				return
-			}
-			if !yield(item, nil) {
-				return
-			}
-		}
-		err = sqlRows.Err()
-		runtime.ReleaseRows(&sqlRows, &ms)
-		if err != nil {
-			yield(zero, err)
-		}
-	}
-}
-
-func (q *Queries) FzInsertRetEach(ctx context.Context, rows []FzNew, fn func(FzOut) error) error {
-	if fn == nil {
-		return runtime.ErrNilArgument
-	}
-	for row, err := range q.FzInsertRetSeq(ctx, rows) {
-		if err != nil {
-			return err
-		}
-		if err := fn(row); err != nil {
-			return err
-		}
-	}
-	return nil
-}
-
-func (pl *Pipeline) FzInsertRet(rows []FzNew) *runtime.SliceFuture[FzOut] {
-	p := paramsFzInsertRet{
-		Rows: rows,
-	}
-	vk, colMask, flagMask, approxArgs := computeFzInsertRetKey(p)
-	argBuf := runtime.AcquireArgsCap(approxArgs)
-	expandErr := expandFzInsertRetParams(argBuf, sqlDialect, p)
-	var tupleLensBuf [1]int
-	tupleLensBuf[0] = len(p.Rows)
-	in := runtime.RenderInput{
-		ColMask:   colMask,
-		FlagMask:  flagMask,
-		TupleLens: tupleLensBuf[:],
-	}
-	return runtime.QueueSlice(pl.Pipeline, stmtIDFzInsertRet, descFzInsertRet, in, vk, nil, argBuf, expandErr,
-		func(rs *sql.Rows, dst *FzOut) error { return scanFzInsertRetRow(rs, dst, colMask, p) },
-	)
-}
-
-func (q *Queries) FzInsertRetBatch(ctx context.Context, rows []FzNew) ([]FzOut, error) {
-	return q.FzInsertRetBatchInto(ctx, nil, rows)
-}
-
-func (q *Queries) FzInsertRetBatchInto(ctx context.Context, dst []FzOut, rows []FzNew) ([]FzOut, error) {
 	totalRows := len(rows)
-	if totalRows == 0 {
-		return nil, runtime.ErrEmptySliceParam
-	}
 	p := paramsFzInsertRet{
 		Rows: rows,
 	}
@@ -5657,29 +5031,24 @@ func (q *Queries) FzInsertRetBatchInto(ctx context.Context, dst []FzOut, rows []
 		targetQ = q.WithTx(autoTx)
 		defer func() { _ = targetQ.Close() }()
 	}
-	for row, err := range targetQ.FzInsertRetBatchSeq(ctx, rows) {
+	out, err := runtime.Collect(targetQ.FzInsertRetSeq(ctx, rows))
+	if autoTx != nil {
 		if err != nil {
-			if autoTx != nil {
-				_ = autoTx.Rollback()
-			}
+			_ = autoTx.Rollback()
 			return nil, err
 		}
-		dst = append(dst, row)
-	}
-	if autoTx != nil {
 		if err := autoTx.Commit(); err != nil {
 			return nil, err
 		}
 	}
-	return dst, nil
+	return out, err
 }
 
-func (q *Queries) FzInsertRetBatchSeq(ctx context.Context, rows []FzNew) iter.Seq2[FzOut, error] {
+func (q *Queries) FzInsertRetSeq(ctx context.Context, rows []FzNew) iter.Seq2[FzOut, error] {
 	return func(yield func(FzOut, error) bool) {
 		var zero FzOut
 		totalRows := len(rows)
 		if totalRows == 0 {
-			yield(zero, runtime.ErrEmptySliceParam)
 			return
 		}
 		p := paramsFzInsertRet{
@@ -5764,19 +5133,26 @@ func (q *Queries) FzInsertRetBatchSeq(ctx context.Context, rows []FzNew) iter.Se
 	}
 }
 
-func (q *Queries) FzInsertRetBatchEach(ctx context.Context, rows []FzNew, fn func(FzOut) error) error {
-	if fn == nil {
-		return runtime.ErrNilArgument
+func (pl *Pipeline) FzInsertRet(rows []FzNew) *runtime.SliceFuture[FzOut] {
+	if len(rows) == 0 {
+		return runtime.QueueSliceNoop[FzOut](pl.Pipeline)
 	}
-	for row, err := range q.FzInsertRetBatchSeq(ctx, rows) {
-		if err != nil {
-			return err
-		}
-		if err := fn(row); err != nil {
-			return err
-		}
+	p := paramsFzInsertRet{
+		Rows: rows,
 	}
-	return nil
+	vk, colMask, flagMask, approxArgs := computeFzInsertRetKey(p)
+	argBuf := runtime.AcquireArgsCap(approxArgs)
+	expandErr := expandFzInsertRetParams(argBuf, sqlDialect, p)
+	var tupleLensBuf [1]int
+	tupleLensBuf[0] = len(p.Rows)
+	in := runtime.RenderInput{
+		ColMask:   colMask,
+		FlagMask:  flagMask,
+		TupleLens: tupleLensBuf[:],
+	}
+	return runtime.QueueSlice(pl.Pipeline, stmtIDFzInsertRet, descFzInsertRet, in, vk, nil, argBuf, expandErr,
+		func(rs *sql.Rows, dst *FzOut) error { return scanFzInsertRetRow(rs, dst, colMask, p) },
+	)
 }
 
 func (q *Queries) FzInsertRetStreamSeq(ctx context.Context, seq iter.Seq2[FzNew, error]) iter.Seq2[FzOut, error] {
@@ -5798,7 +5174,7 @@ func (q *Queries) FzInsertRetStreamSeq(ctx context.Context, seq iter.Seq2[FzNew,
 			if len(chunk) == 0 {
 				return true
 			}
-			for r, err := range q.FzInsertRetBatchSeq(ctx, chunk) {
+			for r, err := range q.FzInsertRetSeq(ctx, chunk) {
 				if err != nil {
 					yield(zero, err)
 					return false
@@ -5827,14 +5203,7 @@ func (q *Queries) FzInsertRetStreamSeq(ctx context.Context, seq iter.Seq2[FzNew,
 }
 
 func (q *Queries) FzInsertRetStream(ctx context.Context, seq iter.Seq2[FzNew, error]) ([]FzOut, error) {
-	var out []FzOut
-	for r, err := range q.FzInsertRetStreamSeq(ctx, seq) {
-		if err != nil {
-			return nil, err
-		}
-		out = append(out, r)
-	}
-	return out, nil
+	return runtime.Collect(q.FzInsertRetStreamSeq(ctx, seq))
 }
 
 const stmtIDFzDeleteRet uint32 = 21
@@ -5978,102 +5347,7 @@ func scanFzDeleteRetRow(scanner interface{ Scan(...any) error }, dst *FzOut, col
 }
 
 func (q *Queries) FzDeleteRet(ctx context.Context, p FzDeleteRetParams) ([]FzOut, error) {
-	return q.FzDeleteRetInto(ctx, nil, p)
-}
-
-func (q *Queries) FzDeleteRetInto(ctx context.Context, dst []FzOut, p FzDeleteRetParams) ([]FzOut, error) {
-	for row, err := range q.FzDeleteRetSeq(ctx, p) {
-		if err != nil {
-			return nil, err
-		}
-		dst = append(dst, row)
-	}
-	return dst, nil
-}
-
-func (q *Queries) FzDeleteRetSeq(ctx context.Context, p FzDeleteRetParams) iter.Seq2[FzOut, error] {
-	return func(yield func(FzOut, error) bool) {
-		var zero FzOut
-		vk, colMask, flagMask, approxArgs := computeFzDeleteRetKey(p)
-		_ = colMask
-		argBuf := runtime.AcquireArgsCap(approxArgs)
-		defer runtime.ReleaseArgs(argBuf)
-		if err := expandFzDeleteRetParams(argBuf, sqlDialect, p); err != nil {
-			yield(zero, err)
-			return
-		}
-		var sliceLensBuf [1]int
-		sliceLensBuf[0] = len(p.IDs)
-		in := runtime.RenderInput{
-			ColMask:   colMask,
-			FlagMask:  flagMask,
-			SliceLens: sliceLensBuf[:],
-		}
-		sqlRows, ms, err := q.cache.Query(ctx, q.db, q.txCache, q.usePrepared, vk, stmtIDFzDeleteRet, runtime.ComputeBatchShapeTag(colMask, flagMask), 0, nil, sqlDialect, descFzDeleteRet, &in, (*argBuf)...)
-		if err != nil {
-			yield(zero, err)
-			return
-		}
-		defer runtime.ReleaseRows(&sqlRows, &ms)
-		var item FzOut
-		for sqlRows.Next() {
-			if err := scanFzDeleteRetRow(sqlRows, &item, colMask, p); err != nil {
-				runtime.ReleaseRows(&sqlRows, &ms)
-				yield(zero, err)
-				return
-			}
-			if !yield(item, nil) {
-				return
-			}
-		}
-		err = sqlRows.Err()
-		runtime.ReleaseRows(&sqlRows, &ms)
-		if err != nil {
-			yield(zero, err)
-		}
-	}
-}
-
-func (q *Queries) FzDeleteRetEach(ctx context.Context, p FzDeleteRetParams, fn func(FzOut) error) error {
-	if fn == nil {
-		return runtime.ErrNilArgument
-	}
-	for row, err := range q.FzDeleteRetSeq(ctx, p) {
-		if err != nil {
-			return err
-		}
-		if err := fn(row); err != nil {
-			return err
-		}
-	}
-	return nil
-}
-
-func (pl *Pipeline) FzDeleteRet(p FzDeleteRetParams) *runtime.SliceFuture[FzOut] {
-	vk, colMask, flagMask, approxArgs := computeFzDeleteRetKey(p)
-	argBuf := runtime.AcquireArgsCap(approxArgs)
-	expandErr := expandFzDeleteRetParams(argBuf, sqlDialect, p)
-	var sliceLensBuf [1]int
-	sliceLensBuf[0] = len(p.IDs)
-	in := runtime.RenderInput{
-		ColMask:   colMask,
-		FlagMask:  flagMask,
-		SliceLens: sliceLensBuf[:],
-	}
-	return runtime.QueueSlice(pl.Pipeline, stmtIDFzDeleteRet, descFzDeleteRet, in, vk, nil, argBuf, expandErr,
-		func(rs *sql.Rows, dst *FzOut) error { return scanFzDeleteRetRow(rs, dst, colMask, p) },
-	)
-}
-
-func (q *Queries) FzDeleteRetBatch(ctx context.Context, p FzDeleteRetParams) ([]FzOut, error) {
-	return q.FzDeleteRetBatchInto(ctx, nil, p)
-}
-
-func (q *Queries) FzDeleteRetBatchInto(ctx context.Context, dst []FzOut, p FzDeleteRetParams) ([]FzOut, error) {
 	totalRows := len(p.IDs)
-	if totalRows == 0 {
-		return nil, runtime.ErrEmptySliceParam
-	}
 	_, colMask, flagMask, _ := computeFzDeleteRetKey(p)
 	maxRows := q.cache.MaxRowsPerBatch(sqlDialect, 1, 1)
 	firstChunk := q.cache.PlanBatchChunk(stmtIDFzDeleteRet, colMask, flagMask, totalRows, maxRows, true)
@@ -6088,24 +5362,20 @@ func (q *Queries) FzDeleteRetBatchInto(ctx context.Context, dst []FzOut, p FzDel
 		targetQ = q.WithTx(autoTx)
 		defer func() { _ = targetQ.Close() }()
 	}
-	for row, err := range targetQ.FzDeleteRetBatchSeq(ctx, p) {
+	out, err := runtime.Collect(targetQ.FzDeleteRetSeq(ctx, p))
+	if autoTx != nil {
 		if err != nil {
-			if autoTx != nil {
-				_ = autoTx.Rollback()
-			}
+			_ = autoTx.Rollback()
 			return nil, err
 		}
-		dst = append(dst, row)
-	}
-	if autoTx != nil {
 		if err := autoTx.Commit(); err != nil {
 			return nil, err
 		}
 	}
-	return dst, nil
+	return out, err
 }
 
-func (q *Queries) FzDeleteRetBatchSeq(ctx context.Context, p FzDeleteRetParams) iter.Seq2[FzOut, error] {
+func (q *Queries) FzDeleteRetSeq(ctx context.Context, p FzDeleteRetParams) iter.Seq2[FzOut, error] {
 	return func(yield func(FzOut, error) bool) {
 		var zero FzOut
 		totalRows := len(p.IDs)
@@ -6183,19 +5453,20 @@ func (q *Queries) FzDeleteRetBatchSeq(ctx context.Context, p FzDeleteRetParams) 
 	}
 }
 
-func (q *Queries) FzDeleteRetBatchEach(ctx context.Context, p FzDeleteRetParams, fn func(FzOut) error) error {
-	if fn == nil {
-		return runtime.ErrNilArgument
+func (pl *Pipeline) FzDeleteRet(p FzDeleteRetParams) *runtime.SliceFuture[FzOut] {
+	vk, colMask, flagMask, approxArgs := computeFzDeleteRetKey(p)
+	argBuf := runtime.AcquireArgsCap(approxArgs)
+	expandErr := expandFzDeleteRetParams(argBuf, sqlDialect, p)
+	var sliceLensBuf [1]int
+	sliceLensBuf[0] = len(p.IDs)
+	in := runtime.RenderInput{
+		ColMask:   colMask,
+		FlagMask:  flagMask,
+		SliceLens: sliceLensBuf[:],
 	}
-	for row, err := range q.FzDeleteRetBatchSeq(ctx, p) {
-		if err != nil {
-			return err
-		}
-		if err := fn(row); err != nil {
-			return err
-		}
-	}
-	return nil
+	return runtime.QueueSlice(pl.Pipeline, stmtIDFzDeleteRet, descFzDeleteRet, in, vk, nil, argBuf, expandErr,
+		func(rs *sql.Rows, dst *FzOut) error { return scanFzDeleteRetRow(rs, dst, colMask, p) },
+	)
 }
 
 const stmtIDFzBumpRet uint32 = 22
@@ -6344,102 +5615,7 @@ func scanFzBumpRetRow(scanner interface{ Scan(...any) error }, dst *FzOut, colMa
 }
 
 func (q *Queries) FzBumpRet(ctx context.Context, p FzBumpRetParams) ([]FzOut, error) {
-	return q.FzBumpRetInto(ctx, nil, p)
-}
-
-func (q *Queries) FzBumpRetInto(ctx context.Context, dst []FzOut, p FzBumpRetParams) ([]FzOut, error) {
-	for row, err := range q.FzBumpRetSeq(ctx, p) {
-		if err != nil {
-			return nil, err
-		}
-		dst = append(dst, row)
-	}
-	return dst, nil
-}
-
-func (q *Queries) FzBumpRetSeq(ctx context.Context, p FzBumpRetParams) iter.Seq2[FzOut, error] {
-	return func(yield func(FzOut, error) bool) {
-		var zero FzOut
-		vk, colMask, flagMask, approxArgs := computeFzBumpRetKey(p)
-		_ = colMask
-		argBuf := runtime.AcquireArgsCap(approxArgs)
-		defer runtime.ReleaseArgs(argBuf)
-		if err := expandFzBumpRetParams(argBuf, sqlDialect, p); err != nil {
-			yield(zero, err)
-			return
-		}
-		var sliceLensBuf [1]int
-		sliceLensBuf[0] = len(p.IDs)
-		in := runtime.RenderInput{
-			ColMask:   colMask,
-			FlagMask:  flagMask,
-			SliceLens: sliceLensBuf[:],
-		}
-		sqlRows, ms, err := q.cache.Query(ctx, q.db, q.txCache, q.usePrepared, vk, stmtIDFzBumpRet, runtime.ComputeBatchShapeTag(colMask, flagMask), 0, nil, sqlDialect, descFzBumpRet, &in, (*argBuf)...)
-		if err != nil {
-			yield(zero, err)
-			return
-		}
-		defer runtime.ReleaseRows(&sqlRows, &ms)
-		var item FzOut
-		for sqlRows.Next() {
-			if err := scanFzBumpRetRow(sqlRows, &item, colMask, p); err != nil {
-				runtime.ReleaseRows(&sqlRows, &ms)
-				yield(zero, err)
-				return
-			}
-			if !yield(item, nil) {
-				return
-			}
-		}
-		err = sqlRows.Err()
-		runtime.ReleaseRows(&sqlRows, &ms)
-		if err != nil {
-			yield(zero, err)
-		}
-	}
-}
-
-func (q *Queries) FzBumpRetEach(ctx context.Context, p FzBumpRetParams, fn func(FzOut) error) error {
-	if fn == nil {
-		return runtime.ErrNilArgument
-	}
-	for row, err := range q.FzBumpRetSeq(ctx, p) {
-		if err != nil {
-			return err
-		}
-		if err := fn(row); err != nil {
-			return err
-		}
-	}
-	return nil
-}
-
-func (pl *Pipeline) FzBumpRet(p FzBumpRetParams) *runtime.SliceFuture[FzOut] {
-	vk, colMask, flagMask, approxArgs := computeFzBumpRetKey(p)
-	argBuf := runtime.AcquireArgsCap(approxArgs)
-	expandErr := expandFzBumpRetParams(argBuf, sqlDialect, p)
-	var sliceLensBuf [1]int
-	sliceLensBuf[0] = len(p.IDs)
-	in := runtime.RenderInput{
-		ColMask:   colMask,
-		FlagMask:  flagMask,
-		SliceLens: sliceLensBuf[:],
-	}
-	return runtime.QueueSlice(pl.Pipeline, stmtIDFzBumpRet, descFzBumpRet, in, vk, nil, argBuf, expandErr,
-		func(rs *sql.Rows, dst *FzOut) error { return scanFzBumpRetRow(rs, dst, colMask, p) },
-	)
-}
-
-func (q *Queries) FzBumpRetBatch(ctx context.Context, p FzBumpRetParams) ([]FzOut, error) {
-	return q.FzBumpRetBatchInto(ctx, nil, p)
-}
-
-func (q *Queries) FzBumpRetBatchInto(ctx context.Context, dst []FzOut, p FzBumpRetParams) ([]FzOut, error) {
 	totalRows := len(p.IDs)
-	if totalRows == 0 {
-		return nil, runtime.ErrEmptySliceParam
-	}
 	_, colMask, flagMask, _ := computeFzBumpRetKey(p)
 	maxRows := q.cache.MaxRowsPerBatch(sqlDialect, 3, 1)
 	firstChunk := q.cache.PlanBatchChunk(stmtIDFzBumpRet, colMask, flagMask, totalRows, maxRows, true)
@@ -6454,24 +5630,20 @@ func (q *Queries) FzBumpRetBatchInto(ctx context.Context, dst []FzOut, p FzBumpR
 		targetQ = q.WithTx(autoTx)
 		defer func() { _ = targetQ.Close() }()
 	}
-	for row, err := range targetQ.FzBumpRetBatchSeq(ctx, p) {
+	out, err := runtime.Collect(targetQ.FzBumpRetSeq(ctx, p))
+	if autoTx != nil {
 		if err != nil {
-			if autoTx != nil {
-				_ = autoTx.Rollback()
-			}
+			_ = autoTx.Rollback()
 			return nil, err
 		}
-		dst = append(dst, row)
-	}
-	if autoTx != nil {
 		if err := autoTx.Commit(); err != nil {
 			return nil, err
 		}
 	}
-	return dst, nil
+	return out, err
 }
 
-func (q *Queries) FzBumpRetBatchSeq(ctx context.Context, p FzBumpRetParams) iter.Seq2[FzOut, error] {
+func (q *Queries) FzBumpRetSeq(ctx context.Context, p FzBumpRetParams) iter.Seq2[FzOut, error] {
 	return func(yield func(FzOut, error) bool) {
 		var zero FzOut
 		totalRows := len(p.IDs)
@@ -6551,17 +5723,18 @@ func (q *Queries) FzBumpRetBatchSeq(ctx context.Context, p FzBumpRetParams) iter
 	}
 }
 
-func (q *Queries) FzBumpRetBatchEach(ctx context.Context, p FzBumpRetParams, fn func(FzOut) error) error {
-	if fn == nil {
-		return runtime.ErrNilArgument
+func (pl *Pipeline) FzBumpRet(p FzBumpRetParams) *runtime.SliceFuture[FzOut] {
+	vk, colMask, flagMask, approxArgs := computeFzBumpRetKey(p)
+	argBuf := runtime.AcquireArgsCap(approxArgs)
+	expandErr := expandFzBumpRetParams(argBuf, sqlDialect, p)
+	var sliceLensBuf [1]int
+	sliceLensBuf[0] = len(p.IDs)
+	in := runtime.RenderInput{
+		ColMask:   colMask,
+		FlagMask:  flagMask,
+		SliceLens: sliceLensBuf[:],
 	}
-	for row, err := range q.FzBumpRetBatchSeq(ctx, p) {
-		if err != nil {
-			return err
-		}
-		if err := fn(row); err != nil {
-			return err
-		}
-	}
-	return nil
+	return runtime.QueueSlice(pl.Pipeline, stmtIDFzBumpRet, descFzBumpRet, in, vk, nil, argBuf, expandErr,
+		func(rs *sql.Rows, dst *FzOut) error { return scanFzBumpRetRow(rs, dst, colMask, p) },
+	)
 }

@@ -365,108 +365,7 @@ func scanGetInventoryBySKUsRow(scanner interface{ Scan(...any) error }, dst *Inv
 }
 
 func (q *Queries) GetInventoryBySKUs(ctx context.Context, keys []SKUKey) ([]InventoryItem, error) {
-	return q.GetInventoryBySKUsInto(ctx, nil, keys)
-}
-
-func (q *Queries) GetInventoryBySKUsInto(ctx context.Context, dst []InventoryItem, keys []SKUKey) ([]InventoryItem, error) {
-	for row, err := range q.GetInventoryBySKUsSeq(ctx, keys) {
-		if err != nil {
-			return nil, err
-		}
-		dst = append(dst, row)
-	}
-	return dst, nil
-}
-
-func (q *Queries) GetInventoryBySKUsSeq(ctx context.Context, keys []SKUKey) iter.Seq2[InventoryItem, error] {
-	return func(yield func(InventoryItem, error) bool) {
-		var zero InventoryItem
-		p := paramsGetInventoryBySKUs{
-			Keys: keys,
-		}
-		vk, colMask, flagMask, approxArgs := computeGetInventoryBySKUsKey(p)
-		_ = colMask
-		argBuf := runtime.AcquireArgsCap(approxArgs)
-		defer runtime.ReleaseArgs(argBuf)
-		if err := expandGetInventoryBySKUsParams(argBuf, sqlDialect, p); err != nil {
-			yield(zero, err)
-			return
-		}
-		var tupleLensBuf [1]int
-		tupleLensBuf[0] = len(p.Keys)
-		in := runtime.RenderInput{
-			ColMask:   colMask,
-			FlagMask:  flagMask,
-			TupleLens: tupleLensBuf[:],
-		}
-		sqlRows, ms, err := q.cache.Query(ctx, q.db, q.txCache, q.usePrepared, vk, stmtIDGetInventoryBySKUs, runtime.ComputeBatchShapeTag(colMask, flagMask), 0, nil, sqlDialect, descGetInventoryBySKUs, &in, (*argBuf)...)
-		if err != nil {
-			yield(zero, err)
-			return
-		}
-		defer runtime.ReleaseRows(&sqlRows, &ms)
-		var item InventoryItem
-		for sqlRows.Next() {
-			if err := scanGetInventoryBySKUsRow(sqlRows, &item, colMask, p); err != nil {
-				runtime.ReleaseRows(&sqlRows, &ms)
-				yield(zero, err)
-				return
-			}
-			if !yield(item, nil) {
-				return
-			}
-		}
-		err = sqlRows.Err()
-		runtime.ReleaseRows(&sqlRows, &ms)
-		if err != nil {
-			yield(zero, err)
-		}
-	}
-}
-
-func (q *Queries) GetInventoryBySKUsEach(ctx context.Context, keys []SKUKey, fn func(InventoryItem) error) error {
-	if fn == nil {
-		return runtime.ErrNilArgument
-	}
-	for row, err := range q.GetInventoryBySKUsSeq(ctx, keys) {
-		if err != nil {
-			return err
-		}
-		if err := fn(row); err != nil {
-			return err
-		}
-	}
-	return nil
-}
-
-func (pl *Pipeline) GetInventoryBySKUs(keys []SKUKey) *runtime.SliceFuture[InventoryItem] {
-	p := paramsGetInventoryBySKUs{
-		Keys: keys,
-	}
-	vk, colMask, flagMask, approxArgs := computeGetInventoryBySKUsKey(p)
-	argBuf := runtime.AcquireArgsCap(approxArgs)
-	expandErr := expandGetInventoryBySKUsParams(argBuf, sqlDialect, p)
-	var tupleLensBuf [1]int
-	tupleLensBuf[0] = len(p.Keys)
-	in := runtime.RenderInput{
-		ColMask:   colMask,
-		FlagMask:  flagMask,
-		TupleLens: tupleLensBuf[:],
-	}
-	return runtime.QueueSlice(pl.Pipeline, stmtIDGetInventoryBySKUs, descGetInventoryBySKUs, in, vk, nil, argBuf, expandErr,
-		func(rs *sql.Rows, dst *InventoryItem) error { return scanGetInventoryBySKUsRow(rs, dst, colMask, p) },
-	)
-}
-
-func (q *Queries) GetInventoryBySKUsBatch(ctx context.Context, keys []SKUKey) ([]InventoryItem, error) {
-	return q.GetInventoryBySKUsBatchInto(ctx, nil, keys)
-}
-
-func (q *Queries) GetInventoryBySKUsBatchInto(ctx context.Context, dst []InventoryItem, keys []SKUKey) ([]InventoryItem, error) {
 	totalRows := len(keys)
-	if totalRows == 0 {
-		return nil, runtime.ErrEmptySliceParam
-	}
 	p := paramsGetInventoryBySKUs{
 		Keys: keys,
 	}
@@ -484,24 +383,20 @@ func (q *Queries) GetInventoryBySKUsBatchInto(ctx context.Context, dst []Invento
 		targetQ = q.WithTx(autoTx)
 		defer func() { _ = targetQ.Close() }()
 	}
-	for row, err := range targetQ.GetInventoryBySKUsBatchSeq(ctx, keys) {
+	out, err := runtime.Collect(targetQ.GetInventoryBySKUsSeq(ctx, keys))
+	if autoTx != nil {
 		if err != nil {
-			if autoTx != nil {
-				_ = autoTx.Rollback()
-			}
+			_ = autoTx.Rollback()
 			return nil, err
 		}
-		dst = append(dst, row)
-	}
-	if autoTx != nil {
 		if err := autoTx.Commit(); err != nil {
 			return nil, err
 		}
 	}
-	return dst, nil
+	return out, err
 }
 
-func (q *Queries) GetInventoryBySKUsBatchSeq(ctx context.Context, keys []SKUKey) iter.Seq2[InventoryItem, error] {
+func (q *Queries) GetInventoryBySKUsSeq(ctx context.Context, keys []SKUKey) iter.Seq2[InventoryItem, error] {
 	return func(yield func(InventoryItem, error) bool) {
 		var zero InventoryItem
 		totalRows := len(keys)
@@ -580,19 +475,23 @@ func (q *Queries) GetInventoryBySKUsBatchSeq(ctx context.Context, keys []SKUKey)
 	}
 }
 
-func (q *Queries) GetInventoryBySKUsBatchEach(ctx context.Context, keys []SKUKey, fn func(InventoryItem) error) error {
-	if fn == nil {
-		return runtime.ErrNilArgument
+func (pl *Pipeline) GetInventoryBySKUs(keys []SKUKey) *runtime.SliceFuture[InventoryItem] {
+	p := paramsGetInventoryBySKUs{
+		Keys: keys,
 	}
-	for row, err := range q.GetInventoryBySKUsBatchSeq(ctx, keys) {
-		if err != nil {
-			return err
-		}
-		if err := fn(row); err != nil {
-			return err
-		}
+	vk, colMask, flagMask, approxArgs := computeGetInventoryBySKUsKey(p)
+	argBuf := runtime.AcquireArgsCap(approxArgs)
+	expandErr := expandGetInventoryBySKUsParams(argBuf, sqlDialect, p)
+	var tupleLensBuf [1]int
+	tupleLensBuf[0] = len(p.Keys)
+	in := runtime.RenderInput{
+		ColMask:   colMask,
+		FlagMask:  flagMask,
+		TupleLens: tupleLensBuf[:],
 	}
-	return nil
+	return runtime.QueueSlice(pl.Pipeline, stmtIDGetInventoryBySKUs, descGetInventoryBySKUs, in, vk, nil, argBuf, expandErr,
+		func(rs *sql.Rows, dst *InventoryItem) error { return scanGetInventoryBySKUsRow(rs, dst, colMask, p) },
+	)
 }
 
 func (q *Queries) GetInventoryBySKUsStreamSeq(ctx context.Context, seq iter.Seq2[SKUKey, error]) iter.Seq2[InventoryItem, error] {
@@ -614,7 +513,7 @@ func (q *Queries) GetInventoryBySKUsStreamSeq(ctx context.Context, seq iter.Seq2
 			if len(chunk) == 0 {
 				return true
 			}
-			for r, err := range q.GetInventoryBySKUsBatchSeq(ctx, chunk) {
+			for r, err := range q.GetInventoryBySKUsSeq(ctx, chunk) {
 				if err != nil {
 					yield(zero, err)
 					return false
@@ -643,14 +542,7 @@ func (q *Queries) GetInventoryBySKUsStreamSeq(ctx context.Context, seq iter.Seq2
 }
 
 func (q *Queries) GetInventoryBySKUsStream(ctx context.Context, seq iter.Seq2[SKUKey, error]) ([]InventoryItem, error) {
-	var out []InventoryItem
-	for r, err := range q.GetInventoryBySKUsStreamSeq(ctx, seq) {
-		if err != nil {
-			return nil, err
-		}
-		out = append(out, r)
-	}
-	return out, nil
+	return runtime.Collect(q.GetInventoryBySKUsStreamSeq(ctx, seq))
 }
 
 const stmtIDInsertOrderItems uint32 = 2
@@ -703,47 +595,10 @@ func computeInsertOrderItemsKey(p paramsInsertOrderItems) (runtime.VariantKey, u
 }
 
 func (q *Queries) InsertOrderItems(ctx context.Context, items []NewOrderItem) (sql.Result, error) {
-	p := paramsInsertOrderItems{
-		Items: items,
+	if len(items) == 0 {
+		return runtime.BatchExecResult{}, nil
 	}
-	vk, colMask, flagMask, approxArgs := computeInsertOrderItemsKey(p)
-	argBuf := runtime.AcquireArgsCap(approxArgs)
-	defer runtime.ReleaseArgs(argBuf)
-	if err := expandInsertOrderItemsParams(argBuf, sqlDialect, p); err != nil {
-		return nil, err
-	}
-	var tupleLensBuf [1]int
-	tupleLensBuf[0] = len(p.Items)
-	in := runtime.RenderInput{
-		ColMask:   colMask,
-		FlagMask:  flagMask,
-		TupleLens: tupleLensBuf[:],
-	}
-	return q.cache.Exec(ctx, q.db, q.txCache, q.usePrepared, vk, stmtIDInsertOrderItems, runtime.ComputeBatchShapeTag(colMask, flagMask), 0, nil, sqlDialect, descInsertOrderItems, &in, (*argBuf)...)
-}
-
-func (pl *Pipeline) InsertOrderItems(items []NewOrderItem) *runtime.ExecFuture {
-	p := paramsInsertOrderItems{
-		Items: items,
-	}
-	vk, colMask, flagMask, approxArgs := computeInsertOrderItemsKey(p)
-	argBuf := runtime.AcquireArgsCap(approxArgs)
-	expandErr := expandInsertOrderItemsParams(argBuf, sqlDialect, p)
-	var tupleLensBuf [1]int
-	tupleLensBuf[0] = len(p.Items)
-	in := runtime.RenderInput{
-		ColMask:   colMask,
-		FlagMask:  flagMask,
-		TupleLens: tupleLensBuf[:],
-	}
-	return pl.Pipeline.QueueExec(stmtIDInsertOrderItems, descInsertOrderItems, in, vk, nil, argBuf, expandErr)
-}
-
-func (q *Queries) InsertOrderItemsBatch(ctx context.Context, items []NewOrderItem) (sql.Result, error) {
 	totalRows := len(items)
-	if totalRows == 0 {
-		return nil, runtime.ErrEmptySliceParam
-	}
 	p := paramsInsertOrderItems{
 		Items: items,
 	}
@@ -800,6 +655,26 @@ func (q *Queries) InsertOrderItemsBatch(ctx context.Context, items []NewOrderIte
 	return batchRes, nil
 }
 
+func (pl *Pipeline) InsertOrderItems(items []NewOrderItem) *runtime.ExecFuture {
+	if len(items) == 0 {
+		return pl.Pipeline.QueueExecNoop()
+	}
+	p := paramsInsertOrderItems{
+		Items: items,
+	}
+	vk, colMask, flagMask, approxArgs := computeInsertOrderItemsKey(p)
+	argBuf := runtime.AcquireArgsCap(approxArgs)
+	expandErr := expandInsertOrderItemsParams(argBuf, sqlDialect, p)
+	var tupleLensBuf [1]int
+	tupleLensBuf[0] = len(p.Items)
+	in := runtime.RenderInput{
+		ColMask:   colMask,
+		FlagMask:  flagMask,
+		TupleLens: tupleLensBuf[:],
+	}
+	return pl.Pipeline.QueueExec(stmtIDInsertOrderItems, descInsertOrderItems, in, vk, nil, argBuf, expandErr)
+}
+
 func (q *Queries) InsertOrderItemsStream(ctx context.Context, seq iter.Seq2[NewOrderItem, error]) (sql.Result, error) {
 	if seq == nil {
 		return nil, runtime.ErrNilArgument
@@ -817,7 +692,7 @@ func (q *Queries) InsertOrderItemsStream(ctx context.Context, seq iter.Seq2[NewO
 		if len(chunk) == 0 {
 			return nil
 		}
-		res, err := q.InsertOrderItemsBatch(ctx, chunk)
+		res, err := q.InsertOrderItems(ctx, chunk)
 		if err != nil {
 			return err
 		}
@@ -945,17 +820,7 @@ func scanStreamFulfilledOrdersRow(scanner interface{ Scan(...any) error }, dst *
 }
 
 func (q *Queries) StreamFulfilledOrders(ctx context.Context, cutoffTs int64) ([]FulfilledOrder, error) {
-	return q.StreamFulfilledOrdersInto(ctx, nil, cutoffTs)
-}
-
-func (q *Queries) StreamFulfilledOrdersInto(ctx context.Context, dst []FulfilledOrder, cutoffTs int64) ([]FulfilledOrder, error) {
-	for row, err := range q.StreamFulfilledOrdersSeq(ctx, cutoffTs) {
-		if err != nil {
-			return nil, err
-		}
-		dst = append(dst, row)
-	}
-	return dst, nil
+	return runtime.Collect(q.StreamFulfilledOrdersSeq(ctx, cutoffTs))
 }
 
 func (q *Queries) StreamFulfilledOrdersSeq(ctx context.Context, cutoffTs int64) iter.Seq2[FulfilledOrder, error] {
@@ -996,21 +861,6 @@ func (q *Queries) StreamFulfilledOrdersSeq(ctx context.Context, cutoffTs int64) 
 			yield(zero, err)
 		}
 	}
-}
-
-func (q *Queries) StreamFulfilledOrdersEach(ctx context.Context, cutoffTs int64, fn func(FulfilledOrder) error) error {
-	if fn == nil {
-		return runtime.ErrNilArgument
-	}
-	for row, err := range q.StreamFulfilledOrdersSeq(ctx, cutoffTs) {
-		if err != nil {
-			return err
-		}
-		if err := fn(row); err != nil {
-			return err
-		}
-	}
-	return nil
 }
 
 func (pl *Pipeline) StreamFulfilledOrders(cutoffTs int64) *runtime.SliceFuture[FulfilledOrder] {
@@ -1082,47 +932,10 @@ func computeInsertArchivedOrdersKey(p paramsInsertArchivedOrders) (runtime.Varia
 }
 
 func (q *Queries) InsertArchivedOrders(ctx context.Context, rows []ArchivedOrderRow) (sql.Result, error) {
-	p := paramsInsertArchivedOrders{
-		Rows: rows,
+	if len(rows) == 0 {
+		return runtime.BatchExecResult{}, nil
 	}
-	vk, colMask, flagMask, approxArgs := computeInsertArchivedOrdersKey(p)
-	argBuf := runtime.AcquireArgsCap(approxArgs)
-	defer runtime.ReleaseArgs(argBuf)
-	if err := expandInsertArchivedOrdersParams(argBuf, sqlDialect, p); err != nil {
-		return nil, err
-	}
-	var tupleLensBuf [1]int
-	tupleLensBuf[0] = len(p.Rows)
-	in := runtime.RenderInput{
-		ColMask:   colMask,
-		FlagMask:  flagMask,
-		TupleLens: tupleLensBuf[:],
-	}
-	return q.cache.Exec(ctx, q.db, q.txCache, q.usePrepared, vk, stmtIDInsertArchivedOrders, runtime.ComputeBatchShapeTag(colMask, flagMask), 0, nil, sqlDialect, descInsertArchivedOrders, &in, (*argBuf)...)
-}
-
-func (pl *Pipeline) InsertArchivedOrders(rows []ArchivedOrderRow) *runtime.ExecFuture {
-	p := paramsInsertArchivedOrders{
-		Rows: rows,
-	}
-	vk, colMask, flagMask, approxArgs := computeInsertArchivedOrdersKey(p)
-	argBuf := runtime.AcquireArgsCap(approxArgs)
-	expandErr := expandInsertArchivedOrdersParams(argBuf, sqlDialect, p)
-	var tupleLensBuf [1]int
-	tupleLensBuf[0] = len(p.Rows)
-	in := runtime.RenderInput{
-		ColMask:   colMask,
-		FlagMask:  flagMask,
-		TupleLens: tupleLensBuf[:],
-	}
-	return pl.Pipeline.QueueExec(stmtIDInsertArchivedOrders, descInsertArchivedOrders, in, vk, nil, argBuf, expandErr)
-}
-
-func (q *Queries) InsertArchivedOrdersBatch(ctx context.Context, rows []ArchivedOrderRow) (sql.Result, error) {
 	totalRows := len(rows)
-	if totalRows == 0 {
-		return nil, runtime.ErrEmptySliceParam
-	}
 	p := paramsInsertArchivedOrders{
 		Rows: rows,
 	}
@@ -1179,6 +992,26 @@ func (q *Queries) InsertArchivedOrdersBatch(ctx context.Context, rows []Archived
 	return batchRes, nil
 }
 
+func (pl *Pipeline) InsertArchivedOrders(rows []ArchivedOrderRow) *runtime.ExecFuture {
+	if len(rows) == 0 {
+		return pl.Pipeline.QueueExecNoop()
+	}
+	p := paramsInsertArchivedOrders{
+		Rows: rows,
+	}
+	vk, colMask, flagMask, approxArgs := computeInsertArchivedOrdersKey(p)
+	argBuf := runtime.AcquireArgsCap(approxArgs)
+	expandErr := expandInsertArchivedOrdersParams(argBuf, sqlDialect, p)
+	var tupleLensBuf [1]int
+	tupleLensBuf[0] = len(p.Rows)
+	in := runtime.RenderInput{
+		ColMask:   colMask,
+		FlagMask:  flagMask,
+		TupleLens: tupleLensBuf[:],
+	}
+	return pl.Pipeline.QueueExec(stmtIDInsertArchivedOrders, descInsertArchivedOrders, in, vk, nil, argBuf, expandErr)
+}
+
 func (q *Queries) InsertArchivedOrdersStream(ctx context.Context, seq iter.Seq2[ArchivedOrderRow, error]) (sql.Result, error) {
 	if seq == nil {
 		return nil, runtime.ErrNilArgument
@@ -1196,7 +1029,7 @@ func (q *Queries) InsertArchivedOrdersStream(ctx context.Context, seq iter.Seq2[
 		if len(chunk) == 0 {
 			return nil
 		}
-		res, err := q.InsertArchivedOrdersBatch(ctx, chunk)
+		res, err := q.InsertArchivedOrders(ctx, chunk)
 		if err != nil {
 			return err
 		}
@@ -1278,43 +1111,6 @@ func computeDeleteFulfilledOrdersByIDsKey(p paramsDeleteFulfilledOrdersByIDs) (r
 }
 
 func (q *Queries) DeleteFulfilledOrdersByIDs(ctx context.Context, ids []int64) (sql.Result, error) {
-	p := paramsDeleteFulfilledOrdersByIDs{
-		IDs: ids,
-	}
-	vk, colMask, flagMask, approxArgs := computeDeleteFulfilledOrdersByIDsKey(p)
-	argBuf := runtime.AcquireArgsCap(approxArgs)
-	defer runtime.ReleaseArgs(argBuf)
-	if err := expandDeleteFulfilledOrdersByIDsParams(argBuf, sqlDialect, p); err != nil {
-		return nil, err
-	}
-	var sliceLensBuf [1]int
-	sliceLensBuf[0] = len(p.IDs)
-	in := runtime.RenderInput{
-		ColMask:   colMask,
-		FlagMask:  flagMask,
-		SliceLens: sliceLensBuf[:],
-	}
-	return q.cache.Exec(ctx, q.db, q.txCache, q.usePrepared, vk, stmtIDDeleteFulfilledOrdersByIDs, runtime.ComputeBatchShapeTag(colMask, flagMask), 0, nil, sqlDialect, descDeleteFulfilledOrdersByIDs, &in, (*argBuf)...)
-}
-
-func (pl *Pipeline) DeleteFulfilledOrdersByIDs(ids []int64) *runtime.ExecFuture {
-	p := paramsDeleteFulfilledOrdersByIDs{
-		IDs: ids,
-	}
-	vk, colMask, flagMask, approxArgs := computeDeleteFulfilledOrdersByIDsKey(p)
-	argBuf := runtime.AcquireArgsCap(approxArgs)
-	expandErr := expandDeleteFulfilledOrdersByIDsParams(argBuf, sqlDialect, p)
-	var sliceLensBuf [1]int
-	sliceLensBuf[0] = len(p.IDs)
-	in := runtime.RenderInput{
-		ColMask:   colMask,
-		FlagMask:  flagMask,
-		SliceLens: sliceLensBuf[:],
-	}
-	return pl.Pipeline.QueueExec(stmtIDDeleteFulfilledOrdersByIDs, descDeleteFulfilledOrdersByIDs, in, vk, nil, argBuf, expandErr)
-}
-
-func (q *Queries) DeleteFulfilledOrdersByIDsBatch(ctx context.Context, ids []int64) (sql.Result, error) {
 	totalRows := len(ids)
 	if totalRows == 0 {
 		return nil, runtime.ErrEmptySliceParam
@@ -1386,4 +1182,21 @@ func (q *Queries) DeleteFulfilledOrdersByIDsBatch(ctx context.Context, ids []int
 		}
 	}
 	return batchRes, nil
+}
+
+func (pl *Pipeline) DeleteFulfilledOrdersByIDs(ids []int64) *runtime.ExecFuture {
+	p := paramsDeleteFulfilledOrdersByIDs{
+		IDs: ids,
+	}
+	vk, colMask, flagMask, approxArgs := computeDeleteFulfilledOrdersByIDsKey(p)
+	argBuf := runtime.AcquireArgsCap(approxArgs)
+	expandErr := expandDeleteFulfilledOrdersByIDsParams(argBuf, sqlDialect, p)
+	var sliceLensBuf [1]int
+	sliceLensBuf[0] = len(p.IDs)
+	in := runtime.RenderInput{
+		ColMask:   colMask,
+		FlagMask:  flagMask,
+		SliceLens: sliceLensBuf[:],
+	}
+	return pl.Pipeline.QueueExec(stmtIDDeleteFulfilledOrdersByIDs, descDeleteFulfilledOrdersByIDs, in, vk, nil, argBuf, expandErr)
 }

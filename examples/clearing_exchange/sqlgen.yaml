@@ -64,7 +64,6 @@ statements:
 
   - name: GetAccountCollateralCents
     kind: one
-    result_type: int64
     sql: |
       SELECT collateral_cents:int64
       FROM margin_accounts
@@ -277,14 +276,12 @@ statements:
 
   - name: TotalExchangeEquityCents
     kind: one
-    result_type: int64
     sql: |
       SELECT COALESCE(SUM(collateral_cents + realized_pnl_cents), 0) AS total_equity:int64
       FROM margin_accounts
 
   - name: TotalNetPositionBySymbol
     kind: one
-    result_type: int64
     sql: |
       SELECT COALESCE(SUM(net_quantity), 0) AS net_qty:int64
       FROM positions
@@ -292,14 +289,12 @@ statements:
 
   - name: CountClearingFills
     kind: one
-    result_type: int64
     sql: |
       SELECT COUNT(*) AS cnt:int64
       FROM clearing_fills
 
   - name: CountComplianceNotices
     kind: one
-    result_type: int64
     sql: |
       SELECT COUNT(*) AS cnt:int64
       FROM compliance_notices

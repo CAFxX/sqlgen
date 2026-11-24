@@ -6,6 +6,7 @@ package integration
 // every byte the driver exchanges with the server and nothing else.
 
 import (
+	"bytes"
 	"context"
 	"database/sql"
 	"fmt"
@@ -30,7 +31,17 @@ type turnConn struct {
 	writes *atomic.Int64
 }
 
+// snoopNeedle, when set, makes every Write that carries it bump snoopHits: tests use it to assert that a
+// statement's text never went over the wire. Only tests that set it (and do not run in parallel) see hits.
+var (
+	snoopNeedle atomic.Pointer[[]byte]
+	snoopHits   atomic.Int64
+)
+
 func (c *turnConn) Write(p []byte) (int, error) {
+	if n := snoopNeedle.Load(); n != nil && bytes.Contains(p, *n) {
+		snoopHits.Add(1)
+	}
 	c.wrote.Store(true)
 	c.writes.Add(1)
 	return c.Conn.Write(p)

@@ -1672,20 +1672,17 @@ func TestPipelineWirePipelinerAndSequentialCoverage(t *testing.T) {
 	if !ifRes.Taken() {
 		t.Fatalf("expected ifRes.Taken() == true")
 	}
-	if val, err := rowFut.Get(); err != nil || val != 42 || rowFut.Skipped() {
+	if val, err := rowFut.Get(); err != nil || val != 42 {
 		t.Fatalf("rowFut.Get() = %d, err=%v", val, err)
 	}
-	if vals, err := sliceFut.Get(); err != nil || len(vals) != 1 || vals[0] != 42 || sliceFut.Skipped() {
+	if vals, err := sliceFut.Get(); err != nil || len(vals) != 1 || vals[0] != 42 {
 		t.Fatalf("sliceFut.Get() = %v, err=%v", vals, err)
 	}
-	if n, err := execFutThen.RowsAffected(); err != nil || n != 1 || execFutThen.Skipped() {
+	if n, err := execFutThen.RowsAffected(); err != nil || n != 1 {
 		t.Fatalf("execFutThen.RowsAffected() = %d, err=%v", n, err)
 	}
 	if _, err := execFutThen.Result(); err != nil {
 		t.Fatalf("execFutThen.Result(): %v", err)
-	}
-	if !execFutElse.Skipped() {
-		t.Fatalf("expected execFutElse.Skipped() == true")
 	}
 	if _, err := execFutElse.Result(); !errors.Is(err, ErrBranchNotTaken) {
 		t.Fatalf("expected ErrBranchNotTaken from skipped ExecFuture.Result, got %v", err)

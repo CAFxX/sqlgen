@@ -561,47 +561,10 @@ func computeApplyMarginSettlementsKey(p paramsApplyMarginSettlements) (runtime.V
 }
 
 func (q *Queries) ApplyMarginSettlements(ctx context.Context, rows []MarginSettlement) (sql.Result, error) {
-	p := paramsApplyMarginSettlements{
-		Rows: rows,
+	if len(rows) == 0 {
+		return runtime.BatchExecResult{}, nil
 	}
-	vk, colMask, flagMask, approxArgs := computeApplyMarginSettlementsKey(p)
-	argBuf := runtime.AcquireArgsCap(approxArgs)
-	defer runtime.ReleaseArgs(argBuf)
-	if err := expandApplyMarginSettlementsParams(argBuf, sqlDialect, p); err != nil {
-		return nil, err
-	}
-	var tupleLensBuf [1]int
-	tupleLensBuf[0] = len(p.Rows)
-	in := runtime.RenderInput{
-		ColMask:   colMask,
-		FlagMask:  flagMask,
-		TupleLens: tupleLensBuf[:],
-	}
-	return q.cache.Exec(ctx, q.db, q.txCache, q.usePrepared, vk, stmtIDApplyMarginSettlements, runtime.ComputeBatchShapeTag(colMask, flagMask), 0, nil, sqlDialect, descApplyMarginSettlements, &in, (*argBuf)...)
-}
-
-func (pl *Pipeline) ApplyMarginSettlements(rows []MarginSettlement) *runtime.ExecFuture {
-	p := paramsApplyMarginSettlements{
-		Rows: rows,
-	}
-	vk, colMask, flagMask, approxArgs := computeApplyMarginSettlementsKey(p)
-	argBuf := runtime.AcquireArgsCap(approxArgs)
-	expandErr := expandApplyMarginSettlementsParams(argBuf, sqlDialect, p)
-	var tupleLensBuf [1]int
-	tupleLensBuf[0] = len(p.Rows)
-	in := runtime.RenderInput{
-		ColMask:   colMask,
-		FlagMask:  flagMask,
-		TupleLens: tupleLensBuf[:],
-	}
-	return pl.Pipeline.QueueExec(stmtIDApplyMarginSettlements, descApplyMarginSettlements, in, vk, nil, argBuf, expandErr)
-}
-
-func (q *Queries) ApplyMarginSettlementsBatch(ctx context.Context, rows []MarginSettlement) (sql.Result, error) {
 	totalRows := len(rows)
-	if totalRows == 0 {
-		return nil, runtime.ErrEmptySliceParam
-	}
 	p := paramsApplyMarginSettlements{
 		Rows: rows,
 	}
@@ -678,6 +641,26 @@ func (q *Queries) ApplyMarginSettlementsBatch(ctx context.Context, rows []Margin
 	return batchRes, nil
 }
 
+func (pl *Pipeline) ApplyMarginSettlements(rows []MarginSettlement) *runtime.ExecFuture {
+	if len(rows) == 0 {
+		return pl.Pipeline.QueueExecNoop()
+	}
+	p := paramsApplyMarginSettlements{
+		Rows: rows,
+	}
+	vk, colMask, flagMask, approxArgs := computeApplyMarginSettlementsKey(p)
+	argBuf := runtime.AcquireArgsCap(approxArgs)
+	expandErr := expandApplyMarginSettlementsParams(argBuf, sqlDialect, p)
+	var tupleLensBuf [1]int
+	tupleLensBuf[0] = len(p.Rows)
+	in := runtime.RenderInput{
+		ColMask:   colMask,
+		FlagMask:  flagMask,
+		TupleLens: tupleLensBuf[:],
+	}
+	return pl.Pipeline.QueueExec(stmtIDApplyMarginSettlements, descApplyMarginSettlements, in, vk, nil, argBuf, expandErr)
+}
+
 func (q *Queries) ApplyMarginSettlementsStream(ctx context.Context, seq iter.Seq2[MarginSettlement, error]) (sql.Result, error) {
 	if seq == nil {
 		return nil, runtime.ErrNilArgument
@@ -695,7 +678,7 @@ func (q *Queries) ApplyMarginSettlementsStream(ctx context.Context, seq iter.Seq
 		if len(chunk) == 0 {
 			return nil
 		}
-		res, err := q.ApplyMarginSettlementsBatch(ctx, chunk)
+		res, err := q.ApplyMarginSettlements(ctx, chunk)
 		if err != nil {
 			return err
 		}
@@ -1256,110 +1239,10 @@ func scanIngestOrdersRow(scanner interface{ Scan(...any) error }, dst *OrderAck,
 }
 
 func (q *Queries) IngestOrders(ctx context.Context, rows []OrderSubmission, epochSeq int64) ([]OrderAck, error) {
-	return q.IngestOrdersInto(ctx, nil, rows, epochSeq)
-}
-
-func (q *Queries) IngestOrdersInto(ctx context.Context, dst []OrderAck, rows []OrderSubmission, epochSeq int64) ([]OrderAck, error) {
-	for row, err := range q.IngestOrdersSeq(ctx, rows, epochSeq) {
-		if err != nil {
-			return nil, err
-		}
-		dst = append(dst, row)
+	if len(rows) == 0 {
+		return nil, nil
 	}
-	return dst, nil
-}
-
-func (q *Queries) IngestOrdersSeq(ctx context.Context, rows []OrderSubmission, epochSeq int64) iter.Seq2[OrderAck, error] {
-	return func(yield func(OrderAck, error) bool) {
-		var zero OrderAck
-		p := paramsIngestOrders{
-			Rows:     rows,
-			EpochSeq: epochSeq,
-		}
-		vk, colMask, flagMask, approxArgs := computeIngestOrdersKey(p)
-		_ = colMask
-		argBuf := runtime.AcquireArgsCap(approxArgs)
-		defer runtime.ReleaseArgs(argBuf)
-		if err := expandIngestOrdersParams(argBuf, sqlDialect, p); err != nil {
-			yield(zero, err)
-			return
-		}
-		var tupleLensBuf [1]int
-		tupleLensBuf[0] = len(p.Rows)
-		in := runtime.RenderInput{
-			ColMask:   colMask,
-			FlagMask:  flagMask,
-			TupleLens: tupleLensBuf[:],
-		}
-		sqlRows, ms, err := q.cache.Query(ctx, q.db, q.txCache, q.usePrepared, vk, stmtIDIngestOrders, runtime.ComputeBatchShapeTag(colMask, flagMask), 0, nil, sqlDialect, descIngestOrders, &in, (*argBuf)...)
-		if err != nil {
-			yield(zero, err)
-			return
-		}
-		defer runtime.ReleaseRows(&sqlRows, &ms)
-		var item OrderAck
-		for sqlRows.Next() {
-			if err := scanIngestOrdersRow(sqlRows, &item, colMask, p); err != nil {
-				runtime.ReleaseRows(&sqlRows, &ms)
-				yield(zero, err)
-				return
-			}
-			if !yield(item, nil) {
-				return
-			}
-		}
-		err = sqlRows.Err()
-		runtime.ReleaseRows(&sqlRows, &ms)
-		if err != nil {
-			yield(zero, err)
-		}
-	}
-}
-
-func (q *Queries) IngestOrdersEach(ctx context.Context, rows []OrderSubmission, epochSeq int64, fn func(OrderAck) error) error {
-	if fn == nil {
-		return runtime.ErrNilArgument
-	}
-	for row, err := range q.IngestOrdersSeq(ctx, rows, epochSeq) {
-		if err != nil {
-			return err
-		}
-		if err := fn(row); err != nil {
-			return err
-		}
-	}
-	return nil
-}
-
-func (pl *Pipeline) IngestOrders(rows []OrderSubmission, epochSeq int64) *runtime.SliceFuture[OrderAck] {
-	p := paramsIngestOrders{
-		Rows:     rows,
-		EpochSeq: epochSeq,
-	}
-	vk, colMask, flagMask, approxArgs := computeIngestOrdersKey(p)
-	argBuf := runtime.AcquireArgsCap(approxArgs)
-	expandErr := expandIngestOrdersParams(argBuf, sqlDialect, p)
-	var tupleLensBuf [1]int
-	tupleLensBuf[0] = len(p.Rows)
-	in := runtime.RenderInput{
-		ColMask:   colMask,
-		FlagMask:  flagMask,
-		TupleLens: tupleLensBuf[:],
-	}
-	return runtime.QueueSlice(pl.Pipeline, stmtIDIngestOrders, descIngestOrders, in, vk, nil, argBuf, expandErr,
-		func(rs *sql.Rows, dst *OrderAck) error { return scanIngestOrdersRow(rs, dst, colMask, p) },
-	)
-}
-
-func (q *Queries) IngestOrdersBatch(ctx context.Context, rows []OrderSubmission, epochSeq int64) ([]OrderAck, error) {
-	return q.IngestOrdersBatchInto(ctx, nil, rows, epochSeq)
-}
-
-func (q *Queries) IngestOrdersBatchInto(ctx context.Context, dst []OrderAck, rows []OrderSubmission, epochSeq int64) ([]OrderAck, error) {
 	totalRows := len(rows)
-	if totalRows == 0 {
-		return nil, runtime.ErrEmptySliceParam
-	}
 	p := paramsIngestOrders{
 		Rows:     rows,
 		EpochSeq: epochSeq,
@@ -1378,29 +1261,24 @@ func (q *Queries) IngestOrdersBatchInto(ctx context.Context, dst []OrderAck, row
 		targetQ = q.WithTx(autoTx)
 		defer func() { _ = targetQ.Close() }()
 	}
-	for row, err := range targetQ.IngestOrdersBatchSeq(ctx, rows, epochSeq) {
+	out, err := runtime.Collect(targetQ.IngestOrdersSeq(ctx, rows, epochSeq))
+	if autoTx != nil {
 		if err != nil {
-			if autoTx != nil {
-				_ = autoTx.Rollback()
-			}
+			_ = autoTx.Rollback()
 			return nil, err
 		}
-		dst = append(dst, row)
-	}
-	if autoTx != nil {
 		if err := autoTx.Commit(); err != nil {
 			return nil, err
 		}
 	}
-	return dst, nil
+	return out, err
 }
 
-func (q *Queries) IngestOrdersBatchSeq(ctx context.Context, rows []OrderSubmission, epochSeq int64) iter.Seq2[OrderAck, error] {
+func (q *Queries) IngestOrdersSeq(ctx context.Context, rows []OrderSubmission, epochSeq int64) iter.Seq2[OrderAck, error] {
 	return func(yield func(OrderAck, error) bool) {
 		var zero OrderAck
 		totalRows := len(rows)
 		if totalRows == 0 {
-			yield(zero, runtime.ErrEmptySliceParam)
 			return
 		}
 		p := paramsIngestOrders{
@@ -1483,19 +1361,27 @@ func (q *Queries) IngestOrdersBatchSeq(ctx context.Context, rows []OrderSubmissi
 	}
 }
 
-func (q *Queries) IngestOrdersBatchEach(ctx context.Context, rows []OrderSubmission, epochSeq int64, fn func(OrderAck) error) error {
-	if fn == nil {
-		return runtime.ErrNilArgument
+func (pl *Pipeline) IngestOrders(rows []OrderSubmission, epochSeq int64) *runtime.SliceFuture[OrderAck] {
+	if len(rows) == 0 {
+		return runtime.QueueSliceNoop[OrderAck](pl.Pipeline)
 	}
-	for row, err := range q.IngestOrdersBatchSeq(ctx, rows, epochSeq) {
-		if err != nil {
-			return err
-		}
-		if err := fn(row); err != nil {
-			return err
-		}
+	p := paramsIngestOrders{
+		Rows:     rows,
+		EpochSeq: epochSeq,
 	}
-	return nil
+	vk, colMask, flagMask, approxArgs := computeIngestOrdersKey(p)
+	argBuf := runtime.AcquireArgsCap(approxArgs)
+	expandErr := expandIngestOrdersParams(argBuf, sqlDialect, p)
+	var tupleLensBuf [1]int
+	tupleLensBuf[0] = len(p.Rows)
+	in := runtime.RenderInput{
+		ColMask:   colMask,
+		FlagMask:  flagMask,
+		TupleLens: tupleLensBuf[:],
+	}
+	return runtime.QueueSlice(pl.Pipeline, stmtIDIngestOrders, descIngestOrders, in, vk, nil, argBuf, expandErr,
+		func(rs *sql.Rows, dst *OrderAck) error { return scanIngestOrdersRow(rs, dst, colMask, p) },
+	)
 }
 
 func (q *Queries) IngestOrdersStreamSeq(ctx context.Context, seq iter.Seq2[OrderSubmission, error], epochSeq int64) iter.Seq2[OrderAck, error] {
@@ -1517,7 +1403,7 @@ func (q *Queries) IngestOrdersStreamSeq(ctx context.Context, seq iter.Seq2[Order
 			if len(chunk) == 0 {
 				return true
 			}
-			for r, err := range q.IngestOrdersBatchSeq(ctx, chunk, epochSeq) {
+			for r, err := range q.IngestOrdersSeq(ctx, chunk, epochSeq) {
 				if err != nil {
 					yield(zero, err)
 					return false
@@ -1546,14 +1432,7 @@ func (q *Queries) IngestOrdersStreamSeq(ctx context.Context, seq iter.Seq2[Order
 }
 
 func (q *Queries) IngestOrdersStream(ctx context.Context, seq iter.Seq2[OrderSubmission, error], epochSeq int64) ([]OrderAck, error) {
-	var out []OrderAck
-	for r, err := range q.IngestOrdersStreamSeq(ctx, seq, epochSeq) {
-		if err != nil {
-			return nil, err
-		}
-		out = append(out, r)
-	}
-	return out, nil
+	return runtime.Collect(q.IngestOrdersStreamSeq(ctx, seq, epochSeq))
 }
 
 const stmtIDCancelOrdersByIDs uint32 = 8
@@ -1689,112 +1568,7 @@ func scanCancelOrdersByIDsRow(scanner interface{ Scan(...any) error }, dst *Orde
 }
 
 func (q *Queries) CancelOrdersByIDs(ctx context.Context, cancelSeq int64, firmID int64, orderIDs []int64) ([]OrderAck, error) {
-	return q.CancelOrdersByIDsInto(ctx, nil, cancelSeq, firmID, orderIDs)
-}
-
-func (q *Queries) CancelOrdersByIDsInto(ctx context.Context, dst []OrderAck, cancelSeq int64, firmID int64, orderIDs []int64) ([]OrderAck, error) {
-	for row, err := range q.CancelOrdersByIDsSeq(ctx, cancelSeq, firmID, orderIDs) {
-		if err != nil {
-			return nil, err
-		}
-		dst = append(dst, row)
-	}
-	return dst, nil
-}
-
-func (q *Queries) CancelOrdersByIDsSeq(ctx context.Context, cancelSeq int64, firmID int64, orderIDs []int64) iter.Seq2[OrderAck, error] {
-	return func(yield func(OrderAck, error) bool) {
-		var zero OrderAck
-		p := paramsCancelOrdersByIDs{
-			CancelSeq: cancelSeq,
-			FirmID:    firmID,
-			OrderIDs:  orderIDs,
-		}
-		vk, colMask, flagMask, approxArgs := computeCancelOrdersByIDsKey(p)
-		_ = colMask
-		argBuf := runtime.AcquireArgsCap(approxArgs)
-		defer runtime.ReleaseArgs(argBuf)
-		if err := expandCancelOrdersByIDsParams(argBuf, sqlDialect, p); err != nil {
-			yield(zero, err)
-			return
-		}
-		var sliceLensBuf [1]int
-		sliceLensBuf[0] = len(p.OrderIDs)
-		in := runtime.RenderInput{
-			ColMask:   colMask,
-			FlagMask:  flagMask,
-			SliceLens: sliceLensBuf[:],
-		}
-		sqlRows, ms, err := q.cache.Query(ctx, q.db, q.txCache, q.usePrepared, vk, stmtIDCancelOrdersByIDs, runtime.ComputeBatchShapeTag(colMask, flagMask), 0, nil, sqlDialect, descCancelOrdersByIDs, &in, (*argBuf)...)
-		if err != nil {
-			yield(zero, err)
-			return
-		}
-		defer runtime.ReleaseRows(&sqlRows, &ms)
-		var item OrderAck
-		for sqlRows.Next() {
-			if err := scanCancelOrdersByIDsRow(sqlRows, &item, colMask, p); err != nil {
-				runtime.ReleaseRows(&sqlRows, &ms)
-				yield(zero, err)
-				return
-			}
-			if !yield(item, nil) {
-				return
-			}
-		}
-		err = sqlRows.Err()
-		runtime.ReleaseRows(&sqlRows, &ms)
-		if err != nil {
-			yield(zero, err)
-		}
-	}
-}
-
-func (q *Queries) CancelOrdersByIDsEach(ctx context.Context, cancelSeq int64, firmID int64, orderIDs []int64, fn func(OrderAck) error) error {
-	if fn == nil {
-		return runtime.ErrNilArgument
-	}
-	for row, err := range q.CancelOrdersByIDsSeq(ctx, cancelSeq, firmID, orderIDs) {
-		if err != nil {
-			return err
-		}
-		if err := fn(row); err != nil {
-			return err
-		}
-	}
-	return nil
-}
-
-func (pl *Pipeline) CancelOrdersByIDs(cancelSeq int64, firmID int64, orderIDs []int64) *runtime.SliceFuture[OrderAck] {
-	p := paramsCancelOrdersByIDs{
-		CancelSeq: cancelSeq,
-		FirmID:    firmID,
-		OrderIDs:  orderIDs,
-	}
-	vk, colMask, flagMask, approxArgs := computeCancelOrdersByIDsKey(p)
-	argBuf := runtime.AcquireArgsCap(approxArgs)
-	expandErr := expandCancelOrdersByIDsParams(argBuf, sqlDialect, p)
-	var sliceLensBuf [1]int
-	sliceLensBuf[0] = len(p.OrderIDs)
-	in := runtime.RenderInput{
-		ColMask:   colMask,
-		FlagMask:  flagMask,
-		SliceLens: sliceLensBuf[:],
-	}
-	return runtime.QueueSlice(pl.Pipeline, stmtIDCancelOrdersByIDs, descCancelOrdersByIDs, in, vk, nil, argBuf, expandErr,
-		func(rs *sql.Rows, dst *OrderAck) error { return scanCancelOrdersByIDsRow(rs, dst, colMask, p) },
-	)
-}
-
-func (q *Queries) CancelOrdersByIDsBatch(ctx context.Context, cancelSeq int64, firmID int64, orderIDs []int64) ([]OrderAck, error) {
-	return q.CancelOrdersByIDsBatchInto(ctx, nil, cancelSeq, firmID, orderIDs)
-}
-
-func (q *Queries) CancelOrdersByIDsBatchInto(ctx context.Context, dst []OrderAck, cancelSeq int64, firmID int64, orderIDs []int64) ([]OrderAck, error) {
 	totalRows := len(orderIDs)
-	if totalRows == 0 {
-		return nil, runtime.ErrEmptySliceParam
-	}
 	p := paramsCancelOrdersByIDs{
 		CancelSeq: cancelSeq,
 		FirmID:    firmID,
@@ -1814,24 +1588,20 @@ func (q *Queries) CancelOrdersByIDsBatchInto(ctx context.Context, dst []OrderAck
 		targetQ = q.WithTx(autoTx)
 		defer func() { _ = targetQ.Close() }()
 	}
-	for row, err := range targetQ.CancelOrdersByIDsBatchSeq(ctx, cancelSeq, firmID, orderIDs) {
+	out, err := runtime.Collect(targetQ.CancelOrdersByIDsSeq(ctx, cancelSeq, firmID, orderIDs))
+	if autoTx != nil {
 		if err != nil {
-			if autoTx != nil {
-				_ = autoTx.Rollback()
-			}
+			_ = autoTx.Rollback()
 			return nil, err
 		}
-		dst = append(dst, row)
-	}
-	if autoTx != nil {
 		if err := autoTx.Commit(); err != nil {
 			return nil, err
 		}
 	}
-	return dst, nil
+	return out, err
 }
 
-func (q *Queries) CancelOrdersByIDsBatchSeq(ctx context.Context, cancelSeq int64, firmID int64, orderIDs []int64) iter.Seq2[OrderAck, error] {
+func (q *Queries) CancelOrdersByIDsSeq(ctx context.Context, cancelSeq int64, firmID int64, orderIDs []int64) iter.Seq2[OrderAck, error] {
 	return func(yield func(OrderAck, error) bool) {
 		var zero OrderAck
 		totalRows := len(orderIDs)
@@ -1913,19 +1683,25 @@ func (q *Queries) CancelOrdersByIDsBatchSeq(ctx context.Context, cancelSeq int64
 	}
 }
 
-func (q *Queries) CancelOrdersByIDsBatchEach(ctx context.Context, cancelSeq int64, firmID int64, orderIDs []int64, fn func(OrderAck) error) error {
-	if fn == nil {
-		return runtime.ErrNilArgument
+func (pl *Pipeline) CancelOrdersByIDs(cancelSeq int64, firmID int64, orderIDs []int64) *runtime.SliceFuture[OrderAck] {
+	p := paramsCancelOrdersByIDs{
+		CancelSeq: cancelSeq,
+		FirmID:    firmID,
+		OrderIDs:  orderIDs,
 	}
-	for row, err := range q.CancelOrdersByIDsBatchSeq(ctx, cancelSeq, firmID, orderIDs) {
-		if err != nil {
-			return err
-		}
-		if err := fn(row); err != nil {
-			return err
-		}
+	vk, colMask, flagMask, approxArgs := computeCancelOrdersByIDsKey(p)
+	argBuf := runtime.AcquireArgsCap(approxArgs)
+	expandErr := expandCancelOrdersByIDsParams(argBuf, sqlDialect, p)
+	var sliceLensBuf [1]int
+	sliceLensBuf[0] = len(p.OrderIDs)
+	in := runtime.RenderInput{
+		ColMask:   colMask,
+		FlagMask:  flagMask,
+		SliceLens: sliceLensBuf[:],
 	}
-	return nil
+	return runtime.QueueSlice(pl.Pipeline, stmtIDCancelOrdersByIDs, descCancelOrdersByIDs, in, vk, nil, argBuf, expandErr,
+		func(rs *sql.Rows, dst *OrderAck) error { return scanCancelOrdersByIDsRow(rs, dst, colMask, p) },
+	)
 }
 
 const stmtIDListOpenOrdersForSymbol uint32 = 9
@@ -2051,17 +1827,7 @@ func scanListOpenOrdersForSymbolRow(scanner interface{ Scan(...any) error }, dst
 }
 
 func (q *Queries) ListOpenOrdersForSymbol(ctx context.Context, symbol string, side string, limit int64) ([]OpenOrderRow, error) {
-	return q.ListOpenOrdersForSymbolInto(ctx, nil, symbol, side, limit)
-}
-
-func (q *Queries) ListOpenOrdersForSymbolInto(ctx context.Context, dst []OpenOrderRow, symbol string, side string, limit int64) ([]OpenOrderRow, error) {
-	for row, err := range q.ListOpenOrdersForSymbolSeq(ctx, symbol, side, limit) {
-		if err != nil {
-			return nil, err
-		}
-		dst = append(dst, row)
-	}
-	return dst, nil
+	return runtime.Collect(q.ListOpenOrdersForSymbolSeq(ctx, symbol, side, limit))
 }
 
 func (q *Queries) ListOpenOrdersForSymbolSeq(ctx context.Context, symbol string, side string, limit int64) iter.Seq2[OpenOrderRow, error] {
@@ -2104,21 +1870,6 @@ func (q *Queries) ListOpenOrdersForSymbolSeq(ctx context.Context, symbol string,
 			yield(zero, err)
 		}
 	}
-}
-
-func (q *Queries) ListOpenOrdersForSymbolEach(ctx context.Context, symbol string, side string, limit int64, fn func(OpenOrderRow) error) error {
-	if fn == nil {
-		return runtime.ErrNilArgument
-	}
-	for row, err := range q.ListOpenOrdersForSymbolSeq(ctx, symbol, side, limit) {
-		if err != nil {
-			return err
-		}
-		if err := fn(row); err != nil {
-			return err
-		}
-	}
-	return nil
 }
 
 func (pl *Pipeline) ListOpenOrdersForSymbol(symbol string, side string, limit int64) *runtime.SliceFuture[OpenOrderRow] {
@@ -3436,17 +3187,7 @@ func scanQueryRiskPositionsPageRow(scanner interface{ Scan(...any) error }, dst 
 }
 
 func (q *Queries) QueryRiskPositionsPage(ctx context.Context, p QueryRiskPositionsPageParams) ([]RiskPositionView, error) {
-	return q.QueryRiskPositionsPageInto(ctx, nil, p)
-}
-
-func (q *Queries) QueryRiskPositionsPageInto(ctx context.Context, dst []RiskPositionView, p QueryRiskPositionsPageParams) ([]RiskPositionView, error) {
-	for row, err := range q.QueryRiskPositionsPageSeq(ctx, p) {
-		if err != nil {
-			return nil, err
-		}
-		dst = append(dst, row)
-	}
-	return dst, nil
+	return runtime.Collect(q.QueryRiskPositionsPageSeq(ctx, p))
 }
 
 func (q *Queries) QueryRiskPositionsPageSeq(ctx context.Context, p QueryRiskPositionsPageParams) iter.Seq2[RiskPositionView, error] {
@@ -3497,21 +3238,6 @@ func (q *Queries) QueryRiskPositionsPageSeq(ctx context.Context, p QueryRiskPosi
 			yield(zero, err)
 		}
 	}
-}
-
-func (q *Queries) QueryRiskPositionsPageEach(ctx context.Context, p QueryRiskPositionsPageParams, fn func(RiskPositionView) error) error {
-	if fn == nil {
-		return runtime.ErrNilArgument
-	}
-	for row, err := range q.QueryRiskPositionsPageSeq(ctx, p) {
-		if err != nil {
-			return err
-		}
-		if err := fn(row); err != nil {
-			return err
-		}
-	}
-	return nil
 }
 
 func (pl *Pipeline) QueryRiskPositionsPage(p QueryRiskPositionsPageParams) *runtime.SliceFuture[RiskPositionView] {

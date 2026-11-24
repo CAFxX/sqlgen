@@ -36,10 +36,6 @@ func (a *pgqAPI) Insert(ctx context.Context, rows []item) error {
 	_, err := a.q.InsertItems(ctx, toNewPgq(rows))
 	return err
 }
-func (a *pgqAPI) InsertBatch(ctx context.Context, rows []item) error {
-	_, err := a.q.InsertItemsBatch(ctx, toNewPgq(rows))
-	return err
-}
 func (a *pgqAPI) InsertStream(ctx context.Context, rows iter.Seq[item]) error {
 	_, err := a.q.InsertItemsStream(ctx, func(yield func(pgq.NewItem, error) bool) {
 		for r := range rows {
@@ -56,10 +52,6 @@ func (a *pgqAPI) Get(ctx context.Context, id int64) (item, error) {
 }
 func (a *pgqAPI) ByIDs(ctx context.Context, ids []int64) ([]item, error) {
 	r, err := a.q.ItemsByIDs(ctx, ids)
-	return fromItemsPgq(r), err
-}
-func (a *pgqAPI) ByIDsBatch(ctx context.Context, ids []int64) ([]item, error) {
-	r, err := a.q.ItemsByIDsBatch(ctx, ids)
 	return fromItemsPgq(r), err
 }
 func toSearchParamsPgq(s searchArgs) pgq.SearchItemsParams {

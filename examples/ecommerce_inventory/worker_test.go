@@ -196,7 +196,7 @@ func TestEcommerceInventoryWorkerEndToEnd(t *testing.T) {
 		t.Fatalf("GetInventoryBySKUs(unsorted): %v", err)
 	}
 	var invEachCount int
-	if err := q.GetInventoryBySKUsEach(ctx, sortedKeys[:2], func(item InventoryItem) error {
+	if err := runtime.Each(q.GetInventoryBySKUsSeq(ctx, sortedKeys[:2]), func(item InventoryItem) error {
 		invEachCount++
 		return nil
 	}); err != nil || invEachCount != 2 {
@@ -206,22 +206,22 @@ func TestEcommerceInventoryWorkerEndToEnd(t *testing.T) {
 		break
 	}
 	errStop := errors.New("stop")
-	_ = q.GetInventoryBySKUsEach(ctx, sortedKeys[:2], func(item InventoryItem) error { return errStop })
-	_ = q.GetInventoryBySKUsEach(ctx, nil, func(item InventoryItem) error { return nil })
+	_ = runtime.Each(q.GetInventoryBySKUsSeq(ctx, sortedKeys[:2]), func(item InventoryItem) error { return errStop })
+	_ = runtime.Each(q.GetInventoryBySKUsSeq(ctx, nil), func(item InventoryItem) error { return nil })
 
 	var batchEachCount int
-	if err := q.GetInventoryBySKUsBatchEach(ctx, sortedKeys, func(item InventoryItem) error {
+	if err := runtime.Each(q.GetInventoryBySKUsSeq(ctx, sortedKeys), func(item InventoryItem) error {
 		batchEachCount++
 		return nil
 	}); err != nil || batchEachCount != 5 {
-		t.Fatalf("GetInventoryBySKUsBatchEach: count=%d, err=%v", batchEachCount, err)
+		t.Fatalf("GetInventoryBySKUsEach: count=%d, err=%v", batchEachCount, err)
 	}
-	for range q.GetInventoryBySKUsBatchSeq(ctx, sortedKeys) {
+	for range q.GetInventoryBySKUsSeq(ctx, sortedKeys) {
 		break
 	}
-	_ = q.GetInventoryBySKUsBatchEach(ctx, sortedKeys, func(item InventoryItem) error { return errStop })
-	_ = q.GetInventoryBySKUsBatchEach(ctx, nil, func(item InventoryItem) error { return nil })
-	_, _ = q.GetInventoryBySKUsBatch(ctx, nil)
+	_ = runtime.Each(q.GetInventoryBySKUsSeq(ctx, sortedKeys), func(item InventoryItem) error { return errStop })
+	_ = runtime.Each(q.GetInventoryBySKUsSeq(ctx, nil), func(item InventoryItem) error { return nil })
+	_, _ = q.GetInventoryBySKUs(ctx, nil)
 
 	// GetInventoryBySKUsStream and GetInventoryBySKUsStreamSeq (including >256 items, empty stream, early break, error stream)
 	bigKeySlice := make([]SKUKey, 260)
@@ -246,11 +246,10 @@ func TestEcommerceInventoryWorkerEndToEnd(t *testing.T) {
 	if _, err := q.InsertOrderItems(ctx, makeOrderItems(9000, 2)); err != nil {
 		t.Fatalf("InsertOrderItems: %v", err)
 	}
-	if _, err := q.InsertOrderItems(ctx, nil); !errors.Is(err, runtime.ErrEmptySliceParam) {
-		t.Fatalf("expected ErrEmptySliceParam, got %v", err)
-	}
-	if _, err := q.InsertOrderItemsBatch(ctx, nil); !errors.Is(err, runtime.ErrEmptySliceParam) {
-		t.Fatalf("expected ErrEmptySliceParam, got %v", err)
+	if res, err := q.InsertOrderItems(ctx, nil); err != nil {
+		t.Fatalf("InsertOrderItems(nil): %v", err)
+	} else if n, _ := res.RowsAffected(); n != 0 {
+		t.Fatalf("InsertOrderItems(nil) affected %d rows", n)
 	}
 	if _, err := q.InsertOrderItemsStream(ctx, runtime.FromSlice(makeOrderItems(9100, 260))); err != nil {
 		t.Fatalf("InsertOrderItemsStream(260): %v", err)
@@ -263,10 +262,10 @@ func TestEcommerceInventoryWorkerEndToEnd(t *testing.T) {
 	})
 
 	// StreamFulfilledOrdersEach, Seq, Query
-	_ = q.StreamFulfilledOrdersEach(ctx, cutoffTS+100000, func(o FulfilledOrder) error {
+	_ = runtime.Each(q.StreamFulfilledOrdersSeq(ctx, cutoffTS+100000), func(o FulfilledOrder) error {
 		return nil
 	})
-	_ = q.StreamFulfilledOrdersEach(ctx, cutoffTS+100000, func(o FulfilledOrder) error {
+	_ = runtime.Each(q.StreamFulfilledOrdersSeq(ctx, cutoffTS+100000), func(o FulfilledOrder) error {
 		return errStop
 	})
 	for range q.StreamFulfilledOrdersSeq(ctx, cutoffTS+100000) {
@@ -280,27 +279,26 @@ func TestEcommerceInventoryWorkerEndToEnd(t *testing.T) {
 		t.Fatalf("InsertArchivedOrders: %v", err)
 	}
 	_, _ = q.InsertArchivedOrders(ctx, nil)
-	_, _ = q.InsertArchivedOrdersBatch(ctx, nil)
 	_, _ = q.InsertArchivedOrdersStream(ctx, runtime.FromSlice([]ArchivedOrderRow(nil)))
 	_, _ = q.InsertArchivedOrdersStream(ctx, func(yield func(ArchivedOrderRow, error) bool) {
 		yield(ArchivedOrderRow{}, errStop)
 	})
-	// Promote 2-row InsertArchivedOrdersBatch then run 3-row batch for multi-chunk autoTx
+	// Promote 2-row InsertArchivedOrders then run 3-row batch for multi-chunk autoTx
 	for i := range 2 {
 		baseID := int64(99100 + i*10)
-		if _, err := q.InsertArchivedOrdersBatch(ctx, []ArchivedOrderRow{
+		if _, err := q.InsertArchivedOrders(ctx, []ArchivedOrderRow{
 			{ID: baseID + 1, CustomerID: 1, TotalCents: 100, FulfilledAt: cutoffTS, ArchivedAt: archivedAt},
 			{ID: baseID + 2, CustomerID: 1, TotalCents: 100, FulfilledAt: cutoffTS, ArchivedAt: archivedAt},
 		}); err != nil {
-			t.Fatalf("InsertArchivedOrdersBatch(2): %v", err)
+			t.Fatalf("InsertArchivedOrders(2): %v", err)
 		}
 	}
-	if _, err := q.InsertArchivedOrdersBatch(ctx, []ArchivedOrderRow{
+	if _, err := q.InsertArchivedOrders(ctx, []ArchivedOrderRow{
 		{ID: 99201, CustomerID: 1, TotalCents: 100, FulfilledAt: cutoffTS, ArchivedAt: archivedAt},
 		{ID: 99202, CustomerID: 1, TotalCents: 100, FulfilledAt: cutoffTS, ArchivedAt: archivedAt},
 		{ID: 99203, CustomerID: 1, TotalCents: 100, FulfilledAt: cutoffTS, ArchivedAt: archivedAt},
 	}); err != nil {
-		t.Fatalf("InsertArchivedOrdersBatch(3): %v", err)
+		t.Fatalf("InsertArchivedOrders(3): %v", err)
 	}
 
 	// DeleteFulfilledOrdersByIDs direct & Batch (sorted and unsorted)
@@ -311,17 +309,16 @@ func TestEcommerceInventoryWorkerEndToEnd(t *testing.T) {
 		t.Fatalf("DeleteFulfilledOrdersByIDs(sorted): %v", err)
 	}
 	_, _ = q.DeleteFulfilledOrdersByIDs(ctx, nil)
-	_, _ = q.DeleteFulfilledOrdersByIDsBatch(ctx, nil)
 	for range 2 {
-		if _, err := q.DeleteFulfilledOrdersByIDsBatch(ctx, []int64{999991, 999992}); err != nil {
-			t.Fatalf("DeleteFulfilledOrdersByIDsBatch(2): %v", err)
+		if _, err := q.DeleteFulfilledOrdersByIDs(ctx, []int64{999991, 999992}); err != nil {
+			t.Fatalf("DeleteFulfilledOrdersByIDs(2): %v", err)
 		}
 	}
-	if _, err := q.DeleteFulfilledOrdersByIDsBatch(ctx, []int64{999995, 999994, 999993}); err != nil {
-		t.Fatalf("DeleteFulfilledOrdersByIDsBatch(3 unsorted): %v", err)
+	if _, err := q.DeleteFulfilledOrdersByIDs(ctx, []int64{999995, 999994, 999993}); err != nil {
+		t.Fatalf("DeleteFulfilledOrdersByIDs(3 unsorted): %v", err)
 	}
-	if _, err := q.DeleteFulfilledOrdersByIDsBatch(ctx, []int64{999996, 999997, 999998}); err != nil {
-		t.Fatalf("DeleteFulfilledOrdersByIDsBatch(3 sorted): %v", err)
+	if _, err := q.DeleteFulfilledOrdersByIDs(ctx, []int64{999996, 999997, 999998}); err != nil {
+		t.Fatalf("DeleteFulfilledOrdersByIDs(3 sorted): %v", err)
 	}
 
 	// Curried Query constructors & Pipeline methods
@@ -392,28 +389,26 @@ func TestEcommerceInventoryWorkerEndToEnd(t *testing.T) {
 	_, _ = closedW.Queries().InsertOrderItemsStream(ctx, runtime.FromSlice(makeOrderItems(1, 260)))
 	_, _ = closedW.Queries().InsertOrderItemsStream(ctx, runtime.FromSlice(makeOrderItems(1, 2)))
 	_, _ = closedW.Queries().InsertArchivedOrders(ctx, []ArchivedOrderRow{{ID: 1}})
-	_, _ = closedW.Queries().InsertArchivedOrdersBatch(ctx, []ArchivedOrderRow{{ID: 1}})
 	_, _ = closedW.Queries().InsertArchivedOrdersStream(ctx, runtime.FromSlice(make([]ArchivedOrderRow, 260)))
 	_, _ = closedW.Queries().InsertArchivedOrdersStream(ctx, runtime.FromSlice([]ArchivedOrderRow{{ID: 1}}))
 	_, _ = closedW.Queries().DeleteFulfilledOrdersByIDs(ctx, []int64{1})
-	_, _ = closedW.Queries().DeleteFulfilledOrdersByIDsBatch(ctx, []int64{1})
 
 	// Exercise multi-chunk autoTx rollback when chunk 2 fails on duplicate PK (99201 already exists)
-	if _, err := q.InsertArchivedOrdersBatch(ctx, []ArchivedOrderRow{
+	if _, err := q.InsertArchivedOrders(ctx, []ArchivedOrderRow{
 		{ID: 99401, CustomerID: 1, TotalCents: 100, FulfilledAt: cutoffTS, ArchivedAt: archivedAt},
 		{ID: 99402, CustomerID: 1, TotalCents: 100, FulfilledAt: cutoffTS, ArchivedAt: archivedAt},
 		{ID: 99201, CustomerID: 1, TotalCents: 100, FulfilledAt: cutoffTS, ArchivedAt: archivedAt},
 	}); err == nil {
-		t.Fatalf("expected duplicate PK error on chunk 2 of InsertArchivedOrdersBatch")
+		t.Fatalf("expected duplicate PK error on chunk 2 of InsertArchivedOrders")
 	}
 
 	// Exercise multi-chunk autoTx BeginTx error paths using a canceled context while heavy chunks are promoted
 	canceledCtx, cancel := context.WithCancel(ctx)
 	cancel()
-	_, _ = q.GetInventoryBySKUsBatch(canceledCtx, sortedKeys)
-	_, _ = q.InsertOrderItemsBatch(canceledCtx, makeOrderItems(1, 1400))
-	_, _ = q.InsertArchivedOrdersBatch(canceledCtx, make([]ArchivedOrderRow, 3))
-	_, _ = q.DeleteFulfilledOrdersByIDsBatch(canceledCtx, []int64{1, 2, 3})
+	_, _ = q.GetInventoryBySKUs(canceledCtx, sortedKeys)
+	_, _ = q.InsertOrderItems(canceledCtx, makeOrderItems(1, 1400))
+	_, _ = q.InsertArchivedOrders(canceledCtx, make([]ArchivedOrderRow, 3))
+	_, _ = q.DeleteFulfilledOrdersByIDs(canceledCtx, []int64{1, 2, 3})
 	_, _ = q.StreamFulfilledOrders(canceledCtx, cutoffTS)
 	_ = worker.Close()
 }

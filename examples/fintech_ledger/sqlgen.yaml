@@ -18,7 +18,6 @@ statements:
 
   - name: TotalSupplyByOrg
     kind: one
-    result_type: int64
     sql: |
       SELECT COALESCE(SUM(balance_cents), 0) AS total_cents:int64
       FROM accounts

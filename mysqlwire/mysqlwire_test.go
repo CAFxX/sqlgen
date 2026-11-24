@@ -414,8 +414,10 @@ func TestAbortAndConditionsOverTheWire(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if !thenRes.Taken() || elseRes.Taken() || !skipped.Skipped() || taken.Skipped() {
-			t.Fatalf("taken = %v / %v, skipped = %v / %v", thenRes.Taken(), elseRes.Taken(), skipped.Skipped(), taken.Skipped())
+		_, skippedErr := skipped.Result()
+		_, takenErr := taken.Result()
+		if !thenRes.Taken() || elseRes.Taken() || !errors.Is(skippedErr, runtime.ErrBranchNotTaken) || errors.Is(takenErr, runtime.ErrBranchNotTaken) {
+			t.Fatalf("taken = %v / %v, branch errors = %v / %v", thenRes.Taken(), elseRes.Taken(), skippedErr, takenErr)
 		}
 		sameRows(t, k.rows(t, plain), []row{{1, 11}, {2, 20}, {3, 30}})
 

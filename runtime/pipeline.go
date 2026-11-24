@@ -152,16 +152,19 @@ type PipelineOp struct {
 	argBuf        *[]any
 	HasResultCols bool
 	IsSingleRow   bool
-	ExecSeq       func(ctx context.Context, p *Pipeline, op *PipelineOp) error
-	ScanWireRows  func(rows *sql.Rows) (int64, error)
-	OnSkipped     func()
-	OnDone        func(rowCount int64, err error)
-	AbortErr      error
-	RowCount      int64
-	Skipped       bool
-	CondVal       bool
-	CondSet       bool
-	Err           error
+	// NoOp marks an operation that has nothing to send: a statement whose multi-row VALUES collection was
+	// empty (see QueueExecNoop). It never reaches a wire driver; its result is zero rows, no error.
+	NoOp         bool
+	ExecSeq      func(ctx context.Context, p *Pipeline, op *PipelineOp) error
+	ScanWireRows func(rows *sql.Rows) (int64, error)
+	OnSkipped    func()
+	OnDone       func(rowCount int64, err error)
+	AbortErr     error
+	RowCount     int64
+	Skipped      bool
+	CondVal      bool
+	CondSet      bool
+	Err          error
 	// overflowGuard is set by RenderPipelineBatch for an operation whose guard was rendered for the
 	// question dialect (SQLite, which the example suites use to simulate a wire driver): that dialect
 	// cannot carry a marker in an error message, its guard is a constant integer overflow, and
@@ -259,11 +262,6 @@ func (f *ExecFuture) RowsAffected() (int64, error) {
 	return f.op.RowCount, nil
 }
 
-// Skipped reports whether this operation was skipped due to an untaken If/Else branch.
-func (f *ExecFuture) Skipped() bool {
-	return f.skipped
-}
-
 // RowFuture represents the pending result of a single-row ("one") statement queued in a Pipeline.
 type RowFuture[T any] struct {
 	pl      *Pipeline
@@ -343,11 +341,6 @@ func (f *RowFuture[T]) Get() (T, error) {
 		return zero, sql.ErrNoRows
 	}
 	return f.val, nil
-}
-
-// Skipped reports whether this operation was skipped due to an untaken If/Else branch.
-func (f *RowFuture[T]) Skipped() bool {
-	return f.skipped
 }
 
 // SliceFuture represents the pending result of a multi-row ("many") statement queued in a Pipeline.
@@ -431,11 +424,6 @@ func (f *SliceFuture[T]) Get() ([]T, error) {
 		return nil, f.err
 	}
 	return f.vals, nil
-}
-
-// Skipped reports whether this operation was skipped due to an untaken If/Else branch.
-func (f *SliceFuture[T]) Skipped() bool {
-	return f.skipped
 }
 
 // IfResult reports whether the "then" branch of a Pipeline.If block was taken.
@@ -855,6 +843,7 @@ type Pipeline struct {
 	ifResults   []*IfResult
 	condSeq     int
 	buildErr    error
+	noOps       int // number of NoOp operations queued
 	flushed     bool
 	ownsTx      bool // PipelineTx: the runtime begins, commits and (on error) rolls back the transaction
 	txOpts      *sql.TxOptions
@@ -968,6 +957,91 @@ func (p *Pipeline) QueueExec(
 	})
 	fut.op = opPtr
 	return fut
+}
+
+// QueueExecNoop queues an exec operation that has nothing to execute (the statement's multi-row VALUES
+// collection is empty) and returns its *ExecFuture. No SQL is sent for it, on any path: the future
+// resolves to zero rows affected and no error, a condition over it sees zero rows, and inside an untaken
+// If branch it is skipped like any other operation.
+func (p *Pipeline) QueueExecNoop() *ExecFuture {
+	fut := &ExecFuture{pl: p}
+	fut.op = p.queueNoop(func() { fut.skipped = true })
+	return fut
+}
+
+// QueueSliceNoop is QueueExecNoop for a multi-row statement: the SliceFuture resolves to no rows.
+func QueueSliceNoop[T any](p *Pipeline) *SliceFuture[T] {
+	fut := &SliceFuture[T]{pl: p}
+	fut.op = p.queueNoop(func() { fut.skipped = true })
+	return fut
+}
+
+func (p *Pipeline) queueNoop(onSkipped func()) *PipelineOp {
+	var in RenderInput
+	in.BranchGates = p.cloneGates()
+	p.noOps++
+	var opPtr *PipelineOp
+	opPtr = p.appendOp(PipelineOp{
+		Input:      in,
+		Decorators: OpDecorators{AssertRows: -1},
+		NoOp:       true,
+		OnSkipped: func() {
+			onSkipped()
+			opPtr.Skipped = true
+		},
+		ExecSeq: func(context.Context, *Pipeline, *PipelineOp) error { return nil },
+	})
+	return opPtr
+}
+
+// plainNoOp reports whether op is a NoOp nothing else depends on: no assertion, and no condition recorded
+// over it (those need the operation to run, which only the sequential path can do without SQL).
+func (op *PipelineOp) plainNoOp() bool {
+	d := &op.Decorators
+	return op.NoOp && d.AssertRows < 0 && d.ProduceCond == nil && len(d.ExtraConds) == 0 && len(d.LeafRecs) == 0
+}
+
+// wireOps returns the operations a wire driver is handed: p.ops without the NoOp operations (there is no
+// statement for them). restore copies what the driver wrote (row counts, conditions, SQL) back into p.ops
+// and must be called once the driver returned having run the batch.
+func (p *Pipeline) wireOps() (ops []PipelineOp, restore func()) {
+	if p.noOps == 0 {
+		return p.ops, func() {}
+	}
+	idx := make([]int, 0, len(p.ops)-p.noOps)
+	ops = make([]PipelineOp, 0, len(p.ops)-p.noOps)
+	for i := range p.ops {
+		if !p.ops[i].NoOp {
+			idx = append(idx, i)
+			ops = append(ops, p.ops[i])
+		}
+	}
+	return ops, func() {
+		for k, i := range idx {
+			p.ops[i] = ops[k]
+		}
+	}
+}
+
+// prepareNoOps decides how a pipeline with NoOp operations runs. done is true when nothing is left to
+// send, so the operations are resolved without touching the database (no connection, no transaction).
+// A NoOp that something depends on (an assertion, a condition) makes the pipeline run on the sequential
+// path instead, which resolves it exactly like any other operation.
+func (p *Pipeline) prepareNoOps() (done bool) {
+	if p.noOps == 0 {
+		return false
+	}
+	allPlain := true
+	for i := range p.ops {
+		op := &p.ops[i]
+		if op.NoOp && !op.plainNoOp() {
+			p.noWire = true
+		}
+		if !op.plainNoOp() {
+			allPlain = false
+		}
+	}
+	return allPlain
 }
 
 // QueueRow queues a single-row ("one") operation on p and returns its *RowFuture[T].
@@ -1375,6 +1449,9 @@ func (p *Pipeline) run() error {
 	if len(p.ops) == 0 {
 		return nil
 	}
+	if p.prepareNoOps() {
+		return p.executePipelineOps(p.ctx, true)
+	}
 	switch {
 	case p.txCache != nil:
 		return p.flushInTx()
@@ -1391,13 +1468,15 @@ func (p *Pipeline) run() error {
 func (p *Pipeline) flushInTx() error {
 	if p.db != nil {
 		if _, isWrapped := p.db.Driver().(*wrappedDriver); isWrapped && !p.noWire {
+			ops, restore := p.wireOps()
 			payload := &pipelineCtxPayload{
 				dialect: p.dialect,
 				cache:   p.cache,
-				ops:     p.ops,
+				ops:     ops,
 			}
 			_, err := p.txCache.tx.ExecContext(withPipelinePayload(p.ctx, payload), "--sqlgen:pipeline")
 			if payload.handled {
+				restore()
 				p.cache.notePipeline(true)
 				if err != nil {
 					return err
@@ -1416,7 +1495,7 @@ func (p *Pipeline) flushInTx() error {
 // A WireTxPipeliner (BEGIN + ops + COMMIT) is always preferred; a plain WirePipeliner is used only when
 // allowPlain is set, because it cannot begin or commit a transaction by itself.
 func (p *Pipeline) flushWireConn(txOpts *sql.TxOptions, allowPlain bool) (handled bool, err error) {
-	if p.db == nil || p.db.Stats().MaxOpenConnections == 1 {
+	if p.db == nil || p.noWire || p.db.Stats().MaxOpenConnections == 1 {
 		return false, nil
 	}
 	conn, cerr := p.db.Conn(p.ctx)
@@ -1427,18 +1506,26 @@ func (p *Pipeline) flushWireConn(txOpts *sql.TxOptions, allowPlain bool) (handle
 	rawErr := conn.Raw(func(driverConn any) error {
 		if tp := wireTxPipelinerOf(driverConn); tp != nil {
 			handled = true
+			ops, restore := p.wireOps()
 			if prerenders(tp) {
-				RenderPipelineBatch(p.dialect, p.cache, p.ops)
+				RenderPipelineBatch(p.dialect, p.cache, ops)
 			}
-			wireErr = tp.ExecTxPipeline(p.ctx, txOpts, p.ops)
+			wireErr = tp.ExecTxPipeline(p.ctx, txOpts, ops)
+			if !errors.Is(wireErr, ErrWireNotApplicable) {
+				restore()
+			}
 			return nil
 		}
 		if wp := wirePipelinerOf(driverConn); allowPlain && wp != nil {
 			handled = true
+			ops, restore := p.wireOps()
 			if prerenders(wp) {
-				RenderPipelineBatch(p.dialect, p.cache, p.ops)
+				RenderPipelineBatch(p.dialect, p.cache, ops)
 			}
-			wireErr = wp.ExecPipeline(p.ctx, p.ops)
+			wireErr = wp.ExecPipeline(p.ctx, ops)
+			if !errors.Is(wireErr, ErrWireNotApplicable) {
+				restore()
+			}
 		}
 		return nil
 	})

@@ -101,7 +101,7 @@ type fzPageArgs struct {
 // Insert variants: Order selects the generated statement (presort ASC / DESC / none), Path how it runs.
 type fzIns struct {
 	Order int // 0 asc, 1 desc, 2 raw, 3 FzInsertLit (literals in the tuple template; see litRow)
-	Path  int // 0 plain, 1 batch, 2 stream
+	Path  int // 0 base method (auto-chunking), 1 stream
 }
 
 // fzVar exposes the Into / Seq / Each flavours of one prepared call (the plain slice flavour is the API
@@ -137,15 +137,15 @@ type fzTSearch struct {
 }
 
 type fzAPI interface {
-	TypedInsert(ctx context.Context, rows []fzTRow, batch bool) (int64, error)
+	TypedInsert(ctx context.Context, rows []fzTRow) (int64, error)
 	TypedSearch(ctx context.Context, a fzTSearch) ([]fzTRow, error)
 	// TypedPage: terms index [f64, i32, flag, id].
 	TypedPage(ctx context.Context, terms []fzTerm, after runtime.Seek, limit int64) ([]fzTRow, error)
 	TypedCursor(r fzTRow) runtime.Seek
 	SearchV(ctx context.Context, a fzSearchArgs) fzVar
 	PageV(ctx context.Context, a fzPageArgs) fzVar
-	ByIDsBatchV(ctx context.Context, ids []int64) fzVar
-	ByKeysBatchV(ctx context.Context, keys [][2]int64) fzVar
+	ByIDsV(ctx context.Context, ids []int64) fzVar
+	ByKeysV(ctx context.Context, keys [][2]int64) fzVar
 	Insert(ctx context.Context, v fzIns, rows []fzRow) (int64, error)
 	InsertStreamErr(ctx context.Context, rows []fzRow, n int, err error) error
 	Search(ctx context.Context, a fzSearchArgs) ([]fzRow, error)
@@ -155,10 +155,10 @@ type fzAPI interface {
 	Agg(ctx context.Context, pick *fzSub, byTag bool, tag string) ([]fzAggRow, error)
 	Subs(ctx context.Context, a, b *fzSub, lo int64, excludeB, againA bool) ([]fzRow, error)
 	Join(ctx context.Context, peerOff, minID int64, withPeer, byGrp bool, grp int64, cols uint64) ([]fzJoinRow, error)
-	ByKeys(ctx context.Context, keys [][2]int64, batch bool) ([]fzRow, error)
-	ByIDs(ctx context.Context, ids []int64, batch bool) ([]fzRow, error)
-	Bump(ctx context.Context, delta int64, ids []int64, grp *int64, batch bool) (int64, error)
-	Delete(ctx context.Context, ids []int64, tag *string, batch bool) (int64, error)
+	ByKeys(ctx context.Context, keys [][2]int64) ([]fzRow, error)
+	ByIDs(ctx context.Context, ids []int64) ([]fzRow, error)
+	Bump(ctx context.Context, delta int64, ids []int64, grp *int64) (int64, error)
+	Delete(ctx context.Context, ids []int64, tag *string) (int64, error)
 	// Tx returns a view of the same statements bound to tx (Queries.WithTx); it shares the cache and must not be closed.
 	Tx(tx *sql.Tx) fzAPI
 	Close() error
@@ -166,11 +166,11 @@ type fzAPI interface {
 
 // fzRetAPI covers the RETURNING statements an engine supports (see fzRetSupport).
 type fzRetAPI interface {
-	// InsertRet mode: 0 plain, 1 Batch, 2 Stream.
+	// InsertRet mode: 0 base method (auto-chunking), 1 Stream, 2 StreamSeq.
 	InsertRet(ctx context.Context, rows []fzRow, mode int) ([]fzOut, error)
-	DeleteRet(ctx context.Context, ids []int64, tag *string, batch bool) ([]fzOut, error)
+	DeleteRet(ctx context.Context, ids []int64, tag *string) ([]fzOut, error)
 	// BumpRet is UPDATE ... RETURNING: PostgreSQL and CockroachDB only (MariaDB has no UPDATE RETURNING).
-	BumpRet(ctx context.Context, delta int64, ids []int64, grp *int64, batch bool) ([]fzOut, error)
+	BumpRet(ctx context.Context, delta int64, ids []int64, grp *int64) ([]fzOut, error)
 }
 
 func newFzAPI(e engine, db *sql.DB, opts ...runtime.CacheOption) (fzAPI, fzRetAPI) {

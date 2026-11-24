@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"go/format"
 	"go/token"
+	"go/types"
 	"io"
 	"math/rand/v2"
 	"os"
@@ -601,7 +602,7 @@ var (
 	reservedTypeNames = setOf("DefaultRetryPolicy", "ExecFuture", "IfResult", "New", "NewSeek", "NewWithCache", "Order",
 		"Pipeline", "PipelineCond", "Queries", "Query", "Seek", "TxOption", "TxRetryPolicy", "WhereCol", "WithTxRetry")
 	reservedStatementNames = setOf("Cache", "CacheStats", "Close", "If", "InTx", "Pipeline", "PipelineTx",
-		"WithPrepared", "WithTx", "SetBuildError", "QueueExec", "Abort", "Flush")
+		"WithPrepared", "WithTx", "SetBuildError", "QueueExec", "QueueExecNoop", "Abort", "Flush")
 )
 
 func setOf(names ...string) map[string]bool {
@@ -716,12 +717,16 @@ type compiledStmt struct {
 	CanBatch        bool
 	CanStream       bool
 	BatchParamIdx   int
-	BatchIsTuple    bool
-	ScalarParamCnt  int
-	BatchArity      int
-	MaxRowsPerStmt  int
-	IsStatic        bool
-	StaticSQL       string
+	// ValuesParamIdx is the parameter index of the multi-row VALUES tuple slice of an INSERT
+	// (INSERT ... VALUES :rows:[]T(...)), or -1. An empty collection there is a no-op, see the X5 rule in
+	// DOCS: it is the only place where emptiness means "nothing to do" instead of an invalid statement.
+	ValuesParamIdx int
+	BatchIsTuple   bool
+	ScalarParamCnt int
+	BatchArity     int
+	MaxRowsPerStmt int
+	IsStatic       bool
+	StaticSQL      string
 	// PGCasts is set for INSERT statements under the dollar dialect: their value placeholders get a
 	// type cast in the descriptor so that branch-gated INSERTs (rewritten to INSERT ... SELECT) type-check.
 	PGCasts bool
@@ -1985,6 +1990,7 @@ func (p *stmtParser) scanSpan(span string, blk *parsedBlock, isTopLevel bool) er
 										if err != nil {
 											return err
 										}
+										p.cs.ValuesParamIdx = pIdx
 										emitSlot(slotRef{Kind: runtime.SlotInsertTupleValuesOpen, ParamIdx: -1})
 										emitSlot(slotRef{Kind: runtime.SlotTupleSlice, ParamIdx: pIdx, Tuple: td})
 										emitSlot(slotRef{Kind: runtime.SlotInsertTupleValuesClose, ParamIdx: -1})
@@ -2213,6 +2219,9 @@ func compileStatement(id uint32, spec StatementSpec, sd stmtDialect) (*compiledS
 		if !isValidGoIdent(spec.ResultType) {
 			return nil, fmt.Errorf("statement %s: invalid result_type identifier %q", spec.Name, spec.ResultType)
 		}
+		if types.Universe.Lookup(spec.ResultType) != nil {
+			return nil, fmt.Errorf("statement %s: result_type %q is a predeclared Go identifier; result_type names the generated row struct, so pick another name (a statement with a single output column and no result_type returns that column's value directly)", spec.Name, spec.ResultType)
+		}
 		if reservedTypeNames[spec.ResultType] {
 			return nil, fmt.Errorf("statement %s: result_type %q collides with a type or function declared in every generated file; rename it", spec.Name, spec.ResultType)
 		}
@@ -2223,10 +2232,11 @@ func compileStatement(id uint32, spec StatementSpec, sd stmtDialect) (*compiledS
 	}
 
 	cs := &compiledStmt{
-		ID:            id,
-		Name:          spec.Name,
-		Kind:          kind,
-		BatchParamIdx: -1,
+		ID:             id,
+		Name:           spec.Name,
+		Kind:           kind,
+		BatchParamIdx:  -1,
+		ValuesParamIdx: -1,
 	}
 
 	parser := &stmtParser{
@@ -2330,14 +2340,15 @@ func compileStatement(id uint32, spec StatementSpec, sd stmtDialect) (*compiledS
 	}
 
 	if kind == KindOne || kind == KindMany {
-		if spec.ResultType != "" {
-			if len(cs.Cols) == 1 && isPredeclaredGoType(spec.ResultType) {
-				cs.RowTypeName = spec.ResultType
-				cs.ScalarResult = true
-			} else {
-				cs.RowTypeName = spec.ResultType
-			}
-		} else {
+		switch {
+		case spec.ResultType != "":
+			// result_type only names (and shares) the row struct, even for a single column.
+			cs.RowTypeName = spec.ResultType
+		case len(cs.Cols) == 1 && cs.Cols[0].CondFlag == "":
+			// One output column and no result_type: the statement returns the column's value itself.
+			cs.RowTypeName = cs.Cols[0].GoType
+			cs.ScalarResult = true
+		default:
 			cs.RowTypeName = spec.Name + "Row"
 		}
 	}
@@ -3566,23 +3577,34 @@ func emitStatementCode(
 	// 2. KindExec methods
 	if cs.Kind == KindExec {
 		fmt.Fprintf(b, "func (q *Queries) %s(ctx context.Context%s) (sql.Result, error) {\n", cs.Name, sigWithLeadingComma)
-		emitLocalParamsInit("\t")
-		fmt.Fprintf(b, "\tvk, colMask, flagMask, approxArgs := compute%sKey(p)\n", cs.Name)
-		b.WriteString("\targBuf := runtime.AcquireArgsCap(approxArgs)\n")
-		b.WriteString("\tdefer runtime.ReleaseArgs(argBuf)\n")
-		if !canFailExpand {
-			fmt.Fprintf(b, "\t_ = expand%sParams(argBuf, sqlDialect, p)\n", cs.Name)
-		} else {
-			fmt.Fprintf(b, "\tif err := expand%sParams(argBuf, sqlDialect, p); err != nil {\n", cs.Name)
-			b.WriteString("\t\treturn nil, err\n")
-			b.WriteString("\t}\n")
+		if acc := cs.valuesAccess(); acc != "" {
+			// An empty multi-row VALUES collection inserts nothing: a successful no-op, no SQL, no transaction.
+			fmt.Fprintf(b, "\tif len(%s) == 0 {\n\t\treturn runtime.BatchExecResult{}, nil\n\t}\n", acc)
 		}
-		emitStackRenderInput("\t", "p")
-		fmt.Fprintf(b, "\treturn q.cache.Exec(ctx, q.db, q.txCache, q.usePrepared, vk, stmtID%s, runtime.ComputeBatchShapeTag(colMask, flagMask), 0, %s, sqlDialect, desc%s, &in, (*argBuf)...)\n", cs.Name, fastSlotExpr, cs.Name)
+		if cs.CanBatch {
+			emitExecChunkedBody(b, cs, paramsStructName, emitStackRenderInput)
+		} else {
+			emitLocalParamsInit("\t")
+			fmt.Fprintf(b, "\tvk, colMask, flagMask, approxArgs := compute%sKey(p)\n", cs.Name)
+			b.WriteString("\targBuf := runtime.AcquireArgsCap(approxArgs)\n")
+			b.WriteString("\tdefer runtime.ReleaseArgs(argBuf)\n")
+			if !canFailExpand {
+				fmt.Fprintf(b, "\t_ = expand%sParams(argBuf, sqlDialect, p)\n", cs.Name)
+			} else {
+				fmt.Fprintf(b, "\tif err := expand%sParams(argBuf, sqlDialect, p); err != nil {\n", cs.Name)
+				b.WriteString("\t\treturn nil, err\n")
+				b.WriteString("\t}\n")
+			}
+			emitStackRenderInput("\t", "p")
+			fmt.Fprintf(b, "\treturn q.cache.Exec(ctx, q.db, q.txCache, q.usePrepared, vk, stmtID%s, runtime.ComputeBatchShapeTag(colMask, flagMask), 0, %s, sqlDialect, desc%s, &in, (*argBuf)...)\n", cs.Name, fastSlotExpr, cs.Name)
+		}
 		b.WriteString("}\n\n")
 
 		// Pipeline queuing method for KindExec
 		fmt.Fprintf(b, "func (pl *Pipeline) %s(%s) *runtime.ExecFuture {\n", cs.Name, sigStr)
+		if acc := cs.valuesAccess(); acc != "" {
+			fmt.Fprintf(b, "\tif len(%s) == 0 {\n\t\treturn pl.Pipeline.QueueExecNoop()\n\t}\n", acc)
+		}
 		emitLocalParamsInit("\t")
 		fmt.Fprintf(b, "\tvk, colMask, flagMask, approxArgs := compute%sKey(p)\n", cs.Name)
 		b.WriteString("\targBuf := runtime.AcquireArgsCap(approxArgs)\n")
@@ -3591,8 +3613,8 @@ func emitStatementCode(
 		fmt.Fprintf(b, "\treturn pl.Pipeline.QueueExec(stmtID%s, desc%s, in, vk, %s, argBuf, expandErr)\n", cs.Name, cs.Name, pipelineFastSlotExpr)
 		b.WriteString("}\n\n")
 
-		if cs.CanBatch {
-			emitExecBatchAndStreamMethods(b, cs, sigWithLeadingComma, paramsStructName, emitStackRenderInput)
+		if cs.CanStream {
+			emitExecStream(b, cs, paramsStructName)
 		}
 		return
 	}
@@ -3694,74 +3716,74 @@ func emitStatementCode(
 		return
 	}
 
-	// 4. KindMany methods: <Name>, <Name>Into, <Name>Seq, <Name>Each
+	// 4. KindMany methods: <Name> (the rows as a slice) and <Name>Seq (the same rows as an iterator).
 	fmt.Fprintf(b, "func (q *Queries) %s(ctx context.Context%s) ([]%s, error) {\n", cs.Name, sigWithLeadingComma, cs.RowTypeName)
-	fmt.Fprintf(b, "\treturn q.%sInto(ctx, nil%s)\n", cs.Name, callWithLeadingComma)
-	b.WriteString("}\n\n")
-
-	fmt.Fprintf(b, "func (q *Queries) %sInto(ctx context.Context, dst []%s%s) ([]%s, error) {\n", cs.Name, cs.RowTypeName, sigWithLeadingComma, cs.RowTypeName)
-	fmt.Fprintf(b, "\tfor row, err := range q.%sSeq(ctx%s) {\n", cs.Name, callWithLeadingComma)
-	b.WriteString("\t\tif err != nil {\n\t\t\treturn nil, err\n\t\t}\n")
-	b.WriteString("\t\tdst = append(dst, row)\n")
-	b.WriteString("\t}\n")
-	b.WriteString("\treturn dst, nil\n")
-	b.WriteString("}\n\n")
-
-	fmt.Fprintf(b, "func (q *Queries) %sSeq(ctx context.Context%s) iter.Seq2[%s, error] {\n", cs.Name, sigWithLeadingComma, cs.RowTypeName)
-	b.WriteString("\treturn func(yield func(" + cs.RowTypeName + ", error) bool) {\n")
-	fmt.Fprintf(b, "\t\tvar zero %s\n", cs.RowTypeName)
-	emitLocalParamsInit("\t\t")
-	fmt.Fprintf(b, "\t\tvk, colMask, flagMask, approxArgs := compute%sKey(p)\n", cs.Name)
-	b.WriteString("\t\t_ = colMask\n")
-	b.WriteString("\t\targBuf := runtime.AcquireArgsCap(approxArgs)\n")
-	b.WriteString("\t\tdefer runtime.ReleaseArgs(argBuf)\n")
-	if !canFailExpand {
-		fmt.Fprintf(b, "\t\t_ = expand%sParams(argBuf, sqlDialect, p)\n", cs.Name)
+	if cs.CanBatch {
+		emitManyChunkedCollect(b, cs, paramsStructName, callWithLeadingComma)
 	} else {
-		fmt.Fprintf(b, "\t\tif err := expand%sParams(argBuf, sqlDialect, p); err != nil {\n", cs.Name)
+		if acc := cs.valuesAccess(); acc != "" {
+			fmt.Fprintf(b, "\tif len(%s) == 0 {\n\t\treturn nil, nil\n\t}\n", acc)
+		}
+		fmt.Fprintf(b, "\treturn runtime.Collect(q.%sSeq(ctx%s))\n", cs.Name, callWithLeadingComma)
+	}
+	b.WriteString("}\n\n")
+
+	if cs.CanBatch {
+		emitManyChunkedSeq(b, cs, sigWithLeadingComma, paramsStructName, emitStackRenderInput)
+	} else {
+		fmt.Fprintf(b, "func (q *Queries) %sSeq(ctx context.Context%s) iter.Seq2[%s, error] {\n", cs.Name, sigWithLeadingComma, cs.RowTypeName)
+		b.WriteString("\treturn func(yield func(" + cs.RowTypeName + ", error) bool) {\n")
+		if acc := cs.valuesAccess(); acc != "" {
+			fmt.Fprintf(b, "\t\tif len(%s) == 0 {\n\t\t\treturn\n\t\t}\n", acc)
+		}
+		fmt.Fprintf(b, "\t\tvar zero %s\n", cs.RowTypeName)
+		emitLocalParamsInit("\t\t")
+		fmt.Fprintf(b, "\t\tvk, colMask, flagMask, approxArgs := compute%sKey(p)\n", cs.Name)
+		b.WriteString("\t\t_ = colMask\n")
+		b.WriteString("\t\targBuf := runtime.AcquireArgsCap(approxArgs)\n")
+		b.WriteString("\t\tdefer runtime.ReleaseArgs(argBuf)\n")
+		if !canFailExpand {
+			fmt.Fprintf(b, "\t\t_ = expand%sParams(argBuf, sqlDialect, p)\n", cs.Name)
+		} else {
+			fmt.Fprintf(b, "\t\tif err := expand%sParams(argBuf, sqlDialect, p); err != nil {\n", cs.Name)
+			b.WriteString("\t\t\tyield(zero, err)\n")
+			b.WriteString("\t\t\treturn\n")
+			b.WriteString("\t\t}\n")
+		}
+		emitStackRenderInput("\t\t", "p")
+		fmt.Fprintf(b, "\t\tsqlRows, ms, err := q.cache.Query(ctx, q.db, q.txCache, q.usePrepared, vk, stmtID%s, runtime.ComputeBatchShapeTag(colMask, flagMask), 0, %s, sqlDialect, desc%s, &in, (*argBuf)...)\n", cs.Name, fastSlotExpr, cs.Name)
+		b.WriteString("\t\tif err != nil {\n")
 		b.WriteString("\t\t\tyield(zero, err)\n")
 		b.WriteString("\t\t\treturn\n")
 		b.WriteString("\t\t}\n")
+		// The deferred release covers a panic in the caller's loop body (or in a Scanner); the explicit one frees
+		// the connection before an error is handed to the caller (ReleaseRows is idempotent).
+		b.WriteString("\t\tdefer runtime.ReleaseRows(&sqlRows, &ms)\n")
+		fmt.Fprintf(b, "\t\tvar item %s\n", cs.RowTypeName)
+		b.WriteString("\t\tfor sqlRows.Next() {\n")
+		fmt.Fprintf(b, "\t\t\tif err := scan%sRow(sqlRows, &item, colMask, p); err != nil {\n", cs.Name)
+		b.WriteString("\t\t\t\truntime.ReleaseRows(&sqlRows, &ms)\n")
+		b.WriteString("\t\t\t\tyield(zero, err)\n")
+		b.WriteString("\t\t\t\treturn\n")
+		b.WriteString("\t\t\t}\n")
+		b.WriteString("\t\t\tif !yield(item, nil) {\n")
+		b.WriteString("\t\t\t\treturn\n")
+		b.WriteString("\t\t\t}\n")
+		b.WriteString("\t\t}\n")
+		b.WriteString("\t\terr = sqlRows.Err()\n")
+		b.WriteString("\t\truntime.ReleaseRows(&sqlRows, &ms)\n")
+		b.WriteString("\t\tif err != nil {\n")
+		b.WriteString("\t\t\tyield(zero, err)\n")
+		b.WriteString("\t\t}\n")
+		b.WriteString("\t}\n")
+		b.WriteString("}\n\n")
 	}
-	emitStackRenderInput("\t\t", "p")
-	fmt.Fprintf(b, "\t\tsqlRows, ms, err := q.cache.Query(ctx, q.db, q.txCache, q.usePrepared, vk, stmtID%s, runtime.ComputeBatchShapeTag(colMask, flagMask), 0, %s, sqlDialect, desc%s, &in, (*argBuf)...)\n", cs.Name, fastSlotExpr, cs.Name)
-	b.WriteString("\t\tif err != nil {\n")
-	b.WriteString("\t\t\tyield(zero, err)\n")
-	b.WriteString("\t\t\treturn\n")
-	b.WriteString("\t\t}\n")
-	// The deferred release covers a panic in the caller's loop body (or in a Scanner); the explicit one frees
-	// the connection before an error is handed to the caller (ReleaseRows is idempotent).
-	b.WriteString("\t\tdefer runtime.ReleaseRows(&sqlRows, &ms)\n")
-	fmt.Fprintf(b, "\t\tvar item %s\n", cs.RowTypeName)
-	b.WriteString("\t\tfor sqlRows.Next() {\n")
-	fmt.Fprintf(b, "\t\t\tif err := scan%sRow(sqlRows, &item, colMask, p); err != nil {\n", cs.Name)
-	b.WriteString("\t\t\t\truntime.ReleaseRows(&sqlRows, &ms)\n")
-	b.WriteString("\t\t\t\tyield(zero, err)\n")
-	b.WriteString("\t\t\t\treturn\n")
-	b.WriteString("\t\t\t}\n")
-	b.WriteString("\t\t\tif !yield(item, nil) {\n")
-	b.WriteString("\t\t\t\treturn\n")
-	b.WriteString("\t\t\t}\n")
-	b.WriteString("\t\t}\n")
-	b.WriteString("\t\terr = sqlRows.Err()\n")
-	b.WriteString("\t\truntime.ReleaseRows(&sqlRows, &ms)\n")
-	b.WriteString("\t\tif err != nil {\n")
-	b.WriteString("\t\t\tyield(zero, err)\n")
-	b.WriteString("\t\t}\n")
-	b.WriteString("\t}\n")
-	b.WriteString("}\n\n")
-
-	fmt.Fprintf(b, "func (q *Queries) %sEach(ctx context.Context%s, fn func(%s) error) error {\n", cs.Name, sigWithLeadingComma, cs.RowTypeName)
-	b.WriteString("\tif fn == nil {\n\t\treturn runtime.ErrNilArgument\n\t}\n")
-	fmt.Fprintf(b, "\tfor row, err := range q.%sSeq(ctx%s) {\n", cs.Name, callWithLeadingComma)
-	b.WriteString("\t\tif err != nil {\n\t\t\treturn err\n\t\t}\n")
-	b.WriteString("\t\tif err := fn(row); err != nil {\n\t\t\treturn err\n\t\t}\n")
-	b.WriteString("\t}\n")
-	b.WriteString("\treturn nil\n")
-	b.WriteString("}\n\n")
 
 	// Pipeline queuing method for KindMany
 	fmt.Fprintf(b, "func (pl *Pipeline) %s(%s) *runtime.SliceFuture[%s] {\n", cs.Name, sigStr, cs.RowTypeName)
+	if acc := cs.valuesAccess(); acc != "" {
+		fmt.Fprintf(b, "\tif len(%s) == 0 {\n\t\treturn runtime.QueueSliceNoop[%s](pl.Pipeline)\n\t}\n", acc, cs.RowTypeName)
+	}
 	emitLocalParamsInit("\t")
 	fmt.Fprintf(b, "\tvk, colMask, flagMask, approxArgs := compute%sKey(p)\n", cs.Name)
 	b.WriteString("\targBuf := runtime.AcquireArgsCap(approxArgs)\n")
@@ -3771,8 +3793,8 @@ func emitStatementCode(
 	fmt.Fprintf(b, "\t\tfunc(rs *sql.Rows, dst *%s) error { return scan%sRow(rs, dst, colMask, p) },\n", cs.RowTypeName, cs.Name)
 	b.WriteString("\t)\n}\n\n")
 
-	if cs.CanBatch {
-		emitManyBatchAndStreamMethods(b, cs, sigWithLeadingComma, callWithLeadingComma, paramsStructName, emitStackRenderInput)
+	if cs.CanStream {
+		emitManyStream(b, cs, paramsStructName)
 	}
 }
 
@@ -3867,28 +3889,63 @@ func buildStreamSignatures(cs *compiledStmt, paramsStructName string) (sigStream
 	return string(sig), string(call)
 }
 
-func emitExecBatchAndStreamMethods(
+// valuesAccess returns the Go expression of the multi-row VALUES collection of an INSERT statement
+// (see compiledStmt.ValuesParamIdx), or "" when the statement has none.
+func (cs *compiledStmt) valuesAccess() string {
+	if cs.ValuesParamIdx < 0 {
+		return ""
+	}
+	p := cs.Params[cs.ValuesParamIdx]
+	if cs.UseParamsStruct {
+		return "p." + p.FieldName
+	}
+	return p.ParamName
+}
+
+// batchAccess returns the Go expression of the collection a CanBatch statement chunks.
+func (cs *compiledStmt) batchAccess() string {
+	p := cs.Params[cs.BatchParamIdx]
+	if cs.UseParamsStruct {
+		return "p." + p.FieldName
+	}
+	return p.ParamName
+}
+
+// batchIsValues reports whether the chunked collection is the INSERT VALUES list, whose emptiness is a
+// no-op (every other collection is an IN list or similar, where emptiness is an error).
+func (cs *compiledStmt) batchIsValues() bool {
+	return cs.BatchParamIdx >= 0 && cs.BatchParamIdx == cs.ValuesParamIdx
+}
+
+// emitBatchParamsInit declares p from the positional parameters when the statement has no params struct.
+func emitBatchParamsInit(b *bytes.Buffer, cs *compiledStmt, indent, paramsStructName string) {
+	if cs.UseParamsStruct {
+		return
+	}
+	fmt.Fprintf(b, "%sp := %s{\n", indent, paramsStructName)
+	for _, p := range cs.Params {
+		fmt.Fprintf(b, "%s\t%s: %s,\n", indent, p.FieldName, p.ParamName)
+	}
+	fmt.Fprintf(b, "%s}\n", indent)
+}
+
+// emitExecChunkedBody emits the body of an exec statement whose single collection parameter is split into
+// wire-safe chunks: global presort, chunk planning, one implicit transaction when there is more than one
+// chunk (unless the caller already is in one), and the summed result.
+func emitExecChunkedBody(
 	b *bytes.Buffer,
 	cs *compiledStmt,
-	sigWithLeadingComma, paramsStructName string,
+	paramsStructName string,
 	emitStackRenderInput func(indent, pVar string),
 ) {
 	batchParam := cs.Params[cs.BatchParamIdx]
-	collAccess := batchParam.ParamName
-	if cs.UseParamsStruct {
-		collAccess = "p." + batchParam.FieldName
-	}
+	collAccess := cs.batchAccess()
 
-	fmt.Fprintf(b, "func (q *Queries) %sBatch(ctx context.Context%s) (sql.Result, error) {\n", cs.Name, sigWithLeadingComma)
 	fmt.Fprintf(b, "\ttotalRows := len(%s)\n", collAccess)
-	b.WriteString("\tif totalRows == 0 {\n\t\treturn nil, runtime.ErrEmptySliceParam\n\t}\n")
-	if !cs.UseParamsStruct {
-		fmt.Fprintf(b, "\tp := %s{\n", paramsStructName)
-		for _, p := range cs.Params {
-			fmt.Fprintf(b, "\t\t%s: %s,\n", p.FieldName, p.ParamName)
-		}
-		b.WriteString("\t}\n")
+	if !cs.batchIsValues() {
+		b.WriteString("\tif totalRows == 0 {\n\t\treturn nil, runtime.ErrEmptySliceParam\n\t}\n")
 	}
+	emitBatchParamsInit(b, cs, "\t", paramsStructName)
 	emitBatchGlobalPresortSetup(b, cs, "\t", collAccess)
 	fmt.Fprintf(b, "\t_, colMask, flagMask, _ := compute%sKey(p)\n", cs.Name)
 	b.WriteString("\tshapeTag := runtime.ComputeBatchShapeTag(colMask, flagMask)\n")
@@ -3914,7 +3971,7 @@ func emitExecBatchAndStreamMethods(
 	fmt.Fprintf(b, "\t\tchunkP.%s = chunkRows\n", batchParam.FieldName)
 	fmt.Fprintf(b, "\t\tvk, _, _, approxArgs := compute%sKey(chunkP)\n", cs.Name)
 	b.WriteString("\t\targBuf := runtime.AcquireArgsCap(approxArgs)\n")
-	emitBatchChunkExpansion(b, cs, "\t\t", collAccess, "\t\t\truntime.ReleaseArgs(argBuf)\n\t\t\tif autoTx != nil {\n\t\t\t\t_ = autoTx.Rollback()\n\t\t\t}\n\t\t\treturn nil, err\n")
+	emitBatchChunkExpansion(b, cs, "\t\t", collAccess, "")
 	emitStackRenderInput("\t\t", "chunkP")
 	fmt.Fprintf(b, "\t\tres, err := q.cache.Exec(ctx, q.db, txCache, q.usePrepared, vk, stmtID%s, shapeTag, chunkSize, nil, sqlDialect, desc%s, &in, (*argBuf)...)\n", cs.Name, cs.Name)
 	b.WriteString("\t\truntime.ReleaseArgs(argBuf)\n")
@@ -3929,70 +3986,54 @@ func emitExecBatchAndStreamMethods(
 	b.WriteString("\t\tif err := autoTx.Commit(); err != nil {\n\t\t\treturn nil, err\n\t\t}\n")
 	b.WriteString("\t}\n")
 	b.WriteString("\treturn batchRes, nil\n")
-	b.WriteString("}\n\n")
-
-	if cs.CanStream {
-		sigStream, callBatchArgs := buildStreamSignatures(cs, paramsStructName)
-		poolName := lowerFirstIdent(batchParam.ElemGoType) + "ChunkPool"
-
-		fmt.Fprintf(b, "func (q *Queries) %sStream(ctx context.Context%s) (sql.Result, error) {\n", cs.Name, sigStream)
-		b.WriteString("\tif seq == nil {\n\t\treturn nil, runtime.ErrNilArgument\n\t}\n")
-		fmt.Fprintf(b, "\tchunkCap := min(256, q.cache.MaxRowsPerBatch(sqlDialect, %d, %d))\n", cs.ScalarParamCnt, cs.BatchArity)
-		fmt.Fprintf(b, "\tbufPtr := %s.Get().(*[]%s)\n", poolName, batchParam.ElemGoType)
-		b.WriteString("\tchunk := (*bufPtr)[:0]\n")
-		b.WriteString("\tdefer func() {\n\t\tclear(chunk[:cap(chunk)])\n\t\t*bufPtr = chunk[:0]\n")
-		fmt.Fprintf(b, "\t\t%s.Put(bufPtr)\n\t}()\n", poolName)
-		b.WriteString("\tvar batchRes runtime.BatchExecResult\n")
-		b.WriteString("\tflushChunk := func() error {\n")
-		b.WriteString("\t\tif len(chunk) == 0 {\n\t\t\treturn nil\n\t\t}\n")
-		if cs.UseParamsStruct {
-			b.WriteString("\t\tchunkP := p\n")
-			fmt.Fprintf(b, "\t\tchunkP.%s = chunk\n", batchParam.FieldName)
-		}
-		fmt.Fprintf(b, "\t\tres, err := q.%sBatch(ctx%s)\n", cs.Name, callBatchArgs)
-		b.WriteString("\t\tif err != nil {\n\t\t\treturn err\n\t\t}\n")
-		b.WriteString("\t\tbatchRes.Add(res)\n")
-		b.WriteString("\t\tchunk = chunk[:0]\n\t\treturn nil\n\t}\n")
-		b.WriteString("\tfor item, err := range seq {\n")
-		b.WriteString("\t\tif err != nil {\n\t\t\treturn nil, err\n\t\t}\n")
-		b.WriteString("\t\tchunk = append(chunk, item)\n")
-		b.WriteString("\t\tif len(chunk) >= chunkCap {\n")
-		b.WriteString("\t\t\tif err := flushChunk(); err != nil {\n\t\t\t\treturn nil, err\n\t\t\t}\n")
-		b.WriteString("\t\t}\n\t}\n")
-		b.WriteString("\tif err := flushChunk(); err != nil {\n\t\treturn nil, err\n\t}\n")
-		b.WriteString("\treturn batchRes, nil\n")
-		b.WriteString("}\n\n")
-	}
 }
 
-func emitManyBatchAndStreamMethods(
-	b *bytes.Buffer,
-	cs *compiledStmt,
-	sigWithLeadingComma, callWithLeadingComma, paramsStructName string,
-	emitStackRenderInput func(indent, pVar string),
-) {
+// emitExecStream emits <Name>Stream of an exec statement: the same statement fed from an iterator, in
+// pooled chunks, each flushed through <Name>.
+func emitExecStream(b *bytes.Buffer, cs *compiledStmt, paramsStructName string) {
 	batchParam := cs.Params[cs.BatchParamIdx]
-	collAccess := batchParam.ParamName
+	sigStream, callBatchArgs := buildStreamSignatures(cs, paramsStructName)
+	poolName := lowerFirstIdent(batchParam.ElemGoType) + "ChunkPool"
+
+	fmt.Fprintf(b, "func (q *Queries) %sStream(ctx context.Context%s) (sql.Result, error) {\n", cs.Name, sigStream)
+	b.WriteString("\tif seq == nil {\n\t\treturn nil, runtime.ErrNilArgument\n\t}\n")
+	fmt.Fprintf(b, "\tchunkCap := min(256, q.cache.MaxRowsPerBatch(sqlDialect, %d, %d))\n", cs.ScalarParamCnt, cs.BatchArity)
+	fmt.Fprintf(b, "\tbufPtr := %s.Get().(*[]%s)\n", poolName, batchParam.ElemGoType)
+	b.WriteString("\tchunk := (*bufPtr)[:0]\n")
+	b.WriteString("\tdefer func() {\n\t\tclear(chunk[:cap(chunk)])\n\t\t*bufPtr = chunk[:0]\n")
+	fmt.Fprintf(b, "\t\t%s.Put(bufPtr)\n\t}()\n", poolName)
+	b.WriteString("\tvar batchRes runtime.BatchExecResult\n")
+	b.WriteString("\tflushChunk := func() error {\n")
+	b.WriteString("\t\tif len(chunk) == 0 {\n\t\t\treturn nil\n\t\t}\n")
 	if cs.UseParamsStruct {
-		collAccess = "p." + batchParam.FieldName
+		b.WriteString("\t\tchunkP := p\n")
+		fmt.Fprintf(b, "\t\tchunkP.%s = chunk\n", batchParam.FieldName)
 	}
-
-	// <Name>Batch
-	fmt.Fprintf(b, "func (q *Queries) %sBatch(ctx context.Context%s) ([]%s, error) {\n", cs.Name, sigWithLeadingComma, cs.RowTypeName)
-	fmt.Fprintf(b, "\treturn q.%sBatchInto(ctx, nil%s)\n", cs.Name, callWithLeadingComma)
+	fmt.Fprintf(b, "\t\tres, err := q.%s(ctx%s)\n", cs.Name, callBatchArgs)
+	b.WriteString("\t\tif err != nil {\n\t\t\treturn err\n\t\t}\n")
+	b.WriteString("\t\tbatchRes.Add(res)\n")
+	b.WriteString("\t\tchunk = chunk[:0]\n\t\treturn nil\n\t}\n")
+	b.WriteString("\tfor item, err := range seq {\n")
+	b.WriteString("\t\tif err != nil {\n\t\t\treturn nil, err\n\t\t}\n")
+	b.WriteString("\t\tchunk = append(chunk, item)\n")
+	b.WriteString("\t\tif len(chunk) >= chunkCap {\n")
+	b.WriteString("\t\t\tif err := flushChunk(); err != nil {\n\t\t\t\treturn nil, err\n\t\t\t}\n")
+	b.WriteString("\t\t}\n\t}\n")
+	b.WriteString("\tif err := flushChunk(); err != nil {\n\t\treturn nil, err\n\t}\n")
+	b.WriteString("\treturn batchRes, nil\n")
 	b.WriteString("}\n\n")
+}
 
-	// <Name>BatchInto
-	fmt.Fprintf(b, "func (q *Queries) %sBatchInto(ctx context.Context, dst []%s%s) ([]%s, error) {\n", cs.Name, cs.RowTypeName, sigWithLeadingComma, cs.RowTypeName)
-	fmt.Fprintf(b, "\ttotalRows := len(%s)\n", collAccess)
-	b.WriteString("\tif totalRows == 0 {\n\t\treturn nil, runtime.ErrEmptySliceParam\n\t}\n")
-	if !cs.UseParamsStruct {
-		fmt.Fprintf(b, "\tp := %s{\n", paramsStructName)
-		for _, p := range cs.Params {
-			fmt.Fprintf(b, "\t\t%s: %s,\n", p.FieldName, p.ParamName)
-		}
-		b.WriteString("\t}\n")
+// emitManyChunkedCollect emits the body of the slice form of a many statement whose single collection
+// parameter is chunked: like the exec form, more than one chunk runs in an implicit transaction (the rows
+// of an INSERT ... RETURNING are then all or nothing) and the rows of all chunks are concatenated in order.
+func emitManyChunkedCollect(b *bytes.Buffer, cs *compiledStmt, paramsStructName, callWithLeadingComma string) {
+	collAccess := cs.batchAccess()
+	if cs.batchIsValues() {
+		fmt.Fprintf(b, "\tif len(%s) == 0 {\n\t\treturn nil, nil\n\t}\n", collAccess)
 	}
+	fmt.Fprintf(b, "\ttotalRows := len(%s)\n", collAccess)
+	emitBatchParamsInit(b, cs, "\t", paramsStructName)
 	fmt.Fprintf(b, "\t_, colMask, flagMask, _ := compute%sKey(p)\n", cs.Name)
 	fmt.Fprintf(b, "\tmaxRows := q.cache.MaxRowsPerBatch(sqlDialect, %d, %d)\n", cs.ScalarParamCnt, cs.BatchArity)
 	fmt.Fprintf(b, "\tfirstChunk := q.cache.PlanBatchChunk(stmtID%s, colMask, flagMask, totalRows, maxRows, true)\n", cs.Name)
@@ -4005,32 +4046,35 @@ func emitManyBatchAndStreamMethods(
 	b.WriteString("\t\ttargetQ = q.WithTx(autoTx)\n")
 	b.WriteString("\t\tdefer func() { _ = targetQ.Close() }()\n")
 	b.WriteString("\t}\n")
-	fmt.Fprintf(b, "\tfor row, err := range targetQ.%sBatchSeq(ctx%s) {\n", cs.Name, callWithLeadingComma)
-	b.WriteString("\t\tif err != nil {\n")
-	b.WriteString("\t\t\tif autoTx != nil {\n\t\t\t\t_ = autoTx.Rollback()\n\t\t\t}\n")
-	b.WriteString("\t\t\treturn nil, err\n")
-	b.WriteString("\t\t}\n")
-	b.WriteString("\t\tdst = append(dst, row)\n")
-	b.WriteString("\t}\n")
+	fmt.Fprintf(b, "\tout, err := runtime.Collect(targetQ.%sSeq(ctx%s))\n", cs.Name, callWithLeadingComma)
 	b.WriteString("\tif autoTx != nil {\n")
+	b.WriteString("\t\tif err != nil {\n\t\t\t_ = autoTx.Rollback()\n\t\t\treturn nil, err\n\t\t}\n")
 	b.WriteString("\t\tif err := autoTx.Commit(); err != nil {\n\t\t\treturn nil, err\n\t\t}\n")
 	b.WriteString("\t}\n")
-	b.WriteString("\treturn dst, nil\n")
-	b.WriteString("}\n\n")
+	b.WriteString("\treturn out, err\n")
+}
 
-	// <Name>BatchSeq
-	fmt.Fprintf(b, "func (q *Queries) %sBatchSeq(ctx context.Context%s) iter.Seq2[%s, error] {\n", cs.Name, sigWithLeadingComma, cs.RowTypeName)
+// emitManyChunkedSeq emits <Name>Seq of a many statement whose single collection parameter is chunked:
+// the chunks run one after the other and their rows are yielded in order.
+func emitManyChunkedSeq(
+	b *bytes.Buffer,
+	cs *compiledStmt,
+	sigWithLeadingComma, paramsStructName string,
+	emitStackRenderInput func(indent, pVar string),
+) {
+	batchParam := cs.Params[cs.BatchParamIdx]
+	collAccess := cs.batchAccess()
+
+	fmt.Fprintf(b, "func (q *Queries) %sSeq(ctx context.Context%s) iter.Seq2[%s, error] {\n", cs.Name, sigWithLeadingComma, cs.RowTypeName)
 	b.WriteString("\treturn func(yield func(" + cs.RowTypeName + ", error) bool) {\n")
 	fmt.Fprintf(b, "\t\tvar zero %s\n", cs.RowTypeName)
 	fmt.Fprintf(b, "\t\ttotalRows := len(%s)\n", collAccess)
-	b.WriteString("\t\tif totalRows == 0 {\n\t\t\tyield(zero, runtime.ErrEmptySliceParam)\n\t\t\treturn\n\t\t}\n")
-	if !cs.UseParamsStruct {
-		fmt.Fprintf(b, "\t\tp := %s{\n", paramsStructName)
-		for _, p := range cs.Params {
-			fmt.Fprintf(b, "\t\t\t%s: %s,\n", p.FieldName, p.ParamName)
-		}
-		b.WriteString("\t\t}\n")
+	if cs.batchIsValues() {
+		b.WriteString("\t\tif totalRows == 0 {\n\t\t\treturn\n\t\t}\n")
+	} else {
+		b.WriteString("\t\tif totalRows == 0 {\n\t\t\tyield(zero, runtime.ErrEmptySliceParam)\n\t\t\treturn\n\t\t}\n")
 	}
+	emitBatchParamsInit(b, cs, "\t\t", paramsStructName)
 	emitBatchGlobalPresortSetup(b, cs, "\t\t", collAccess)
 	fmt.Fprintf(b, "\t\t_, colMask, flagMask, _ := compute%sKey(p)\n", cs.Name)
 	b.WriteString("\t\tshapeTag := runtime.ComputeBatchShapeTag(colMask, flagMask)\n")
@@ -4049,7 +4093,7 @@ func emitManyBatchAndStreamMethods(
 	fmt.Fprintf(b, "\t\t\tchunkP.%s = chunkRows\n", batchParam.FieldName)
 	fmt.Fprintf(b, "\t\t\tvk, _, _, approxArgs := compute%sKey(chunkP)\n", cs.Name)
 	b.WriteString("\t\t\targBuf := runtime.AcquireArgsCap(approxArgs)\n")
-	emitBatchChunkExpansion(b, cs, "\t\t\t", collAccess, "\t\t\t\truntime.ReleaseArgs(argBuf)\n\t\t\t\tyield(zero, err)\n\t\t\t\treturn\n")
+	emitBatchChunkExpansion(b, cs, "\t\t\t", collAccess, "")
 	emitStackRenderInput("\t\t\t", "chunkP")
 	b.WriteString("\t\t\tvar err error\n")
 	fmt.Fprintf(b, "\t\t\tsqlRows, ms, err = q.cache.Query(ctx, q.db, q.txCache, q.usePrepared, vk, stmtID%s, shapeTag, chunkSize, nil, sqlDialect, desc%s, &in, (*argBuf)...)\n", cs.Name, cs.Name)
@@ -4079,72 +4123,59 @@ func emitManyBatchAndStreamMethods(
 	b.WriteString("\t\t}\n")
 	b.WriteString("\t}\n")
 	b.WriteString("}\n\n")
+}
 
-	// <Name>BatchEach
-	fmt.Fprintf(b, "func (q *Queries) %sBatchEach(ctx context.Context%s, fn func(%s) error) error {\n", cs.Name, sigWithLeadingComma, cs.RowTypeName)
-	b.WriteString("\tif fn == nil {\n\t\treturn runtime.ErrNilArgument\n\t}\n")
-	fmt.Fprintf(b, "\tfor row, err := range q.%sBatchSeq(ctx%s) {\n", cs.Name, callWithLeadingComma)
-	b.WriteString("\t\tif err != nil {\n\t\t\treturn err\n\t\t}\n")
-	b.WriteString("\t\tif err := fn(row); err != nil {\n\t\t\treturn err\n\t\t}\n")
+// emitManyStream emits <Name>StreamSeq and <Name>Stream of a many statement with a tuple-slice
+// collection: the statement fed from an iterator in pooled chunks, each flushed through <Name>Seq.
+func emitManyStream(b *bytes.Buffer, cs *compiledStmt, paramsStructName string) {
+	batchParam := cs.Params[cs.BatchParamIdx]
+	sigStream, callBatchArgs := buildStreamSignatures(cs, paramsStructName)
+	poolName := lowerFirstIdent(batchParam.ElemGoType) + "ChunkPool"
+
+	fmt.Fprintf(b, "func (q *Queries) %sStreamSeq(ctx context.Context%s) iter.Seq2[%s, error] {\n", cs.Name, sigStream, cs.RowTypeName)
+	b.WriteString("\treturn func(yield func(" + cs.RowTypeName + ", error) bool) {\n")
+	fmt.Fprintf(b, "\t\tvar zero %s\n", cs.RowTypeName)
+	b.WriteString("\t\tif seq == nil {\n\t\t\tyield(zero, runtime.ErrNilArgument)\n\t\t\treturn\n\t\t}\n")
+	fmt.Fprintf(b, "\t\tchunkCap := min(256, q.cache.MaxRowsPerBatch(sqlDialect, %d, %d))\n", cs.ScalarParamCnt, cs.BatchArity)
+	fmt.Fprintf(b, "\t\tbufPtr := %s.Get().(*[]%s)\n", poolName, batchParam.ElemGoType)
+	b.WriteString("\t\tchunk := (*bufPtr)[:0]\n")
+	b.WriteString("\t\tdefer func() {\n\t\t\tclear(chunk[:cap(chunk)])\n\t\t\t*bufPtr = chunk[:0]\n")
+	fmt.Fprintf(b, "\t\t\t%s.Put(bufPtr)\n\t\t}()\n", poolName)
+	b.WriteString("\t\tflushChunk := func() bool {\n")
+	b.WriteString("\t\t\tif len(chunk) == 0 {\n\t\t\t\treturn true\n\t\t\t}\n")
+	if cs.UseParamsStruct {
+		b.WriteString("\t\t\tchunkP := p\n")
+		fmt.Fprintf(b, "\t\t\tchunkP.%s = chunk\n", batchParam.FieldName)
+	}
+	fmt.Fprintf(b, "\t\t\tfor r, err := range q.%sSeq(ctx%s) {\n", cs.Name, callBatchArgs)
+	b.WriteString("\t\t\t\tif err != nil {\n\t\t\t\t\tyield(zero, err)\n\t\t\t\t\treturn false\n\t\t\t\t}\n")
+	b.WriteString("\t\t\t\tif !yield(r, nil) {\n\t\t\t\t\treturn false\n\t\t\t\t}\n")
+	b.WriteString("\t\t\t}\n")
+	b.WriteString("\t\t\tchunk = chunk[:0]\n\t\t\treturn true\n\t\t}\n")
+	b.WriteString("\t\tfor item, err := range seq {\n")
+	b.WriteString("\t\t\tif err != nil {\n\t\t\t\tyield(zero, err)\n\t\t\t\treturn\n\t\t\t}\n")
+	b.WriteString("\t\t\tchunk = append(chunk, item)\n")
+	b.WriteString("\t\t\tif len(chunk) >= chunkCap {\n")
+	b.WriteString("\t\t\t\tif !flushChunk() {\n\t\t\t\t\treturn\n\t\t\t\t}\n")
+	b.WriteString("\t\t\t}\n\t\t}\n")
+	b.WriteString("\t\t_ = flushChunk()\n")
 	b.WriteString("\t}\n")
-	b.WriteString("\treturn nil\n")
 	b.WriteString("}\n\n")
 
-	// <Name>Stream and <Name>StreamSeq
-	if cs.CanStream {
-		sigStream, callBatchArgs := buildStreamSignatures(cs, paramsStructName)
-		poolName := lowerFirstIdent(batchParam.ElemGoType) + "ChunkPool"
-
-		fmt.Fprintf(b, "func (q *Queries) %sStreamSeq(ctx context.Context%s) iter.Seq2[%s, error] {\n", cs.Name, sigStream, cs.RowTypeName)
-		b.WriteString("\treturn func(yield func(" + cs.RowTypeName + ", error) bool) {\n")
-		fmt.Fprintf(b, "\t\tvar zero %s\n", cs.RowTypeName)
-		b.WriteString("\t\tif seq == nil {\n\t\t\tyield(zero, runtime.ErrNilArgument)\n\t\t\treturn\n\t\t}\n")
-		fmt.Fprintf(b, "\t\tchunkCap := min(256, q.cache.MaxRowsPerBatch(sqlDialect, %d, %d))\n", cs.ScalarParamCnt, cs.BatchArity)
-		fmt.Fprintf(b, "\t\tbufPtr := %s.Get().(*[]%s)\n", poolName, batchParam.ElemGoType)
-		b.WriteString("\t\tchunk := (*bufPtr)[:0]\n")
-		b.WriteString("\t\tdefer func() {\n\t\t\tclear(chunk[:cap(chunk)])\n\t\t\t*bufPtr = chunk[:0]\n")
-		fmt.Fprintf(b, "\t\t\t%s.Put(bufPtr)\n\t\t}()\n", poolName)
-		b.WriteString("\t\tflushChunk := func() bool {\n")
-		b.WriteString("\t\t\tif len(chunk) == 0 {\n\t\t\t\treturn true\n\t\t\t}\n")
-		if cs.UseParamsStruct {
-			b.WriteString("\t\t\tchunkP := p\n")
-			fmt.Fprintf(b, "\t\t\tchunkP.%s = chunk\n", batchParam.FieldName)
-		}
-		fmt.Fprintf(b, "\t\t\tfor r, err := range q.%sBatchSeq(ctx%s) {\n", cs.Name, callBatchArgs)
-		b.WriteString("\t\t\t\tif err != nil {\n\t\t\t\t\tyield(zero, err)\n\t\t\t\t\treturn false\n\t\t\t\t}\n")
-		b.WriteString("\t\t\t\tif !yield(r, nil) {\n\t\t\t\t\treturn false\n\t\t\t\t}\n")
-		b.WriteString("\t\t\t}\n")
-		b.WriteString("\t\t\tchunk = chunk[:0]\n\t\t\treturn true\n\t\t}\n")
-		b.WriteString("\t\tfor item, err := range seq {\n")
-		b.WriteString("\t\t\tif err != nil {\n\t\t\t\tyield(zero, err)\n\t\t\t\treturn\n\t\t\t}\n")
-		b.WriteString("\t\t\tchunk = append(chunk, item)\n")
-		b.WriteString("\t\t\tif len(chunk) >= chunkCap {\n")
-		b.WriteString("\t\t\t\tif !flushChunk() {\n\t\t\t\t\treturn\n\t\t\t\t}\n")
-		b.WriteString("\t\t\t}\n\t\t}\n")
-		b.WriteString("\t\t_ = flushChunk()\n")
-		b.WriteString("\t}\n")
-		b.WriteString("}\n\n")
-
-		fmt.Fprintf(b, "func (q *Queries) %sStream(ctx context.Context%s) ([]%s, error) {\n", cs.Name, sigStream, cs.RowTypeName)
-		fmt.Fprintf(b, "\tvar out []%s\n", cs.RowTypeName)
-		var forwardArgs []byte
-		if cs.UseParamsStruct {
-			forwardArgs = append(forwardArgs, ", p, seq"...)
-		} else {
-			for i, p := range cs.Params {
-				forwardArgs = append(forwardArgs, ", "...)
-				if i == cs.BatchParamIdx {
-					forwardArgs = append(forwardArgs, "seq"...)
-				} else {
-					forwardArgs = append(forwardArgs, p.ParamName...)
-				}
+	fmt.Fprintf(b, "func (q *Queries) %sStream(ctx context.Context%s) ([]%s, error) {\n", cs.Name, sigStream, cs.RowTypeName)
+	var forwardArgs []byte
+	if cs.UseParamsStruct {
+		forwardArgs = append(forwardArgs, ", p, seq"...)
+	} else {
+		for i, p := range cs.Params {
+			forwardArgs = append(forwardArgs, ", "...)
+			if i == cs.BatchParamIdx {
+				forwardArgs = append(forwardArgs, "seq"...)
+			} else {
+				forwardArgs = append(forwardArgs, p.ParamName...)
 			}
 		}
-		fmt.Fprintf(b, "\tfor r, err := range q.%sStreamSeq(ctx%s) {\n", cs.Name, string(forwardArgs))
-		b.WriteString("\t\tif err != nil {\n\t\t\treturn nil, err\n\t\t}\n")
-		b.WriteString("\t\tout = append(out, r)\n")
-		b.WriteString("\t}\n")
-		b.WriteString("\treturn out, nil\n")
-		b.WriteString("}\n\n")
 	}
+	fmt.Fprintf(b, "\treturn runtime.Collect(q.%sStreamSeq(ctx%s))\n", cs.Name, string(forwardArgs))
+	b.WriteString("}\n\n")
 }

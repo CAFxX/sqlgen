@@ -282,8 +282,11 @@ func TestIfElseAndAbortOverTheWire(t *testing.T) {
 		if !thenRes.Taken() || elseRes.Taken() {
 			t.Fatalf("taken = %v / %v", thenRes.Taken(), elseRes.Taken())
 		}
-		if !skipped.Skipped() || taken.Skipped() {
-			t.Fatalf("skipped = %v / %v", skipped.Skipped(), taken.Skipped())
+		if _, serr := skipped.Result(); !errors.Is(serr, runtime.ErrBranchNotTaken) {
+			t.Fatalf("untaken branch future: err = %v, want ErrBranchNotTaken", serr)
+		}
+		if _, terr := taken.Result(); errors.Is(terr, runtime.ErrBranchNotTaken) {
+			t.Fatalf("taken branch future reports ErrBranchNotTaken")
 		}
 		sameRows(t, k.rows(t, plain), []row{{1, 11}, {2, 20}, {3, 30}})
 
@@ -321,8 +324,8 @@ func TestSeveralConditionsOverOneFuture(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if !first.Taken() || second.Taken() || !third.Taken() || !skipped.Skipped() {
-			t.Fatalf("taken = %v %v %v, skipped = %v", first.Taken(), second.Taken(), third.Taken(), skipped.Skipped())
+		if _, serr := skipped.Result(); !first.Taken() || second.Taken() || !third.Taken() || !errors.Is(serr, runtime.ErrBranchNotTaken) {
+			t.Fatalf("taken = %v %v %v, skipped err = %v", first.Taken(), second.Taken(), third.Taken(), serr)
 		}
 		sameRows(t, k.rows(t, plain), []row{{1, 11}, {2, 23}, {3, 37}})
 	})

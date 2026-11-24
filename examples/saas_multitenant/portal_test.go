@@ -328,7 +328,7 @@ func TestSaaSMultitenantPortalEndToEnd(t *testing.T) {
 
 	// 5. Exercise Seq, Each, Query currying, Pipeline, and error paths
 	var eachMembers int
-	if err := q.SearchMembersEach(ctx, SearchMembersParams{OrgID: 1}, func(r MemberRow) error {
+	if err := runtime.Each(q.SearchMembersSeq(ctx, SearchMembersParams{OrgID: 1}), func(r MemberRow) error {
 		eachMembers++
 		return nil
 	}); err != nil || eachMembers != 60 {
@@ -339,24 +339,24 @@ func TestSaaSMultitenantPortalEndToEnd(t *testing.T) {
 		break
 	}
 	errStop := errors.New("stop iteration")
-	if err := q.SearchMembersEach(ctx, SearchMembersParams{OrgID: 1}, func(r MemberRow) error {
+	if err := runtime.Each(q.SearchMembersSeq(ctx, SearchMembersParams{OrgID: 1}), func(r MemberRow) error {
 		return errStop
 	}); !errors.Is(err, errStop) {
 		t.Fatalf("expected errStop from SearchMembersEach, got %v", err)
 	}
-	if err := q.SearchMembersEach(ctx, SearchMembersParams{OrgID: 1, FilterStatuses: true, Statuses: nil}, func(r MemberRow) error {
+	if err := runtime.Each(q.SearchMembersSeq(ctx, SearchMembersParams{OrgID: 1, FilterStatuses: true, Statuses: nil}), func(r MemberRow) error {
 		return nil
 	}); !errors.Is(err, runtime.ErrEmptySliceParam) {
 		t.Fatalf("expected ErrEmptySliceParam from SearchMembersEach, got %v", err)
 	}
 
 	var eachPaged int
-	if err := q.ListMembersPaginatedEach(ctx, ListMembersPaginatedParams{
+	if err := runtime.Each(q.ListMembersPaginatedSeq(ctx, ListMembersPaginatedParams{
 		OrgID:      1,
 		Sort:       sortConfigs[0].order,
 		Limit:      10,
 		SelectCols: MemberItemColID | MemberItemColEmail | MemberItemColRole,
-	}, func(r MemberItem) error {
+	}), func(r MemberItem) error {
 		eachPaged++
 		_ = SeekMemberItem(r)
 		_ = SeekListMembersPaginated(r)
@@ -367,12 +367,12 @@ func TestSaaSMultitenantPortalEndToEnd(t *testing.T) {
 	for range q.ListMembersPaginatedSeq(ctx, ListMembersPaginatedParams{OrgID: 1, Sort: sortConfigs[0].order, Limit: 5}) {
 		break
 	}
-	if err := q.ListMembersPaginatedEach(ctx, ListMembersPaginatedParams{OrgID: 1, Sort: sortConfigs[0].order, Limit: 5}, func(r MemberItem) error {
+	if err := runtime.Each(q.ListMembersPaginatedSeq(ctx, ListMembersPaginatedParams{OrgID: 1, Sort: sortConfigs[0].order, Limit: 5}), func(r MemberItem) error {
 		return errStop
 	}); !errors.Is(err, errStop) {
 		t.Fatalf("expected errStop from ListMembersPaginatedEach, got %v", err)
 	}
-	if err := q.ListMembersPaginatedEach(ctx, ListMembersPaginatedParams{OrgID: 1, After: NewSeek("bad"), Sort: sortConfigs[0].order, Limit: 5}, func(r MemberItem) error {
+	if err := runtime.Each(q.ListMembersPaginatedSeq(ctx, ListMembersPaginatedParams{OrgID: 1, After: NewSeek("bad"), Sort: sortConfigs[0].order, Limit: 5}), func(r MemberItem) error {
 		return nil
 	}); !errors.Is(err, runtime.ErrInvalidSeek) {
 		t.Fatalf("expected ErrInvalidSeek from ListMembersPaginatedEach, got %v", err)
@@ -381,7 +381,7 @@ func TestSaaSMultitenantPortalEndToEnd(t *testing.T) {
 	activeQ := ActiveOrgsQuery(plans)
 	cohortQ := CohortMemberIDsQuery(activeQ, minScore)
 	var eachSummary int
-	if err := q.AggregateCohortInvoicesEach(ctx, cohortQ, invStatus, func(r CohortInvoiceSummary) error {
+	if err := runtime.Each(q.AggregateCohortInvoicesSeq(ctx, cohortQ, invStatus), func(r CohortInvoiceSummary) error {
 		eachSummary++
 		return nil
 	}); err != nil || eachSummary != len(wantSummary) {
@@ -390,12 +390,12 @@ func TestSaaSMultitenantPortalEndToEnd(t *testing.T) {
 	for range q.AggregateCohortInvoicesSeq(ctx, cohortQ, invStatus) {
 		break
 	}
-	if err := q.AggregateCohortInvoicesEach(ctx, cohortQ, invStatus, func(r CohortInvoiceSummary) error {
+	if err := runtime.Each(q.AggregateCohortInvoicesSeq(ctx, cohortQ, invStatus), func(r CohortInvoiceSummary) error {
 		return errStop
 	}); !errors.Is(err, errStop) {
 		t.Fatalf("expected errStop from AggregateCohortInvoicesEach, got %v", err)
 	}
-	if err := q.AggregateCohortInvoicesEach(ctx, CohortMemberIDsQuery(ActiveOrgsQuery(nil), 0), invStatus, func(r CohortInvoiceSummary) error {
+	if err := runtime.Each(q.AggregateCohortInvoicesSeq(ctx, CohortMemberIDsQuery(ActiveOrgsQuery(nil), 0), invStatus), func(r CohortInvoiceSummary) error {
 		return nil
 	}); !errors.Is(err, runtime.ErrEmptySliceParam) {
 		t.Fatalf("expected ErrEmptySliceParam from AggregateCohortInvoicesEach, got %v", err)

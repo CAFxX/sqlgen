@@ -135,6 +135,22 @@ statements:
       SELECT id:int64 FROM users
       WHERE (score = :Score:int64 OR score + 1 = :Score:int64 OR score + 2 = :Score:int64) AND id IN (:IDs:[]int64)
 
+  - name: UserEmailBytes
+    kind: one
+    sql: |
+      SELECT CAST(email AS BLOB) AS raw:[]byte FROM users WHERE id = :ID:int64
+
+  - name: UserBioIfSet
+    kind: many
+    sql: |
+      SELECT NULLIF(bio, '') AS bio:*string FROM users ORDER BY id
+
+  - name: UserEmailOnly
+    kind: one
+    result_type: EmailOnly
+    sql: |
+      SELECT email:string FROM users WHERE id = :ID:int64
+
   - name: PageQuad
     kind: many
     params_struct: true
@@ -469,7 +485,7 @@ func TestPostgresSQLGeneration(t *testing.T) {
 	}
 }
 
-func setupE2EDB(t *testing.T) (*sql.DB, *Queries) {
+func setupE2EDB(t testing.TB) (*sql.DB, *Queries) {
 	t.Helper()
 	dbPath := filepath.Join(t.TempDir(), "e2e.db")
 	db, err := sql.Open("sqlite", dbPath+"?_pragma=journal_mode(WAL)&_pragma=synchronous(OFF)&_pragma=busy_timeout(5000)")
@@ -572,7 +588,7 @@ func TestE2EFixedArityAndDualConsumption(t *testing.T) {
 	}
 
 	prealloc := make([]User, 0, 8)
-	usersInto, err := q.ListUsersByIDsInto(ctx, prealloc, []int64{2, 4})
+	usersInto, err := runtime.AppendTo(prealloc, q.ListUsersByIDsSeq(ctx, []int64{2, 4}))
 	if err != nil || len(usersInto) != 2 || cap(usersInto) != 8 {
 		t.Fatalf("ListUsersByIDsInto failed: len=%d cap=%d err=%v", len(usersInto), cap(usersInto), err)
 	}
@@ -592,7 +608,7 @@ func TestE2EFixedArityAndDualConsumption(t *testing.T) {
 	}
 
 	var eachIDs []int64
-	if err := q.ListUsersByIDsEach(ctx, []int64{4, 6}, func(u User) error {
+	if err := runtime.Each(q.ListUsersByIDsSeq(ctx, []int64{4, 6}), func(u User) error {
 		eachIDs = append(eachIDs, u.ID)
 		return nil
 	}); err != nil {
@@ -814,11 +830,11 @@ func TestE2EAdaptiveMultiRowBatchExecution(t *testing.T) {
 		if _, err := db.Exec(`DELETE FROM batch_users`); err != nil {
 			t.Fatal(err)
 		}
-		inserted1000, err := q.InsertUsersBatchReturningBatch(ctx, makeInsertBatch(1, 1000))
+		inserted1000, err := q.InsertUsersBatchReturning(ctx, makeInsertBatch(1, 1000))
 		if err != nil || len(inserted1000) != 1000 {
 			t.Fatalf("run %d Insert 1000: len=%d err=%v", run, len(inserted1000), err)
 		}
-		inserted900, err := q.InsertUsersBatchReturningBatch(ctx, makeInsertBatch(1001, 900))
+		inserted900, err := q.InsertUsersBatchReturning(ctx, makeInsertBatch(1001, 900))
 		if err != nil || len(inserted900) != 900 {
 			t.Fatalf("run %d Insert 900: len=%d err=%v", run, len(inserted900), err)
 		}
@@ -834,7 +850,7 @@ func TestE2EAdaptiveMultiRowBatchExecution(t *testing.T) {
 	if _, err := db.Exec(`DELETE FROM batch_users`); err != nil {
 		t.Fatal(err)
 	}
-	inserted2900, err := q.InsertUsersBatchReturningBatch(ctx, makeInsertBatch(1, 2900))
+	inserted2900, err := q.InsertUsersBatchReturning(ctx, makeInsertBatch(1, 2900))
 	if err != nil || len(inserted2900) != 2900 {
 		t.Fatalf("Insert 2900 failed: len=%d err=%v", len(inserted2900), err)
 	}
@@ -843,9 +859,9 @@ func TestE2EAdaptiveMultiRowBatchExecution(t *testing.T) {
 	for i := 0; i < 2900; i++ {
 		updates[i] = BatchBonusInput{ID: int64(i + 1), Bonus: 5}
 	}
-	updRes, err := q.UpdateUsersBatchFromValuesBatch(ctx, updates)
+	updRes, err := q.UpdateUsersBatchFromValues(ctx, updates)
 	if err != nil {
-		t.Fatalf("UpdateUsersBatchFromValuesBatch(2900): %v", err)
+		t.Fatalf("UpdateUsersBatchFromValues(2900): %v", err)
 	}
 	aff, _ := updRes.RowsAffected()
 	if aff != 2900 {
@@ -856,7 +872,7 @@ func TestE2EAdaptiveMultiRowBatchExecution(t *testing.T) {
 		t.Fatal(err)
 	}
 	yielded := 0
-	for row, err := range q.InsertUsersBatchReturningBatchSeq(ctx, makeInsertBatch(1, 300)) {
+	for row, err := range q.InsertUsersBatchReturningSeq(ctx, makeInsertBatch(1, 300)) {
 		if err != nil {
 			t.Fatalf("BatchSeq error: %v", err)
 		}
@@ -879,7 +895,7 @@ func TestE2EAdaptiveMultiRowBatchExecution(t *testing.T) {
 
 	errBoom := errors.New("rollback test")
 	_ = q.InTx(ctx, nil, func(txQ *Queries) error {
-		if _, err := txQ.InsertUsersBatchReturningBatch(ctx, makeInsertBatch(5000, 20)); err != nil {
+		if _, err := txQ.InsertUsersBatchReturning(ctx, makeInsertBatch(5000, 20)); err != nil {
 			return err
 		}
 		return errBoom
@@ -901,12 +917,20 @@ func TestE2EGeneratedCodeUpToDate(t *testing.T) {
 	if len(src) == 0 {
 		t.Fatalf("expected non-empty generated Go source")
 	}
+	if os.Getenv("SQLGEN_UPDATE_E2E") != "" {
+		// Regenerates the checked-in file after a deliberate generator change:
+		//   SQLGEN_UPDATE_E2E=1 go test -run TestE2EGeneratedCodeUpToDate .
+		if err := os.WriteFile("e2e_gen_test.go", src, 0o644); err != nil {
+			t.Fatalf("WriteFile(e2e_gen_test.go): %v", err)
+		}
+		return
+	}
 	onDisk, err := os.ReadFile("e2e_gen_test.go")
 	if err != nil {
 		t.Fatalf("ReadFile(e2e_gen_test.go): %v", err)
 	}
 	if !bytes.Equal(src, onDisk) {
-		t.Fatalf("e2e_gen_test.go is out of date with e2eYAML")
+		t.Fatalf("e2e_gen_test.go is out of date with e2eYAML (SQLGEN_UPDATE_E2E=1 go test -run TestE2EGeneratedCodeUpToDate . regenerates it)")
 	}
 }
 
@@ -1019,7 +1043,7 @@ statements:
 			yaml: `package: iso10
 dialect: postgres
 statements:
-  - name: InsertItemsBatch
+  - name: InsertItems
     kind: exec
     sql: INSERT INTO items (id, name) VALUES :Rows:[]ItemInput(ID:int64 ASC, Name:string)
 `,
@@ -1044,8 +1068,35 @@ statements:
     sql: UPDATE items SET updated_at = :UpdatedAt:time.Time WHERE id = :ID:int64
   - name: GetItemScore
     kind: one
-    result_type: int64
     sql: SELECT score:int64 FROM items WHERE id = :ID:int64
+`,
+		},
+		{
+			name: "13_scalar_returns",
+			yaml: `package: iso13
+dialect: postgres
+statements:
+  - name: CreatedAt
+    kind: one
+    sql: SELECT created_at:time.Time FROM items WHERE id = :ID:int64
+  - name: Payloads
+    kind: many
+    sql: SELECT payload:[]byte FROM items WHERE tenant = :Tenant:string
+  - name: Notes
+    kind: many
+    sql: SELECT note:*string FROM items ORDER BY id
+  - name: ScoreRow
+    kind: one
+    result_type: ScoreOnly
+    sql: SELECT score:int64 FROM items WHERE id = :ID:int64
+  - name: ScoreRowsAgain
+    kind: many
+    result_type: ScoreOnly
+    sql: SELECT score:int64 FROM items WHERE tenant = :Tenant:string
+  - name: ScoresByID
+    kind: many
+    sql: |
+      INSERT INTO items (id, score) VALUES :Rows:[]ScoreIn(ID:int64 ASC, Score:int64) RETURNING score:int64
 `,
 		},
 	}
@@ -1110,8 +1161,8 @@ func TestPropertyKeysetPaginationEquivalence(t *testing.T) {
 			CreatedTs: timestamps[rng.IntN(len(timestamps))],
 		}
 	}
-	if _, err := q.InsertQuadBatchBatch(ctx, inputs); err != nil {
-		t.Fatalf("InsertQuadBatchBatch(250): %v", err)
+	if _, err := q.InsertQuadBatch(ctx, inputs); err != nil {
+		t.Fatalf("InsertQuadBatch(250): %v", err)
 	}
 
 	pageSizes := []int64{1, 2, 7, 25, 250, 500}
@@ -1482,7 +1533,7 @@ func TestMaxOpenConns1DeadlockGate(t *testing.T) {
 		if _, err := txQ.ListUsersByIDs(ctx, []int64{1, 2, 3}); err != nil {
 			return err
 		}
-		if _, err := txQ.InsertUsersBatchReturningBatch(ctx, []BatchUserInput{
+		if _, err := txQ.InsertUsersBatchReturning(ctx, []BatchUserInput{
 			{ID: 10, Name: "b10", Points: 1},
 			{ID: 11, Name: "b11", Points: 2},
 		}); err != nil {
@@ -1558,7 +1609,7 @@ func TestGeneratorAndE2EAdditionalCoverage(t *testing.T) {
 	if _, err := q.InsertUsersBatchReturning(ctx, batchIn); err != nil {
 		t.Fatalf("InsertUsersBatchReturning: %v", err)
 	}
-	if _, err := q.InsertUsersBatchReturningInto(ctx, nil, []BatchUserInput{{ID: 3, Name: "c", Points: 30}}); err != nil {
+	if _, err := runtime.AppendTo(nil, q.InsertUsersBatchReturningSeq(ctx, []BatchUserInput{{ID: 3, Name: "c", Points: 30}})); err != nil {
 		t.Fatalf("InsertUsersBatchReturningInto: %v", err)
 	}
 	for _, err := range q.InsertUsersBatchReturningSeq(ctx, []BatchUserInput{{ID: 4, Name: "d", Points: 40}}) {
@@ -1566,8 +1617,8 @@ func TestGeneratorAndE2EAdditionalCoverage(t *testing.T) {
 			t.Fatalf("InsertUsersBatchReturningSeq: %v", err)
 		}
 	}
-	_ = q.InsertUsersBatchReturningEach(ctx, []BatchUserInput{{ID: 5, Name: "e", Points: 50}}, func(InsertUsersBatchReturningRow) error { return nil })
-	_ = q.InsertUsersBatchReturningBatchEach(ctx, []BatchUserInput{{ID: 6, Name: "f", Points: 60}}, func(InsertUsersBatchReturningRow) error { return nil })
+	_ = runtime.Each(q.InsertUsersBatchReturningSeq(ctx, []BatchUserInput{{ID: 5, Name: "e", Points: 50}}), func(InsertUsersBatchReturningRow) error { return nil })
+	_ = runtime.Each(q.InsertUsersBatchReturningSeq(ctx, []BatchUserInput{{ID: 6, Name: "f", Points: 60}}), func(InsertUsersBatchReturningRow) error { return nil })
 	if _, err := q.InsertUsersBatchReturningStream(ctx, runtime.FromSlice([]BatchUserInput{{ID: 7, Name: "g", Points: 70}})); err != nil {
 		t.Fatalf("InsertUsersBatchReturningStream: %v", err)
 	}
@@ -1598,14 +1649,14 @@ func TestGeneratorAndE2EAdditionalCoverage(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	_ = q.SelectUserProfileSubsetEach(ctx, SelectUserProfileSubsetParams{OrgID: 1}, func(SelectUserProfileSubsetRow) error { return nil })
+	_ = runtime.Each(q.SelectUserProfileSubsetSeq(ctx, SelectUserProfileSubsetParams{OrgID: 1}), func(SelectUserProfileSubsetRow) error { return nil })
 
 	for _, err := range q.SearchUsersCoupledSeq(ctx, SearchUsersCoupledParams{}) {
 		if err != nil {
 			t.Fatal(err)
 		}
 	}
-	_ = q.SearchUsersCoupledEach(ctx, SearchUsersCoupledParams{}, func(SearchUsersCoupledRow) error { return nil })
+	_ = runtime.Each(q.SearchUsersCoupledSeq(ctx, SearchUsersCoupledParams{}), func(SearchUsersCoupledRow) error { return nil })
 	_ = q.SearchUsersCoupledQuery(SearchUsersCoupledParams{})
 
 	for _, err := range q.PageUsersSeq(ctx, PageUsersParams{Limit: 5}) {
@@ -1613,16 +1664,16 @@ func TestGeneratorAndE2EAdditionalCoverage(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	_ = q.PageUsersEach(ctx, PageUsersParams{Limit: 5}, func(PageUsersRow) error { return nil })
-	_, _ = q.PageUsersInto(ctx, nil, PageUsersParams{Limit: 5})
+	_ = runtime.Each(q.PageUsersSeq(ctx, PageUsersParams{Limit: 5}), func(PageUsersRow) error { return nil })
+	_, _ = runtime.AppendTo(nil, q.PageUsersSeq(ctx, PageUsersParams{Limit: 5}))
 
 	for _, err := range q.UsersFromCTEAndInSubquerySeq(ctx, q.PageUsersQuery(PageUsersParams{Limit: 5}), q.SubUserIDsByScoreQuery(0)) {
 		if err != nil {
 			t.Fatal(err)
 		}
 	}
-	_ = q.UsersFromCTEAndInSubqueryEach(ctx, q.PageUsersQuery(PageUsersParams{Limit: 5}), q.SubUserIDsByScoreQuery(0), func(UsersFromCTEAndInSubqueryRow) error { return nil })
-	_, _ = q.UsersFromCTEAndInSubqueryInto(ctx, nil, q.PageUsersQuery(PageUsersParams{Limit: 5}), q.SubUserIDsByScoreQuery(0))
+	_ = runtime.Each(q.UsersFromCTEAndInSubquerySeq(ctx, q.PageUsersQuery(PageUsersParams{Limit: 5}), q.SubUserIDsByScoreQuery(0)), func(UsersFromCTEAndInSubqueryRow) error { return nil })
+	_, _ = runtime.AppendTo(nil, q.UsersFromCTEAndInSubquerySeq(ctx, q.PageUsersQuery(PageUsersParams{Limit: 5}), q.SubUserIDsByScoreQuery(0)))
 	_ = q.UsersFromCTEAndInSubqueryQuery(q.PageUsersQuery(PageUsersParams{Limit: 5}), q.SubUserIDsByScoreQuery(0))
 
 	for _, err := range q.PageQuadSeq(ctx, PageQuadParams{Limit: 5}) {
@@ -1630,8 +1681,8 @@ func TestGeneratorAndE2EAdditionalCoverage(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	_ = q.PageQuadEach(ctx, PageQuadParams{Limit: 5}, func(QuadItem) error { return nil })
-	_, _ = q.PageQuadInto(ctx, nil, PageQuadParams{Limit: 5})
+	_ = runtime.Each(q.PageQuadSeq(ctx, PageQuadParams{Limit: 5}), func(QuadItem) error { return nil })
+	_, _ = runtime.AppendTo(nil, q.PageQuadSeq(ctx, PageQuadParams{Limit: 5}))
 
 	// Pipeline queueing methods for all statements
 	pl := q.Pipeline(ctx)
@@ -1707,7 +1758,6 @@ dialect: mariadb
 statements:
   - name: ListScoresDesc
     kind: many
-    result_type: int64
     sql: |
       SELECT score:int64
       FROM items
@@ -1911,6 +1961,11 @@ func TestGeneratorRejectsInputsThatCannotGenerateCorrectCode(t *testing.T) {
 		{"param named SelectCols in params struct", "  - name: Q\n    kind: many\n    params_struct: true\n    sql: |\n      SELECT id:int64 FROM t WHERE x = :select_cols:int64\n", "SelectCols projection mask"},
 		{"unconditional column after a conditional one", "  - name: Q\n    kind: many\n    sql: |\n      SELECT id:int64 {?WithName: , name:string}, created:time.Time FROM t\n", "follows a conditional"},
 		{"more than 64 columns", "  - name: Q\n    kind: many\n    sql: |\n      SELECT " + strings.Join(sixtyFive, ", ") + " FROM t\n", "more than 64 unconditional output columns"},
+		{"result_type is a predeclared type", "  - name: Q\n    kind: many\n    result_type: int64\n    sql: |\n      SELECT id:int64 FROM t\n", `result_type "int64" is a predeclared Go identifier`},
+		{"result_type is a predeclared type, several columns", "  - name: Q\n    kind: many\n    result_type: string\n    sql: |\n      SELECT id:int64, name:string FROM t\n", `result_type "string" is a predeclared Go identifier`},
+		{"result_type is a predeclared non-type", "  - name: Q\n    kind: one\n    result_type: nil\n    sql: |\n      SELECT id:int64 FROM t\n", `result_type "nil" is a predeclared Go identifier`},
+		{"result_type is any", "  - name: Q\n    kind: one\n    result_type: any\n    sql: |\n      SELECT id:int64 FROM t\n", `result_type "any" is a predeclared Go identifier`},
+		{"result_type is not an identifier", "  - name: Q\n    kind: one\n    result_type: time.Time\n    sql: |\n      SELECT id:int64 FROM t\n", `invalid result_type identifier`},
 		{"result_type collides with generated type", "  - name: Q\n    kind: many\n    result_type: Order\n    sql: |\n      SELECT id:int64 FROM t\n", `result_type "Order" collides`},
 		{"tuple struct collides with generated type", "  - name: Q\n    kind: exec\n    sql: |\n      INSERT INTO t(a) VALUES :rows:[]Query(A:int64)\n", `tuple struct name "Query" collides`},
 		{"statement named like a generated method", "  - name: Close\n    kind: exec\n    sql: DELETE FROM t\n", `statement name "Close" collides`},

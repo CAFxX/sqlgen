@@ -36,10 +36,6 @@ func (a *myqAPI) Insert(ctx context.Context, rows []item) error {
 	_, err := a.q.InsertItems(ctx, toNewMyq(rows))
 	return err
 }
-func (a *myqAPI) InsertBatch(ctx context.Context, rows []item) error {
-	_, err := a.q.InsertItemsBatch(ctx, toNewMyq(rows))
-	return err
-}
 func (a *myqAPI) InsertStream(ctx context.Context, rows iter.Seq[item]) error {
 	_, err := a.q.InsertItemsStream(ctx, func(yield func(myq.NewItem, error) bool) {
 		for r := range rows {
@@ -56,10 +52,6 @@ func (a *myqAPI) Get(ctx context.Context, id int64) (item, error) {
 }
 func (a *myqAPI) ByIDs(ctx context.Context, ids []int64) ([]item, error) {
 	r, err := a.q.ItemsByIDs(ctx, ids)
-	return fromItemsMyq(r), err
-}
-func (a *myqAPI) ByIDsBatch(ctx context.Context, ids []int64) ([]item, error) {
-	r, err := a.q.ItemsByIDsBatch(ctx, ids)
 	return fromItemsMyq(r), err
 }
 func toSearchParamsMyq(s searchArgs) myq.SearchItemsParams {

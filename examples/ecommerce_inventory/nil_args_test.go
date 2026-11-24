@@ -39,9 +39,9 @@ func TestNilIteratorAndCallbackArgumentsAreErrors(t *testing.T) {
 		"exec Stream":     execStream,
 		"many Stream":     manyStream,
 		"many StreamSeq":  manyStreamSeq,
-		"Each":            q.GetInventoryBySKUsEach(ctx, keys, nil),
-		"BatchEach":       q.GetInventoryBySKUsBatchEach(ctx, keys, nil),
-		"single-row Each": q.StreamFulfilledOrdersEach(ctx, 1, nil),
+		"Each":            runtime.Each(q.GetInventoryBySKUsSeq(ctx, keys), nil),
+		"BatchEach":       runtime.Each(q.GetInventoryBySKUsSeq(ctx, keys), nil),
+		"single-row Each": runtime.Each(q.StreamFulfilledOrdersSeq(ctx, 1), nil),
 		"InTx":            q.InTx(ctx, nil, nil),
 		"PipelineTx":      q.PipelineTx(ctx, nil, nil),
 	} {

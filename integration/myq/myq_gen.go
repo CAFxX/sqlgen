@@ -41,7 +41,7 @@ type Queries struct {
 	cache       *runtime.StmtCache
 	txCache     *runtime.TxStmtCache
 	usePrepared bool
-	fastSlots   *[4]atomic.Pointer[runtime.ManagedStmt]
+	fastSlots   *[5]atomic.Pointer[runtime.ManagedStmt]
 }
 
 // New creates a new Queries instance with a dedicated StmtCache.
@@ -58,7 +58,7 @@ func NewWithCache(db *sql.DB, cache *runtime.StmtCache) *Queries {
 		db:          db,
 		cache:       cache,
 		usePrepared: true,
-		fastSlots:   new([4]atomic.Pointer[runtime.ManagedStmt]),
+		fastSlots:   new([5]atomic.Pointer[runtime.ManagedStmt]),
 	}
 }
 
@@ -293,47 +293,10 @@ func computeInsertItemsKey(p paramsInsertItems) (runtime.VariantKey, uint64, uin
 }
 
 func (q *Queries) InsertItems(ctx context.Context, rows []NewItem) (sql.Result, error) {
-	p := paramsInsertItems{
-		Rows: rows,
+	if len(rows) == 0 {
+		return runtime.BatchExecResult{}, nil
 	}
-	vk, colMask, flagMask, approxArgs := computeInsertItemsKey(p)
-	argBuf := runtime.AcquireArgsCap(approxArgs)
-	defer runtime.ReleaseArgs(argBuf)
-	if err := expandInsertItemsParams(argBuf, sqlDialect, p); err != nil {
-		return nil, err
-	}
-	var tupleLensBuf [1]int
-	tupleLensBuf[0] = len(p.Rows)
-	in := runtime.RenderInput{
-		ColMask:   colMask,
-		FlagMask:  flagMask,
-		TupleLens: tupleLensBuf[:],
-	}
-	return q.cache.Exec(ctx, q.db, q.txCache, q.usePrepared, vk, stmtIDInsertItems, runtime.ComputeBatchShapeTag(colMask, flagMask), 0, nil, sqlDialect, descInsertItems, &in, (*argBuf)...)
-}
-
-func (pl *Pipeline) InsertItems(rows []NewItem) *runtime.ExecFuture {
-	p := paramsInsertItems{
-		Rows: rows,
-	}
-	vk, colMask, flagMask, approxArgs := computeInsertItemsKey(p)
-	argBuf := runtime.AcquireArgsCap(approxArgs)
-	expandErr := expandInsertItemsParams(argBuf, sqlDialect, p)
-	var tupleLensBuf [1]int
-	tupleLensBuf[0] = len(p.Rows)
-	in := runtime.RenderInput{
-		ColMask:   colMask,
-		FlagMask:  flagMask,
-		TupleLens: tupleLensBuf[:],
-	}
-	return pl.Pipeline.QueueExec(stmtIDInsertItems, descInsertItems, in, vk, nil, argBuf, expandErr)
-}
-
-func (q *Queries) InsertItemsBatch(ctx context.Context, rows []NewItem) (sql.Result, error) {
 	totalRows := len(rows)
-	if totalRows == 0 {
-		return nil, runtime.ErrEmptySliceParam
-	}
 	p := paramsInsertItems{
 		Rows: rows,
 	}
@@ -407,6 +370,26 @@ func (q *Queries) InsertItemsBatch(ctx context.Context, rows []NewItem) (sql.Res
 	return batchRes, nil
 }
 
+func (pl *Pipeline) InsertItems(rows []NewItem) *runtime.ExecFuture {
+	if len(rows) == 0 {
+		return pl.Pipeline.QueueExecNoop()
+	}
+	p := paramsInsertItems{
+		Rows: rows,
+	}
+	vk, colMask, flagMask, approxArgs := computeInsertItemsKey(p)
+	argBuf := runtime.AcquireArgsCap(approxArgs)
+	expandErr := expandInsertItemsParams(argBuf, sqlDialect, p)
+	var tupleLensBuf [1]int
+	tupleLensBuf[0] = len(p.Rows)
+	in := runtime.RenderInput{
+		ColMask:   colMask,
+		FlagMask:  flagMask,
+		TupleLens: tupleLensBuf[:],
+	}
+	return pl.Pipeline.QueueExec(stmtIDInsertItems, descInsertItems, in, vk, nil, argBuf, expandErr)
+}
+
 func (q *Queries) InsertItemsStream(ctx context.Context, seq iter.Seq2[NewItem, error]) (sql.Result, error) {
 	if seq == nil {
 		return nil, runtime.ErrNilArgument
@@ -424,7 +407,7 @@ func (q *Queries) InsertItemsStream(ctx context.Context, seq iter.Seq2[NewItem, 
 		if len(chunk) == 0 {
 			return nil
 		}
-		res, err := q.InsertItemsBatch(ctx, chunk)
+		res, err := q.InsertItems(ctx, chunk)
 		if err != nil {
 			return err
 		}
@@ -718,108 +701,7 @@ func scanItemsByIDsRow(scanner interface{ Scan(...any) error }, dst *Item, colMa
 }
 
 func (q *Queries) ItemsByIDs(ctx context.Context, ids []int64) ([]Item, error) {
-	return q.ItemsByIDsInto(ctx, nil, ids)
-}
-
-func (q *Queries) ItemsByIDsInto(ctx context.Context, dst []Item, ids []int64) ([]Item, error) {
-	for row, err := range q.ItemsByIDsSeq(ctx, ids) {
-		if err != nil {
-			return nil, err
-		}
-		dst = append(dst, row)
-	}
-	return dst, nil
-}
-
-func (q *Queries) ItemsByIDsSeq(ctx context.Context, ids []int64) iter.Seq2[Item, error] {
-	return func(yield func(Item, error) bool) {
-		var zero Item
-		p := paramsItemsByIDs{
-			IDs: ids,
-		}
-		vk, colMask, flagMask, approxArgs := computeItemsByIDsKey(p)
-		_ = colMask
-		argBuf := runtime.AcquireArgsCap(approxArgs)
-		defer runtime.ReleaseArgs(argBuf)
-		if err := expandItemsByIDsParams(argBuf, sqlDialect, p); err != nil {
-			yield(zero, err)
-			return
-		}
-		var sliceLensBuf [1]int
-		sliceLensBuf[0] = len(p.IDs)
-		in := runtime.RenderInput{
-			ColMask:   colMask,
-			FlagMask:  flagMask,
-			SliceLens: sliceLensBuf[:],
-		}
-		sqlRows, ms, err := q.cache.Query(ctx, q.db, q.txCache, q.usePrepared, vk, stmtIDItemsByIDs, runtime.ComputeBatchShapeTag(colMask, flagMask), 0, nil, sqlDialect, descItemsByIDs, &in, (*argBuf)...)
-		if err != nil {
-			yield(zero, err)
-			return
-		}
-		defer runtime.ReleaseRows(&sqlRows, &ms)
-		var item Item
-		for sqlRows.Next() {
-			if err := scanItemsByIDsRow(sqlRows, &item, colMask, p); err != nil {
-				runtime.ReleaseRows(&sqlRows, &ms)
-				yield(zero, err)
-				return
-			}
-			if !yield(item, nil) {
-				return
-			}
-		}
-		err = sqlRows.Err()
-		runtime.ReleaseRows(&sqlRows, &ms)
-		if err != nil {
-			yield(zero, err)
-		}
-	}
-}
-
-func (q *Queries) ItemsByIDsEach(ctx context.Context, ids []int64, fn func(Item) error) error {
-	if fn == nil {
-		return runtime.ErrNilArgument
-	}
-	for row, err := range q.ItemsByIDsSeq(ctx, ids) {
-		if err != nil {
-			return err
-		}
-		if err := fn(row); err != nil {
-			return err
-		}
-	}
-	return nil
-}
-
-func (pl *Pipeline) ItemsByIDs(ids []int64) *runtime.SliceFuture[Item] {
-	p := paramsItemsByIDs{
-		IDs: ids,
-	}
-	vk, colMask, flagMask, approxArgs := computeItemsByIDsKey(p)
-	argBuf := runtime.AcquireArgsCap(approxArgs)
-	expandErr := expandItemsByIDsParams(argBuf, sqlDialect, p)
-	var sliceLensBuf [1]int
-	sliceLensBuf[0] = len(p.IDs)
-	in := runtime.RenderInput{
-		ColMask:   colMask,
-		FlagMask:  flagMask,
-		SliceLens: sliceLensBuf[:],
-	}
-	return runtime.QueueSlice(pl.Pipeline, stmtIDItemsByIDs, descItemsByIDs, in, vk, nil, argBuf, expandErr,
-		func(rs *sql.Rows, dst *Item) error { return scanItemsByIDsRow(rs, dst, colMask, p) },
-	)
-}
-
-func (q *Queries) ItemsByIDsBatch(ctx context.Context, ids []int64) ([]Item, error) {
-	return q.ItemsByIDsBatchInto(ctx, nil, ids)
-}
-
-func (q *Queries) ItemsByIDsBatchInto(ctx context.Context, dst []Item, ids []int64) ([]Item, error) {
 	totalRows := len(ids)
-	if totalRows == 0 {
-		return nil, runtime.ErrEmptySliceParam
-	}
 	p := paramsItemsByIDs{
 		IDs: ids,
 	}
@@ -837,24 +719,20 @@ func (q *Queries) ItemsByIDsBatchInto(ctx context.Context, dst []Item, ids []int
 		targetQ = q.WithTx(autoTx)
 		defer func() { _ = targetQ.Close() }()
 	}
-	for row, err := range targetQ.ItemsByIDsBatchSeq(ctx, ids) {
+	out, err := runtime.Collect(targetQ.ItemsByIDsSeq(ctx, ids))
+	if autoTx != nil {
 		if err != nil {
-			if autoTx != nil {
-				_ = autoTx.Rollback()
-			}
+			_ = autoTx.Rollback()
 			return nil, err
 		}
-		dst = append(dst, row)
-	}
-	if autoTx != nil {
 		if err := autoTx.Commit(); err != nil {
 			return nil, err
 		}
 	}
-	return dst, nil
+	return out, err
 }
 
-func (q *Queries) ItemsByIDsBatchSeq(ctx context.Context, ids []int64) iter.Seq2[Item, error] {
+func (q *Queries) ItemsByIDsSeq(ctx context.Context, ids []int64) iter.Seq2[Item, error] {
 	return func(yield func(Item, error) bool) {
 		var zero Item
 		totalRows := len(ids)
@@ -932,19 +810,23 @@ func (q *Queries) ItemsByIDsBatchSeq(ctx context.Context, ids []int64) iter.Seq2
 	}
 }
 
-func (q *Queries) ItemsByIDsBatchEach(ctx context.Context, ids []int64, fn func(Item) error) error {
-	if fn == nil {
-		return runtime.ErrNilArgument
+func (pl *Pipeline) ItemsByIDs(ids []int64) *runtime.SliceFuture[Item] {
+	p := paramsItemsByIDs{
+		IDs: ids,
 	}
-	for row, err := range q.ItemsByIDsBatchSeq(ctx, ids) {
-		if err != nil {
-			return err
-		}
-		if err := fn(row); err != nil {
-			return err
-		}
+	vk, colMask, flagMask, approxArgs := computeItemsByIDsKey(p)
+	argBuf := runtime.AcquireArgsCap(approxArgs)
+	expandErr := expandItemsByIDsParams(argBuf, sqlDialect, p)
+	var sliceLensBuf [1]int
+	sliceLensBuf[0] = len(p.IDs)
+	in := runtime.RenderInput{
+		ColMask:   colMask,
+		FlagMask:  flagMask,
+		SliceLens: sliceLensBuf[:],
 	}
-	return nil
+	return runtime.QueueSlice(pl.Pipeline, stmtIDItemsByIDs, descItemsByIDs, in, vk, nil, argBuf, expandErr,
+		func(rs *sql.Rows, dst *Item) error { return scanItemsByIDsRow(rs, dst, colMask, p) },
+	)
 }
 
 const stmtIDSearchItems uint32 = 4
@@ -1123,17 +1005,7 @@ func scanSearchItemsRow(scanner interface{ Scan(...any) error }, dst *Item, colM
 }
 
 func (q *Queries) SearchItems(ctx context.Context, p SearchItemsParams) ([]Item, error) {
-	return q.SearchItemsInto(ctx, nil, p)
-}
-
-func (q *Queries) SearchItemsInto(ctx context.Context, dst []Item, p SearchItemsParams) ([]Item, error) {
-	for row, err := range q.SearchItemsSeq(ctx, p) {
-		if err != nil {
-			return nil, err
-		}
-		dst = append(dst, row)
-	}
-	return dst, nil
+	return runtime.Collect(q.SearchItemsSeq(ctx, p))
 }
 
 func (q *Queries) SearchItemsSeq(ctx context.Context, p SearchItemsParams) iter.Seq2[Item, error] {
@@ -1179,21 +1051,6 @@ func (q *Queries) SearchItemsSeq(ctx context.Context, p SearchItemsParams) iter.
 			yield(zero, err)
 		}
 	}
-}
-
-func (q *Queries) SearchItemsEach(ctx context.Context, p SearchItemsParams, fn func(Item) error) error {
-	if fn == nil {
-		return runtime.ErrNilArgument
-	}
-	for row, err := range q.SearchItemsSeq(ctx, p) {
-		if err != nil {
-			return err
-		}
-		if err := fn(row); err != nil {
-			return err
-		}
-	}
-	return nil
 }
 
 func (pl *Pipeline) SearchItems(p SearchItemsParams) *runtime.SliceFuture[Item] {
@@ -1421,17 +1278,7 @@ func scanPageItemsRow(scanner interface{ Scan(...any) error }, dst *PagedItem, c
 }
 
 func (q *Queries) PageItems(ctx context.Context, p PageItemsParams) ([]PagedItem, error) {
-	return q.PageItemsInto(ctx, nil, p)
-}
-
-func (q *Queries) PageItemsInto(ctx context.Context, dst []PagedItem, p PageItemsParams) ([]PagedItem, error) {
-	for row, err := range q.PageItemsSeq(ctx, p) {
-		if err != nil {
-			return nil, err
-		}
-		dst = append(dst, row)
-	}
-	return dst, nil
+	return runtime.Collect(q.PageItemsSeq(ctx, p))
 }
 
 func (q *Queries) PageItemsSeq(ctx context.Context, p PageItemsParams) iter.Seq2[PagedItem, error] {
@@ -1474,21 +1321,6 @@ func (q *Queries) PageItemsSeq(ctx context.Context, p PageItemsParams) iter.Seq2
 			yield(zero, err)
 		}
 	}
-}
-
-func (q *Queries) PageItemsEach(ctx context.Context, p PageItemsParams, fn func(PagedItem) error) error {
-	if fn == nil {
-		return runtime.ErrNilArgument
-	}
-	for row, err := range q.PageItemsSeq(ctx, p) {
-		if err != nil {
-			return err
-		}
-		if err := fn(row); err != nil {
-			return err
-		}
-	}
-	return nil
 }
 
 func (pl *Pipeline) PageItems(p PageItemsParams) *runtime.SliceFuture[PagedItem] {
@@ -1852,17 +1684,7 @@ func scanWideRowsRow(scanner interface{ Scan(...any) error }, dst *Wide, colMask
 }
 
 func (q *Queries) WideRows(ctx context.Context, p WideRowsParams) ([]Wide, error) {
-	return q.WideRowsInto(ctx, nil, p)
-}
-
-func (q *Queries) WideRowsInto(ctx context.Context, dst []Wide, p WideRowsParams) ([]Wide, error) {
-	for row, err := range q.WideRowsSeq(ctx, p) {
-		if err != nil {
-			return nil, err
-		}
-		dst = append(dst, row)
-	}
-	return dst, nil
+	return runtime.Collect(q.WideRowsSeq(ctx, p))
 }
 
 func (q *Queries) WideRowsSeq(ctx context.Context, p WideRowsParams) iter.Seq2[Wide, error] {
@@ -1905,21 +1727,6 @@ func (q *Queries) WideRowsSeq(ctx context.Context, p WideRowsParams) iter.Seq2[W
 			yield(zero, err)
 		}
 	}
-}
-
-func (q *Queries) WideRowsEach(ctx context.Context, p WideRowsParams, fn func(Wide) error) error {
-	if fn == nil {
-		return runtime.ErrNilArgument
-	}
-	for row, err := range q.WideRowsSeq(ctx, p) {
-		if err != nil {
-			return err
-		}
-		if err := fn(row); err != nil {
-			return err
-		}
-	}
-	return nil
 }
 
 func (pl *Pipeline) WideRows(p WideRowsParams) *runtime.SliceFuture[Wide] {
@@ -2000,47 +1807,6 @@ func computeAddScoreKey(p paramsAddScore) (runtime.VariantKey, uint64, uint64, i
 }
 
 func (q *Queries) AddScore(ctx context.Context, delta int64, ids []int64, orgID int64) (sql.Result, error) {
-	p := paramsAddScore{
-		Delta: delta,
-		IDs:   ids,
-		OrgID: orgID,
-	}
-	vk, colMask, flagMask, approxArgs := computeAddScoreKey(p)
-	argBuf := runtime.AcquireArgsCap(approxArgs)
-	defer runtime.ReleaseArgs(argBuf)
-	if err := expandAddScoreParams(argBuf, sqlDialect, p); err != nil {
-		return nil, err
-	}
-	var sliceLensBuf [1]int
-	sliceLensBuf[0] = len(p.IDs)
-	in := runtime.RenderInput{
-		ColMask:   colMask,
-		FlagMask:  flagMask,
-		SliceLens: sliceLensBuf[:],
-	}
-	return q.cache.Exec(ctx, q.db, q.txCache, q.usePrepared, vk, stmtIDAddScore, runtime.ComputeBatchShapeTag(colMask, flagMask), 0, nil, sqlDialect, descAddScore, &in, (*argBuf)...)
-}
-
-func (pl *Pipeline) AddScore(delta int64, ids []int64, orgID int64) *runtime.ExecFuture {
-	p := paramsAddScore{
-		Delta: delta,
-		IDs:   ids,
-		OrgID: orgID,
-	}
-	vk, colMask, flagMask, approxArgs := computeAddScoreKey(p)
-	argBuf := runtime.AcquireArgsCap(approxArgs)
-	expandErr := expandAddScoreParams(argBuf, sqlDialect, p)
-	var sliceLensBuf [1]int
-	sliceLensBuf[0] = len(p.IDs)
-	in := runtime.RenderInput{
-		ColMask:   colMask,
-		FlagMask:  flagMask,
-		SliceLens: sliceLensBuf[:],
-	}
-	return pl.Pipeline.QueueExec(stmtIDAddScore, descAddScore, in, vk, nil, argBuf, expandErr)
-}
-
-func (q *Queries) AddScoreBatch(ctx context.Context, delta int64, ids []int64, orgID int64) (sql.Result, error) {
 	totalRows := len(ids)
 	if totalRows == 0 {
 		return nil, runtime.ErrEmptySliceParam
@@ -2116,6 +1882,25 @@ func (q *Queries) AddScoreBatch(ctx context.Context, delta int64, ids []int64, o
 		}
 	}
 	return batchRes, nil
+}
+
+func (pl *Pipeline) AddScore(delta int64, ids []int64, orgID int64) *runtime.ExecFuture {
+	p := paramsAddScore{
+		Delta: delta,
+		IDs:   ids,
+		OrgID: orgID,
+	}
+	vk, colMask, flagMask, approxArgs := computeAddScoreKey(p)
+	argBuf := runtime.AcquireArgsCap(approxArgs)
+	expandErr := expandAddScoreParams(argBuf, sqlDialect, p)
+	var sliceLensBuf [1]int
+	sliceLensBuf[0] = len(p.IDs)
+	in := runtime.RenderInput{
+		ColMask:   colMask,
+		FlagMask:  flagMask,
+		SliceLens: sliceLensBuf[:],
+	}
+	return pl.Pipeline.QueueExec(stmtIDAddScore, descAddScore, in, vk, nil, argBuf, expandErr)
 }
 
 const stmtIDAddScoreOne uint32 = 8
@@ -2247,43 +2032,6 @@ func computeDeleteItemsKey(p paramsDeleteItems) (runtime.VariantKey, uint64, uin
 }
 
 func (q *Queries) DeleteItems(ctx context.Context, ids []int64) (sql.Result, error) {
-	p := paramsDeleteItems{
-		IDs: ids,
-	}
-	vk, colMask, flagMask, approxArgs := computeDeleteItemsKey(p)
-	argBuf := runtime.AcquireArgsCap(approxArgs)
-	defer runtime.ReleaseArgs(argBuf)
-	if err := expandDeleteItemsParams(argBuf, sqlDialect, p); err != nil {
-		return nil, err
-	}
-	var sliceLensBuf [1]int
-	sliceLensBuf[0] = len(p.IDs)
-	in := runtime.RenderInput{
-		ColMask:   colMask,
-		FlagMask:  flagMask,
-		SliceLens: sliceLensBuf[:],
-	}
-	return q.cache.Exec(ctx, q.db, q.txCache, q.usePrepared, vk, stmtIDDeleteItems, runtime.ComputeBatchShapeTag(colMask, flagMask), 0, nil, sqlDialect, descDeleteItems, &in, (*argBuf)...)
-}
-
-func (pl *Pipeline) DeleteItems(ids []int64) *runtime.ExecFuture {
-	p := paramsDeleteItems{
-		IDs: ids,
-	}
-	vk, colMask, flagMask, approxArgs := computeDeleteItemsKey(p)
-	argBuf := runtime.AcquireArgsCap(approxArgs)
-	expandErr := expandDeleteItemsParams(argBuf, sqlDialect, p)
-	var sliceLensBuf [1]int
-	sliceLensBuf[0] = len(p.IDs)
-	in := runtime.RenderInput{
-		ColMask:   colMask,
-		FlagMask:  flagMask,
-		SliceLens: sliceLensBuf[:],
-	}
-	return pl.Pipeline.QueueExec(stmtIDDeleteItems, descDeleteItems, in, vk, nil, argBuf, expandErr)
-}
-
-func (q *Queries) DeleteItemsBatch(ctx context.Context, ids []int64) (sql.Result, error) {
 	totalRows := len(ids)
 	if totalRows == 0 {
 		return nil, runtime.ErrEmptySliceParam
@@ -2355,6 +2103,23 @@ func (q *Queries) DeleteItemsBatch(ctx context.Context, ids []int64) (sql.Result
 		}
 	}
 	return batchRes, nil
+}
+
+func (pl *Pipeline) DeleteItems(ids []int64) *runtime.ExecFuture {
+	p := paramsDeleteItems{
+		IDs: ids,
+	}
+	vk, colMask, flagMask, approxArgs := computeDeleteItemsKey(p)
+	argBuf := runtime.AcquireArgsCap(approxArgs)
+	expandErr := expandDeleteItemsParams(argBuf, sqlDialect, p)
+	var sliceLensBuf [1]int
+	sliceLensBuf[0] = len(p.IDs)
+	in := runtime.RenderInput{
+		ColMask:   colMask,
+		FlagMask:  flagMask,
+		SliceLens: sliceLensBuf[:],
+	}
+	return pl.Pipeline.QueueExec(stmtIDDeleteItems, descDeleteItems, in, vk, nil, argBuf, expandErr)
 }
 
 const stmtIDTopOrgs uint32 = 10
@@ -2539,17 +2304,7 @@ func scanOrgStatsRow(scanner interface{ Scan(...any) error }, dst *OrgStat, colM
 }
 
 func (q *Queries) OrgStats(ctx context.Context, orgs runtime.Query, status string) ([]OrgStat, error) {
-	return q.OrgStatsInto(ctx, nil, orgs, status)
-}
-
-func (q *Queries) OrgStatsInto(ctx context.Context, dst []OrgStat, orgs runtime.Query, status string) ([]OrgStat, error) {
-	for row, err := range q.OrgStatsSeq(ctx, orgs, status) {
-		if err != nil {
-			return nil, err
-		}
-		dst = append(dst, row)
-	}
-	return dst, nil
+	return runtime.Collect(q.OrgStatsSeq(ctx, orgs, status))
 }
 
 func (q *Queries) OrgStatsSeq(ctx context.Context, orgs runtime.Query, status string) iter.Seq2[OrgStat, error] {
@@ -2597,21 +2352,6 @@ func (q *Queries) OrgStatsSeq(ctx context.Context, orgs runtime.Query, status st
 			yield(zero, err)
 		}
 	}
-}
-
-func (q *Queries) OrgStatsEach(ctx context.Context, orgs runtime.Query, status string, fn func(OrgStat) error) error {
-	if fn == nil {
-		return runtime.ErrNilArgument
-	}
-	for row, err := range q.OrgStatsSeq(ctx, orgs, status) {
-		if err != nil {
-			return err
-		}
-		if err := fn(row); err != nil {
-			return err
-		}
-	}
-	return nil
 }
 
 func (pl *Pipeline) OrgStats(orgs runtime.Query, status string) *runtime.SliceFuture[OrgStat] {
@@ -2785,4 +2525,370 @@ func (pl *Pipeline) SetAllStatus(status string) *runtime.ExecFuture {
 		FlagMask: flagMask,
 	}
 	return pl.Pipeline.QueueExec(stmtIDSetAllStatus, descSetAllStatus, in, vk, &pl.q.fastSlots[3], argBuf, expandErr)
+}
+
+const stmtIDCountOrgItems uint32 = 14
+
+const (
+	CountOrgItemsColN    uint64 = 1 << 0
+	CountOrgItemsColsAll uint64 = (1 << 1) - 1
+)
+
+type paramsCountOrgItems struct {
+	OrgID int64
+}
+
+var descCountOrgItems = &runtime.QueryDescriptor{
+	Name:      "CountOrgItems",
+	StmtID:    14,
+	StmtVerb:  runtime.VerbSelect,
+	StaticSQL: "SELECT COUNT(*) AS n FROM sg_items WHERE org_id = ?",
+	Segments:  []string{"SELECT COUNT(*) AS n FROM sg_items WHERE org_id = ", ""},
+	Slots: []runtime.Slot{
+		{Kind: runtime.SlotScalar},
+	},
+}
+
+func expandCountOrgItemsParams(dst *[]any, dialect runtime.Dialect, p paramsCountOrgItems) error {
+	_ = dialect
+	_ = p
+	*dst = append(*dst, p.OrgID)
+	return nil
+}
+
+func expandCountOrgItemsArgs(dst *[]any, dialect runtime.Dialect, q *runtime.Query) error {
+	return expandCountOrgItemsParams(dst, dialect, q.Params.(paramsCountOrgItems))
+}
+
+func computeCountOrgItemsKey(p paramsCountOrgItems) (runtime.VariantKey, uint64, uint64, int) {
+	_ = p
+	var colMask uint64
+	var flagMask uint64
+	var orderSpec runtime.Order
+	var hasSeek bool
+	orderKey := runtime.EncodeOrderKey(orderSpec, hasSeek)
+	approxArgs := 5
+	vk := runtime.MakeVariantKey(stmtIDCountOrgItems, colMask, flagMask, orderKey)
+	return vk, colMask, flagMask, approxArgs
+}
+
+// CountOrgItemsQuery constructs a composable runtime.Query without executing it.
+func CountOrgItemsQuery(orgID int64) runtime.Query {
+	p := paramsCountOrgItems{
+		OrgID: orgID,
+	}
+	_, colMask, flagMask, _ := computeCountOrgItemsKey(p)
+	in := runtime.RenderInput{
+		ColMask:  colMask,
+		FlagMask: flagMask,
+	}
+	orderKey := runtime.EncodeOrderKey(in.OrderSpec, in.HasSeek)
+	shapeTag := runtime.ComputeSubqueryShape(stmtIDCountOrgItems, colMask, flagMask, orderKey, false)
+	return runtime.Query{
+		StmtID:   stmtIDCountOrgItems,
+		Desc:     descCountOrgItems,
+		Input:    in,
+		Params:   p,
+		Expand:   expandCountOrgItemsArgs,
+		ShapeTag: shapeTag,
+	}
+}
+
+// CountOrgItemsQuery constructs a composable runtime.Query without executing it.
+func (q *Queries) CountOrgItemsQuery(orgID int64) runtime.Query {
+	return CountOrgItemsQuery(orgID)
+}
+
+func scanCountOrgItemsRow(scanner interface{ Scan(...any) error }, dst *int64, colMask uint64, p paramsCountOrgItems) error {
+	_ = colMask
+	_ = p
+	var item int64
+	scanDest := [1]any{&item}
+	scanSlice := scanDest[:1]
+	if err := scanner.Scan(scanSlice...); err != nil {
+		return err
+	}
+	*dst = item
+	return nil
+}
+
+func (q *Queries) CountOrgItems(ctx context.Context, orgID int64) (int64, error) {
+	var zero int64
+	p := paramsCountOrgItems{
+		OrgID: orgID,
+	}
+	vk, colMask, flagMask, approxArgs := computeCountOrgItemsKey(p)
+	_ = colMask
+	argBuf := runtime.AcquireArgsCap(approxArgs)
+	defer runtime.ReleaseArgs(argBuf)
+	_ = expandCountOrgItemsParams(argBuf, sqlDialect, p)
+	in := runtime.RenderInput{
+		ColMask:  colMask,
+		FlagMask: flagMask,
+	}
+	sqlRow, ms, err := q.cache.QueryRow(ctx, q.db, q.txCache, q.usePrepared, vk, stmtIDCountOrgItems, runtime.ComputeBatchShapeTag(colMask, flagMask), 0, &q.fastSlots[4], sqlDialect, descCountOrgItems, &in, (*argBuf)...)
+	if err != nil {
+		return zero, err
+	}
+	var item int64
+	err = scanCountOrgItemsRow(sqlRow, &item, colMask, p)
+	_ = ms.Release()
+	if err != nil {
+		return zero, err
+	}
+	return item, nil
+}
+
+func (pl *Pipeline) CountOrgItems(orgID int64) *runtime.RowFuture[int64] {
+	p := paramsCountOrgItems{
+		OrgID: orgID,
+	}
+	vk, colMask, flagMask, approxArgs := computeCountOrgItemsKey(p)
+	argBuf := runtime.AcquireArgsCap(approxArgs)
+	expandErr := expandCountOrgItemsParams(argBuf, sqlDialect, p)
+	in := runtime.RenderInput{
+		ColMask:  colMask,
+		FlagMask: flagMask,
+	}
+	return runtime.QueueRow(pl.Pipeline, stmtIDCountOrgItems, descCountOrgItems, in, vk, &pl.q.fastSlots[4], argBuf, expandErr,
+		func(r *sql.Row, dst *int64) error { return scanCountOrgItemsRow(r, dst, colMask, p) },
+		func(rs *sql.Rows, dst *int64) error { return scanCountOrgItemsRow(rs, dst, colMask, p) },
+	)
+}
+
+const stmtIDNamesByIDs uint32 = 15
+
+const (
+	NamesByIDsColName uint64 = 1 << 0
+	NamesByIDsColsAll uint64 = (1 << 1) - 1
+)
+
+type paramsNamesByIDs struct {
+	IDs []int64
+}
+
+var descNamesByIDs = &runtime.QueryDescriptor{
+	Name:     "NamesByIDs",
+	StmtID:   15,
+	StmtVerb: runtime.VerbSelect,
+	Segments: []string{"SELECT name FROM sg_items WHERE id IN (", ") ORDER BY id"},
+	Slots: []runtime.Slot{
+		{Kind: runtime.SlotSlice},
+	},
+	NumSlices: 1,
+}
+
+func expandNamesByIDsParams(dst *[]any, dialect runtime.Dialect, p paramsNamesByIDs) error {
+	_ = dialect
+	_ = p
+	if len(p.IDs) == 0 {
+		return runtime.ErrEmptySliceParam
+	}
+	if isint64AscSorted(p.IDs) {
+		for _, v := range p.IDs {
+			*dst = append(*dst, v)
+		}
+	} else {
+		idxBuf := runtime.AcquireIndices(len(p.IDs))
+		idx := *idxBuf
+		slices.SortFunc(idx, func(i, j int) int { return compareint64Asc(p.IDs[i], p.IDs[j]) })
+		for _, k := range idx {
+			*dst = append(*dst, p.IDs[k])
+		}
+		runtime.ReleaseIndices(idxBuf)
+	}
+	return nil
+}
+
+func expandNamesByIDsArgs(dst *[]any, dialect runtime.Dialect, q *runtime.Query) error {
+	return expandNamesByIDsParams(dst, dialect, q.Params.(paramsNamesByIDs))
+}
+
+func computeNamesByIDsKey(p paramsNamesByIDs) (runtime.VariantKey, uint64, uint64, int) {
+	_ = p
+	var colMask uint64
+	var flagMask uint64
+	var orderSpec runtime.Order
+	var hasSeek bool
+	orderKey := runtime.EncodeOrderKey(orderSpec, hasSeek)
+	approxArgs := 5
+	var d0 uint64
+	d0 = uint64(len(p.IDs))
+	approxArgs += len(p.IDs)
+	vk := runtime.MakeVariantKey(stmtIDNamesByIDs, colMask, flagMask, orderKey, d0)
+	return vk, colMask, flagMask, approxArgs
+}
+
+// NamesByIDsQuery constructs a composable runtime.Query without executing it.
+func NamesByIDsQuery(ids []int64) runtime.Query {
+	p := paramsNamesByIDs{
+		IDs: ids,
+	}
+	_, colMask, flagMask, _ := computeNamesByIDsKey(p)
+	var sliceLensBuf [1]int
+	sliceLensBuf[0] = len(p.IDs)
+	in := runtime.RenderInput{
+		ColMask:   colMask,
+		FlagMask:  flagMask,
+		SliceLens: sliceLensBuf[:],
+	}
+	orderKey := runtime.EncodeOrderKey(in.OrderSpec, in.HasSeek)
+	var shapeLens [1]int
+	copy(shapeLens[:], in.SliceLens)
+	shapeTag := runtime.ComputeSubqueryShape(stmtIDNamesByIDs, colMask, flagMask, orderKey, false, shapeLens[:]...)
+	return runtime.Query{
+		StmtID:   stmtIDNamesByIDs,
+		Desc:     descNamesByIDs,
+		Input:    in,
+		Params:   p,
+		Expand:   expandNamesByIDsArgs,
+		ShapeTag: shapeTag,
+	}
+}
+
+// NamesByIDsQuery constructs a composable runtime.Query without executing it.
+func (q *Queries) NamesByIDsQuery(ids []int64) runtime.Query {
+	return NamesByIDsQuery(ids)
+}
+
+func scanNamesByIDsRow(scanner interface{ Scan(...any) error }, dst *string, colMask uint64, p paramsNamesByIDs) error {
+	_ = colMask
+	_ = p
+	var item string
+	scanDest := [1]any{&item}
+	scanSlice := scanDest[:1]
+	if err := scanner.Scan(scanSlice...); err != nil {
+		return err
+	}
+	*dst = item
+	return nil
+}
+
+func (q *Queries) NamesByIDs(ctx context.Context, ids []int64) ([]string, error) {
+	totalRows := len(ids)
+	p := paramsNamesByIDs{
+		IDs: ids,
+	}
+	_, colMask, flagMask, _ := computeNamesByIDsKey(p)
+	maxRows := q.cache.MaxRowsPerBatch(sqlDialect, 0, 1)
+	firstChunk := q.cache.PlanBatchChunk(stmtIDNamesByIDs, colMask, flagMask, totalRows, maxRows, true)
+	targetQ := q
+	var autoTx *sql.Tx
+	if q.txCache == nil && firstChunk < totalRows {
+		var err error
+		autoTx, err = q.db.BeginTx(ctx, nil)
+		if err != nil {
+			return nil, err
+		}
+		targetQ = q.WithTx(autoTx)
+		defer func() { _ = targetQ.Close() }()
+	}
+	out, err := runtime.Collect(targetQ.NamesByIDsSeq(ctx, ids))
+	if autoTx != nil {
+		if err != nil {
+			_ = autoTx.Rollback()
+			return nil, err
+		}
+		if err := autoTx.Commit(); err != nil {
+			return nil, err
+		}
+	}
+	return out, err
+}
+
+func (q *Queries) NamesByIDsSeq(ctx context.Context, ids []int64) iter.Seq2[string, error] {
+	return func(yield func(string, error) bool) {
+		var zero string
+		totalRows := len(ids)
+		if totalRows == 0 {
+			yield(zero, runtime.ErrEmptySliceParam)
+			return
+		}
+		p := paramsNamesByIDs{
+			IDs: ids,
+		}
+		var sortedIdx *[]int
+		if !isint64AscSorted(ids) {
+			sortedIdx = runtime.AcquireIndices(totalRows)
+			defer runtime.ReleaseIndices(sortedIdx)
+			slices.SortFunc(*sortedIdx, func(i, j int) int { return compareint64Asc(ids[i], ids[j]) })
+		}
+		_, colMask, flagMask, _ := computeNamesByIDsKey(p)
+		shapeTag := runtime.ComputeBatchShapeTag(colMask, flagMask)
+		maxRows := q.cache.MaxRowsPerBatch(sqlDialect, 0, 1)
+		firstChunk := q.cache.PlanBatchChunk(stmtIDNamesByIDs, colMask, flagMask, totalRows, maxRows, true)
+		var sqlRows *sql.Rows
+		var ms *runtime.ManagedStmt
+		defer runtime.ReleaseRows(&sqlRows, &ms)
+		for offset := 0; offset < totalRows; {
+			chunkSize := firstChunk
+			if offset > 0 {
+				chunkSize = q.cache.PlanBatchChunk(stmtIDNamesByIDs, colMask, flagMask, totalRows-offset, maxRows, false)
+			}
+			chunkRows := ids[offset : offset+chunkSize]
+			chunkP := p
+			chunkP.IDs = chunkRows
+			vk, _, _, approxArgs := computeNamesByIDsKey(chunkP)
+			argBuf := runtime.AcquireArgsCap(approxArgs)
+			if sortedIdx == nil {
+				_ = expandNamesByIDsParams(argBuf, sqlDialect, chunkP)
+			} else {
+				idx := (*sortedIdx)[offset : offset+chunkSize]
+				for _, k := range idx {
+					*argBuf = append(*argBuf, ids[k])
+				}
+			}
+			var sliceLensBuf [1]int
+			sliceLensBuf[0] = len(chunkP.IDs)
+			in := runtime.RenderInput{
+				ColMask:   colMask,
+				FlagMask:  flagMask,
+				SliceLens: sliceLensBuf[:],
+			}
+			var err error
+			sqlRows, ms, err = q.cache.Query(ctx, q.db, q.txCache, q.usePrepared, vk, stmtIDNamesByIDs, shapeTag, chunkSize, nil, sqlDialect, descNamesByIDs, &in, (*argBuf)...)
+			runtime.ReleaseArgs(argBuf)
+			if err != nil {
+				yield(zero, err)
+				return
+			}
+			var item string
+			for sqlRows.Next() {
+				if err := scanNamesByIDsRow(sqlRows, &item, colMask, chunkP); err != nil {
+					runtime.ReleaseRows(&sqlRows, &ms)
+					yield(zero, err)
+					return
+				}
+				if !yield(item, nil) {
+					return
+				}
+			}
+			err = sqlRows.Err()
+			runtime.ReleaseRows(&sqlRows, &ms)
+			if err != nil {
+				yield(zero, err)
+				return
+			}
+			offset += chunkSize
+		}
+	}
+}
+
+func (pl *Pipeline) NamesByIDs(ids []int64) *runtime.SliceFuture[string] {
+	p := paramsNamesByIDs{
+		IDs: ids,
+	}
+	vk, colMask, flagMask, approxArgs := computeNamesByIDsKey(p)
+	argBuf := runtime.AcquireArgsCap(approxArgs)
+	expandErr := expandNamesByIDsParams(argBuf, sqlDialect, p)
+	var sliceLensBuf [1]int
+	sliceLensBuf[0] = len(p.IDs)
+	in := runtime.RenderInput{
+		ColMask:   colMask,
+		FlagMask:  flagMask,
+		SliceLens: sliceLensBuf[:],
+	}
+	return runtime.QueueSlice(pl.Pipeline, stmtIDNamesByIDs, descNamesByIDs, in, vk, nil, argBuf, expandErr,
+		func(rs *sql.Rows, dst *string) error { return scanNamesByIDsRow(rs, dst, colMask, p) },
+	)
 }

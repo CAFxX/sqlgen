@@ -145,12 +145,12 @@ func (s *LedgerService) Transfer(
 }
 
 // BulkSettle applies a batch of account balance settlements inside a retryable transaction.
-// UpsertAccountBalancesBatch automatically presorts items by (OrgID ASC, AccountID ASC)
+// UpsertAccountBalances automatically presorts items by (OrgID ASC, AccountID ASC)
 // without mutating the caller's slice.
 func (s *LedgerService) BulkSettle(ctx context.Context, items []AccountSettlement) (int64, error) {
 	var affected int64
 	err := s.q.InTx(ctx, nil, func(txQ *Queries) error {
-		res, err := txQ.UpsertAccountBalancesBatch(ctx, items)
+		res, err := txQ.UpsertAccountBalances(ctx, items)
 		if err != nil {
 			return err
 		}

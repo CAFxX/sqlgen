@@ -230,7 +230,7 @@ var wireScenarios = []scenario{
 			func(p *pgq.Pipeline) {
 				up = p.UpsertItemsReturning([]pgq.NewItem{{ID: 1, OrgID: 1, Name: "u", Score: 5, Status: "x"}, {ID: 70, OrgID: 2, Name: "v", Score: 6, Status: "y"}})
 			})
-		return []*runtime.IfResult{r}, func() string { return fmtSlice(up) + "#" + fmt.Sprint(bump.Skipped()) }
+		return []*runtime.IfResult{r}, func() string { return fmtSlice(up) + "#" + fmtSlice(bump) }
 	}},
 }
 

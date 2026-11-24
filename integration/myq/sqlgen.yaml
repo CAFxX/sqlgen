@@ -105,3 +105,12 @@ statements:
     kind: exec
     sql: |
       UPDATE sg_items SET status = :status:string
+
+  # ---- single output column and no result_type: the value itself is returned ----
+  - name: CountOrgItems
+    kind: one
+    sql: SELECT COUNT(*) AS n:int64 FROM sg_items WHERE org_id = :org_id:int64
+
+  - name: NamesByIDs
+    kind: many
+    sql: SELECT name:string FROM sg_items WHERE id IN (:ids:[]int64 ASC) ORDER BY id

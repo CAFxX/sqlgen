@@ -118,28 +118,28 @@ func pageParamsFzmy(s fzPageArgs) fzmy.FzPageParams {
 
 func (a *fzmyAPI) SearchV(ctx context.Context, s fzSearchArgs) fzVar {
 	p := searchParamsFzmy(s)
-	return varFzmy(func(dst []fzmy.FzRow) ([]fzmy.FzRow, error) { return a.q.FzSearchInto(ctx, dst, p) },
-		a.q.FzSearchSeq(ctx, p), func(fn func(fzmy.FzRow) error) error { return a.q.FzSearchEach(ctx, p, fn) })
+	return varFzmy(func(dst []fzmy.FzRow) ([]fzmy.FzRow, error) { return runtime.AppendTo(dst, a.q.FzSearchSeq(ctx, p)) },
+		a.q.FzSearchSeq(ctx, p), func(fn func(fzmy.FzRow) error) error { return runtime.Each(a.q.FzSearchSeq(ctx, p), fn) })
 }
 
 func (a *fzmyAPI) PageV(ctx context.Context, s fzPageArgs) fzVar {
 	p := pageParamsFzmy(s)
-	return varFzmy(func(dst []fzmy.FzRow) ([]fzmy.FzRow, error) { return a.q.FzPageInto(ctx, dst, p) },
-		a.q.FzPageSeq(ctx, p), func(fn func(fzmy.FzRow) error) error { return a.q.FzPageEach(ctx, p, fn) })
+	return varFzmy(func(dst []fzmy.FzRow) ([]fzmy.FzRow, error) { return runtime.AppendTo(dst, a.q.FzPageSeq(ctx, p)) },
+		a.q.FzPageSeq(ctx, p), func(fn func(fzmy.FzRow) error) error { return runtime.Each(a.q.FzPageSeq(ctx, p), fn) })
 }
 
-func (a *fzmyAPI) ByIDsBatchV(ctx context.Context, ids []int64) fzVar {
-	return varFzmy(func(dst []fzmy.FzRow) ([]fzmy.FzRow, error) { return a.q.FzByIDsBatchInto(ctx, dst, ids) },
-		a.q.FzByIDsBatchSeq(ctx, ids), func(fn func(fzmy.FzRow) error) error { return a.q.FzByIDsBatchEach(ctx, ids, fn) })
+func (a *fzmyAPI) ByIDsV(ctx context.Context, ids []int64) fzVar {
+	return varFzmy(func(dst []fzmy.FzRow) ([]fzmy.FzRow, error) { return runtime.AppendTo(dst, a.q.FzByIDsSeq(ctx, ids)) },
+		a.q.FzByIDsSeq(ctx, ids), func(fn func(fzmy.FzRow) error) error { return runtime.Each(a.q.FzByIDsSeq(ctx, ids), fn) })
 }
 
-func (a *fzmyAPI) ByKeysBatchV(ctx context.Context, keys [][2]int64) fzVar {
+func (a *fzmyAPI) ByKeysV(ctx context.Context, keys [][2]int64) fzVar {
 	ks := make([]fzmy.FzKey, len(keys))
 	for i, k := range keys {
 		ks[i] = fzmy.FzKey{Grp: k[0], K1: k[1]}
 	}
-	return varFzmy(func(dst []fzmy.FzRow) ([]fzmy.FzRow, error) { return a.q.FzByKeysBatchInto(ctx, dst, ks) },
-		a.q.FzByKeysBatchSeq(ctx, ks), func(fn func(fzmy.FzRow) error) error { return a.q.FzByKeysBatchEach(ctx, ks, fn) })
+	return varFzmy(func(dst []fzmy.FzRow) ([]fzmy.FzRow, error) { return runtime.AppendTo(dst, a.q.FzByKeysSeq(ctx, ks)) },
+		a.q.FzByKeysSeq(ctx, ks), func(fn func(fzmy.FzRow) error) error { return runtime.Each(a.q.FzByKeysSeq(ctx, ks), fn) })
 }
 
 func fromTRowsFzmy(rows []fzmy.FzTypedRow, err error) ([]fzTRow, error) {
@@ -150,13 +150,10 @@ func fromTRowsFzmy(rows []fzmy.FzTypedRow, err error) ([]fzTRow, error) {
 	return out, err
 }
 
-func (a *fzmyAPI) TypedInsert(ctx context.Context, rows []fzTRow, batch bool) (int64, error) {
+func (a *fzmyAPI) TypedInsert(ctx context.Context, rows []fzTRow) (int64, error) {
 	in := make([]fzmy.FzTypedNew, len(rows))
 	for i, r := range rows {
 		in[i] = fzmy.FzTypedNew{ID: r.ID, I32: r.I32, F64: r.F64, Flag: r.Flag, Bin: r.Blob, Ni: r.NI}
-	}
-	if batch {
-		return rowsAffectedFzmy(a.q.FzTypedInsertBatch(ctx, in))
 	}
 	return rowsAffectedFzmy(a.q.FzTypedInsert(ctx, in))
 }
@@ -189,11 +186,8 @@ func (a *fzmyAPI) Insert(ctx context.Context, v fzIns, rows []fzRow) (int64, err
 		for i, r := range rows {
 			in[i] = fzmy.FzLit{ID: r.ID, Grp: r.Grp, K1: r.K[0], Tag: r.Tag}
 		}
-		switch v.Path {
-		case 0:
+		if v.Path == 0 {
 			return rowsAffectedFzmy(a.q.FzInsertLit(ctx, in))
-		case 1:
-			return rowsAffectedFzmy(a.q.FzInsertLitBatch(ctx, in))
 		}
 		return rowsAffectedFzmy(a.q.FzInsertLitStream(ctx, func(yield func(fzmy.FzLit, error) bool) {
 			for _, r := range in {
@@ -215,21 +209,18 @@ func (a *fzmyAPI) Insert(ctx context.Context, v fzIns, rows []fzRow) (int64, err
 	}
 	type fn func(context.Context, []fzmy.FzNew) (sql.Result, error)
 	type sfn func(context.Context, iter.Seq2[fzmy.FzNew, error]) (sql.Result, error)
-	var plain, batch fn
+	var plain fn
 	var stream sfn
 	switch v.Order {
 	case 0:
-		plain, batch, stream = a.q.FzInsertAsc, a.q.FzInsertAscBatch, a.q.FzInsertAscStream
+		plain, stream = a.q.FzInsertAsc, a.q.FzInsertAscStream
 	case 1:
-		plain, batch, stream = a.q.FzInsertDesc, a.q.FzInsertDescBatch, a.q.FzInsertDescStream
+		plain, stream = a.q.FzInsertDesc, a.q.FzInsertDescStream
 	default:
-		plain, batch, stream = a.q.FzInsertRaw, a.q.FzInsertRawBatch, a.q.FzInsertRawStream
+		plain, stream = a.q.FzInsertRaw, a.q.FzInsertRawStream
 	}
-	switch v.Path {
-	case 0:
+	if v.Path == 0 {
 		return rowsAffectedFzmy(plain(ctx, in))
-	case 1:
-		return rowsAffectedFzmy(batch(ctx, in))
 	}
 	return rowsAffectedFzmy(stream(ctx, seq()))
 }
@@ -304,69 +295,55 @@ func (a *fzmyAPI) Join(ctx context.Context, peerOff, minID int64, withPeer, byGr
 	return out, err
 }
 
-func (a *fzmyAPI) ByKeys(ctx context.Context, keys [][2]int64, batch bool) ([]fzRow, error) {
+func (a *fzmyAPI) ByKeys(ctx context.Context, keys [][2]int64) ([]fzRow, error) {
 	ks := make([]fzmy.FzKey, len(keys))
 	for i, k := range keys {
 		ks[i] = fzmy.FzKey{Grp: k[0], K1: k[1]}
 	}
-	if batch {
-		return fromRowsFzmy(a.q.FzByKeysBatch(ctx, ks))
-	}
 	return fromRowsFzmy(a.q.FzByKeys(ctx, ks))
 }
 
-func (a *fzmyAPI) ByIDs(ctx context.Context, ids []int64, batch bool) ([]fzRow, error) {
-	if batch {
-		return fromRowsFzmy(a.q.FzByIDsBatch(ctx, ids))
-	}
+func (a *fzmyAPI) ByIDs(ctx context.Context, ids []int64) ([]fzRow, error) {
 	return fromRowsFzmy(a.q.FzByIDs(ctx, ids))
 }
 
-func (a *fzmyAPI) Bump(ctx context.Context, delta int64, ids []int64, grp *int64, batch bool) (int64, error) {
+func (a *fzmyAPI) Bump(ctx context.Context, delta int64, ids []int64, grp *int64) (int64, error) {
 	p := fzmy.FzBumpParams{Delta: delta, IDs: ids}
 	if grp != nil {
 		p.OnlyGrp, p.Grp = true, *grp
 	}
-	if batch {
-		return rowsAffectedFzmy(a.q.FzBumpBatch(ctx, p))
-	}
 	return rowsAffectedFzmy(a.q.FzBump(ctx, p))
 }
 
-func (a *fzmyAPI) Delete(ctx context.Context, ids []int64, tag *string, batch bool) (int64, error) {
+func (a *fzmyAPI) Delete(ctx context.Context, ids []int64, tag *string) (int64, error) {
 	p := fzmy.FzDeleteParams{IDs: ids}
 	if tag != nil {
 		p.OnlyTag, p.Tag = true, *tag
-	}
-	if batch {
-		return rowsAffectedFzmy(a.q.FzDeleteBatch(ctx, p))
 	}
 	return rowsAffectedFzmy(a.q.FzDelete(ctx, p))
 }
 
 func (a *fzmyAPI) InsertRet(ctx context.Context, rows []fzRow, mode int) ([]fzOut, error) {
+	src := func(yield func(fzmy.FzNew, error) bool) {
+		for _, r := range rows {
+			if !yield(toNewFzmy(r), nil) {
+				return
+			}
+		}
+	}
 	switch mode {
 	case 1:
-		return outsFzmy(a.q.FzInsertRetBatch(ctx, toNewsFzmy(rows)))
+		return outsFzmy(a.q.FzInsertRetStream(ctx, src))
 	case 2:
-		return outsFzmy(a.q.FzInsertRetStream(ctx, func(yield func(fzmy.FzNew, error) bool) {
-			for _, r := range rows {
-				if !yield(toNewFzmy(r), nil) {
-					return
-				}
-			}
-		}))
+		return outsFzmy(runtime.Collect(a.q.FzInsertRetStreamSeq(ctx, src)))
 	}
 	return outsFzmy(a.q.FzInsertRet(ctx, toNewsFzmy(rows)))
 }
 
-func (a *fzmyAPI) DeleteRet(ctx context.Context, ids []int64, tag *string, batch bool) ([]fzOut, error) {
+func (a *fzmyAPI) DeleteRet(ctx context.Context, ids []int64, tag *string) ([]fzOut, error) {
 	p := fzmy.FzDeleteRetParams{IDs: ids}
 	if tag != nil {
 		p.OnlyTag, p.Tag = true, *tag
-	}
-	if batch {
-		return outsFzmy(a.q.FzDeleteRetBatch(ctx, p))
 	}
 	return outsFzmy(a.q.FzDeleteRet(ctx, p))
 }
