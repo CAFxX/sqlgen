@@ -507,7 +507,7 @@ func TestRealEngineMySQLPipelineArgumentsNeverTravelUnescaped(t *testing.T) {
 					pid, wid := int64(2*i), int64(2*i+1)
 					_, perr := plain.Exec("INSERT INTO "+tbl+" (id, v, w) VALUES (?, ?, ?)", pid, s, "tail-"+s)
 					werr := q.PipelineTx(ctxT(t), nil, func(p *myq.Pipeline) error {
-						myQueue(p, desc, wid, s, "tail-"+s).AssertRowsAffected(1)
+						myQueue(p, desc, wid, s, "tail-"+s).AssertRows(1)
 						return nil
 					})
 					if i < len(myHostile) {

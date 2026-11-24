@@ -90,46 +90,46 @@ func fmtRow[T any](f *runtime.RowFuture[T]) string {
 
 var wireScenarios = []scenario{
 	{"guarded transfer succeeds", func(p *pgq.Pipeline) ([]*runtime.IfResult, func() string) {
-		p.AddScoreOne(-5, 1).AssertRowsAffected(1)
-		p.AddScoreOne(5, 2).AssertRowsAffected(1)
+		p.AddScoreOne(-5, 1).AssertRows(1)
+		p.AddScoreOne(5, 2).AssertRows(1)
 		return nil, nil
 	}},
 	{"failed assertion rolls the whole batch back", func(p *pgq.Pipeline) ([]*runtime.IfResult, func() string) {
-		p.AddScoreOne(-5, 1).AssertRowsAffected(1)
-		p.AddScoreOne(5, 999).AssertRowsAffected(1) // no such row
+		p.AddScoreOne(-5, 1).AssertRows(1)
+		p.AddScoreOne(5, 999).AssertRows(1) // no such row
 		return nil, nil
 	}},
 	{"AssertFound on a row-returning op that finds the row", func(p *pgq.Pipeline) ([]*runtime.IfResult, func() string) {
 		g := p.GetItem(1).AssertFound()
-		p.AddScoreOne(1, 1).AssertRowsAffected(1)
+		p.AddScoreOne(1, 1).AssertRows(1)
 		return nil, func() string { return fmtRow(g) }
 	}},
 	{"AssertFound on a row-returning op that finds nothing", func(p *pgq.Pipeline) ([]*runtime.IfResult, func() string) {
-		p.AddScoreOne(1, 1).AssertRowsAffected(1)
+		p.AddScoreOne(1, 1).AssertRows(1)
 		p.GetItem(999).AssertFound() // must fire even though the op returns zero rows
 		return nil, nil
 	}},
 	{"assertion on a many-op row count", func(p *pgq.Pipeline) ([]*runtime.IfResult, func() string) {
 		p.AddScoreOne(1, 1)
-		p.ItemsByIDs([]int64{1, 2}).AssertRowsAffected(3)
+		p.ItemsByIDs([]int64{1, 2}).AssertRows(3)
 		return nil, nil
 	}},
 	{"zero-row assertion", func(p *pgq.Pipeline) ([]*runtime.IfResult, func() string) {
-		p.AddScoreOne(1, 999).AssertRowsAffected(0)
-		p.DeleteItems([]int64{998, 999}).AssertRowsAffected(0)
+		p.AddScoreOne(1, 999).AssertRows(0)
+		p.DeleteItems([]int64{998, 999}).AssertRows(0)
 		return nil, nil
 	}},
 	{"if: row found -> then branch", func(p *pgq.Pipeline) ([]*runtime.IfResult, func() string) {
 		get := p.GetItem(1)
 		return []*runtime.IfResult{p.If(get.Found(),
-			func(p *pgq.Pipeline) { p.AddScoreOne(100, 2).AssertRowsAffected(1) },
-			func(p *pgq.Pipeline) { p.AddScoreOne(7, 3).AssertRowsAffected(1) })}, nil
+			func(p *pgq.Pipeline) { p.AddScoreOne(100, 2).AssertRows(1) },
+			func(p *pgq.Pipeline) { p.AddScoreOne(7, 3).AssertRows(1) })}, nil
 	}},
 	{"if: row missing -> else branch", func(p *pgq.Pipeline) ([]*runtime.IfResult, func() string) {
 		get := p.GetItem(12345)
 		return []*runtime.IfResult{p.If(get.Found(),
-			func(p *pgq.Pipeline) { p.AddScoreOne(100, 2).AssertRowsAffected(1) },
-			func(p *pgq.Pipeline) { p.AddScoreOne(7, 3).AssertRowsAffected(1) })}, nil
+			func(p *pgq.Pipeline) { p.AddScoreOne(100, 2).AssertRows(1) },
+			func(p *pgq.Pipeline) { p.AddScoreOne(7, 3).AssertRows(1) })}, nil
 	}},
 	{"if: unguarded else delete", func(p *pgq.Pipeline) ([]*runtime.IfResult, func() string) {
 		get := p.GetItem(12345)
@@ -140,19 +140,19 @@ var wireScenarios = []scenario{
 	{"WhereCol predicate true -> then", func(p *pgq.Pipeline) ([]*runtime.IfResult, func() string) {
 		get := p.GetItem(2) // score 20
 		return []*runtime.IfResult{p.If(get.WhereCol("score >= 20", func(it pgq.Item) bool { return it.Score >= 20 }),
-			func(p *pgq.Pipeline) { p.AddScoreOne(1, 2).AssertRowsAffected(1) },
-			func(p *pgq.Pipeline) { p.AddScoreOne(2, 3).AssertRowsAffected(1) })}, nil
+			func(p *pgq.Pipeline) { p.AddScoreOne(1, 2).AssertRows(1) },
+			func(p *pgq.Pipeline) { p.AddScoreOne(2, 3).AssertRows(1) })}, nil
 	}},
 	{"WhereCol predicate false -> else", func(p *pgq.Pipeline) ([]*runtime.IfResult, func() string) {
 		get := p.GetItem(2)
 		return []*runtime.IfResult{p.If(get.WhereCol("score >= 21", func(it pgq.Item) bool { return it.Score >= 21 }),
-			func(p *pgq.Pipeline) { p.AddScoreOne(1, 2).AssertRowsAffected(1) },
-			func(p *pgq.Pipeline) { p.AddScoreOne(2, 3).AssertRowsAffected(1) })}, nil
+			func(p *pgq.Pipeline) { p.AddScoreOne(1, 2).AssertRows(1) },
+			func(p *pgq.Pipeline) { p.AddScoreOne(2, 3).AssertRows(1) })}, nil
 	}},
 	{"gated single-row insert (then) / multi-row insert (else)", func(p *pgq.Pipeline) ([]*runtime.IfResult, func() string) {
 		get := p.GetItem(1)
 		return []*runtime.IfResult{p.If(get.Found(),
-			func(p *pgq.Pipeline) { p.InsertItem(50, 9, "then-row", 5, "new").AssertRowsAffected(1) },
+			func(p *pgq.Pipeline) { p.InsertItem(50, 9, "then-row", 5, "new").AssertRows(1) },
 			func(p *pgq.Pipeline) {
 				p.InsertItems([]pgq.NewItem{{ID: 60, OrgID: 9, Name: "else-a"}, {ID: 61, OrgID: 9, Name: "else-b"}})
 			})}, nil
@@ -160,7 +160,7 @@ var wireScenarios = []scenario{
 	{"gated multi-row insert runs when the else branch is taken", func(p *pgq.Pipeline) ([]*runtime.IfResult, func() string) {
 		get := p.GetItem(777)
 		return []*runtime.IfResult{p.If(get.Found(),
-			func(p *pgq.Pipeline) { p.InsertItem(50, 9, "then-row", 5, "new").AssertRowsAffected(1) },
+			func(p *pgq.Pipeline) { p.InsertItem(50, 9, "then-row", 5, "new").AssertRows(1) },
 			func(p *pgq.Pipeline) {
 				p.InsertItems([]pgq.NewItem{{ID: 61, OrgID: 9, Name: "else-b", Status: "x"}, {ID: 60, OrgID: 9, Name: "else-a", Status: "x"}})
 			})}, nil
@@ -172,13 +172,13 @@ var wireScenarios = []scenario{
 			func(p *pgq.Pipeline) { p.SetAllStatus("else") })}, nil
 	}},
 	{"abort in the taken branch rolls everything back", func(p *pgq.Pipeline) ([]*runtime.IfResult, func() string) {
-		p.AddScoreOne(1, 1).AssertRowsAffected(1)
+		p.AddScoreOne(1, 1).AssertRows(1)
 		get := p.GetItem(1)
 		return []*runtime.IfResult{p.If(get.Found(),
 			func(p *pgq.Pipeline) { p.Abort(errStop) }, nil)}, nil
 	}},
 	{"abort in the branch NOT taken is inert", func(p *pgq.Pipeline) ([]*runtime.IfResult, func() string) {
-		p.AddScoreOne(1, 1).AssertRowsAffected(1)
+		p.AddScoreOne(1, 1).AssertRows(1)
 		get := p.GetItem(1)
 		return []*runtime.IfResult{p.If(get.Found(), nil,
 			func(p *pgq.Pipeline) { p.Abort(errStop) })}, nil
@@ -190,7 +190,7 @@ var wireScenarios = []scenario{
 			g2 := p.GetItem(12345)
 			inner = p.If(g2.Found(),
 				func(p *pgq.Pipeline) { p.AddScoreOne(1000, 1) },
-				func(p *pgq.Pipeline) { p.AddScoreOne(5, 4).AssertRowsAffected(1) })
+				func(p *pgq.Pipeline) { p.AddScoreOne(5, 4).AssertRows(1) })
 		}, func(p *pgq.Pipeline) { p.AddScoreOne(2000, 1) })
 		return []*runtime.IfResult{o, inner}, nil
 	}},
@@ -203,14 +203,14 @@ var wireScenarios = []scenario{
 		return []*runtime.IfResult{i1, i2}, nil
 	}},
 	{"server error in the middle of the batch (duplicate key)", func(p *pgq.Pipeline) ([]*runtime.IfResult, func() string) {
-		p.AddScoreOne(1, 1).AssertRowsAffected(1)
+		p.AddScoreOne(1, 1).AssertRows(1)
 		p.InsertItem(2, 1, "dup", 0, "x")
 		p.AddScoreOne(1, 3)
 		return nil, nil
 	}},
 	{"RETURNING op feeds a condition", func(p *pgq.Pipeline) ([]*runtime.IfResult, func() string) {
 		b := p.BumpScoresReturning(5, []int64{1, 2})
-		r := p.If(b.RowsAffectedEq(2),
+		r := p.If(b.RowsEq(2),
 			func(p *pgq.Pipeline) { p.AddScoreOne(1, 3) },
 			func(p *pgq.Pipeline) { p.AddScoreOne(1, 4) })
 		return []*runtime.IfResult{r}, func() string { return fmtSlice(b) }

@@ -140,8 +140,8 @@ func (a *myqAPI) Transfer(ctx context.Context, first, second, amount int64, pol 
 }
 func (a *myqAPI) PipelineTransfer(ctx context.Context, from, to, amount int64, pol runtime.TxRetryPolicy) error {
 	return a.q.PipelineTx(ctx, nil, func(p *myq.Pipeline) error {
-		p.AddScoreOne(-amount, from).AssertRowsAffected(1)
-		p.AddScoreOne(amount, to).AssertRowsAffected(1)
+		p.AddScoreOne(-amount, from).AssertRows(1)
+		p.AddScoreOne(amount, to).AssertRows(1)
 		return nil
 	}, runtime.WithTxRetry(pol))
 }

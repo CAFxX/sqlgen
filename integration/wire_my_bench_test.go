@@ -77,7 +77,7 @@ func myGuardedN(n int) myBenchWorkload {
 	return myBenchWorkload{fmt.Sprintf("%d-guarded", n), func(ctx context.Context, q *myq.Queries, i int) error {
 		return q.PipelineTx(ctx, nil, func(p *myq.Pipeline) error {
 			for k := 0; k < n; k++ {
-				p.AddScoreOne(1, int64((i+k)%8)+1).AssertRowsAffected(1)
+				p.AddScoreOne(1, int64((i+k)%8)+1).AssertRows(1)
 			}
 			return nil
 		})
@@ -96,7 +96,7 @@ var myBenchWorkloads = []myBenchWorkload{
 	// read-heavy: a write, an If on a read, and a dozen reads of both shapes
 	{"read-heavy", func(ctx context.Context, q *myq.Queries, i int) error {
 		return q.PipelineTx(ctx, nil, func(p *myq.Pipeline) error {
-			p.AddScoreOne(1, int64(i%8)+1).AssertRowsAffected(1)
+			p.AddScoreOne(1, int64(i%8)+1).AssertRows(1)
 			get := p.GetItem(1).AssertFound()
 			p.If(get.Found(), func(p *myq.Pipeline) { p.GetItem(2); p.GetItem(3) }, func(p *myq.Pipeline) { p.GetItem(4) })
 			for k := 0; k < 5; k++ {

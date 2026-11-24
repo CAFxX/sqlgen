@@ -44,8 +44,8 @@ func myUserTxFlows() []myUserTxFlow {
 	stop := errors.New("user tx abort")
 	return []myUserTxFlow{
 		{"failed assertion: earlier work kept, the failing operation undone, later operations never run", func(p *myq.Pipeline) {
-			p.AddScoreOne(1, 1).AssertRowsAffected(1)
-			p.AddScoreOne(5, 2).AssertRowsAffected(2) // affects one row
+			p.AddScoreOne(1, 1).AssertRows(1)
+			p.AddScoreOne(5, 2).AssertRows(2) // affects one row
 			p.AddScoreOne(1000, 3)
 		}, func(err error) bool {
 			var ae *runtime.AssertionError
@@ -56,14 +56,14 @@ func myUserTxFlows() []myUserTxFlow {
 			p.GetItem(999).AssertFound()
 		}, myIsAssertion, myUserTxState(15, 20, 30, 40), ""},
 		{"failed assertion on the first operation", func(p *myq.Pipeline) {
-			p.AddScoreOne(5, 999).AssertRowsAffected(1)
+			p.AddScoreOne(5, 999).AssertRows(1)
 			p.AddScoreOne(5, 1)
 		}, myIsAssertion, myUserTxState(10, 20, 30, 40), ""},
 		{"two asserted operations, the second fails", func(p *myq.Pipeline) {
-			p.AddScoreOne(1, 1).AssertRowsAffected(1)
-			p.AddScoreOne(2, 2).AssertRowsAffected(1)
-			p.DeleteItems([]int64{98}).AssertRowsAffected(1)
-			p.AddScoreOne(4, 4).AssertRowsAffected(1)
+			p.AddScoreOne(1, 1).AssertRows(1)
+			p.AddScoreOne(2, 2).AssertRows(1)
+			p.DeleteItems([]int64{98}).AssertRows(1)
+			p.AddScoreOne(4, 4).AssertRows(1)
 		}, myIsAssertion, myUserTxState(11, 22, 30, 40), ""},
 		{"Abort in a taken branch keeps the earlier work", func(p *myq.Pipeline) {
 			p.AddScoreOne(1, 1)
@@ -78,22 +78,22 @@ func myUserTxFlows() []myUserTxFlow {
 		}, myIsDup, myUserTxState(11, 20, 30, 40), ""},
 		{"duplicate key in an asserted operation", func(p *myq.Pipeline) {
 			p.AddScoreOne(1, 1)
-			p.InsertItem(2, 1, "dup", 0, "x").AssertRowsAffected(1)
+			p.InsertItem(2, 1, "dup", 0, "x").AssertRows(1)
 		}, myIsDup, myUserTxState(11, 20, 30, 40), ""},
 		{"the caller's own error 1146 is returned unchanged, never mistaken for a guard", func(p *myq.Pipeline) {
 			p.AddScoreOne(1, 1)
-			myQueue(p, myMissingDesc).AssertRowsAffected(1)
+			myQueue(p, myMissingDesc).AssertRows(1)
 		}, func(err error) bool {
 			return myErrNum(err) == 1146 && !errors.Is(err, runtime.ErrAssertionFailed)
 		}, myUserTxState(11, 20, 30, 40), ""},
 		{"syntax error", func(p *myq.Pipeline) {
-			p.AddScoreOne(1, 1).AssertRowsAffected(1)
+			p.AddScoreOne(1, 1).AssertRows(1)
 			myQueue(p, myBadSyntaxDesc)
 		}, func(err error) bool { return myErrNum(err) == 1064 }, myUserTxState(11, 20, 30, 40), ""},
 		{"successful pipeline (control)", func(p *myq.Pipeline) {
-			p.AddScoreOne(1, 1).AssertRowsAffected(1)
+			p.AddScoreOne(1, 1).AssertRows(1)
 			g := p.GetItem(2)
-			p.If(g.Found(), func(p *myq.Pipeline) { p.AddScoreOne(2, 3).AssertRowsAffected(1) }, nil)
+			p.If(g.Found(), func(p *myq.Pipeline) { p.AddScoreOne(2, 3).AssertRows(1) }, nil)
 		}, nil, myUserTxState(11, 20, 32, 40), ""},
 	}
 }
@@ -189,21 +189,21 @@ func TestRealEngineMySQLWireTwoPipelinesInOneUserTransaction(t *testing.T) {
 				return p.Flush()
 			}
 			if err := flush(func(p *myq.Pipeline) {
-				p.AddScoreOne(1, 1).AssertRowsAffected(1)
-				p.AddScoreOne(1, 2).AssertRowsAffected(1)
+				p.AddScoreOne(1, 1).AssertRows(1)
+				p.AddScoreOne(1, 2).AssertRows(1)
 			}); err != nil {
 				t.Fatalf("wire=%v first: %v", wire, err)
 			}
 			err = flush(func(p *myq.Pipeline) {
-				p.AddScoreOne(10, 3).AssertRowsAffected(1)
-				p.AddScoreOne(10, 999).AssertRowsAffected(1) // fails: row 3 keeps its +10 (earlier work), row 999 does not exist
+				p.AddScoreOne(10, 3).AssertRows(1)
+				p.AddScoreOne(10, 999).AssertRows(1) // fails: row 3 keeps its +10 (earlier work), row 999 does not exist
 			})
 			if !myIsAssertion(err) {
 				t.Fatalf("wire=%v second: %v", wire, err)
 			}
 			if err := flush(func(p *myq.Pipeline) { // the same statement shapes again after a failure
-				p.AddScoreOne(100, 4).AssertRowsAffected(1)
-				p.AddScoreOne(1, 1).AssertRowsAffected(1)
+				p.AddScoreOne(100, 4).AssertRows(1)
+				p.AddScoreOne(1, 1).AssertRows(1)
 			}); err != nil {
 				t.Fatalf("wire=%v third: %v", wire, err)
 			}
@@ -371,7 +371,7 @@ func TestRealEngineMySQLWireTxOptions(t *testing.T) {
 			id := myConnID(t, wdb)
 			err := q.PipelineTx(ctx, &sql.TxOptions{ReadOnly: true}, func(p *myq.Pipeline) error {
 				p.GetItem(1)
-				p.AddScoreOne(1, 1).AssertRowsAffected(1)
+				p.AddScoreOne(1, 1).AssertRows(1)
 				return nil
 			})
 			if myErrNum(err) != 1792 {
@@ -384,7 +384,7 @@ func TestRealEngineMySQLWireTxOptions(t *testing.T) {
 				myNoPrepared(t, wdb, "read-only violation")
 			}
 			// and the connection is not stuck in read-only mode
-			if err := q.PipelineTx(ctx, nil, func(p *myq.Pipeline) error { p.AddScoreOne(1, 1).AssertRowsAffected(1); return nil }); err != nil {
+			if err := q.PipelineTx(ctx, nil, func(p *myq.Pipeline) error { p.AddScoreOne(1, 1).AssertRows(1); return nil }); err != nil {
 				t.Fatalf("wire=%v: write after the read-only failure: %v", wire, err)
 			}
 			if got := mySnap(t, db); got != "1/1/n1/11/new;2/1/n2/20/new;3/1/n3/30/new;4/1/n4/40/new;" {
@@ -420,7 +420,7 @@ func TestRealEngineMySQLWireTxOptions(t *testing.T) {
 func myBigPipeline(p *myq.Pipeline, n int) {
 	name := strings.Repeat("x", 40)
 	for i := 0; i < n; i++ {
-		p.InsertItem(int64(1000+i), 2, name, int64(i), "new").AssertRowsAffected(1)
+		p.InsertItem(int64(1000+i), 2, name, int64(i), "new").AssertRows(1)
 	}
 }
 
@@ -452,8 +452,8 @@ func TestRealEngineMySQLWirePacketLimitFallsBackToSequential(t *testing.T) {
 		// under the limit: wire path
 		if cost := measure(t, wdb, turns, func() {
 			if err := q.PipelineTx(ctx, nil, func(p *myq.Pipeline) error {
-				p.AddScoreOne(1, 1).AssertRowsAffected(1)
-				p.AddScoreOne(-1, 1).AssertRowsAffected(1)
+				p.AddScoreOne(1, 1).AssertRows(1)
+				p.AddScoreOne(-1, 1).AssertRows(1)
 				return nil
 			}); err != nil {
 				t.Fatal(err)
@@ -497,7 +497,7 @@ func TestRealEngineMySQLWirePacketLimitFallsBackToSequential(t *testing.T) {
 		// standalone Flush and a Flush in a user-managed transaction fall back too
 		p := q.Pipeline(ctx)
 		for i := 0; i < n; i++ {
-			p.AddScoreOne(1, int64(i%4)+1).AssertRowsAffected(1)
+			p.AddScoreOne(1, int64(i%4)+1).AssertRows(1)
 		}
 		if err := p.Flush(); err != nil {
 			t.Fatalf("oversized Flush: %v", err)
@@ -508,7 +508,7 @@ func TestRealEngineMySQLWirePacketLimitFallsBackToSequential(t *testing.T) {
 		}
 		up := q.WithTx(tx).Pipeline(ctx)
 		for i := 0; i < n; i++ {
-			up.AddScoreOne(1, int64(i%4)+1).AssertRowsAffected(1)
+			up.AddScoreOne(1, int64(i%4)+1).AssertRows(1)
 		}
 		if err := up.Flush(); err != nil {
 			_ = tx.Rollback()
@@ -525,7 +525,7 @@ func TestRealEngineMySQLWirePacketLimitFallsBackToSequential(t *testing.T) {
 			t.Fatalf("score of item 1 = %d, %v (want 30: +10 from each of the two oversized flushes)", s1, err)
 		}
 		// ... and a small batch uses the wire path again on the very same connection
-		if err := q.PipelineTx(ctx, nil, func(p *myq.Pipeline) error { p.AddScoreOne(1, 2).AssertRowsAffected(1); return nil }); err != nil {
+		if err := q.PipelineTx(ctx, nil, func(p *myq.Pipeline) error { p.AddScoreOne(1, 2).AssertRows(1); return nil }); err != nil {
 			t.Fatal(err)
 		}
 		if st := q.CacheStats(); st.WirePipelines != 2 {
@@ -556,7 +556,7 @@ func TestRealEngineMySQLWireUnsupportedArgumentFallsBackToSequential(t *testing.
 				wdb.SetMaxOpenConns(2)
 				q := myq.New(wdb)
 				build := func(p *myq.Pipeline) {
-					p.AddScoreOne(1, 1).AssertRowsAffected(1)
+					p.AddScoreOne(1, 1).AssertRows(1)
 					myQueue(p, myTouchStructArg, struct{ X int }{1}, int64(2))
 				}
 				var err error

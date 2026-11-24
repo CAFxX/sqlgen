@@ -79,7 +79,7 @@ func TestCompoundConditionBindingShapes(t *testing.T) {
 	// equal leaves of one operation share a record; different ones do not
 	p.If(d.NotFound().And(g.Found()), queueUpd, nil)
 	p.If(d.NotFound().Or(g.NotFound()), queueUpd, nil)
-	p.If(d.RowsAffectedEq(3).Or(g.Found()), queueUpd, nil)
+	p.If(d.RowsEq(3).Or(g.Found()), queueUpd, nil)
 	// a WhereCol with a different predicate is a different leaf
 	p.If(g.WhereCol("id > 1", func(int64) bool { return true }).And(d.Found()).Not(), queueUpd, nil)
 	// a leaf without an operation is FALSE, as in Go

@@ -587,8 +587,8 @@ db.SetMaxOpenConns(16) // 1 also works, but loses the one-turn transaction (see 
 q := store.New(db)
 
 err = q.PipelineTx(ctx, nil, func(p *store.Pipeline) error {
-    p.AddScore(-5, from).AssertRowsAffected(1)
-    p.AddScore(5, to).AssertRowsAffected(1)
+    p.AddScore(-5, from).AssertRows(1)
+    p.AddScore(5, to).AssertRows(1)
     return nil
 }, runtime.WithTxRetry(runtime.DefaultRetryPolicy()))
 
@@ -673,8 +673,8 @@ The sequential figures include the extra `Prepare` round-trips of statement-cach
 db, err := mysqlwire.OpenDB("user:pass@tcp(host:3306)/app?parseTime=true")   // or sql.OpenDB(mysqlwire.Connector(cfg))
 q := store.New(db)
 err = q.PipelineTx(ctx, nil, func(p *store.Pipeline) error {
-    p.AddScore(-5, from).AssertRowsAffected(1)
-    p.AddScore(5, to).AssertRowsAffected(1)
+    p.AddScore(-5, from).AssertRows(1)
+    p.AddScore(5, to).AssertRows(1)
     return nil
 })
 fmt.Println(q.CacheStats().WirePipelines) // 1
@@ -785,15 +785,15 @@ err := q.PipelineTx(ctx, nil, func(p *Pipeline) error {
                     frozenP.Abort(ErrAccountFrozen)
                 },
                 func(activeP *Pipeline) {
-                    activeP.DebitAccount(orgID, senderID, transferAmount).AssertRowsAffected(1)
-                    activeP.CreditAccount(orgID, receiverID, transferAmount).AssertRowsAffected(1)
-                    activeP.InsertTransferReceipt(idempotencyKey, orgID, senderID, receiverID, transferAmount).AssertRowsAffected(1)
+                    activeP.DebitAccount(orgID, senderID, transferAmount).AssertRows(1)
+                    activeP.CreditAccount(orgID, receiverID, transferAmount).AssertRows(1)
+                    activeP.InsertTransferReceipt(idempotencyKey, orgID, senderID, receiverID, transferAmount).AssertRows(1)
                 },
             )
         },
         func(elseP *Pipeline) {
             // Insufficient funds: record rejection audit log and commit cleanly!
-            elseP.InsertAuditEvent(orgID, senderID, "rejected_insufficient_funds", transferAmount).AssertRowsAffected(1)
+            elseP.InsertAuditEvent(orgID, senderID, "rejected_insufficient_funds", transferAmount).AssertRows(1)
         },
     )
     return nil
@@ -804,19 +804,20 @@ err := q.PipelineTx(ctx, nil, func(p *Pipeline) error {
 
 1. **Future Types**:
    - `*runtime.ExecFuture`: returned by `kind: exec` pipeline methods.
-     - `.AssertRowsAffected(n int64) *ExecFuture`: fails the pipeline with an error matching `runtime.ErrAssertionFailed` if rows affected $\ne n$.
+     - `.AssertRows(n int64) *ExecFuture`: fails the pipeline with an error matching `runtime.ErrAssertionFailed` if rows affected $\ne n$.
      - `.AssertFound() *ExecFuture`: fails the pipeline with an error matching `runtime.ErrAssertionFailed` if rows affected $\ne 1$.
-     - `.RowsAffectedEq(n)`, `.RowsAffectedGt(n)`, `.RowsAffectedGe(n)`, `.RowsAffectedLt(n)`, `.RowsAffectedLe(n)`, `.Found()`, `.NotFound()`: returns a `PipelineCond` for `p.If(...)`.
+     - `.RowsEq(n)`, `.RowsGt(n)`, `.RowsGe(n)`, `.RowsLt(n)`, `.RowsLe(n)`, `.Found()`, `.NotFound()`: returns a `PipelineCond` for `p.If(...)`.
+     - The `Rows*` / `AssertRows` family is the same on every future (`ExecFuture`, `RowFuture`, `SliceFuture`): the count is rows affected for an exec statement and rows returned for a query.
      - `.Result() (sql.Result, error)` and `.RowsAffected() (int64, error)` (valid after `Flush` / `PipelineTx` completes).
    - `*runtime.RowFuture[T]`: returned by `kind: one` pipeline methods.
      - `.AssertFound() *RowFuture[T]`: fails the pipeline with an error matching `runtime.ErrAssertionFailed` if the row count is not 1.
-     - `.AssertRowsAffected(n int64) *RowFuture[T]`: fails the pipeline with an error matching `runtime.ErrAssertionFailed` if row count $\ne n$.
-     - `.Found()`, `.NotFound()`, `.RowsAffectedEq(n)`, `.RowsAffectedGt(n)`, `.RowsAffectedGe(n)`, `.RowsAffectedLt(n)`, `.RowsAffectedLe(n)`: returns a `PipelineCond`.
+     - `.AssertRows(n int64) *RowFuture[T]`: fails the pipeline with an error matching `runtime.ErrAssertionFailed` if row count $\ne n$.
+     - `.Found()`, `.NotFound()`, `.RowsEq(n)`, `.RowsGt(n)`, `.RowsGe(n)`, `.RowsLt(n)`, `.RowsLe(n)`: returns a `PipelineCond`.
      - `.WhereCol(sqlPred string, goPred func(T) bool) PipelineCond`: evaluates `sqlPred` on the wire in `wire.Pipeliner` mode and `goPred(row)` in Go fallback mode.
      - `.Get() (T, error)` (valid after flush).
    - `*runtime.SliceFuture[T]`: returned by `kind: many` pipeline methods.
-     - `.AssertRowsAffected(n int64) *SliceFuture[T]`, `.AssertFound() *SliceFuture[T]`
-     - `.Found()`, `.NotFound()`, `.RowsAffectedEq(n)`, `.RowsAffectedGt(n)`, `.RowsAffectedGe(n)`, `.RowsAffectedLt(n)`, `.RowsAffectedLe(n)`, `.WhereCol(sqlPred, goPred func(T) bool)`
+     - `.AssertRows(n int64) *SliceFuture[T]`, `.AssertFound() *SliceFuture[T]`
+     - `.Found()`, `.NotFound()`, `.RowsEq(n)`, `.RowsGt(n)`, `.RowsGe(n)`, `.RowsLt(n)`, `.RowsLe(n)`, `.WhereCol(sqlPred, goPred func(T) bool)`
      - `.Get() ([]T, error)` (valid after flush; no rows is an empty slice, not an error).
    - Reading any future's result (`Result`, `RowsAffected`, `Get`, `Value`, `Values`) before its pipeline has flushed (`Flush`, or the end of `PipelineTx`) returns `runtime.ErrFutureNotReady`, never a result that could be mistaken for a real one; after the flush a `*RowFuture` whose statement matched no row returns `sql.ErrNoRows`.
 2. **Boolean Combinators & Control Flow**:
@@ -824,7 +825,7 @@ err := q.PipelineTx(ctx, nil, func(p *Pipeline) error {
      The operands may come from different futures (`del.NotFound().And(get.Found())`): every leaf is evaluated over its own operation's rows, also on the single-round-trip path, where each earlier operation records its leaf server-side and the latest one combines the records, still in one network round-trip. A leaf over an operation that did not run (its branch was not taken) is false, so `Not` of it is true, identically on both paths.
    - `ifRes := p.If(cond, thenFn, elseFn)`: `ifRes.Taken()` and `ifRes.Skipped()` report whether the `then` branch was taken after flush.
    - **One mechanism for "this operation did not run"**: reading a future whose operation sits in an untaken `If`/`Else` branch returns `runtime.ErrBranchNotTaken` (test it with `errors.Is`); there is no separate `Skipped()` on futures. `ifRes.Skipped()` is about the block (it is inside an outer untaken branch), which has no error to carry the answer.
-   - **Empty `VALUES` operations**: queuing an `INSERT ... VALUES` statement with an empty collection (section 2.3) queues an operation that sends no SQL: its future reports zero rows affected / no rows (a `Found()`/`RowsAffectedGt(0)` condition over it is false, `NotFound()` is true; `AssertRowsAffected(0)` holds), it is never handed to `pgxwire` / `mysqlwire`, and the other operations of the pipeline still run in one round trip. A pipeline in which an empty operation carries an assertion or a condition runs on the sequential path (counted in `CacheStats.SequentialPipelines`) so that the assertion and condition are evaluated in order; a pipeline made only of empty operations sends nothing at all.
+   - **Empty `VALUES` operations**: queuing an `INSERT ... VALUES` statement with an empty collection (section 2.3) queues an operation that sends no SQL: its future reports zero rows affected / no rows (a `Found()`/`RowsGt(0)` condition over it is false, `NotFound()` is true; `AssertRows(0)` holds), it is never handed to `pgxwire` / `mysqlwire`, and the other operations of the pipeline still run in one round trip. A pipeline in which an empty operation carries an assertion or a condition runs on the sequential path (counted in `CacheStats.SequentialPipelines`) so that the assertion and condition are evaluated in order; a pipeline made only of empty operations sends nothing at all.
    - `p.Abort(err)`: when reached inside an active branch, aborts the pipeline, returning `err` from `PipelineTx` / `Flush` (the transaction is rolled back only inside `PipelineTx` or a standalone `Pipeline`; see below).
 3. **Assertion errors**: a failed assertion returns a `*runtime.AssertionError` (`errors.Is(err, runtime.ErrAssertionFailed)` is true; use `errors.As` to read the fields `Statement`, `Want`, `Got`, `GotKnown`). The message names the statement and the expected count, for example `sqlgen: pipeline assertion failed on statement "InsertAudit": expected 5 rows affected, got 3`. On the single-roundtrip wire path the guard's error carries the actual row count too, so `Got` / `GotKnown` and the message are the same on both paths. Only the guard's own, marked error is translated: a genuine database error of one of your statements (an integer overflow, a unique violation, ...) that happens to carry an assertion is returned as that database error, identically on both paths.
 4. **Who rolls back**:

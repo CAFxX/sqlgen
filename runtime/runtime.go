@@ -523,7 +523,7 @@ type QueryDescriptor struct {
 	NumSubs        int
 }
 
-// AssertionError is the error returned when AssertRowsAffected/AssertFound fails. errors.Is(err,
+// AssertionError is the error returned when AssertRows/AssertFound fails. errors.Is(err,
 // ErrAssertionFailed) is true for it. GotKnown is false only when the actual row count could not be
 // determined.
 type AssertionError struct {

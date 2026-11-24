@@ -122,12 +122,12 @@ func (s *LedgerService) Transfer(
 				transferBranch = activeP.If(
 					sufficientCond,
 					func(thenP *Pipeline) {
-						thenP.DebitAccount(amountCents, orgID, senderID).AssertRowsAffected(1)
-						thenP.CreditAccount(amountCents, orgID, receiverID).AssertRowsAffected(1)
-						thenP.InsertTransferReceipt(idempotencyKey, orgID, senderID, receiverID, amountCents).AssertRowsAffected(1)
+						thenP.DebitAccount(amountCents, orgID, senderID).AssertRows(1)
+						thenP.CreditAccount(amountCents, orgID, receiverID).AssertRows(1)
+						thenP.InsertTransferReceipt(idempotencyKey, orgID, senderID, receiverID, amountCents).AssertRows(1)
 					},
 					func(elseP *Pipeline) {
-						elseP.InsertAuditEvent(orgID, senderID, "rejected_insufficient_funds", amountCents).AssertRowsAffected(1)
+						elseP.InsertAuditEvent(orgID, senderID, "rejected_insufficient_funds", amountCents).AssertRows(1)
 					},
 				)
 			},

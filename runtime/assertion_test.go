@@ -38,7 +38,7 @@ func TestAssertionErrorNamesStatementAndCounts(t *testing.T) {
 	p := NewPipeline(ctx, db, cache, nil, true, DialectQuestion)
 	ab := AcquireArgsCap(1)
 	*ab = append(*ab, "cat_1")
-	fut := p.QueueExec(21, updDesc, RenderInput{}, MakeVariantKey(21, 0, 0, 0), nil, ab, nil).AssertRowsAffected(5)
+	fut := p.QueueExec(21, updDesc, RenderInput{}, MakeVariantKey(21, 0, 0, 0), nil, ab, nil).AssertRows(5)
 	err := p.Flush()
 	if !errors.Is(err, ErrAssertionFailed) {
 		t.Fatalf("errors.Is(ErrAssertionFailed) = false for %v", err)
@@ -141,8 +141,8 @@ func TestUserManagedTxAssertionFailureDoesNotRollBack(t *testing.T) {
 		return ab
 	}
 	// First write succeeds (8 rows in cat_1), the second asserts a wrong count.
-	p.QueueExec(21, updDesc, RenderInput{}, MakeVariantKey(21, 0, 0, 0), nil, mk("cat_1"), nil).AssertRowsAffected(8)
-	p.QueueExec(21, updDesc, RenderInput{}, MakeVariantKey(21, 0, 0, 0), nil, mk("cat_2"), nil).AssertRowsAffected(1)
+	p.QueueExec(21, updDesc, RenderInput{}, MakeVariantKey(21, 0, 0, 0), nil, mk("cat_1"), nil).AssertRows(8)
+	p.QueueExec(21, updDesc, RenderInput{}, MakeVariantKey(21, 0, 0, 0), nil, mk("cat_2"), nil).AssertRows(1)
 	if err := p.Flush(); !errors.Is(err, ErrAssertionFailed) {
 		t.Fatalf("Flush = %v, want ErrAssertionFailed", err)
 	}

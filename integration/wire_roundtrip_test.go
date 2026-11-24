@@ -119,7 +119,7 @@ func transferN(n int) workload {
 	return workload{fmt.Sprintf("%d guarded updates", n), int64(n) + 2, func(ctx context.Context, q *pgq.Queries) error {
 		return q.PipelineTx(ctx, nil, func(p *pgq.Pipeline) error {
 			for i := 0; i < n; i++ {
-				p.AddScoreOne(1, int64(i%4)+1).AssertRowsAffected(1)
+				p.AddScoreOne(1, int64(i%4)+1).AssertRows(1)
 			}
 			return nil
 		})
@@ -131,10 +131,10 @@ var mixedWorkload = workload{"read + If/Else + assertions", 6, func(ctx context.
 		get := p.GetItem(1).AssertFound()
 		p.If(get.Found(),
 			func(p *pgq.Pipeline) {
-				p.AddScoreOne(-1, 1).AssertRowsAffected(1)
-				p.AddScoreOne(1, 2).AssertRowsAffected(1)
+				p.AddScoreOne(-1, 1).AssertRows(1)
+				p.AddScoreOne(1, 2).AssertRows(1)
 			},
-			func(p *pgq.Pipeline) { p.AddScoreOne(7, 3).AssertRowsAffected(1) })
+			func(p *pgq.Pipeline) { p.AddScoreOne(7, 3).AssertRows(1) })
 		p.ItemsByIDs([]int64{1, 2, 3})
 		return nil
 	})
@@ -225,7 +225,7 @@ func TestRealEngineWireFlushVariantsRoundTrips(t *testing.T) {
 		defer q.Close()
 		build := func(p *pgq.Pipeline) {
 			get := p.GetItem(1)
-			p.If(get.Found(), func(p *pgq.Pipeline) { p.AddScoreOne(1, 2).AssertRowsAffected(1) }, nil)
+			p.If(get.Found(), func(p *pgq.Pipeline) { p.AddScoreOne(1, 2).AssertRows(1) }, nil)
 		}
 
 		standalone := measure(t, wdb, turns, func() {
@@ -287,8 +287,8 @@ func TestRealEngineWireSingleConnectionPool(t *testing.T) {
 		})
 		flush := measure(t, wdb, turns, func() {
 			p := q.Pipeline(ctx)
-			p.AddScoreOne(1, 1).AssertRowsAffected(1)
-			p.AddScoreOne(1, 2).AssertRowsAffected(1)
+			p.AddScoreOne(1, 1).AssertRows(1)
+			p.AddScoreOne(1, 2).AssertRows(1)
 			if err := p.Flush(); err != nil {
 				t.Fatal(err)
 			}

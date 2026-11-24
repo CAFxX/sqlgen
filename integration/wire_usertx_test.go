@@ -26,9 +26,9 @@ type userTxOutcome struct {
 func TestRealEnginePipelineUserTransactionAfterFailure(t *testing.T) {
 	scenarios := []scenario{
 		{"failed assertion, nothing changed by the failing op", func(p *pgq.Pipeline) ([]*runtime.IfResult, func() string) {
-			p.AddScoreOne(1, 1).AssertRowsAffected(1)
-			p.AddScoreOne(1, 999).AssertRowsAffected(1) // no such row
-			p.AddScoreOne(1000, 2)                      // never runs
+			p.AddScoreOne(1, 1).AssertRows(1)
+			p.AddScoreOne(1, 999).AssertRows(1) // no such row
+			p.AddScoreOne(1000, 2)              // never runs
 			return nil, nil
 		}},
 		{"failed assertion on a read", func(p *pgq.Pipeline) ([]*runtime.IfResult, func() string) {
@@ -37,10 +37,10 @@ func TestRealEnginePipelineUserTransactionAfterFailure(t *testing.T) {
 			return nil, nil
 		}},
 		{"two asserted operations, the second fails", func(p *pgq.Pipeline) ([]*runtime.IfResult, func() string) {
-			p.AddScoreOne(1, 1).AssertRowsAffected(1)
-			p.AddScoreOne(2, 2).AssertRowsAffected(1)
-			p.DeleteItems([]int64{98}).AssertRowsAffected(1)
-			p.AddScoreOne(4, 4).AssertRowsAffected(1)
+			p.AddScoreOne(1, 1).AssertRows(1)
+			p.AddScoreOne(2, 2).AssertRows(1)
+			p.DeleteItems([]int64{98}).AssertRows(1)
+			p.AddScoreOne(4, 4).AssertRows(1)
 			return nil, nil
 		}},
 		{"abort in a taken branch", func(p *pgq.Pipeline) ([]*runtime.IfResult, func() string) {
@@ -50,21 +50,21 @@ func TestRealEnginePipelineUserTransactionAfterFailure(t *testing.T) {
 		}},
 		{"assertion on an operation that feeds a condition", func(p *pgq.Pipeline) ([]*runtime.IfResult, func() string) {
 			p.AddScoreOne(1, 1)
-			u := p.AddScoreOne(1, 999).AssertRowsAffected(1)
+			u := p.AddScoreOne(1, 999).AssertRows(1)
 			return []*runtime.IfResult{p.If(u.Found(), func(p *pgq.Pipeline) { p.AddScoreOne(1, 3) }, nil)}, nil
 		}},
 		{"successful pipeline (control)", func(p *pgq.Pipeline) ([]*runtime.IfResult, func() string) {
-			p.AddScoreOne(1, 1).AssertRowsAffected(1)
+			p.AddScoreOne(1, 1).AssertRows(1)
 			return nil, nil
 		}},
 		{"unique violation aborts the transaction on both paths", func(p *pgq.Pipeline) ([]*runtime.IfResult, func() string) {
-			p.AddScoreOne(1, 1).AssertRowsAffected(1)
+			p.AddScoreOne(1, 1).AssertRows(1)
 			p.InsertItem(2, 1, "dup", 0, "x")
 			return nil, nil
 		}},
 		{"unique violation in an asserted operation", func(p *pgq.Pipeline) ([]*runtime.IfResult, func() string) {
 			p.AddScoreOne(1, 1)
-			p.InsertItem(2, 1, "dup", 0, "x").AssertRowsAffected(1)
+			p.InsertItem(2, 1, "dup", 0, "x").AssertRows(1)
 			return nil, nil
 		}},
 	}

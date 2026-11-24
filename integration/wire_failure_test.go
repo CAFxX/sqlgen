@@ -49,8 +49,8 @@ func TestRealEngineWireFailurePathsLeaveTheConnectionClean(t *testing.T) {
 		}{
 			{"failed assertion", func() error {
 				return q.PipelineTx(ctx, nil, func(p *pgq.Pipeline) error {
-					p.AddScoreOne(1, 1).AssertRowsAffected(1)
-					p.AddScoreOne(1, 999).AssertRowsAffected(1)
+					p.AddScoreOne(1, 1).AssertRows(1)
+					p.AddScoreOne(1, 999).AssertRows(1)
 					return nil
 				})
 			}, func(err error) bool { return errors.Is(err, runtime.ErrAssertionFailed) }},
@@ -120,8 +120,8 @@ func TestRealEngineWireFailurePathsLeaveTheConnectionClean(t *testing.T) {
 			// ... and the next pipeline is a normal one-turn transaction again
 			cost = measure(t, wdb, turns, func() {
 				if err := q.PipelineTx(ctx, nil, func(p *pgq.Pipeline) error {
-					p.AddScoreOne(1, 1).AssertRowsAffected(1)
-					p.AddScoreOne(-1, 1).AssertRowsAffected(1)
+					p.AddScoreOne(1, 1).AssertRows(1)
+					p.AddScoreOne(-1, 1).AssertRows(1)
 					return nil
 				}); err != nil {
 					t.Fatalf("%s: pipeline after the failure: %v", f.name, err)
@@ -182,7 +182,7 @@ func TestRealEngineWireRetriesAConflictDetectedMidBatch(t *testing.T) {
 		go func() {
 			done <- q.PipelineTx(ctx, &sql.TxOptions{Isolation: sql.LevelRepeatableRead}, func(p *pgq.Pipeline) error {
 				attempts.Add(1)
-				p.AddScoreOne(10, 1).AssertRowsAffected(1)
+				p.AddScoreOne(10, 1).AssertRows(1)
 				return nil
 			}, runtime.WithTxRetry(runtime.TxRetryPolicy{MaxRetries: 5, BaseDelay: time.Millisecond, MaxDelay: 5 * time.Millisecond}))
 		}()
@@ -269,7 +269,7 @@ func TestRealEngineWireRetriesAnErrorRaisedAtCommit(t *testing.T) {
 		cost := measure(t, wdb, turns, func() {
 			err = q.PipelineTx(ctx, nil, func(p *pgq.Pipeline) error {
 				attempts++
-				p.InsertItem(101, 1, "y", 0, "x").AssertRowsAffected(1)
+				p.InsertItem(101, 1, "y", 0, "x").AssertRows(1)
 				return nil
 			}, runtime.WithTxRetry(runtime.TxRetryPolicy{MaxRetries: 5, BaseDelay: time.Millisecond, MaxDelay: 2 * time.Millisecond}))
 		})

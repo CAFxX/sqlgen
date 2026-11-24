@@ -1477,7 +1477,7 @@ func TestPropertyPipelineWireVsSequentialParity(t *testing.T) {
 				}).And(getFut.Found())
 
 				ifRes = p.If(cond, func(p *Pipeline) {
-					p.CreateUser(100+int64(trial), 1, "then@p.com", "admin", 99, "ok").AssertRowsAffected(1)
+					p.CreateUser(100+int64(trial), 1, "then@p.com", "admin", 99, "ok").AssertRows(1)
 				}, func(p *Pipeline) {
 					if triggerAbort {
 						p.Abort(errCustomAbort)

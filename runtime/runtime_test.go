@@ -1671,28 +1671,28 @@ func TestPipelineWirePipelinerAndSequentialCoverage(t *testing.T) {
 	rowFut := QueueRow[int64](p, 1, selDesc, RenderInput{}, vk, nil, ab1, nil,
 		func(r *sql.Row, dst *int64) error { return r.Scan(dst) },
 		func(rs *sql.Rows, dst *int64) error { return rs.Scan(dst) },
-	).AssertFound().AssertRowsAffected(1)
+	).AssertFound().AssertRows(1)
 
 	ab2 := AcquireArgsCap(1)
 	*ab2 = append(*ab2, int64(1))
 	sliceFut := QueueSlice[int64](p, 1, selDesc, RenderInput{}, vk, nil, ab2, nil,
 		func(rs *sql.Rows, dst *int64) error { return rs.Scan(dst) },
-	).AssertFound().AssertRowsAffected(1)
+	).AssertFound().AssertRows(1)
 
 	// Exercise all condition constructors and combinators (.And, .Or, .Not, WhereCol)
-	c1 := rowFut.Found().And(rowFut.RowsAffectedEq(1)).And(rowFut.RowsAffectedGe(1)).And(rowFut.RowsAffectedLe(1))
-	c2 := rowFut.NotFound().Or(rowFut.RowsAffectedGt(5)).Or(rowFut.RowsAffectedLt(0)).Not()
+	c1 := rowFut.Found().And(rowFut.RowsEq(1)).And(rowFut.RowsGe(1)).And(rowFut.RowsLe(1))
+	c2 := rowFut.NotFound().Or(rowFut.RowsGt(5)).Or(rowFut.RowsLt(0)).Not()
 	c3 := rowFut.WhereCol("id = 42", func(v int64) bool { return v == 42 }).And(c1).And(c2)
 
-	sc1 := sliceFut.Found().And(sliceFut.RowsAffectedEq(1)).And(sliceFut.RowsAffectedGe(1)).And(sliceFut.RowsAffectedLe(1))
-	sc2 := sliceFut.NotFound().Or(sliceFut.RowsAffectedGt(5)).Or(sliceFut.RowsAffectedLt(0)).Not()
+	sc1 := sliceFut.Found().And(sliceFut.RowsEq(1)).And(sliceFut.RowsGe(1)).And(sliceFut.RowsLe(1))
+	sc2 := sliceFut.NotFound().Or(sliceFut.RowsGt(5)).Or(sliceFut.RowsLt(0)).Not()
 	sc3 := sliceFut.WhereCol("id = 42", func(v int64) bool { return v == 42 }).And(sc1).And(sc2)
 
 	var execFutThen, execFutElse *ExecFuture
 	ifRes := p.If(c3.And(sc3), func() {
 		ab3 := AcquireArgsCap(1)
 		*ab3 = append(*ab3, int64(99))
-		execFutThen = p.QueueExec(2, updNoWhereDesc, RenderInput{}, MakeVariantKey(2, 0, 0, 0), nil, ab3, nil).AssertFound().AssertRowsAffected(1)
+		execFutThen = p.QueueExec(2, updNoWhereDesc, RenderInput{}, MakeVariantKey(2, 0, 0, 0), nil, ab3, nil).AssertFound().AssertRows(1)
 
 		ab4 := AcquireArgsCap(2)
 		*ab4 = append(*ab4, int64(10), int64(20))
@@ -1702,8 +1702,8 @@ func TestPipelineWirePipelinerAndSequentialCoverage(t *testing.T) {
 		*ab5 = append(*ab5, int64(11), int64(21))
 		_ = p.QueueExec(4, insTupleDesc, RenderInput{TupleLens: []int{1}}, MakeVariantKey(4, 0, 0, 0, 1), nil, ab5, nil)
 
-		ec1 := execFutThen.Found().And(execFutThen.RowsAffectedEq(1)).And(execFutThen.RowsAffectedGe(1)).And(execFutThen.RowsAffectedLe(1))
-		ec2 := execFutThen.NotFound().Or(execFutThen.RowsAffectedGt(5)).Or(execFutThen.RowsAffectedLt(0)).Not()
+		ec1 := execFutThen.Found().And(execFutThen.RowsEq(1)).And(execFutThen.RowsGe(1)).And(execFutThen.RowsLe(1))
+		ec2 := execFutThen.NotFound().Or(execFutThen.RowsGt(5)).Or(execFutThen.RowsLt(0)).Not()
 		p.If(ec1.And(ec2), func() {}, nil)
 	}, func() {
 		abElse := AcquireArgsCap(1)
@@ -1835,11 +1835,11 @@ func TestPipelineWirePipelinerAndSequentialCoverage(t *testing.T) {
 	)
 
 	seqCond := rfSeq.WhereCol("score = 10", func(v int64) bool { return v == 10 }).
-		And(rfSeq.RowsAffectedEq(1)).
-		And(rfSeq.RowsAffectedGe(1)).
-		And(rfSeq.RowsAffectedLe(1)).
-		And(rfSeq.RowsAffectedGt(0)).
-		And(rfSeq.RowsAffectedLt(2)).
+		And(rfSeq.RowsEq(1)).
+		And(rfSeq.RowsGe(1)).
+		And(rfSeq.RowsLe(1)).
+		And(rfSeq.RowsGt(0)).
+		And(rfSeq.RowsLt(2)).
 		And(rfMissing.NotFound()).
 		And(sfSeq.WhereCol("score = 20", func(v int64) bool { return v == 20 }))
 
@@ -2171,7 +2171,7 @@ func TestPipelineWirePipelinerAndSequentialCoverage(t *testing.T) {
 		func(rs *sql.Rows, dst *int64) error { return rs.Scan(dst) },
 	)
 	pMultiIf.If(rfMulti.Found(), func() {}, nil)
-	pMultiIf.If(rfMulti.RowsAffectedEq(1), func() {}, nil)
+	pMultiIf.If(rfMulti.RowsEq(1), func() {}, nil)
 	if err := pMultiIf.Flush(); err != nil {
 		t.Fatalf("pMultiIf.Flush: %v", err)
 	}

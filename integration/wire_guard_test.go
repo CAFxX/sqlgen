@@ -31,19 +31,19 @@ type guardKind struct {
 var guardKinds = []guardKind{
 	{"exec", func(p *pgq.Pipeline, id int64) guardOp {
 		f := p.AddScoreOne(100, id)
-		return guardOp{func(n int64) { f.AssertRowsAffected(n) }, func(i int) runtime.PipelineCond { return guardConds(f, i) }}
+		return guardOp{func(n int64) { f.AssertRows(n) }, func(i int) runtime.PipelineCond { return guardConds(f, i) }}
 	}},
 	{"exec-returning", func(p *pgq.Pipeline, id int64) guardOp {
 		f := p.BumpScoresReturning(5, []int64{id})
-		return guardOp{func(n int64) { f.AssertRowsAffected(n) }, func(i int) runtime.PipelineCond { return guardConds(f, i) }}
+		return guardOp{func(n int64) { f.AssertRows(n) }, func(i int) runtime.PipelineCond { return guardConds(f, i) }}
 	}},
 	{"row", func(p *pgq.Pipeline, id int64) guardOp {
 		f := p.GetItem(id)
-		return guardOp{func(n int64) { f.AssertRowsAffected(n) }, func(i int) runtime.PipelineCond { return guardConds(f, i) }}
+		return guardOp{func(n int64) { f.AssertRows(n) }, func(i int) runtime.PipelineCond { return guardConds(f, i) }}
 	}},
 	{"slice", func(p *pgq.Pipeline, id int64) guardOp {
 		f := p.ItemsByIDs([]int64{id})
-		return guardOp{func(n int64) { f.AssertRowsAffected(n) }, func(i int) runtime.PipelineCond { return guardConds(f, i) }}
+		return guardOp{func(n int64) { f.AssertRows(n) }, func(i int) runtime.PipelineCond { return guardConds(f, i) }}
 	}},
 }
 
@@ -51,8 +51,8 @@ var guardKinds = []guardKind{
 type condSource interface {
 	Found() runtime.PipelineCond
 	NotFound() runtime.PipelineCond
-	RowsAffectedGe(int64) runtime.PipelineCond
-	RowsAffectedEq(int64) runtime.PipelineCond
+	RowsGe(int64) runtime.PipelineCond
+	RowsEq(int64) runtime.PipelineCond
 }
 
 func guardConds(f condSource, i int) runtime.PipelineCond {
@@ -60,9 +60,9 @@ func guardConds(f condSource, i int) runtime.PipelineCond {
 	case 0:
 		return f.Found()
 	case 1:
-		return f.RowsAffectedGe(1)
+		return f.RowsGe(1)
 	default:
-		return f.NotFound().Not().And(f.RowsAffectedEq(1))
+		return f.NotFound().Not().And(f.RowsEq(1))
 	}
 }
 
@@ -120,7 +120,7 @@ func TestRealEnginePipelineGuardMatrix(t *testing.T) {
 var overflowScenarios = []scenario{
 	{"overflowing update with an assertion", func(p *pgq.Pipeline) ([]*runtime.IfResult, func() string) {
 		p.AddScoreOne(1, 1)
-		p.AddScoreOne(math.MaxInt64, 2).AssertRowsAffected(1) // 20 + MaxInt64 overflows
+		p.AddScoreOne(math.MaxInt64, 2).AssertRows(1) // 20 + MaxInt64 overflows
 		return nil, nil
 	}},
 	{"overflowing update without an assertion", func(p *pgq.Pipeline) ([]*runtime.IfResult, func() string) {
@@ -128,25 +128,25 @@ var overflowScenarios = []scenario{
 		return nil, nil
 	}},
 	{"overflowing update with an assertion and a condition", func(p *pgq.Pipeline) ([]*runtime.IfResult, func() string) {
-		u := p.AddScoreOne(math.MaxInt64, 2).AssertRowsAffected(1)
+		u := p.AddScoreOne(math.MaxInt64, 2).AssertRows(1)
 		return []*runtime.IfResult{p.If(u.Found(), func(p *pgq.Pipeline) { p.AddScoreOne(1, 3) }, nil)}, nil
 	}},
 	{"overflowing update in a taken branch", func(p *pgq.Pipeline) ([]*runtime.IfResult, func() string) {
 		g := p.GetItem(1)
-		return []*runtime.IfResult{p.If(g.Found(), func(p *pgq.Pipeline) { p.AddScoreOne(math.MaxInt64, 2).AssertRowsAffected(1) }, nil)}, nil
+		return []*runtime.IfResult{p.If(g.Found(), func(p *pgq.Pipeline) { p.AddScoreOne(math.MaxInt64, 2).AssertRows(1) }, nil)}, nil
 	}},
 	{"overflowing update in a branch that is not taken", func(p *pgq.Pipeline) ([]*runtime.IfResult, func() string) {
 		g := p.GetItem(404)
-		return []*runtime.IfResult{p.If(g.Found(), func(p *pgq.Pipeline) { p.AddScoreOne(math.MaxInt64, 2).AssertRowsAffected(1) },
-			func(p *pgq.Pipeline) { p.AddScoreOne(1, 2).AssertRowsAffected(1) })}, nil
+		return []*runtime.IfResult{p.If(g.Found(), func(p *pgq.Pipeline) { p.AddScoreOne(math.MaxInt64, 2).AssertRows(1) },
+			func(p *pgq.Pipeline) { p.AddScoreOne(1, 2).AssertRows(1) })}, nil
 	}},
 	{"overflow after a failed assertion never runs", func(p *pgq.Pipeline) ([]*runtime.IfResult, func() string) {
-		p.AddScoreOne(1, 999).AssertRowsAffected(1) // fails first
+		p.AddScoreOne(1, 999).AssertRows(1) // fails first
 		p.AddScoreOne(math.MaxInt64, 2)
 		return nil, nil
 	}},
 	{"abort after an overflow never runs", func(p *pgq.Pipeline) ([]*runtime.IfResult, func() string) {
-		p.AddScoreOne(math.MaxInt64, 2).AssertRowsAffected(1)
+		p.AddScoreOne(math.MaxInt64, 2).AssertRows(1)
 		p.Abort(errStop)
 		return nil, nil
 	}},
@@ -155,11 +155,11 @@ var overflowScenarios = []scenario{
 		return []*runtime.IfResult{p.If(g.Found(), func(p *pgq.Pipeline) { p.Abort(errStop) }, nil)}, nil
 	}},
 	{"failed assertion reports the actual count (many rows)", func(p *pgq.Pipeline) ([]*runtime.IfResult, func() string) {
-		p.ItemsByIDs([]int64{1, 2, 3}).AssertRowsAffected(2)
+		p.ItemsByIDs([]int64{1, 2, 3}).AssertRows(2)
 		return nil, nil
 	}},
 	{"failed assertion reports the actual count (zero rows)", func(p *pgq.Pipeline) ([]*runtime.IfResult, func() string) {
-		p.DeleteItems([]int64{98, 99}).AssertRowsAffected(2)
+		p.DeleteItems([]int64{98, 99}).AssertRows(2)
 		return nil, nil
 	}},
 }

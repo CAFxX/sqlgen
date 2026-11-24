@@ -232,7 +232,7 @@ func (e *ClearingEngine) ExecuteMatchAndClear(ctx context.Context, req MatchRequ
 				return c >= req.RequiredMarginCents
 			}),
 		)
-		bookMatchCond := openSellsFut.Found().And(openSellsFut.RowsAffectedGe(1)).And(
+		bookMatchCond := openSellsFut.Found().And(openSellsFut.RowsGe(1)).And(
 			openSellsFut.WhereCol(fmt.Sprintf("limit_price_cents <= %d", req.PriceCents), func(o OpenOrderRow) bool {
 				return o.LimitPriceCents <= req.PriceCents
 			}),
@@ -251,33 +251,33 @@ func (e *ClearingEngine) ExecuteMatchAndClear(ctx context.Context, req MatchRequ
 					canClearCond,
 					func(clearP *Pipeline) {
 						// Double-entry zero-sum clearing fee / PnL transfer between buyer and seller
-						clearP.AdjustAccountMarginAndPnl(-req.ClearingFeeCents, -req.ClearingFeeCents, req.Seq, req.BuyerFirmID, req.BuyerAccountID).AssertRowsAffected(1)
-						clearP.AdjustAccountMarginAndPnl(req.ClearingFeeCents, req.ClearingFeeCents, req.Seq, req.SellerFirmID, req.SellerAccountID).AssertRowsAffected(1)
+						clearP.AdjustAccountMarginAndPnl(-req.ClearingFeeCents, -req.ClearingFeeCents, req.Seq, req.BuyerFirmID, req.BuyerAccountID).AssertRows(1)
+						clearP.AdjustAccountMarginAndPnl(req.ClearingFeeCents, req.ClearingFeeCents, req.Seq, req.SellerFirmID, req.SellerAccountID).AssertRows(1)
 
-						clearP.MarkOrderFilled("filled", 0, req.Seq, req.BuyOrderID).AssertRowsAffected(1)
-						clearP.MarkOrderFilled("filled", 0, req.Seq, req.SellOrderID).AssertRowsAffected(1)
+						clearP.MarkOrderFilled("filled", 0, req.Seq, req.BuyOrderID).AssertRows(1)
+						clearP.MarkOrderFilled("filled", 0, req.Seq, req.SellOrderID).AssertRows(1)
 
 						// Double-entry position updates (+Qty for buyer, -Qty for seller)
 						clearP.UpsertPositionSnapshot(
 							req.BuyerPositionID, req.BuyerFirmID, req.BuyerAccountID, req.Symbol,
 							req.Quantity, req.PriceCents, notionalCents, 0, 10000, 250, req.Seq,
-						).AssertRowsAffected(1)
+						).AssertRows(1)
 						clearP.UpsertPositionSnapshot(
 							req.SellerPositionID, req.SellerFirmID, req.SellerAccountID, req.Symbol,
 							-req.Quantity, req.PriceCents, notionalCents, 0, -10000, 250, req.Seq,
-						).AssertRowsAffected(1)
+						).AssertRows(1)
 
 						fillFut := clearP.InsertClearingFill(
 							req.FillID, req.BuyOrderID, req.SellOrderID, req.BuyerAccountID, req.SellerAccountID,
 							req.Symbol, req.PriceCents, req.Quantity, notionalCents, req.Seq,
-						).AssertRowsAffected(1)
+						).AssertRows(1)
 
 						// Exercise UPDATE without WHERE and DELETE without WHERE inside Pipeline.If
-						clearP.TouchExchangeHeartbeat(req.Seq).AssertRowsAffected(1)
+						clearP.TouchExchangeHeartbeat(req.Seq).AssertRows(1)
 						clearP.PurgeExpiredLocks()
 
 						// Level 3 Nested If: Large-trader institutional KYC compliance filing vs. standard audit notice
-						isInstitutionalCond := fillFut.RowsAffectedEq(1).And(
+						isInstitutionalCond := fillFut.RowsEq(1).And(
 							buyerFut.WhereCol("kyc_verified = 1 AND margin_ratio_bps >= 1500", func(a MarginAccount) bool {
 								return a.KycVerified == 1 && a.MarginRatioBps >= 1500
 							}),
@@ -285,16 +285,16 @@ func (e *ClearingEngine) ExecuteMatchAndClear(ctx context.Context, req MatchRequ
 						complianceBranch = clearP.If(
 							isInstitutionalCond,
 							func(instP *Pipeline) {
-								instP.InsertComplianceNotice(req.FillID, req.BuyerFirmID, req.BuyerAccountID, "institutional_cleared", notionalCents, req.Seq).AssertRowsAffected(1)
+								instP.InsertComplianceNotice(req.FillID, req.BuyerFirmID, req.BuyerAccountID, "institutional_cleared", notionalCents, req.Seq).AssertRows(1)
 							},
 							func(retailP *Pipeline) {
-								retailP.InsertComplianceNotice(req.FillID, req.BuyerFirmID, req.BuyerAccountID, "standard_cleared", notionalCents, req.Seq).AssertRowsAffected(1)
+								retailP.InsertComplianceNotice(req.FillID, req.BuyerFirmID, req.BuyerAccountID, "standard_cleared", notionalCents, req.Seq).AssertRows(1)
 							},
 						)
 					},
 					func(rejectP *Pipeline) {
-						rejectP.InsertComplianceNotice(req.FillID, req.BuyerFirmID, req.BuyerAccountID, "rejected_margin_or_price", notionalCents, req.Seq).AssertRowsAffected(1)
-						rejectP.TouchExchangeHeartbeat(req.Seq).AssertRowsAffected(1)
+						rejectP.InsertComplianceNotice(req.FillID, req.BuyerFirmID, req.BuyerAccountID, "rejected_margin_or_price", notionalCents, req.Seq).AssertRows(1)
+						rejectP.TouchExchangeHeartbeat(req.Seq).AssertRows(1)
 					},
 				)
 			},

@@ -266,7 +266,7 @@ func TestEmptyValuesCollectionInPipelines(t *testing.T) {
 	pl = q.Pipeline(ctx)
 	probe := pl.CreateUser(1, 1, "a@x", "m", 1, "b")
 	var skipped *runtime.ExecFuture
-	res := pl.If(probe.RowsAffectedEq(5), func(p *Pipeline) { skipped = p.InsertQuadBatch(nil) }, nil)
+	res := pl.If(probe.RowsEq(5), func(p *Pipeline) { skipped = p.InsertQuadBatch(nil) }, nil)
 	if err := pl.Flush(); err != nil {
 		t.Fatal(err)
 	}

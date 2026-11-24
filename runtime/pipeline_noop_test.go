@@ -182,7 +182,7 @@ func TestPipelineNoOpAssertion(t *testing.T) {
 	db, cache := noopTestDB(t, cfg)
 
 	p := NewPipeline(context.Background(), db, cache, nil, true, DialectDollar)
-	p.QueueExecNoop().AssertRowsAffected(0)
+	p.QueueExecNoop().AssertRows(0)
 	if err := p.Flush(); err != nil {
 		t.Fatalf("assertion of 0 rows over a no-op: %v", err)
 	}

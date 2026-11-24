@@ -79,7 +79,7 @@ func myDescribe(v any, err error) string {
 func myExecFut(f *runtime.ExecFuture) myFut {
 	return myFut{
 		src:         f,
-		assertRows:  func(n int64) { f.AssertRowsAffected(n) },
+		assertRows:  func(n int64) { f.AssertRows(n) },
 		assertFound: func() { f.AssertFound() },
 		desc: func() string {
 			n, err := f.RowsAffected()
@@ -91,7 +91,7 @@ func myExecFut(f *runtime.ExecFuture) myFut {
 func myRowFut[T any](f *runtime.RowFuture[T], score func(T) int64) myFut {
 	m := myFut{
 		src:         f,
-		assertRows:  func(n int64) { f.AssertRowsAffected(n) },
+		assertRows:  func(n int64) { f.AssertRows(n) },
 		assertFound: func() { f.AssertFound() },
 		desc: func() string {
 			v, err := f.Get()
@@ -109,7 +109,7 @@ func myRowFut[T any](f *runtime.RowFuture[T], score func(T) int64) myFut {
 func mySliceFut[T any](f *runtime.SliceFuture[T], score func(T) int64) myFut {
 	m := myFut{
 		src:         f,
-		assertRows:  func(n int64) { f.AssertRowsAffected(n) },
+		assertRows:  func(n int64) { f.AssertRows(n) },
 		assertFound: func() { f.AssertFound() },
 		desc: func() string {
 			v, err := f.Get()
@@ -415,9 +415,9 @@ func myGuardCond(op myFut, i int, colPred bool) runtime.PipelineCond {
 	case i == 0:
 		return op.src.Found()
 	case i == 1:
-		return op.src.RowsAffectedGe(1)
+		return op.src.RowsGe(1)
 	default:
-		return op.src.NotFound().Not().And(op.src.RowsAffectedEq(1))
+		return op.src.NotFound().Not().And(op.src.RowsEq(1))
 	}
 }
 

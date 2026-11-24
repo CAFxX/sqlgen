@@ -298,7 +298,7 @@ func TestPipelineTxAndFlushRunOnTheWire(t *testing.T) {
 		var g, miss *runtime.RowFuture[row]
 		var all *runtime.SliceFuture[row]
 		err := k.tx(ctx, db, nil, nil, func(p *runtime.Pipeline) error {
-			up1 = k.Upd(p, -5, 1).AssertRowsAffected(1)
+			up1 = k.Upd(p, -5, 1).AssertRows(1)
 			up2 = k.Upd(p, 5, 2).AssertFound()
 			noop = k.Upd(p, 5, 99) // matches nothing
 			g = k.Get(p, 3)
@@ -358,8 +358,8 @@ func TestAssertionFailureRollsBackAndKeepsTheConnectionClean(t *testing.T) {
 		db.SetMaxOpenConns(1)
 
 		err := k.tx(ctx, db, nil, nil, func(p *runtime.Pipeline) error {
-			k.Upd(p, 1, 1).AssertRowsAffected(1)
-			k.Upd(p, 1, 99).AssertRowsAffected(1) // no such row
+			k.Upd(p, 1, 1).AssertRows(1)
+			k.Upd(p, 1, 99).AssertRows(1) // no such row
 			k.Upd(p, 1, 2)
 			return nil
 		})
@@ -426,10 +426,10 @@ func TestAbortAndConditionsOverTheWire(t *testing.T) {
 		var c1, c2, c3 *runtime.IfResult
 		err = k.tx(ctx, db, nil, nil, func(p *runtime.Pipeline) error {
 			up := k.Upd(p, 1, 1)
-			c1 = p.If(up.RowsAffectedEq(1), func() { k.Upd(p, 1, 2) }, func() { k.Upd(p, 1000, 2) })
-			c2 = p.If(up.RowsAffectedGt(1).Or(up.NotFound()), func() { k.Upd(p, 1000, 2) }, func() { k.Upd(p, 1, 3) })
+			c1 = p.If(up.RowsEq(1), func() { k.Upd(p, 1, 2) }, func() { k.Upd(p, 1000, 2) })
+			c2 = p.If(up.RowsGt(1).Or(up.NotFound()), func() { k.Upd(p, 1000, 2) }, func() { k.Upd(p, 1, 3) })
 			hit := k.Get(p, 1)
-			c3 = p.If(hit.RowsAffectedGe(1).And(hit.RowsAffectedLe(1)).And(hit.RowsAffectedLt(2)), func() { k.Upd(p, 3, 3) }, nil)
+			c3 = p.If(hit.RowsGe(1).And(hit.RowsLe(1)).And(hit.RowsLt(2)), func() { k.Upd(p, 3, 3) }, nil)
 			return nil
 		})
 		if err != nil {
@@ -499,7 +499,7 @@ func TestServerErrorMidBatchRollsBackAndIsAttributed(t *testing.T) {
 			err := k.tx(ctx, db, nil, nil, func(p *runtime.Pipeline) error {
 				f := k.Upd(p, 1, 1)
 				if withGuard {
-					f.AssertRowsAffected(1)
+					f.AssertRows(1)
 				}
 				failing = k.Ins(p, 1, 0) // duplicate primary key
 				k.Upd(p, 1, 2)
@@ -599,19 +599,19 @@ func TestUserManagedTransaction(t *testing.T) {
 			want  []row
 		}{
 			{"assertion", func(p *runtime.Pipeline) {
-				k.Upd(p, 1, 1).AssertRowsAffected(1)
+				k.Upd(p, 1, 1).AssertRows(1)
 				k.Upd(p, 5, 2)
-				k.Upd(p, 1, 404).AssertRowsAffected(1) // fails
+				k.Upd(p, 1, 404).AssertRows(1) // fails
 				k.Upd(p, 1000, 3)
 			}, func(err error) bool { return errors.Is(err, runtime.ErrAssertionFailed) }, []row{{1, 11}, {2, 25}, {3, 130}}},
 			{"abort", func(p *runtime.Pipeline) {
-				k.Upd(p, 1, 1).AssertRowsAffected(1)
+				k.Upd(p, 1, 1).AssertRows(1)
 				g := k.Get(p, 1)
 				p.If(g.Found(), func() { p.Abort(abortErr) }, nil)
 				k.Upd(p, 1000, 3)
 			}, func(err error) bool { return errors.Is(err, abortErr) }, []row{{1, 11}, {2, 20}, {3, 130}}},
 			{"assertion on the update that fails after changing a row", func(p *runtime.Pipeline) {
-				k.Upd(p, 5, 2).AssertRowsAffected(2) // changes row 2, then fails: the savepoint undoes it
+				k.Upd(p, 5, 2).AssertRows(2) // changes row 2, then fails: the savepoint undoes it
 			}, func(err error) bool { return errors.Is(err, runtime.ErrAssertionFailed) }, []row{{1, 10}, {2, 20}, {3, 130}}},
 		} {
 			tx, err := db.BeginTx(ctx, nil)
@@ -642,8 +642,8 @@ func TestUserManagedTransaction(t *testing.T) {
 			t.Fatal(err)
 		}
 		p = newP(tx)
-		k.Upd(p, 1, 1).AssertRowsAffected(1)
-		k.Ins(p, 1, 0).AssertRowsAffected(1)
+		k.Upd(p, 1, 1).AssertRows(1)
+		k.Ins(p, 1, 0).AssertRows(1)
 		if err := p.Flush(); mysqlNumber(err) != 1062 {
 			t.Fatalf("Flush = %v", err)
 		}
@@ -801,7 +801,7 @@ func TestReturningOnMariaDB(t *testing.T) {
 		err := k.tx(ctx, db, nil, nil, func(p *runtime.Pipeline) error {
 			got = runtime.QueueRow[row](p, 8, ret, runtime.RenderInput{}, runtime.MakeVariantKey(8, 0, 0, 0), nil, args(int64(10), int64(100)), nil,
 				func(r *sql.Row, d *row) error { return r.Scan(&d.ID, &d.V) },
-				func(r *sql.Rows, d *row) error { return r.Scan(&d.ID, &d.V) }).AssertRowsAffected(1)
+				func(r *sql.Rows, d *row) error { return r.Scan(&d.ID, &d.V) }).AssertRows(1)
 			k.Upd(p, 1, 10)
 			return nil
 		})
@@ -1172,7 +1172,7 @@ func TestConnectorKeepsTheConfig(t *testing.T) {
 		for _, db := range []*sql.DB{cdb} {
 			var f *runtime.ExecFuture
 			err := k.tx(ctx, db, nil, nil, func(p *runtime.Pipeline) error {
-				f = k.Upd(p, 0, 1).AssertRowsAffected(1)
+				f = k.Upd(p, 0, 1).AssertRows(1)
 				return nil
 			})
 			if err != nil {

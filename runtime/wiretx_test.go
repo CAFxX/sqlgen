@@ -470,7 +470,7 @@ func TestExtraConditionsAreRecordedServerSide(t *testing.T) {
 		func(r *sql.Row, dst *int64) error { return r.Scan(dst) }, func(rs *sql.Rows, dst *int64) error { return rs.Scan(dst) })
 	p.If(f.Found(), func() { p.QueueExec(3, upd, RenderInput{}, MakeVariantKey(3, 0, 0, 0), nil, nil, nil) }, nil)
 	p.If(f.NotFound(), nil, func() { p.QueueExec(3, upd, RenderInput{}, MakeVariantKey(3, 0, 0, 0), nil, nil, nil) })
-	p.If(f.RowsAffectedGe(1), nil, nil)
+	p.If(f.RowsGe(1), nil, nil)
 	p.syncOpsFromPtrs()
 	renderPipelineBatch(DialectDollar, nil, p.ops)
 

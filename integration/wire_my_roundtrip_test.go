@@ -184,12 +184,12 @@ func myMixedN(n int) myWorkload {
 	return myWorkload{fmt.Sprintf("%d guarded updates + read + If/Else + assertion", n), int64(n) + 5, func(ctx context.Context, q *myq.Queries) error {
 		return q.PipelineTx(ctx, nil, func(p *myq.Pipeline) error {
 			for i := 0; i < n; i++ {
-				p.AddScoreOne(1, int64(i%4)+1).AssertRowsAffected(1)
+				p.AddScoreOne(1, int64(i%4)+1).AssertRows(1)
 			}
 			get := p.GetItem(1).AssertFound()
 			p.If(get.Found(),
-				func(p *myq.Pipeline) { p.AddScoreOne(-1, 1).AssertRowsAffected(1) },
-				func(p *myq.Pipeline) { p.AddScoreOne(7, 3).AssertRowsAffected(1) })
+				func(p *myq.Pipeline) { p.AddScoreOne(-1, 1).AssertRows(1) },
+				func(p *myq.Pipeline) { p.AddScoreOne(7, 3).AssertRows(1) })
 			p.ItemsByIDs([]int64{1, 2, 3})
 			return nil
 		})
@@ -279,12 +279,12 @@ var myErrAbortStop = errors.New("turn-count abort")
 
 func myTurnCases() []myTurnCase {
 	failAssert := func(p *myq.Pipeline) {
-		p.AddScoreOne(1, 1).AssertRowsAffected(1)
-		p.AddScoreOne(1, 999).AssertRowsAffected(1) // no such row
-		p.AddScoreOne(1, 2)                         // gated off
+		p.AddScoreOne(1, 1).AssertRows(1)
+		p.AddScoreOne(1, 999).AssertRows(1) // no such row
+		p.AddScoreOne(1, 2)                 // gated off
 	}
 	dupKey := func(p *myq.Pipeline) {
-		p.AddScoreOne(1, 1).AssertRowsAffected(1)
+		p.AddScoreOne(1, 1).AssertRows(1)
 		p.InsertItem(2, 1, "dup", 0, "x") // id 2 exists
 		p.AddScoreOne(1, 3)
 	}
@@ -295,7 +295,7 @@ func myTurnCases() []myTurnCase {
 	}
 	ok := func(p *myq.Pipeline) {
 		get := p.GetItem(1)
-		p.If(get.Found(), func(p *myq.Pipeline) { p.AddScoreOne(1, 2).AssertRowsAffected(1) }, nil)
+		p.If(get.Found(), func(p *myq.Pipeline) { p.AddScoreOne(1, 2).AssertRows(1) }, nil)
 	}
 	ptx := func(build func(*myq.Pipeline)) func(context.Context, *myq.Queries) error {
 		return func(ctx context.Context, q *myq.Queries) error {
@@ -427,7 +427,7 @@ func TestRealEngineMySQLWireConnectionStaysOneTurnAfterFailures(t *testing.T) {
 			t.Fatal(err)
 		}
 		p := q.WithTx(tx).Pipeline(ctx)
-		p.AddScoreOne(1, 1).AssertRowsAffected(1)
+		p.AddScoreOne(1, 1).AssertRows(1)
 		if err := p.Flush(); err != nil {
 			t.Fatal(err)
 		}

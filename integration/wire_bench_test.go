@@ -52,7 +52,7 @@ func BenchmarkPipelineTx(b *testing.B) {
 							run := func(i int) {
 								err := q.PipelineTx(ctx, nil, func(p *pgq.Pipeline) error {
 									for k := 0; k < ops; k++ {
-										p.AddScoreOne(1, int64((i+k)%8)+1).AssertRowsAffected(1)
+										p.AddScoreOne(1, int64((i+k)%8)+1).AssertRows(1)
 									}
 									return nil
 								})

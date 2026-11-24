@@ -51,15 +51,15 @@ func (g *myFuzzGen) leaf(f myFut) runtime.PipelineCond {
 	case 1:
 		return c.NotFound()
 	case 2:
-		return c.RowsAffectedEq(n)
+		return c.RowsEq(n)
 	case 3:
-		return c.RowsAffectedGt(n)
+		return c.RowsGt(n)
 	case 4:
-		return c.RowsAffectedGe(n)
+		return c.RowsGe(n)
 	case 5:
-		return c.RowsAffectedLt(n)
+		return c.RowsLt(n)
 	default:
-		return c.RowsAffectedLe(n)
+		return c.RowsLe(n)
 	}
 }
 
@@ -319,30 +319,30 @@ var myCondVariants = []myCondVariant{
 	// single leaves
 	{"d.Found", func(o myCondOps) runtime.PipelineCond { return o.d.src.Found() }},
 	{"d.NotFound", func(o myCondOps) runtime.PipelineCond { return o.d.src.NotFound() }},
-	{"d.Eq0", func(o myCondOps) runtime.PipelineCond { return o.d.src.RowsAffectedEq(0) }},
-	{"d.Gt0", func(o myCondOps) runtime.PipelineCond { return o.d.src.RowsAffectedGt(0) }},
-	{"d.Ge0", func(o myCondOps) runtime.PipelineCond { return o.d.src.RowsAffectedGe(0) }},
-	{"d.Lt1", func(o myCondOps) runtime.PipelineCond { return o.d.src.RowsAffectedLt(1) }},
-	{"d.Le0", func(o myCondOps) runtime.PipelineCond { return o.d.src.RowsAffectedLe(0) }},
+	{"d.Eq0", func(o myCondOps) runtime.PipelineCond { return o.d.src.RowsEq(0) }},
+	{"d.Gt0", func(o myCondOps) runtime.PipelineCond { return o.d.src.RowsGt(0) }},
+	{"d.Ge0", func(o myCondOps) runtime.PipelineCond { return o.d.src.RowsGe(0) }},
+	{"d.Lt1", func(o myCondOps) runtime.PipelineCond { return o.d.src.RowsLt(1) }},
+	{"d.Le0", func(o myCondOps) runtime.PipelineCond { return o.d.src.RowsLe(0) }},
 	{"!d.Found", func(o myCondOps) runtime.PipelineCond { return o.d.src.Found().Not() }},
 	// two operations, both orders
 	{"d.NotFound&g.Found", func(o myCondOps) runtime.PipelineCond { return o.d.src.NotFound().And(o.g.src.Found()) }},
 	{"g.Found&d.NotFound", func(o myCondOps) runtime.PipelineCond { return o.g.src.Found().And(o.d.src.NotFound()) }},
-	{"get.Found&del.Eq0", func(o myCondOps) runtime.PipelineCond { return o.g.src.Found().And(o.d.src.RowsAffectedEq(0)) }},
+	{"get.Found&del.Eq0", func(o myCondOps) runtime.PipelineCond { return o.g.src.Found().And(o.d.src.RowsEq(0)) }},
 	{"!(d.NotFound&g.Found)", func(o myCondOps) runtime.PipelineCond { return o.d.src.NotFound().And(o.g.src.Found()).Not() }},
 	{"d.Found|g.Found", func(o myCondOps) runtime.PipelineCond { return o.d.src.Found().Or(o.g.src.Found()) }},
 	{"d.Found|m.Found", func(o myCondOps) runtime.PipelineCond { return o.d.src.Found().Or(o.m.src.Found()) }},
 	{"g.Found&m.NotFound", func(o myCondOps) runtime.PipelineCond { return o.g.src.Found().And(o.m.src.NotFound()) }},
 	{"m.Found|g.NotFound", func(o myCondOps) runtime.PipelineCond { return o.m.src.Found().Or(o.g.src.NotFound()) }},
 	{"u.Eq1&s.Ge2", func(o myCondOps) runtime.PipelineCond {
-		return o.u.src.RowsAffectedEq(1).And(o.s.src.RowsAffectedGe(2))
+		return o.u.src.RowsEq(1).And(o.s.src.RowsGe(2))
 	}},
 	{"s.Gt1&u.Lt1", func(o myCondOps) runtime.PipelineCond {
-		return o.s.src.RowsAffectedGt(1).And(o.u.src.RowsAffectedLt(1))
+		return o.s.src.RowsGt(1).And(o.u.src.RowsLt(1))
 	}},
-	{"s.Le1|u.Le1", func(o myCondOps) runtime.PipelineCond { return o.s.src.RowsAffectedLe(1).Or(o.u.src.RowsAffectedLe(1)) }},
+	{"s.Le1|u.Le1", func(o myCondOps) runtime.PipelineCond { return o.s.src.RowsLe(1).Or(o.u.src.RowsLe(1)) }},
 	{"r.Eq2&d.Eq0", func(o myCondOps) runtime.PipelineCond {
-		return o.r.src.RowsAffectedEq(2).And(o.d.src.RowsAffectedEq(0))
+		return o.r.src.RowsEq(2).And(o.d.src.RowsEq(0))
 	}},
 	{"r.Found&!d.Found", func(o myCondOps) runtime.PipelineCond { return o.r.src.Found().And(o.d.src.Found().Not()) }},
 	// column predicates
@@ -364,7 +364,7 @@ var myCondVariants = []myCondVariant{
 	}},
 	// three operations, nested
 	{"(d.NotFound&g.Found)&s.Eq2", func(o myCondOps) runtime.PipelineCond {
-		return o.d.src.NotFound().And(o.g.src.Found()).And(o.s.src.RowsAffectedEq(2))
+		return o.d.src.NotFound().And(o.g.src.Found()).And(o.s.src.RowsEq(2))
 	}},
 	{"d.NotFound&(g.Found|m.Found)", func(o myCondOps) runtime.PipelineCond {
 		return o.d.src.NotFound().And(o.g.src.Found().Or(o.m.src.Found()))
@@ -373,13 +373,13 @@ var myCondVariants = []myCondVariant{
 		return o.m.src.Found().Or(o.d.src.Found()).Not().And(o.u.src.Found())
 	}},
 	{"(g.Found&m.Found)|(d.NotFound&s.Gt1)", func(o myCondOps) runtime.PipelineCond {
-		return o.g.src.Found().And(o.m.src.Found()).Or(o.d.src.NotFound().And(o.s.src.RowsAffectedGt(1)))
+		return o.g.src.Found().And(o.m.src.Found()).Or(o.d.src.NotFound().And(o.s.src.RowsGt(1)))
 	}},
 	{"!(d.Found|(g.Found&!m.Found))", func(o myCondOps) runtime.PipelineCond {
 		return o.d.src.Found().Or(o.g.src.Found().And(o.m.src.Found().Not())).Not()
 	}},
 	{"same op twice", func(o myCondOps) runtime.PipelineCond {
-		return o.g.src.Found().And(o.g.src.RowsAffectedEq(1)).And(o.d.src.NotFound())
+		return o.g.src.Found().And(o.g.src.RowsEq(1)).And(o.d.src.NotFound())
 	}},
 	// operations that never ran (their branch was not taken) count as false, also under Not
 	{"skipped.Found|d.NotFound", func(o myCondOps) runtime.PipelineCond { return o.skipped.src.Found().Or(o.d.src.NotFound()) }},

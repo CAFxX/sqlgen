@@ -236,7 +236,7 @@ func TestPipelineTxCommitsAndDeliversResults(t *testing.T) {
 		var g *runtime.RowFuture[row]
 		var all *runtime.SliceFuture[row]
 		err := k.tx(ctx, db, nil, nil, func(p *runtime.Pipeline) error {
-			up1 = k.Upd(p, -5, 1).AssertRowsAffected(1)
+			up1 = k.Upd(p, -5, 1).AssertRows(1)
 			up2 = k.Upd(p, 5, 2).AssertFound()
 			g = k.Get(p, 3)
 			all = k.All(p)
@@ -319,7 +319,7 @@ func TestSeveralConditionsOverOneFuture(t *testing.T) {
 			hit := k.Get(p, 1)
 			first = p.If(hit.Found(), func() { k.Upd(p, 1, 1) }, nil)
 			second = p.If(hit.NotFound(), func() { skipped = k.Upd(p, 1000, 2) }, func() { k.Upd(p, 7, 3) })
-			third = p.If(hit.RowsAffectedGe(1), func() { k.Upd(p, 3, 2) }, nil)
+			third = p.If(hit.RowsGe(1), func() { k.Upd(p, 3, 2) }, nil)
 			return nil
 		})
 		if err != nil {
@@ -340,8 +340,8 @@ func TestAssertionAndServerErrorsRollBackAndKeepTheConnectionClean(t *testing.T)
 		before := db.Stats().OpenConnections
 
 		err := k.tx(ctx, db, nil, nil, func(p *runtime.Pipeline) error {
-			k.Upd(p, 1, 1).AssertRowsAffected(1)
-			k.Upd(p, 1, 99).AssertRowsAffected(1) // no such row
+			k.Upd(p, 1, 1).AssertRows(1)
+			k.Upd(p, 1, 99).AssertRows(1) // no such row
 			k.Upd(p, 1, 2)
 			return nil
 		})
@@ -457,13 +457,13 @@ func TestUserManagedTransactionSurvivesAGuardFailure(t *testing.T) {
 			want  []row // committed state: the work before the failing operation + the caller's own update
 		}{
 			{"assertion", func(p *runtime.Pipeline) {
-				k.Upd(p, 1, 1).AssertRowsAffected(1)
+				k.Upd(p, 1, 1).AssertRows(1)
 				k.Upd(p, 5, 2)
-				k.Upd(p, 1, 404).AssertRowsAffected(1) // fails
+				k.Upd(p, 1, 404).AssertRows(1) // fails
 				k.Upd(p, 1000, 3)
 			}, func(err error) bool { return errors.Is(err, runtime.ErrAssertionFailed) }, []row{{1, 11}, {2, 25}, {3, 130}}},
 			{"abort", func(p *runtime.Pipeline) {
-				k.Upd(p, 1, 1).AssertRowsAffected(1)
+				k.Upd(p, 1, 1).AssertRows(1)
 				g := k.Get(p, 1)
 				p.If(g.Found(), func() { p.Abort(abortErr) }, nil)
 				k.Upd(p, 1000, 3)
@@ -498,8 +498,8 @@ func TestUserManagedTransactionSurvivesAGuardFailure(t *testing.T) {
 			t.Fatal(err)
 		}
 		p := runtime.NewPipeline(ctx, db, k.cache, runtime.NewTxStmtCache(tx), true, runtime.DialectDollar)
-		k.Upd(p, 1, 1).AssertRowsAffected(1)
-		k.Ins(p, 1, 0).AssertRowsAffected(1) // unique violation raised by the caller's own statement
+		k.Upd(p, 1, 1).AssertRows(1)
+		k.Ins(p, 1, 0).AssertRows(1) // unique violation raised by the caller's own statement
 		var pgErr *pgconn.PgError
 		if err := p.Flush(); !errors.As(err, &pgErr) || pgErr.Code != "23505" {
 			t.Fatalf("Flush = %v", err)

@@ -173,8 +173,8 @@ type ExecFuture struct {
 	err     error
 }
 
-// AssertRowsAffected requires the operation to affect exactly n rows, rolling back with ErrAssertionFailed otherwise.
-func (f *ExecFuture) AssertRowsAffected(n int64) *ExecFuture {
+// AssertRows requires the operation to affect exactly n rows (rows affected for an exec, rows returned for a query), rolling back with ErrAssertionFailed otherwise.
+func (f *ExecFuture) AssertRows(n int64) *ExecFuture {
 	f.op.Decorators.AssertRows = n
 	return f
 }
@@ -185,23 +185,23 @@ func (f *ExecFuture) AssertFound() *ExecFuture {
 	return f
 }
 
-func (f *ExecFuture) RowsAffectedEq(n int64) PipelineCond {
+func (f *ExecFuture) RowsEq(n int64) PipelineCond {
 	return PipelineCond{Kind: CondRowsEq, Op: f.op, Threshold: n}
 }
 
-func (f *ExecFuture) RowsAffectedGt(n int64) PipelineCond {
+func (f *ExecFuture) RowsGt(n int64) PipelineCond {
 	return PipelineCond{Kind: CondRowsGt, Op: f.op, Threshold: n}
 }
 
-func (f *ExecFuture) RowsAffectedGe(n int64) PipelineCond {
+func (f *ExecFuture) RowsGe(n int64) PipelineCond {
 	return PipelineCond{Kind: CondRowsGe, Op: f.op, Threshold: n}
 }
 
-func (f *ExecFuture) RowsAffectedLt(n int64) PipelineCond {
+func (f *ExecFuture) RowsLt(n int64) PipelineCond {
 	return PipelineCond{Kind: CondRowsLt, Op: f.op, Threshold: n}
 }
 
-func (f *ExecFuture) RowsAffectedLe(n int64) PipelineCond {
+func (f *ExecFuture) RowsLe(n int64) PipelineCond {
 	return PipelineCond{Kind: CondRowsLe, Op: f.op, Threshold: n}
 }
 
@@ -270,29 +270,29 @@ func (f *RowFuture[T]) AssertFound() *RowFuture[T] {
 	return f
 }
 
-// AssertRowsAffected requires the query to return n rows (0 or 1).
-func (f *RowFuture[T]) AssertRowsAffected(n int64) *RowFuture[T] {
+// AssertRows requires the query to return n rows (0 or 1).
+func (f *RowFuture[T]) AssertRows(n int64) *RowFuture[T] {
 	f.op.Decorators.AssertRows = n
 	return f
 }
 
-func (f *RowFuture[T]) RowsAffectedEq(n int64) PipelineCond {
+func (f *RowFuture[T]) RowsEq(n int64) PipelineCond {
 	return PipelineCond{Kind: CondRowsEq, Op: f.op, Threshold: n}
 }
 
-func (f *RowFuture[T]) RowsAffectedGt(n int64) PipelineCond {
+func (f *RowFuture[T]) RowsGt(n int64) PipelineCond {
 	return PipelineCond{Kind: CondRowsGt, Op: f.op, Threshold: n}
 }
 
-func (f *RowFuture[T]) RowsAffectedGe(n int64) PipelineCond {
+func (f *RowFuture[T]) RowsGe(n int64) PipelineCond {
 	return PipelineCond{Kind: CondRowsGe, Op: f.op, Threshold: n}
 }
 
-func (f *RowFuture[T]) RowsAffectedLt(n int64) PipelineCond {
+func (f *RowFuture[T]) RowsLt(n int64) PipelineCond {
 	return PipelineCond{Kind: CondRowsLt, Op: f.op, Threshold: n}
 }
 
-func (f *RowFuture[T]) RowsAffectedLe(n int64) PipelineCond {
+func (f *RowFuture[T]) RowsLe(n int64) PipelineCond {
 	return PipelineCond{Kind: CondRowsLe, Op: f.op, Threshold: n}
 }
 
@@ -353,29 +353,29 @@ func (f *SliceFuture[T]) AssertFound() *SliceFuture[T] {
 	return f
 }
 
-// AssertRowsAffected requires the query to return exactly n rows.
-func (f *SliceFuture[T]) AssertRowsAffected(n int64) *SliceFuture[T] {
+// AssertRows requires the query to return exactly n rows.
+func (f *SliceFuture[T]) AssertRows(n int64) *SliceFuture[T] {
 	f.op.Decorators.AssertRows = n
 	return f
 }
 
-func (f *SliceFuture[T]) RowsAffectedEq(n int64) PipelineCond {
+func (f *SliceFuture[T]) RowsEq(n int64) PipelineCond {
 	return PipelineCond{Kind: CondRowsEq, Op: f.op, Threshold: n}
 }
 
-func (f *SliceFuture[T]) RowsAffectedGt(n int64) PipelineCond {
+func (f *SliceFuture[T]) RowsGt(n int64) PipelineCond {
 	return PipelineCond{Kind: CondRowsGt, Op: f.op, Threshold: n}
 }
 
-func (f *SliceFuture[T]) RowsAffectedGe(n int64) PipelineCond {
+func (f *SliceFuture[T]) RowsGe(n int64) PipelineCond {
 	return PipelineCond{Kind: CondRowsGe, Op: f.op, Threshold: n}
 }
 
-func (f *SliceFuture[T]) RowsAffectedLt(n int64) PipelineCond {
+func (f *SliceFuture[T]) RowsLt(n int64) PipelineCond {
 	return PipelineCond{Kind: CondRowsLt, Op: f.op, Threshold: n}
 }
 
-func (f *SliceFuture[T]) RowsAffectedLe(n int64) PipelineCond {
+func (f *SliceFuture[T]) RowsLe(n int64) PipelineCond {
 	return PipelineCond{Kind: CondRowsLe, Op: f.op, Threshold: n}
 }
 

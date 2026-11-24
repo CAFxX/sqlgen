@@ -121,8 +121,8 @@ func TestRealEngineMySQLWireFailurePathsLeaveTheConnectionClean(t *testing.T) {
 		}{
 			{"failed assertion", func() error {
 				return q.PipelineTx(ctx, nil, func(p *myq.Pipeline) error {
-					p.AddScoreOne(1, 1).AssertRowsAffected(1)
-					p.AddScoreOne(1, 999).AssertRowsAffected(1)
+					p.AddScoreOne(1, 1).AssertRows(1)
+					p.AddScoreOne(1, 999).AssertRows(1)
 					return nil
 				})
 			}, myIsAssertion},
@@ -144,7 +144,7 @@ func TestRealEngineMySQLWireFailurePathsLeaveTheConnectionClean(t *testing.T) {
 			}, myIsDup},
 			{"syntax error in a hand-written statement mid-batch", func() error {
 				return q.PipelineTx(ctx, nil, func(p *myq.Pipeline) error {
-					p.AddScoreOne(1, 1).AssertRowsAffected(1)
+					p.AddScoreOne(1, 1).AssertRows(1)
 					myQueue(p, myBadSyntaxDesc)
 					p.AddScoreOne(1, 2)
 					return nil
@@ -153,7 +153,7 @@ func TestRealEngineMySQLWireFailurePathsLeaveTheConnectionClean(t *testing.T) {
 			{"missing table in a hand-written statement", func() error {
 				return q.PipelineTx(ctx, nil, func(p *myq.Pipeline) error {
 					p.AddScoreOne(1, 1)
-					myQueue(p, myMissingDesc).AssertRowsAffected(1)
+					myQueue(p, myMissingDesc).AssertRows(1)
 					return nil
 				})
 			}, func(err error) bool { return myErrNum(err) == 1146 }},
@@ -174,8 +174,8 @@ func TestRealEngineMySQLWireFailurePathsLeaveTheConnectionClean(t *testing.T) {
 				p.InsertItem(1, 1, "dup", 0, "x")
 			}), myIsDup},
 			{"failed assertion in a user-managed transaction", userTx(func(p *myq.Pipeline) {
-				p.AddScoreOne(1, 1).AssertRowsAffected(1)
-				p.AddScoreOne(1, 999).AssertRowsAffected(1)
+				p.AddScoreOne(1, 1).AssertRows(1)
+				p.AddScoreOne(1, 999).AssertRows(1)
 			}), myIsAssertion},
 			{"ErrWireNotApplicable fallback (argument that cannot be inlined)", func() error {
 				return q.PipelineTx(ctx, nil, func(p *myq.Pipeline) error {
@@ -213,8 +213,8 @@ func TestRealEngineMySQLWireFailurePathsLeaveTheConnectionClean(t *testing.T) {
 			// ... and the next pipeline is a normal one-turn transaction again
 			cost := measure(t, wdb, turns, func() {
 				if err := q.PipelineTx(ctx, nil, func(p *myq.Pipeline) error {
-					p.AddScoreOne(1, 1).AssertRowsAffected(1)
-					p.AddScoreOne(-1, 1).AssertRowsAffected(1)
+					p.AddScoreOne(1, 1).AssertRows(1)
+					p.AddScoreOne(-1, 1).AssertRows(1)
 					return nil
 				}); err != nil {
 					t.Fatalf("%s: pipeline after the failure: %v", f.name, err)
@@ -271,8 +271,8 @@ func TestRealEngineMySQLWireCancellationAndDeadline(t *testing.T) {
 				t.Fatalf("%s: state = %s", what, got)
 			}
 			if err := q.PipelineTx(ctx, nil, func(p *myq.Pipeline) error {
-				p.AddScoreOne(1, 1).AssertRowsAffected(1)
-				p.AddScoreOne(-1, 1).AssertRowsAffected(1)
+				p.AddScoreOne(1, 1).AssertRows(1)
+				p.AddScoreOne(-1, 1).AssertRows(1)
 				return nil
 			}); err != nil {
 				t.Fatalf("%s: pipeline afterwards: %v", what, err)
@@ -288,7 +288,7 @@ func TestRealEngineMySQLWireCancellationAndDeadline(t *testing.T) {
 		done := make(chan error, 1)
 		go func() {
 			done <- q.PipelineTx(cctx, nil, func(p *myq.Pipeline) error {
-				p.AddScoreOne(1, 1).AssertRowsAffected(1)
+				p.AddScoreOne(1, 1).AssertRows(1)
 				myQueueSleep(p, 2)
 				return nil
 			})
@@ -312,7 +312,7 @@ func TestRealEngineMySQLWireCancellationAndDeadline(t *testing.T) {
 		defer dcancel()
 		start := time.Now()
 		err := q.PipelineTx(dctx, nil, func(p *myq.Pipeline) error {
-			p.AddScoreOne(1, 1).AssertRowsAffected(1)
+			p.AddScoreOne(1, 1).AssertRows(1)
 			myQueueSleep(p, 3)
 			return nil
 		})
@@ -359,7 +359,7 @@ func TestRealEngineMySQLWireKilledStatementLeavesTheConnectionClean(t *testing.T
 		done := make(chan error, 1)
 		go func() {
 			done <- q.PipelineTx(ctx, nil, func(p *myq.Pipeline) error {
-				p.AddScoreOne(1, 1).AssertRowsAffected(1)
+				p.AddScoreOne(1, 1).AssertRows(1)
 				myQueue(p, myKillableDesc) // SLEEP inside a larger statement: its interruption is an error
 				p.AddScoreOne(1, 2)
 				return nil
@@ -392,7 +392,7 @@ func TestRealEngineMySQLWireKilledStatementLeavesTheConnectionClean(t *testing.T
 		} else {
 			myNoPrepared(t, wdb, "KILL QUERY")
 		}
-		if err := q.PipelineTx(ctx, nil, func(p *myq.Pipeline) error { p.AddScoreOne(1, 1).AssertRowsAffected(1); return nil }); err != nil {
+		if err := q.PipelineTx(ctx, nil, func(p *myq.Pipeline) error { p.AddScoreOne(1, 1).AssertRows(1); return nil }); err != nil {
 			t.Fatalf("pipeline afterwards: %v", err)
 		}
 	})
@@ -419,7 +419,7 @@ func TestRealEngineMySQLWireKilledConnection(t *testing.T) {
 		go func() {
 			done <- q.PipelineTx(ctx, nil, func(p *myq.Pipeline) error {
 				attempts.Add(1)
-				p.AddScoreOne(1, 1).AssertRowsAffected(1)
+				p.AddScoreOne(1, 1).AssertRows(1)
 				myQueueSleep(p, 3)
 				return nil
 			}, runtime.WithTxRetry(runtime.TxRetryPolicy{MaxRetries: 5, BaseDelay: time.Millisecond, MaxDelay: 5 * time.Millisecond}))
@@ -443,7 +443,7 @@ func TestRealEngineMySQLWireKilledConnection(t *testing.T) {
 		if got := mySnap(t, db); got != myPristine {
 			t.Fatalf("state = %s", got)
 		}
-		if err := q.PipelineTx(ctx, nil, func(p *myq.Pipeline) error { p.AddScoreOne(1, 1).AssertRowsAffected(1); return nil }); err != nil {
+		if err := q.PipelineTx(ctx, nil, func(p *myq.Pipeline) error { p.AddScoreOne(1, 1).AssertRows(1); return nil }); err != nil {
 			t.Fatalf("pipeline afterwards (the pool must have discarded the dead connection): %v", err)
 		}
 
@@ -524,9 +524,9 @@ func TestRealEngineMySQLWireDeadlockIsRetried(t *testing.T) {
 					<-start
 					errs[i] = q.PipelineTx(ctx, nil, func(p *myq.Pipeline) error {
 						attempts.Add(1)
-						p.AddScoreOne(1, rows[0]).AssertRowsAffected(1)
+						p.AddScoreOne(1, rows[0]).AssertRows(1)
 						myQueueSleep(p, 1) // both hold their first row before asking for the second
-						p.AddScoreOne(1, rows[1]).AssertRowsAffected(1)
+						p.AddScoreOne(1, rows[1]).AssertRows(1)
 						return nil
 					}, opts...)
 				}()
@@ -613,8 +613,8 @@ func TestRealEngineMySQLWireLockWaitTimeoutIsRetried(t *testing.T) {
 		id := myConnID(t, wdb)
 
 		err = q.PipelineTx(ctx, nil, func(p *myq.Pipeline) error {
-			p.AddScoreOne(1, 2).AssertRowsAffected(1)
-			p.AddScoreOne(1, 1).AssertRowsAffected(1) // blocked by the holder
+			p.AddScoreOne(1, 2).AssertRows(1)
+			p.AddScoreOne(1, 1).AssertRows(1) // blocked by the holder
 			return nil
 		})
 		var ce *runtime.CommitError
@@ -638,8 +638,8 @@ func TestRealEngineMySQLWireLockWaitTimeoutIsRetried(t *testing.T) {
 					t.Error(err)
 				}
 			}
-			p.AddScoreOne(1, 2).AssertRowsAffected(1)
-			p.AddScoreOne(1, 1).AssertRowsAffected(1)
+			p.AddScoreOne(1, 2).AssertRows(1)
+			p.AddScoreOne(1, 1).AssertRows(1)
 			return nil
 		}, runtime.WithTxRetry(runtime.TxRetryPolicy{MaxRetries: 5, BaseDelay: time.Millisecond, MaxDelay: 5 * time.Millisecond}))
 		if err != nil || attempts.Load() != 2 {
@@ -692,11 +692,11 @@ func TestRealEngineMySQLWireSessionVariablesDoNotLeakBetweenBatches(t *testing.T
 		poisons := []func(p *myq.Pipeline){
 			func(p *myq.Pipeline) { // a failed assertion in the middle of many operations
 				for i := 0; i < 12; i++ {
-					p.AddScoreOne(1, int64(i%4)+1).AssertRowsAffected(1)
+					p.AddScoreOne(1, int64(i%4)+1).AssertRows(1)
 				}
 				g := p.GetItem(1)
 				p.If(g.Found(), func(p *myq.Pipeline) { p.AddScoreOne(1, 2) }, func(p *myq.Pipeline) { p.AddScoreOne(1, 3) })
-				p.AddScoreOne(1, 999).AssertRowsAffected(1)
+				p.AddScoreOne(1, 999).AssertRows(1)
 				p.AddScoreOne(1, 4)
 			},
 			func(p *myq.Pipeline) { // an Abort in a taken branch
@@ -777,22 +777,22 @@ func myRandomScenario(r *rand.Rand) myScenario {
 			case 0, 7:
 				f := p.AddScoreOne(s.a, s.b)
 				if s.assert {
-					f.AssertRowsAffected(1)
+					f.AssertRows(1)
 				}
 			case 1:
 				f := p.InsertItem(s.b, 2, fmt.Sprintf("r%d", s.b), s.a, s.status)
 				if s.assert {
-					f.AssertRowsAffected(1)
+					f.AssertRows(1)
 				}
 			case 2:
 				f := p.DeleteItems([]int64{s.b, s.c})
 				if s.assert {
-					f.AssertRowsAffected(1)
+					f.AssertRows(1)
 				}
 			case 3:
 				g := p.GetItem(s.b)
 				ifs = append(ifs, p.If(g.Found(),
-					func(p *myq.Pipeline) { p.AddScoreOne(1, s.b).AssertRowsAffected(1) },
+					func(p *myq.Pipeline) { p.AddScoreOne(1, s.b).AssertRows(1) },
 					func(p *myq.Pipeline) { p.AddScoreOne(2, s.c) }))
 				reads = append(reads, func() string { return myFmtRow(g) })
 			case 4:
@@ -801,7 +801,7 @@ func myRandomScenario(r *rand.Rand) myScenario {
 			case 5:
 				f := p.AddScore(s.a, []int64{s.b, s.c}, 1)
 				if s.assert {
-					f.AssertRowsAffected(2)
+					f.AssertRows(2)
 				}
 			case 6:
 				if s.assert {
@@ -983,20 +983,20 @@ func TestRealEngineMySQLWireConcurrentPipelinesMatchTheModel(t *testing.T) {
 				defer wg.Done()
 				for i, s := range plans[g] {
 					err := q.PipelineTx(ctx, nil, func(p *myq.Pipeline) error {
-						p.AddScoreOne(-s.delta, s.from).AssertRowsAffected(1)
-						p.AddScoreOne(s.delta, s.to).AssertRowsAffected(1)
+						p.AddScoreOne(-s.delta, s.from).AssertRows(1)
+						p.AddScoreOne(s.delta, s.to).AssertRows(1)
 						switch i % 4 {
 						case 0, 2:
-							p.InsertItem(xid(g, i), 2, "x", int64(i), "x").AssertRowsAffected(1)
+							p.InsertItem(xid(g, i), 2, "x", int64(i), "x").AssertRows(1)
 						case 1:
-							p.DeleteItems([]int64{xid(g, i-1)}).AssertRowsAffected(1)
+							p.DeleteItems([]int64{xid(g, i-1)}).AssertRows(1)
 						case 3:
 							// Only a row of this goroutine is written after the read: a write to a row that other
 							// transactions change would, on MariaDB 11.6+ (innodb_snapshot_isolation=ON), fail with
 							// error 1020 once the read has established the snapshot.
 							gt := p.GetItem(xid(g, i-1))
 							p.If(gt.Found(),
-								func(p *myq.Pipeline) { p.AddScoreOne(1, xid(g, i-1)).AssertRowsAffected(1) },
+								func(p *myq.Pipeline) { p.AddScoreOne(1, xid(g, i-1)).AssertRows(1) },
 								func(p *myq.Pipeline) { p.AddScoreOne(1000, 1) })
 						}
 						return nil

@@ -39,25 +39,25 @@ var condVariants = []condVariant{
 	// single leaves
 	{"d.Found", func(o condOps) runtime.PipelineCond { return o.d.Found() }},
 	{"d.NotFound", func(o condOps) runtime.PipelineCond { return o.d.NotFound() }},
-	{"d.Eq0", func(o condOps) runtime.PipelineCond { return o.d.RowsAffectedEq(0) }},
-	{"d.Gt0", func(o condOps) runtime.PipelineCond { return o.d.RowsAffectedGt(0) }},
-	{"d.Ge0", func(o condOps) runtime.PipelineCond { return o.d.RowsAffectedGe(0) }},
-	{"d.Lt1", func(o condOps) runtime.PipelineCond { return o.d.RowsAffectedLt(1) }},
-	{"d.Le0", func(o condOps) runtime.PipelineCond { return o.d.RowsAffectedLe(0) }},
+	{"d.Eq0", func(o condOps) runtime.PipelineCond { return o.d.RowsEq(0) }},
+	{"d.Gt0", func(o condOps) runtime.PipelineCond { return o.d.RowsGt(0) }},
+	{"d.Ge0", func(o condOps) runtime.PipelineCond { return o.d.RowsGe(0) }},
+	{"d.Lt1", func(o condOps) runtime.PipelineCond { return o.d.RowsLt(1) }},
+	{"d.Le0", func(o condOps) runtime.PipelineCond { return o.d.RowsLe(0) }},
 	{"!d.Found", func(o condOps) runtime.PipelineCond { return o.d.Found().Not() }},
 	// two operations, both orders
 	{"d.NotFound&g.Found", func(o condOps) runtime.PipelineCond { return o.d.NotFound().And(o.g.Found()) }},
 	{"g.Found&d.NotFound", func(o condOps) runtime.PipelineCond { return o.g.Found().And(o.d.NotFound()) }},
-	{"get.Found&del.Eq0", func(o condOps) runtime.PipelineCond { return o.g.Found().And(o.d.RowsAffectedEq(0)) }},
+	{"get.Found&del.Eq0", func(o condOps) runtime.PipelineCond { return o.g.Found().And(o.d.RowsEq(0)) }},
 	{"!(d.NotFound&g.Found)", func(o condOps) runtime.PipelineCond { return o.d.NotFound().And(o.g.Found()).Not() }},
 	{"d.Found|g.Found", func(o condOps) runtime.PipelineCond { return o.d.Found().Or(o.g.Found()) }},
 	{"d.Found|m.Found", func(o condOps) runtime.PipelineCond { return o.d.Found().Or(o.m.Found()) }},
 	{"g.Found&m.NotFound", func(o condOps) runtime.PipelineCond { return o.g.Found().And(o.m.NotFound()) }},
 	{"m.Found|g.NotFound", func(o condOps) runtime.PipelineCond { return o.m.Found().Or(o.g.NotFound()) }},
-	{"u.Eq1&s.Ge2", func(o condOps) runtime.PipelineCond { return o.u.RowsAffectedEq(1).And(o.s.RowsAffectedGe(2)) }},
-	{"s.Gt1&u.Lt1", func(o condOps) runtime.PipelineCond { return o.s.RowsAffectedGt(1).And(o.u.RowsAffectedLt(1)) }},
-	{"s.Le1|u.Le1", func(o condOps) runtime.PipelineCond { return o.s.RowsAffectedLe(1).Or(o.u.RowsAffectedLe(1)) }},
-	{"r.Eq2&d.Eq0", func(o condOps) runtime.PipelineCond { return o.r.RowsAffectedEq(2).And(o.d.RowsAffectedEq(0)) }},
+	{"u.Eq1&s.Ge2", func(o condOps) runtime.PipelineCond { return o.u.RowsEq(1).And(o.s.RowsGe(2)) }},
+	{"s.Gt1&u.Lt1", func(o condOps) runtime.PipelineCond { return o.s.RowsGt(1).And(o.u.RowsLt(1)) }},
+	{"s.Le1|u.Le1", func(o condOps) runtime.PipelineCond { return o.s.RowsLe(1).Or(o.u.RowsLe(1)) }},
+	{"r.Eq2&d.Eq0", func(o condOps) runtime.PipelineCond { return o.r.RowsEq(2).And(o.d.RowsEq(0)) }},
 	// column predicates
 	{"g.WhereCol(true)", func(o condOps) runtime.PipelineCond {
 		sq, gp := scoreAtLeast(30)
@@ -85,7 +85,7 @@ var condVariants = []condVariant{
 	}},
 	// three operations, nested
 	{"(d.NotFound&g.Found)&s.Eq2", func(o condOps) runtime.PipelineCond {
-		return o.d.NotFound().And(o.g.Found()).And(o.s.RowsAffectedEq(2))
+		return o.d.NotFound().And(o.g.Found()).And(o.s.RowsEq(2))
 	}},
 	{"d.NotFound&(g.Found|m.Found)", func(o condOps) runtime.PipelineCond {
 		return o.d.NotFound().And(o.g.Found().Or(o.m.Found()))
@@ -94,13 +94,13 @@ var condVariants = []condVariant{
 		return o.m.Found().Or(o.d.Found()).Not().And(o.u.Found())
 	}},
 	{"(g.Found&m.Found)|(d.NotFound&s.Gt1)", func(o condOps) runtime.PipelineCond {
-		return o.g.Found().And(o.m.Found()).Or(o.d.NotFound().And(o.s.RowsAffectedGt(1)))
+		return o.g.Found().And(o.m.Found()).Or(o.d.NotFound().And(o.s.RowsGt(1)))
 	}},
 	{"!(d.Found|(g.Found&!m.Found))", func(o condOps) runtime.PipelineCond {
 		return o.d.Found().Or(o.g.Found().And(o.m.Found().Not())).Not()
 	}},
 	{"same op twice", func(o condOps) runtime.PipelineCond {
-		return o.g.Found().And(o.g.RowsAffectedEq(1)).And(o.d.NotFound())
+		return o.g.Found().And(o.g.RowsEq(1)).And(o.d.NotFound())
 	}},
 	// operations that never ran (their branch was not taken) count as false, also under Not
 	{"skipped.Found|d.NotFound", func(o condOps) runtime.PipelineCond { return o.skipped.Found().Or(o.d.NotFound()) }},

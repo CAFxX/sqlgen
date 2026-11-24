@@ -34,11 +34,11 @@ type fuzzFut struct {
 type fuzzCondSrc interface {
 	Found() runtime.PipelineCond
 	NotFound() runtime.PipelineCond
-	RowsAffectedEq(int64) runtime.PipelineCond
-	RowsAffectedGt(int64) runtime.PipelineCond
-	RowsAffectedGe(int64) runtime.PipelineCond
-	RowsAffectedLt(int64) runtime.PipelineCond
-	RowsAffectedLe(int64) runtime.PipelineCond
+	RowsEq(int64) runtime.PipelineCond
+	RowsGt(int64) runtime.PipelineCond
+	RowsGe(int64) runtime.PipelineCond
+	RowsLt(int64) runtime.PipelineCond
+	RowsLe(int64) runtime.PipelineCond
 }
 
 func (f fuzzFut) src() fuzzCondSrc {
@@ -80,15 +80,15 @@ func (g *fuzzGen) leaf(f fuzzFut) runtime.PipelineCond {
 	case 1:
 		return c.NotFound()
 	case 2:
-		return c.RowsAffectedEq(n)
+		return c.RowsEq(n)
 	case 3:
-		return c.RowsAffectedGt(n)
+		return c.RowsGt(n)
 	case 4:
-		return c.RowsAffectedGe(n)
+		return c.RowsGe(n)
 	case 5:
-		return c.RowsAffectedLt(n)
+		return c.RowsLt(n)
 	default:
-		return c.RowsAffectedLe(n)
+		return c.RowsLe(n)
 	}
 }
 
@@ -124,7 +124,7 @@ func (g *fuzzGen) gen(p *pgq.Pipeline, depth, n int) {
 			f := p.InsertItem(id, 1, "n", int64(g.rnd.IntN(100)), "new")
 			g.tr(depth, "insert %d", id)
 			if g.rnd.IntN(3) == 0 {
-				f.AssertRowsAffected(1)
+				f.AssertRows(1)
 				g.tr(depth, " assert 1")
 			}
 			g.futs = append(g.futs, fuzzFut{kind: "ins", e: f})
@@ -133,10 +133,10 @@ func (g *fuzzGen) gen(p *pgq.Pipeline, depth, n int) {
 			g.tr(depth, "update %d", id)
 			switch g.rnd.IntN(4) {
 			case 0:
-				f.AssertRowsAffected(1)
+				f.AssertRows(1)
 				g.tr(depth, " assert 1")
 			case 1:
-				f.AssertRowsAffected(0)
+				f.AssertRows(0)
 				g.tr(depth, " assert 0")
 			}
 			g.futs = append(g.futs, fuzzFut{kind: "upd", e: f})
@@ -145,7 +145,7 @@ func (g *fuzzGen) gen(p *pgq.Pipeline, depth, n int) {
 			g.tr(depth, "delete %d,%d", id, id+1)
 			if g.rnd.IntN(4) == 0 {
 				x := int64(g.rnd.IntN(3))
-				f.AssertRowsAffected(x)
+				f.AssertRows(x)
 				g.tr(depth, " assert %d", x)
 			}
 			g.futs = append(g.futs, fuzzFut{kind: "del", e: f})
@@ -162,7 +162,7 @@ func (g *fuzzGen) gen(p *pgq.Pipeline, depth, n int) {
 			g.tr(depth, "many#%d %d..", len(g.futs), id)
 			if g.rnd.IntN(5) == 0 {
 				x := int64(g.rnd.IntN(4))
-				f.AssertRowsAffected(x)
+				f.AssertRows(x)
 				g.tr(depth, " assertRows %d", x)
 			}
 			g.futs = append(g.futs, fuzzFut{kind: "many", s: f})
@@ -196,7 +196,7 @@ func (g *fuzzGen) gen(p *pgq.Pipeline, depth, n int) {
 			f := p.BumpScoresReturning(int64(g.rnd.IntN(5)), []int64{id, id + 1})
 			if g.rnd.IntN(4) == 0 {
 				x := int64(g.rnd.IntN(3))
-				f.AssertRowsAffected(x)
+				f.AssertRows(x)
 				g.tr(depth, " assertRows %d", x)
 			}
 			g.futs = append(g.futs, fuzzFut{kind: "bump", w: f})

@@ -140,8 +140,8 @@ func (a *pgqAPI) Transfer(ctx context.Context, first, second, amount int64, pol 
 }
 func (a *pgqAPI) PipelineTransfer(ctx context.Context, from, to, amount int64, pol runtime.TxRetryPolicy) error {
 	return a.q.PipelineTx(ctx, nil, func(p *pgq.Pipeline) error {
-		p.AddScoreOne(-amount, from).AssertRowsAffected(1)
-		p.AddScoreOne(amount, to).AssertRowsAffected(1)
+		p.AddScoreOne(-amount, from).AssertRows(1)
+		p.AddScoreOne(amount, to).AssertRows(1)
 		return nil
 	}, runtime.WithTxRetry(pol))
 }
