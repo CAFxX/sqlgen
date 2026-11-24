@@ -6,11 +6,13 @@ package integration
 // IfResult / future values -- in a PipelineTx, in a standalone Flush and in a user-managed transaction.
 
 import (
+	"cmp"
 	"database/sql"
 	"errors"
 	"fmt"
 	"math/rand/v2"
 	"os"
+	"slices"
 	"strings"
 	"testing"
 
@@ -242,6 +244,10 @@ func (g *fuzzGen) describe(err error) string {
 			fmt.Fprintf(&sb, " many[%v,%s,sk=%v]", v, fuzzClassify(e), errors.Is(e, runtime.ErrBranchNotTaken))
 		case f.w != nil:
 			v, e := f.w.Get()
+			// UPDATE ... RETURNING returns rows in the order the executor met them, which SQL leaves
+			// unspecified (a CTE-wrapped UPDATE and a plain one can differ): compare them by id
+			v = slices.Clone(v)
+			slices.SortFunc(v, func(a, b pgq.Written) int { return cmp.Compare(a.ID, b.ID) })
 			fmt.Fprintf(&sb, " bump[%v,%s,sk=%v]", v, fuzzClassify(e), errors.Is(e, runtime.ErrBranchNotTaken))
 		}
 	}
