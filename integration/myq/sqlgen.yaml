@@ -1,4 +1,3 @@
-version: "1"
 package: myq
 out: myq_gen.go
 dialect: mysql

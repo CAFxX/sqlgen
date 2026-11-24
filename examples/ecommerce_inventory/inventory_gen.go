@@ -102,11 +102,6 @@ func (q *Queries) InTx(ctx context.Context, txOpts *sql.TxOptions, fn func(*Quer
 	})
 }
 
-// InTxOpts is an alias for InTx.
-func (q *Queries) InTxOpts(ctx context.Context, txOpts *sql.TxOptions, fn func(*Queries) error, opts ...runtime.TxOption) error {
-	return q.InTx(ctx, txOpts, fn, opts...)
-}
-
 // Pipeline queues strongly-typed SQL operations for single-roundtrip execution or sequential fallback.
 type Pipeline struct {
 	*runtime.Pipeline
@@ -847,10 +842,6 @@ func (q *Queries) InsertOrderItemsStream(ctx context.Context, seq iter.Seq2[NewO
 	return batchRes, nil
 }
 
-func (q *Queries) InsertOrderItemsStreamSeq(ctx context.Context, seq iter.Seq2[NewOrderItem, error]) (sql.Result, error) {
-	return q.InsertOrderItemsStream(ctx, seq)
-}
-
 const stmtIDStreamFulfilledOrders uint32 = 3
 
 const (
@@ -1228,10 +1219,6 @@ func (q *Queries) InsertArchivedOrdersStream(ctx context.Context, seq iter.Seq2[
 		return nil, err
 	}
 	return batchRes, nil
-}
-
-func (q *Queries) InsertArchivedOrdersStreamSeq(ctx context.Context, seq iter.Seq2[ArchivedOrderRow, error]) (sql.Result, error) {
-	return q.InsertArchivedOrdersStream(ctx, seq)
 }
 
 const stmtIDDeleteFulfilledOrdersByIDs uint32 = 5

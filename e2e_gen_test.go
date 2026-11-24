@@ -102,11 +102,6 @@ func (q *Queries) InTx(ctx context.Context, txOpts *sql.TxOptions, fn func(*Quer
 	})
 }
 
-// InTxOpts is an alias for InTx.
-func (q *Queries) InTxOpts(ctx context.Context, txOpts *sql.TxOptions, fn func(*Queries) error, opts ...runtime.TxOption) error {
-	return q.InTx(ctx, txOpts, fn, opts...)
-}
-
 // Pipeline queues strongly-typed SQL operations for single-roundtrip execution or sequential fallback.
 type Pipeline struct {
 	*runtime.Pipeline
@@ -2726,10 +2721,6 @@ func (q *Queries) UpdateUsersBatchFromValuesStream(ctx context.Context, seq iter
 	return batchRes, nil
 }
 
-func (q *Queries) UpdateUsersBatchFromValuesStreamSeq(ctx context.Context, seq iter.Seq2[BatchBonusInput, error]) (sql.Result, error) {
-	return q.UpdateUsersBatchFromValuesStream(ctx, seq)
-}
-
 const stmtIDInsertQuadBatch uint32 = 12
 
 type paramsInsertQuadBatch struct {
@@ -2946,10 +2937,6 @@ func (q *Queries) InsertQuadBatchStream(ctx context.Context, seq iter.Seq2[QuadI
 		return nil, err
 	}
 	return batchRes, nil
-}
-
-func (q *Queries) InsertQuadBatchStreamSeq(ctx context.Context, seq iter.Seq2[QuadInput, error]) (sql.Result, error) {
-	return q.InsertQuadBatchStream(ctx, seq)
 }
 
 const stmtIDUserIDsNearScore uint32 = 13

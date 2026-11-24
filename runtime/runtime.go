@@ -16,8 +16,6 @@ const (
 	DialectQuestion Dialect = iota
 	// DialectDollar emits positional placeholders ($1, $2, ...).
 	DialectDollar
-	// DialectPostgres is an alias for DialectDollar.
-	DialectPostgres = DialectDollar
 )
 
 // StmtVerb identifies the top-level SQL DML/DQL verb of a statement.
@@ -67,8 +65,6 @@ var (
 	ErrEmptySliceParam = errors.New("sqlgen: slice parameter cannot be empty")
 	// ErrUninitializedQuery is returned when an active composed Query parameter is uninitialized.
 	ErrUninitializedQuery = errors.New("sqlgen: curried Query argument is uninitialized")
-	// ErrNilQuery is an alias for ErrUninitializedQuery.
-	ErrNilQuery = ErrUninitializedQuery
 	// ErrAssertionFailed is matched (errors.Is) by every pipeline row-count assertion failure. The returned
 	// error is an *AssertionError naming the statement and the expected count.
 	ErrAssertionFailed = errors.New("sqlgen: pipeline row-count assertion failed")

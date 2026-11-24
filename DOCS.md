@@ -24,7 +24,7 @@ Or add a `//go:generate` directive to any Go file in your package:
 
 | Flag | Description |
 | :--- | :--- |
-| `-config <path>` | Path to YAML configuration file (default `"sqlgen.yaml"`). You may also pass `<path>` as a single positional argument if `-config` is not explicitly provided. |
+| `-config <path>` | Path to YAML configuration file (default `"sqlgen.yaml"`). It is given with `-config` only; positional arguments are rejected. |
 | `-out <path>` | Overrides the `out` path configured in `sqlgen.yaml`; unlike `out`, a relative `-out` is relative to the working directory. |
 | `-stdout` | Writes generated Go code to `stdout` instead of disk. |
 | `-check` | CI verification mode. Generates the Go code in memory and compares it byte-for-byte against the existing output file on disk without modifying any files. Exits with code `2` if the file is missing or out of date. |
@@ -42,39 +42,27 @@ Or add a `//go:generate` directive to any Go file in your package:
 ### `sqlgen.yaml` Schema Reference
 
 ```yaml
-version: "1"                                    # Optional: must be "" or "1"
 package: ledger                                 # Target Go package name (required)
 out: ledger_gen.go                              # Output Go file path relative to YAML file (default: "sqlgen_gen.go")
-dialect: postgres                               # "postgres" | "postgresql" | "pgx" | "cockroachdb" | "cockroach" ($1, $2)
-                                                # "sqlite" | "sqlite3" | "mysql" | "mariadb" (?)
-                                                # also the engine-neutral "dollar" ($) and "question" (?); anything else is an error
-                                                # (SQL Server and Oracle are not supported)
-runtime_import: "github.com/CAFxX/sqlgen/runtime" # Optional override for runtime import path
-extra_imports:                                  # Optional extra Go import paths
-  - "github.com/google/uuid"
+dialect: postgres                               # Required, exactly one of: postgres | cockroachdb ($1, $2) | mysql | mariadb | sqlite (?)
+                                                # (no aliases; a missing or unknown value is an error listing the five; SQL Server and Oracle are not supported)
+extra_imports:                                  # Optional extra Go import paths for types outside the standard library prefixes
+  - "github.com/google/uuid"                    # (time, encoding/json, math/big, net/netip, net/url and database/sql/driver are imported automatically)
 
 statements:
   - name: GetAccount                            # Exported Go identifier (required)
-    kind: one                                   # "exec" | "one" | "many" | "subquery" (default: "many")
+    kind: one                                   # Required: "exec" | "one" | "many" | "subquery"
     result_type: Account                        # Optional custom struct name (or scalar type like "int64") for "one"/"many" (default: "<Name>Row")
     params_struct: false                        # Optional: set true to always generate <Name>Params struct instead of positional arguments
-    params:                                     # Optional out-of-line parameter type declarations
-      - org_id: int64                           # Shorthand mapping
-      - "account_id:int64"                      # Compact scalar string
-      - { name: tags, type: string, slice: true } # Verbose mapping
-    columns:                                    # Optional explicit output columns (used when SQL omits inline :type)
-      - id: int64
-      - "balance:int64"
-      - { name: status, type: string }
-    sql: |
-      SELECT id, balance, status
+    sql: |                                      # Output columns and parameters are typed inline (section 2)
+      SELECT id:int64, balance:int64, status:string
       FROM accounts
-      WHERE org_id = :org_id AND id = :account_id
+      WHERE org_id = :org_id:int64 AND id = :account_id:int64
 ```
 
 Statement names are exported Go identifiers: `name: getAccount` is rejected at generate time (`must be an exported Go identifier`), as are names that collide with generated methods. The `out:` directory is created if it does not exist.
 
-> **Strict YAML Validation**: `sqlgen` decodes `sqlgen.yaml` with `KnownFields(true)`. Unknown keys at any level, empty YAML files, or trailing YAML documents produce an immediate compile-time error.
+> **Strict YAML Validation**: `sqlgen` decodes `sqlgen.yaml` with `KnownFields(true)`. Unknown keys at any level, empty YAML files, or trailing YAML documents produce an immediate compile-time error. Every type is declared inline in the SQL: there are no `params:` / `columns:` lists, and no `version:` or `runtime_import:` keys.
 
 #### Placeholders are generated, never hand-written
 
@@ -135,7 +123,7 @@ statements:
 ```
 
 - **Column Name Inference**:
-  - If an `AS alias:type` clause is present, the Go struct field name is `PascalCase(alias)` (with standard Go initialisms uppercased: `id` $\rightarrow$ `ID`, `url` $\rightarrow$ `URL`, `uuid` $\rightarrow$ `UUID`, `sku` $\rightarrow$ `SKU`, `api` $\rightarrow$ `API`, `http` $\rightarrow$ `HTTP`, `ip` $\rightarrow$ `IP`, `json` $\rightarrow$ `JSON`, `sql` $\rightarrow$ `SQL`, `cpu` $\rightarrow$ `CPU`, `ttl` $\rightarrow$ `TTL`, `uri` $\rightarrow$ `URI`, `uid` $\rightarrow$ `UID`, `acl` $\rightarrow$ `ACL`, `html` $\rightarrow$ `HTML`, `xml` $\rightarrow$ `XML`, `db` $\rightarrow$ `DB`, `io` $\rightarrow$ `IO`, `os` $\rightarrow$ `OS`, `ui` $\rightarrow$ `UI`).
+  - If an `AS alias:type` clause is present, the Go struct field name is `PascalCase(alias)` (with these initialisms uppercased, singular and plural: `id` $\rightarrow$ `ID`, `ids` $\rightarrow$ `IDs`, `sku` $\rightarrow$ `SKU`, `url` $\rightarrow$ `URL`, `uri` $\rightarrow$ `URI`, `uuid` $\rightarrow$ `UUID`; and `sql` $\rightarrow$ `SQL`, `api` $\rightarrow$ `API`, `http` $\rightarrow$ `HTTP`, `https` $\rightarrow$ `HTTPS`, `ip` $\rightarrow$ `IP`, `json` $\rightarrow$ `JSON`, `xml` $\rightarrow$ `XML`, `html` $\rightarrow$ `HTML`, `cpu` $\rightarrow$ `CPU`; any other word is simply capitalized).
   - Otherwise, if the expression is a table-qualified column `u.created_at:time.Time`, the `u.` prefix is stripped and the field name is `CreatedAt`.
   - Complex expressions without a trailing identifier (e.g., `COUNT(*):int64` without `AS alias`) MUST include `AS <alias>:type`.
 - **Column and parameter restrictions**:
@@ -149,7 +137,7 @@ statements:
 
 ### 2.2. Scalar Parameters, Parameter Deduplication & 1D Slices
 
-Parameters outside `SELECT` projection lists may be written with or without a leading colon (`:OrgID:int64` or `OrgID:int64`), or referenced as `:org_id` when declared in the statement's `params:` list.
+A parameter is declared where it is first used, always with a leading colon and its Go type: `:name:Type` for a scalar, `:name:[]Type` for a slice (optionally followed by `ASC` / `DESC`, section 2.4), `:name:*Type` for a nullable value. Later uses repeat just `:name` (or `:name ASC|DESC` for a slice). Without the leading colon, `name:Type` is only an output column (section 2.1), and a `name:Type` anywhere else is an error that tells you to add the colon. The `Type...` / `name...` slice spellings do not exist.
 
 ```yaml
 statements:
@@ -482,11 +470,10 @@ Database drivers enforce hard limits on parameters per statement (e.g., 65,535 i
 
 #### $O(1)$-Memory Streaming Ingestion (`*Stream` & `*StreamSeq`)
 
-When a statement qualifies for `*Batch` **and** its collection parameter is a tuple slice (`[]Tuple`; 1D slices get `*Batch` only), `sqlgen` also generates `<Name>Stream` and `<Name>StreamSeq`. They take the lazy `iter.Seq2[<TupleType>, error]` **in place of** the tuple-slice parameter (same position in the argument list), so an arbitrarily large or lazy source is ingested in $O(1)$ memory:
+When a statement qualifies for `*Batch` **and** its collection parameter is a tuple slice (`[]Tuple`; 1D slices get `*Batch` only), `sqlgen` also generates `<Name>Stream` (and, for `many` statements, `<Name>StreamSeq`). They take the lazy `iter.Seq2[<TupleType>, error]` **in place of** the tuple-slice parameter (same position in the argument list), so an arbitrarily large or lazy source is ingested in $O(1)$ memory:
 
 - `kind: exec`:
   - `q.<Name>Stream(ctx, ..., seq iter.Seq2[<TupleType>, error], ...) (sql.Result, error)` — pulls items from `seq` into a pooled chunk buffer (`256` items or `MaxRowsPerBatch`, whichever is smaller), flushes each chunk via `<Name>Batch`, and returns the summed result (`res.RowsAffected()` is the total).
-  - `q.<Name>StreamSeq(...)` — same signature and behaviour as `<Name>Stream` (an alias kept so exec and many statements expose the same names).
 - `kind: many`:
   - `q.<Name>Stream(ctx, ..., seq iter.Seq2[<TupleType>, error], ...) ([]<RowType>, error)`
   - `q.<Name>StreamSeq(ctx, ..., seq iter.Seq2[<TupleType>, error], ...) iter.Seq2[<RowType>, error]`
@@ -496,7 +483,7 @@ When a statement qualifies for `*Batch` **and** its collection parameter is a tu
 **Iterator Adapters in `runtime`** (all return plain `iter.Seq2[T, error]`):
 - `runtime.FromSlice(items []T) iter.Seq2[T, error]` — wraps an in-memory slice.
 - `runtime.FromSeq(seq iter.Seq[T]) iter.Seq2[T, error]` — wraps a non-error `iter.Seq[T]`.
-- `runtime.MapSeq2(seq iter.Seq2[In, error], fn func(In) (Out, error)) iter.Seq2[Out, error]` — transforms a streaming query (`q.StreamOrdersSeq(...)`) directly into the input stream of `<Name>Stream` or `<Name>StreamSeq` in $O(1)$ memory; the first error from `seq` or `fn` ends the stream.
+- `runtime.MapSeq2(seq iter.Seq2[In, error], fn func(In) (Out, error)) iter.Seq2[Out, error]` — transforms a streaming query (`q.StreamOrdersSeq(...)`) directly into the input stream of a `<Name>Stream` or `<Name>StreamSeq` in $O(1)$ memory; the first error from `seq` or `fn` ends the stream.
 - `runtime.MapSeq(seq iter.Seq2[In, error], fn func(In) Out) iter.Seq2[Out, error]` — infallible mapping helper.
 
 ```go
@@ -597,7 +584,7 @@ Use `pgxwire.Connector(cfg *pgx.ConnConfig, opts ...stdlib.OptionOpenDB)` with `
 | `db.SetMaxOpenConns(1)` (pgxwire) | **3**: `BEGIN`, the operations in one batch, `COMMIT` | With one open connection the runtime never borrows a second one for the batch (that would deadlock against itself): it begins an ordinary transaction on the only connection and sends the operations through that connection's pipeliner. No deadlock, same results and errors, but `BEGIN` and `COMMIT` are separate turns. Counted in `WirePipelines`, not `SequentialPipelines`. |
 | any other driver, or a `*sql.DB` not opened through pgxwire | sequential fallback (`BEGIN`, one per statement, `COMMIT`) | `CacheStats().SequentialPipelines` counts these. |
 
-An empty pipeline, or one whose `fn` returned an error, sends nothing. Calling `Flush()`/`Exec()` inside a `PipelineTx` callback returns `runtime.ErrFlushInPipelineTx`; the transaction flushes the pipeline itself.
+An empty pipeline, or one whose `fn` returned an error, sends nothing. Calling `Flush()` inside a `PipelineTx` callback returns `runtime.ErrFlushInPipelineTx`; the transaction flushes the pipeline itself.
 
 **Failure semantics.** Any failure (a failed assertion, an `Abort`, a server error in the middle of the batch, a serialization failure or deadlock, a dropped connection) rolls the transaction back and surfaces the same error value the sequential path returns (`runtime.ErrAssertionFailed`, your `Abort` error, the `*pgconn.PgError`). When a statement fails the server skips the rest of the batch and leaves the transaction aborted, so pgxwire sends one extra `ROLLBACK` round-trip (error path only) and the connection goes back to the pool clean; if even that fails the connection is closed and the pool replaces it. A failure raised by the `COMMIT` itself (a deferred constraint, a serialization failure under `SERIALIZABLE`) is reported like any other and is retried by `WithTxRetry` when `runtime.IsRetryableTxError` says so; a dropped connection during the batch has an unknown outcome (the `COMMIT` may have been processed) and is never retried.
 
@@ -802,11 +789,11 @@ err := q.PipelineTx(ctx, nil, func(p *Pipeline) error {
      - `.AssertRowsAffected(n int64) *RowFuture[T]`: fails the pipeline with an error matching `runtime.ErrAssertionFailed` if row count $\ne n$.
      - `.Found()`, `.NotFound()`, `.RowsAffectedEq(n)`, `.RowsAffectedGt(n)`, `.RowsAffectedGe(n)`, `.RowsAffectedLt(n)`, `.RowsAffectedLe(n)`: returns a `PipelineCond`.
      - `.WhereCol(sqlPred string, goPred func(T) bool) PipelineCond` (or package helper `WhereCol(fut, sqlPred, goPred)`): evaluates `sqlPred` on the wire in `WirePipeliner` mode and `goPred(row)` in Go fallback mode.
-     - `.Get() (T, error)` (or `.Value() (T, error)`) and `.Skipped() bool` (valid after flush).
+     - `.Get() (T, error)` and `.Skipped() bool` (valid after flush).
    - `*runtime.SliceFuture[T]`: returned by `kind: many` pipeline methods.
      - `.AssertRowsAffected(n int64) *SliceFuture[T]`, `.AssertFound() *SliceFuture[T]`
      - `.Found()`, `.NotFound()`, `.RowsAffectedEq(n)`, `.RowsAffectedGt(n)`, `.RowsAffectedGe(n)`, `.RowsAffectedLt(n)`, `.RowsAffectedLe(n)`, `.WhereCol(sqlPred, goPred func(T) bool)`
-     - `.Get() ([]T, error)` (or `.Values() ([]T, error)`) and `.Skipped() bool` (valid after flush).
+     - `.Get() ([]T, error)` and `.Skipped() bool` (valid after flush).
    - Reading any future's result (`Result`, `RowsAffected`, `Get`, `Value`, `Values`) before its pipeline has flushed (`Flush`, or the end of `PipelineTx`) returns `runtime.ErrFutureNotReady`, never a result that could be mistaken for a real one; after the flush a `*RowFuture` whose statement matched no row returns `sql.ErrNoRows`.
 2. **Boolean Combinators & Control Flow**:
    - `condA.And(condB)`, `condA.Or(condB)`, `condA.Not()` combine `PipelineCond` values.
@@ -826,9 +813,9 @@ err := q.PipelineTx(ctx, nil, func(p *Pipeline) error {
 
 | Option | Default | Description |
 | :--- | :--- | :--- |
-| `runtime.WithMaxPreparedStmts(n)` | `512` (`32`/shard) | Maximum Tier-2 `*sql.Stmt` handles across all 16 shards (`0` disables Tier 2). |
+| `runtime.WithMaxPreparedStmts(n)` | `256` (`16`/shard) | Maximum Tier-2 `*sql.Stmt` handles across all 16 shards (`0` disables Tier 2). |
 | `runtime.WithMaxSQLVariants(n)` | `4096` (`256`/shard) | Maximum Tier-1 rendered SQL strings cached across all 16 shards (`0` disables Tier 1+2). |
-| `runtime.WithMaxPartialBytes(bytes)` | `4 MiB` (`256 KiB`/shard) | Hard memory budget in bytes for Tier-1 cached SQL strings. |
+| `runtime.WithMaxPartialBytes(bytes)` | `16 MiB` (`1 MiB`/shard) | Hard memory budget in bytes for Tier-1 cached SQL strings. |
 | `runtime.WithPromoteThreshold(hits)` | `2` | Sketch frequency required before promoting a Tier-1 SQL variant (or recurring batch size) to a Tier-2 `*sql.Stmt`. |
 | `runtime.WithMaxBatchParams(params)` | `16384` | Maximum parameters per batch chunk. It is always clamped to the wire limit of the placeholder style: `65535` for `$N` (PostgreSQL, CockroachDB) and `32766` for `?` (SQLite, MySQL, MariaDB: the SQLite-safe value, below MySQL's own 65535, because the runtime only knows the placeholder style). With the default the limit never binds. |
 
@@ -863,7 +850,7 @@ Every generated file declares the same fixed set of top-level names in your pack
 
 **Why the unqualified aliases exist.** The aliases (`Query = runtime.Query`, `WithTxRetry = runtime.WithTxRetry`, and so on) re-export the runtime types and options that appear in generated signatures, so application code that only calls the generated API never has to import the `runtime` package. For example `q.InTx(ctx, nil, fn, WithTxRetry(DefaultRetryPolicy()))` and `After: NewSeek(...)` compile with just the generated package. They are aliases, not new types: a `Query` and a `runtime.Query` are identical and interchangeable.
 
-**Method names generated on `*Queries` and `*Pipeline`** that a statement name must avoid (`reservedStatementNames`): `Cache`, `CacheStats`, `Close`, `If`, `InTx`, `InTxOpts`, `Pipeline`, `PipelineTx`, `WithPrepared`, `WithTx`, plus `SetBuildError`, `QueueExec`, `Abort`, `Flush` and `Exec`, which the generated `Pipeline` inherits from `runtime.Pipeline`. A statement becomes a method with its own name on both `*Queries` and `*Pipeline`, so it must not shadow any of them.
+**Method names generated on `*Queries` and `*Pipeline`** that a statement name must avoid (`reservedStatementNames`): `Cache`, `CacheStats`, `Close`, `If`, `InTx`, `Pipeline`, `PipelineTx`, `WithPrepared`, `WithTx`, plus `SetBuildError`, `QueueExec`, `Abort` and `Flush`, which the generated `Pipeline` inherits from `runtime.Pipeline`. A statement becomes a method with its own name on both `*Queries` and `*Pipeline`, so it must not shadow any of them.
 
 **What happens on a clash.** Generation fails with a clear error instead of emitting code that does not compile:
 

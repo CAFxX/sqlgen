@@ -1,4 +1,3 @@
-version: "1"
 package: saas_multitenant
 out: portal_gen.go
 dialect: sqlite

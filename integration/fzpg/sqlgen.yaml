@@ -1,7 +1,6 @@
 # Fuzz/differential fixture (integration/fuzz_*_test.go). fzpg: dialect postgres. The statements are identical
 # across the fzpg and fzmy packages except for the RETURNING ones (see the end of the file); keep them in
 # sync (TestFuzzYamlInSync enforces it).
-version: "1"
 package: fzpg
 out: fzpg_gen.go
 dialect: postgres

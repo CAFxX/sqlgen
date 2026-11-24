@@ -1,4 +1,3 @@
-version: "1"
 package: pgq
 out: pgq_gen.go
 dialect: postgres

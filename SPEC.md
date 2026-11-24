@@ -21,7 +21,7 @@ Note: the spec comes from the spec workshop on https://share.gemini.google/Nm8OX
 3. **100% `database/sql` Compatibility**:
    - Works seamlessly with `*sql.DB` (implicit transactions) and `*sql.Tx` (explicit transactions via `q.WithTx(tx)` and `q.InTx(...)`) across PostgreSQL, CockroachDB, SQLite, MySQL, and MariaDB, including when `db.SetMaxOpenConns(1)`.
 4. **Everything-in-SQL Typed DSL**:
-   - Output columns (`col:GoType`), input parameters (`Param:GoType`), 1D slices (`IDs:[]int64`), multi-row tuple slices (`Rows:[]Patch(ID:int64, ...)`), deadlock-prevention sort modifiers (`ASC`/`DESC`), conditional blocks (`{?Flag: ...}`), keyset pagination (`Seek:sqlgen.Seek` and `Order:sqlgen.Order(...)`), and composable subqueries (`Sub:sqlgen.Query`) are expressed inline in the SQL string.
+   - Output columns (`col:GoType`), input parameters (`:Param:GoType`), 1D slices (`:IDs:[]int64`), multi-row tuple slices (`:Rows:[]Patch(ID:int64, ...)`), deadlock-prevention sort modifiers (`ASC`/`DESC`), conditional blocks (`{?Flag: ...}`), keyset pagination (`:Seek:sqlgen.Seek` and `:Order:sqlgen.Order(...)`), and composable subqueries (`:Sub:sqlgen.Query`) are expressed inline in the SQL string. Every parameter starts with a colon; there is no other spelling, and no out-of-line `params:` / `columns:` lists.
 5. **16-Shard Two-Tier Adaptive Statement Cache (W-TinyLFU + SLRU)**:
    - **Tier 1 (Partially Prepared / Staged SQL)**: Stores pre-rendered `sqlStr` strings in memory (`MaxSQLVariants`, `MaxPartialBytes`) using Segmented LRU (20% Probation, 80% Protected), W-TinyLFU admission filtering (via a 2 KB 4-bit Count-Min Sketch per shard), and in-place `cacheEntry` struct recycling.
    - **Tier 2 (Fully Prepared `*sql.Stmt`)**: Stores reference-counted `ManagedStmt` handles (`MaxPreparedStmts`). Variants promote from Tier 1 to Tier 2 (using singleflight coordination via `entry.preparing`) when their decayed TinyLFU frequency reaches `PromoteThreshold` and beats the Tier-2 victim, and demote back to Tier 1 Protected (closing `*sql.Stmt` when `refs == 0` while keeping `sqlStr` warm) when superseded.
@@ -30,7 +30,7 @@ Note: the spec comes from the spec workshop on https://share.gemini.google/Nm8OX
 7. **Arity-Scaled Batching, Heavy-Hitter Promotion & Iterator Streaming Writes**:
    - Per-statement power-of-2 chunk ceiling $N_{\text{chunk\_max}} \in \{2^0 \dots 2^{15}\}$ (`1` to `32,768`) computed from scalar count $S$, tuple arity $F$, dialect parameter limit (`65,535` or `32,766`), and `WithMaxBatchParams` (default `16,384`).
    - Recurring non-power-of-2 batch sizes (e.g., `1000` or `900` rows) are promoted to dedicated Tier-2 `*sql.Stmt` handles, greedily reused for larger batches (`2900 = 1000 + 1000 + 900`), and fall back to powers of 2 when cold.
-   - Tuple-slice statements also generate `<Name>Stream` and `<Name>StreamSeq` accepting `iter.Seq2[TupleStruct, error]` for $O(1)$-memory streaming writes.
+   - Tuple-slice statements also generate `<Name>Stream` (and, for `kind: many`, `<Name>StreamSeq`) accepting `iter.Seq2[TupleStruct, error]` for $O(1)$-memory streaming writes.
 8. **Deadlock-Prevention Global Presorting (`ASC` / `DESC`)**:
    - Slices and tuple-slices with `ASC`/`DESC` modifiers run an $O(N)$ `isSorted` check first (0 allocs). If unsorted, they sort a pooled `*[]int` index permutation (`AcquireIndices`) globally **before** chunk slicing—never mutating the caller's slice and guaranteeing that the *bound parameters* are globally monotonic across all chunks. Monotonic **lock acquisition** follows only where the engine processes keys in bound order (multi-row `INSERT`/upsert `VALUES`); for `UPDATE`/`DELETE ... WHERE col IN (...)` the engine's plan decides the order rows are visited, locked and returned (PostgreSQL scans an `IN` list in ascending index order, so `DESC` has no effect there).
 9. **Single-Roundtrip `Pipeline` & `PipelineTx` with Server-Side Bail-Out & `If/Then/Else`**:
@@ -114,61 +114,34 @@ const (
 	KindSubquery QueryKind = "subquery"
 )
 
-type Dialect string
-
-const (
-	DialectQuestion Dialect = "question" // ? (SQLite, MySQL, MariaDB)
-	DialectDollar   Dialect = "dollar"   // $1, $2, ... (PostgreSQL, CockroachDB)
-)
-
-// The `dialect` YAML key is case-insensitive and also accepts aliases (parseDialect):
-//   dollar:   "", "postgres", "postgresql", "pgx", "cockroach", "cockroachdb", "$"  (default)
-//   question: "sqlite", "sqlite3", "mysql", "mariadb", "?"
-// Any other value fails with `sqlgen: unsupported dialect "<v>"`.
-
-type ColumnSpec struct {
-	Name     string `yaml:"name"`
-	GoType   string `yaml:"type"`
-	SQLExpr  string `yaml:"-"`
-	FlagName string `yaml:"-"`
-	FlagBit  uint64 `yaml:"-"`
-}
-
-type ParamSpec struct {
-	Name    string `yaml:"name"`
-	GoType  string `yaml:"type"`
-	Slice   bool   `yaml:"slice"`
-	HasSort bool   `yaml:"-"`
-	Desc    bool   `yaml:"-"`
-}
-
 type StatementSpec struct {
-	Name         string       `yaml:"name"`
-	Kind         QueryKind    `yaml:"kind"`
-	ResultType   string       `yaml:"result_type"`
-	ParamsStruct bool         `yaml:"params_struct"`
-	SQL          string       `yaml:"sql"`
-	Params       []ParamSpec  `yaml:"params"`
-	Columns      []ColumnSpec `yaml:"columns"`
+	Name         string    `yaml:"name"`
+	Kind         QueryKind `yaml:"kind"`
+	ResultType   string    `yaml:"result_type"`
+	ParamsStruct bool      `yaml:"params_struct"`
+	SQL          string    `yaml:"sql"`
 }
 
 type Config struct {
-	Version       string          `yaml:"version"`
-	PackageName   string          `yaml:"package"`
-	Out           string          `yaml:"out"`
-	RuntimeImport string          `yaml:"runtime_import"`
-	ExtraImports  []string        `yaml:"extra_imports"`
-	Dialect       Dialect         `yaml:"dialect"`
-	Statements    []StatementSpec `yaml:"statements"`
+	PackageName  string          `yaml:"package"`
+	Out          string          `yaml:"out"`
+	ExtraImports []string        `yaml:"extra_imports"`
+	Dialect      string          `yaml:"dialect"`
+	Statements   []StatementSpec `yaml:"statements"`
 }
+
+// `dialect` is REQUIRED and is exactly one of the five names below (parseDialect). There are no aliases and
+// no case folding; a missing or unknown value fails with
+//   sqlgen: dialect is required; set dialect: to one of postgres, cockroachdb, mysql, mariadb, sqlite
+//   sqlgen: unsupported dialect "<v>" (valid dialects: postgres, cockroachdb, mysql, mariadb, sqlite)
+// The name alone decides the placeholder style (engineStyle: `$N` for postgres and cockroachdb, `?` for mysql,
+// mariadb and sqlite) and the engine-specific diagnostics (mysql rejects RETURNING; mariadb allows it).
+// Generated code carries only the style, as `const sqlDialect = runtime.DialectDollar | runtime.DialectQuestion`.
 ```
 
 ### 3.2. Strict YAML Unmarshaling & Import Resolution Rules
-1. `ParseYAML(data []byte) (Config, error)` MUST use `dec := yaml.NewDecoder(bytes.NewReader(data))` with `dec.KnownFields(true)`. Empty input (`io.EOF`), trailing YAML documents after the first document, or `Version` values other than `""` or `"1"` MUST return an error.
-2. `ColumnSpec.UnmarshalYAML(value *yaml.Node)` and `ParamSpec.UnmarshalYAML(value *yaml.Node)` MUST inspect `*yaml.Node` directly (never calling `value.Decode` into a struct, which drops `KnownFields(true)`) and support three notations:
-   - Verbose mapping: `{ name: ID, type: int64 }` (and optional `slice: true` on `ParamSpec`). Any unknown mapping key MUST fail with `fmt.Errorf("line %d: unknown field %q", kNode.Line, kNode.Value)`.
-   - Single-key shorthand mapping: `- ID: int64` (or `- org_ids...: int64`).
-   - Compact scalar string: `- "ID:int64"` (or `- "org_ids...:int64"`).
+1. `ParseYAML(data []byte) (Config, error)` MUST use `dec := yaml.NewDecoder(bytes.NewReader(data))` with `dec.KnownFields(true)`. Empty input (`io.EOF`), trailing YAML documents after the first document, or any key not in `Config` / `StatementSpec` (in particular the removed `version`, `runtime_import`, `params` and `columns`) MUST return an error.
+2. Output columns and parameters are declared only inline in the SQL (section 4); `generator.go` has no `ColumnSpec` / `ParamSpec` types and no custom `UnmarshalYAML`.
 3. **Strict Unused-Import Prevention (`resolveImports`)**:
    - `context` and `database/sql` are imported when at least one non-`subquery` statement exists (or in `Queries` methods).
    - `sync` is imported ONLY if at least one statement emits a `<tupleStruct>ChunkPool` (`CanStream == true`).
@@ -176,12 +149,12 @@ type Config struct {
    - `iter` is imported ONLY if at least one statement has `Kind == KindMany` or `CanStream == true`.
    - `slices` is imported ONLY if at least one 1D slice parameter or tuple field has `HasSort == true`.
    - Standard library packages (`time`, `encoding/json`, `math/big`, `net/netip`, `net/url`, `database/sql/driver`) are auto-imported ONLY when their package selector (`time.`, `json.`, etc.) appears in a parameter, tuple field, or output column type.
-4. `GenerateFromYAMLFile` MUST write the formatted output file atomically via `os.CreateTemp` in the target directory, `Chmod(0644)`, `Close()`, and `os.Rename` (cleaning up the temp file via `os.Remove` on any error).
+4. `GenerateFromYAMLFile` (the single file-level entry point; `cmd/sqlgen` calls it) MUST write the formatted output file atomically through `WriteFileAtomic`: a same-directory temporary file (mode `0666` filtered by the umask, or the existing file's permission bits), `Sync()`, `Close()` and `os.Rename`, removing the temp file on any error.
 
 ### 3.3. CLI Binary Contract (`cmd/sqlgen/main.go`)
 `cmd/sqlgen` MUST expose a testable `run(args []string, stdout, stderr io.Writer) int` function called by `main()`:
 - **Flags**:
-  - `-config <path>`: Path to YAML configuration file (default `"sqlgen.yaml"`). Also accepts a single positional argument `<path>` if `-config` is not explicitly passed.
+  - `-config <path>`: Path to YAML configuration file (default `"sqlgen.yaml"`). It is the only way to name the configuration: a positional argument is rejected with exit code `2`.
   - `-out <path>`: Overrides the `out` path in `sqlgen.yaml`.
   - `-stdout`: Writes generated Go code to `stdout` instead of disk.
   - `-check`: CI verification mode. Generates the Go code in memory and compares it byte-for-byte against the existing output file on disk without modifying disk files. If the file is missing or differs, prints an actionable diff/drift message to `stderr` and exits with code `2`.
@@ -219,22 +192,24 @@ annotated_token    = tuple_slice_param
                    | order_directive
                    | seek_directive
                    | query_param
-                   | typed_token
-                   | yaml_ref_param ;
+                   | param_decl
+                   | param_ref
+                   | output_column ;
 
-tuple_slice_param  = [ ":" ] , identifier , ":" , "[]" , go_ident , "(" , tuple_body , ")" ;
+tuple_slice_param  = ":" , identifier , ":" , "[]" , go_ident , "(" , tuple_body , ")" ;
 tuple_body         = { protected_token | tuple_field | "(" , tuple_body , ")" | raw_sql_char } ;
 tuple_field        = identifier , ":" , scalar_go_type , [ typecast_suffix ] , [ sort_dir ] ;
 typecast_suffix    = "::" , identifier , [ "(" , { digit | "," | " " } , ")" ] ;
 
-order_directive    = [ ":" ] , identifier , ":" , ( "sqlgen.Order" | "runtime.Order" ) , "(" , order_col_list , ")" ;
+order_directive    = ":" , identifier , ":" , "sqlgen.Order" , "(" , order_col_list , ")" ;
 order_col_list     = sql_col_ref , { "," , sql_col_ref } ;
 sql_col_ref        = [ identifier , "." ] , identifier ;
 
-seek_directive     = [ ":" ] , identifier , ":" , ( "sqlgen.Seek" | "runtime.Seek" ) ;
-query_param        = [ ":" ] , identifier , ":" , ( "sqlgen.Query" | "runtime.Query" | "Query" ) ;
-typed_token        = [ ":" ] , identifier , [ "..." ] , ":" , go_type , [ "..." ] , [ sort_dir ] ;
-yaml_ref_param     = ":" , identifier , [ "..." ] , [ sort_dir ] ;
+seek_directive     = ":" , identifier , ":" , "sqlgen.Seek" ;
+query_param        = ":" , identifier , ":" , "sqlgen.Query" ;
+param_decl         = ":" , identifier , ":" , go_type , [ sort_dir ] ;          (* scalar ":name:T", slice ":name:[]T" [ASC|DESC] *)
+param_ref          = ":" , identifier , [ sort_dir ] ;                          (* repeat of an earlier declaration *)
+output_column      = identifier , ":" , go_type ;                               (* only at the end of a top-level SELECT / RETURNING item *)
 
 sort_dir           = ( "ASC" | "asc" | "DESC" | "desc" ) ;
 identifier         = ( letter | "_" ) , { letter | digit | "_" } ;
@@ -251,18 +226,15 @@ scalar_go_type     = [ "[]" | "*" ] , [ identifier , "." ] , identifier ;
    - If `lower(W) == "returning"`: set `inProjection = true`, `hasReturning = true`.
    - If `inProjection == true` and `lower(W)` is in the **Projection Terminator Set** `{"from", "into", "where", "group", "having", "window", "order", "limit", "offset", "fetch", "for", "union", "intersect", "except"}`: set `inProjection = false`.
 2. **Classification Rule**:
-   A `typed_token` ending at offset `pos` is classified as an **Output Column** if and only if ALL 6 conditions hold:
-   - No leading `:` before `identifier`.
-   - No `...` before or after `go_type`.
-   - No trailing `ASC` or `DESC` modifier.
-   - `go_type` is not `Query`, `Seek`, or `Order`.
-   - `inProjection == true`, `parenDepth == 0`, and `bracketDepth == 0`.
-   - **`isEndOfProjectionItem(span, pos)` returns `true`**:
+   There is exactly one spelling per concept, so classification is by the leading colon:
+   - A token that starts with `:` is a **parameter**: `:name:Type` declares one (a `[]T` type other than `[]byte` is a slice and may be followed by `ASC` / `DESC`; `*T` is nullable), `:name:[]Struct(...)` a tuple slice, `:name:sqlgen.Order(...)` / `:name:sqlgen.Seek` / `:name:sqlgen.Query` the directives, and a bare `:name` repeats a parameter declared earlier in the statement (an undeclared `:name` is an error: declare the type at the first use). Referencing a non-scalar, non-slice parameter again is an error.
+   - A token without a leading `:` followed by `:Type` is an **Output Column** if and only if `inProjection == true`, `parenDepth == 0`, `bracketDepth == 0` and **`isEndOfProjectionItem(span, pos)` returns `true`**:
      Starting at `pos`, loop to skip whitespace, `--` comments, `/*...*/` comments, and **any `{?Flag: ...}` conditional blocks** (scanning balanced `{...}` while respecting `'...'` strings). After skipping those, return `true` if and only if `i >= len(span)`, `span[i] == ','`, `span[i] == ';'`, or `span[i]` starts an unannotated identifier word `W` whose lowercase form is in the **Projection Terminator Set**.
-   - Otherwise, classify the `typed_token` as an **Input Parameter**.
+   - Any other colon-less `name:Type` is a generate-time error that names the token and the corrected spelling (`:name:Type`).
+   - The retired spellings are errors too: `name...` / `Type...` slices (declare `:name:[]Type`), the `runtime.` and bare `Query` / `Seek` / `Order` directive prefixes (only `sqlgen.Order`, `sqlgen.Seek`, `sqlgen.Query` exist), and YAML `params:` / `columns:`.
 
 ### 4.4. Unconditional `SlotSelectCols` Splicing (Single-Pass Safe)
-Whenever a statement has `len(UncondCols) > 1` and `len(spec.Columns) == 0` (inline output columns in `SELECT` or `RETURNING`), **regardless of whether `UseParamsStruct` is already true during `SELECT` scanning**:
+Whenever a statement has `len(UncondCols) > 1` (inline output columns in `SELECT` or `RETURNING`), **regardless of whether `UseParamsStruct` is already true during `SELECT` scanning**:
 1. Each unconditional output column records its full trimmed SQL projection expression in `QueryDescriptor.SelectColExprs` (e.g., `"u.id"`, `"COALESCE(o.display_name, o.slug) AS org_name"`).
 2. In the top-level `QueryDescriptor`, the entire span of unconditional column expressions (from after the `SELECT ` / `RETURNING ` whitespace to the end of the last unconditional column) is replaced by a single `SlotSelectCols` slot in `QueryDescriptor.Slots`.
 3. Any conditional output columns (`{?WithOrg: , o.name AS org_name:string}`) remain as `SlotOptBlock` occurrences immediately following `SlotSelectCols`.
@@ -278,7 +250,7 @@ To allow any statement inside a pipelined `p.If(...)` branch to be gated on the 
      - When `len(in.BranchGates) == 0`: `SlotInsertValuesOpen` writes `"VALUES ("` and `SlotInsertValuesClose` writes `")"`.
      - When `len(in.BranchGates) > 0`: `SlotInsertValuesOpen` writes `"SELECT "` and `SlotInsertValuesClose` writes `" FROM (SELECT 1) AS _sqlgen_dual WHERE "` + `<branch_gates>`.
      - *(Emitting `INSERT INTO tbl (c1, c2) SELECT $1, $2 FROM (SELECT 1) AS _sqlgen_dual WHERE <gates> [ON CONFLICT ...] [RETURNING ...]` is valid syntax in PostgreSQL, CockroachDB and SQLite, but it does NOT preserve PostgreSQL's target-column type inference: a placeholder in a SELECT list is not typed from the target column (PostgreSQL resolves it to `text` and fails with `column "id" is of type bigint but expression is of type text`; CockroachDB fails with `could not determine data type of placeholder $1`). Therefore, under `DialectDollar`, every placeholder rendered inside a branch-gated INSERT's value list is typed explicitly: `Slot.Cast` / `TupleDescriptor.Casts[i]` (emitted by the generator for `INSERT` statements from the parameter's Go type: `int`/`int64`/`uint32`→`bigint`, `int32`/`rune`/`uint16`→`integer`, `int16`/`int8`/`uint8`/`byte`→`smallint`, `string`→`text`, `bool`→`boolean`, `float64`→`double precision`, `float32`→`real`, `[]byte`→`bytea`, `time.Time`→`timestamptz`; no cast for other types, where the user adds an explicit `::type`) renders as `$1::bigint`. Un-gated INSERTs keep plain `VALUES (...)`, where inference works, and carry no casts.)*
-   - **Subcase 2B: Multi-Row Tuple Slice `INSERT INTO tbl (c1, c2) VALUES Rows:[]Tuple(...)`** (where `VALUES` is followed by a `SlotTupleSlice` token):
+   - **Subcase 2B: Multi-Row Tuple Slice `INSERT INTO tbl (c1, c2) VALUES :Rows:[]Tuple(...)`** (where `VALUES` is followed by a `SlotTupleSlice` token):
      - Replace the `VALUES` keyword with `SlotInsertTupleValuesOpen`, and place `SlotInsertTupleValuesClose` immediately after the `SlotTupleSlice` occurrence (before `ON CONFLICT`, `RETURNING`, `;`, or `EOF`).
      - When `len(in.BranchGates) == 0`: `SlotInsertTupleValuesOpen` writes `"VALUES "` and `SlotInsertTupleValuesClose` writes `""`.
      - When `len(in.BranchGates) > 0`: `SlotInsertTupleValuesOpen` writes `"WITH _sqlgen_v AS (VALUES "` and `SlotInsertTupleValuesClose` writes `") SELECT * FROM _sqlgen_v WHERE "` + `<branch_gates>`.
@@ -297,7 +269,7 @@ To allow any statement inside a pipelined `p.If(...)` branch to be gated on the 
    - If `OrgID:int64` and `org_id:int64` both appear in the same statement, they resolve to a **single** Go function parameter (`orgID int64`) or `<Name>Params` struct field (`OrgID int64`), while binding separate positional SQL placeholders (`$1`, `$3`) at each occurrence in `Occurrences`.
    - If the same `canonicalKey` is redeclared in the same statement with conflicting Go types, slot kinds, or sort directions, `parseSQL` MUST fail with a compile-time error.
 2. **Presort Modifiers (`ASC` / `DESC`)**:
-   - After a `SlotSlice` token (`IDs:[]int64`) or a tuple field (`ID:int64` or `ID:int64::bigint`), look ahead across horizontal whitespace (`' '`, `'\t'`). If the next word is `ASC`, `asc`, `DESC`, or `desc` (followed by whitespace, `,`, `)`, `\n`, or `EOF`), consume it and set `HasSort = true, Desc = (lower == "desc")`.
+   - After a `SlotSlice` token (`:IDs:[]int64`) or a tuple field (`ID:int64` or `ID:int64::bigint`), look ahead across horizontal whitespace (`' '`, `'\t'`). If the next word is `ASC`, `asc`, `DESC`, or `desc` (followed by whitespace, `,`, `)`, `\n`, or `EOF`), consume it and set `HasSort = true, Desc = (lower == "desc")`.
    - Validate that the element/field Go type is orderable (`int*`, `uint*`, `float*`, `uintptr`, `byte`, `rune`, `string`, `time.Time`, `[]byte`, `[]uint8`); otherwise return a compile-time error.
 4. **Generator input restrictions** (each is rejected at generation time rather than emitting code that does not compile or silently misbehaves):
    - A conditional flag name, a parameter name and a `SelectCols` Go field of one statement MUST NOT collide.
@@ -885,7 +857,7 @@ For each statement `<Name>` in `sqlgen.yaml`, `Generate` emits into a single `by
 7. Direct execution methods on `*Queries`:
    - `kind: exec`: `<Name>`, `<Name>Batch` (if `CanBatch`), `<Name>Stream` (if `CanStream`).
    - `kind: one`: `<Name>`.
-   - `kind: many`: `<Name>`, `<Name>Into`, `<Name>Seq`, `<Name>Each`, `<Name>Batch`, `<Name>BatchInto`, `<Name>BatchSeq`, `<Name>BatchEach` (if `CanBatch`), `<Name>Stream`, `<Name>StreamSeq` (if `CanStream`).
+   - `kind: many`: `<Name>`, `<Name>Into`, `<Name>Seq`, `<Name>Each`, `<Name>Batch`, `<Name>BatchInto`, `<Name>BatchSeq`, `<Name>BatchEach` (if `CanBatch`), `<Name>Stream`, `<Name>StreamSeq` (if `CanStream`; a `kind: exec` statement has `<Name>Stream` only).
 8. Pipeline queuing method on `*Pipeline`: `func (p *Pipeline) <Name>(...) *runtime.ExecFuture` / `*runtime.RowFuture[<RowType>]` / `*runtime.SliceFuture[<RowType>]`.
 
 ---
@@ -896,8 +868,8 @@ Because the Clean-Room Dogfooding Protocol (Section 11) requires users/sub-agent
 1. **Quickstart & CLI Reference**: Exact `go run ./cmd/sqlgen -config sqlgen.yaml` and `//go:generate` usage, `-check` mode for CI, and full `sqlgen.yaml` schema reference.
 2. **Complete SQL DSL Cookbook**: Copy-pasteable examples and exact rules for:
    - Inline output columns (`SELECT id:int64, expr AS alias:string`) and single-column vs. struct return types.
-   - Scalar parameters (`ID:int64`, `Payload:[]byte`), parameter deduplication when the same parameter name appears multiple times in one statement, 1D slices (`IDs:[]int64`), and multi-row tuple slices (`Users:[]NewUser(OrgID:int64, Email:string, NOW())`).
-   - Deadlock-prevention presorting (`IDs:[]int64 ASC`, `OrgID:int64 ASC, Email:string DESC`), PostgreSQL `::type` casts inside `VALUES` tuples (`ID:int64::bigint ASC`), and a clear note that `RETURNING` rows of a presorted multi-row `INSERT`/upsert are returned in presorted order (verified on PostgreSQL/CockroachDB by `integration/features_test.go`) while the caller's input slice remains unmutated, and that the returned order of `UPDATE`/`DELETE ... WHERE col IN (...) RETURNING` is unspecified.
+   - Scalar parameters (`:ID:int64`, `:Payload:[]byte`), parameter deduplication when the same parameter name appears multiple times in one statement, 1D slices (`:IDs:[]int64`), and multi-row tuple slices (`:Users:[]NewUser(OrgID:int64, Email:string, NOW())`).
+   - Deadlock-prevention presorting (`:IDs:[]int64 ASC`, `OrgID:int64 ASC, Email:string DESC`), PostgreSQL `::type` casts inside `VALUES` tuples (`ID:int64::bigint ASC`), and a clear note that `RETURNING` rows of a presorted multi-row `INSERT`/upsert are returned in presorted order (verified on PostgreSQL/CockroachDB by `integration/features_test.go`) while the caller's input slice remains unmutated, and that the returned order of `UPDATE`/`DELETE ... WHERE col IN (...) RETURNING` is unspecified.
    - Conditional blocks (`{?FlagName: ...}`) across `SELECT`, `JOIN`, and `WHERE`, and `SelectCols` bitmask projection (`UserColID | UserColEmail`).
    - Keyset pagination (`After:sqlgen.Seek` and `Sort:sqlgen.Order(col1, col2, id)`) and constructing sort orders via `Order<RowType>(<RowType>OrderBy<Col>.Asc(), ...)`.
    - Runtime query composition (`<Name>Query(...)` passed into `Sub:sqlgen.Query` slots in `WITH` CTEs or `WHERE IN`).
@@ -947,7 +919,7 @@ To validate ergonomics, documentation completeness, and end-to-end reliability u
 - **Features Road-Tested**:
   - Bulk composite-key `SELECT` lookup (`GetInventoryBySKUsBatch`).
   - Heavy-hitter batch promotion on `InsertOrderItemsBatch` (repeated `500`-row and `400`-row batches) followed by greedy decomposition of a `1400`-row spike (`500 + 500 + 400`).
-  - Streaming ETL pipeline: `StreamFulfilledOrdersSeq` $\rightarrow$ `runtime.MapSeq2` $\rightarrow$ `InsertArchivedOrdersStreamSeq` $\rightarrow$ `DeleteFulfilledOrdersByIDsBatch` (with `IDs:[]int64 ASC`).
+  - Streaming ETL pipeline: `StreamFulfilledOrdersSeq` $\rightarrow$ `runtime.MapSeq2` $\rightarrow$ `InsertArchivedOrdersStream` $\rightarrow$ `DeleteFulfilledOrdersByIDsBatch` (with `:IDs:[]int64 ASC`).
 - **Mandatory End-to-End Test (`examples/ecommerce_inventory/worker_test.go`)**:
   - Ingest 3,000 order items across recurring batch sizes, verify `q.CacheStats().Promotions` and `PreparedHits`, stream-archive 2,000 fulfilled orders in $O(1)$ memory, and verify `cmd/sqlgen -check` passes on all 4 example directories.
 
@@ -955,17 +927,17 @@ To validate ergonomics, documentation completeness, and end-to-end reliability u
 - **Domain**: Institutional multi-asset clearing house, real-time margin & risk surveillance engine, atomic bilateral trade settlement with maker/taker fee rebates and liquidation protection, and regulatory trade settlement archival.
 - **Features Road-Tested (Full Combinatorial Stress Test)**:
   - **3-Level Nested Curried `sqlgen.Query` Composition + Coupled Conditional Projections/JOINs/WHEREs + Bitmask `SelectCols` + 4-Column Keyset Pagination**:
-    - Level 1 (`EligibleAccountsSubquery` with `{?FilterTiers: tier IN (Tiers:[]string ASC)}`, `{?FilterJurisdictions: jurisdiction IN (Jurisdictions:[]string DESC)}`, `{?ExcludeFrozen: status != 'FROZEN'}`, `{?RequireKYC: kyc_verified = 1}`) and Level 1 (`ActiveInstrumentsSubquery` with `{?FilterAssetClasses: asset_class IN (AssetClasses:[]string ASC)}` and `{?MaxInitialMarginBps: initial_margin_bps <= MaxMarginBps:int64}`).
-    - Level 2 (`FilteredPositionsSubquery` composing both Level 1 subqueries via `WITH eligible_accts AS (...), active_insts AS (...)` plus `{?OnlyNonZero: p.net_quantity != 0}` and `{?MinNotionalExposure: ABS(p.net_quantity * i.mark_price_cents) >= MinNotionalCents:int64}`).
-    - Level 3 (`QueryRiskPositionsPage` composing Level 2 with coupled `{?IncludeAccountMeta: ...}` and `{?IncludeMarginMetrics: ...}` across `SELECT`, `JOIN`, and `WHERE`, bitmask `SelectCols`, `After:sqlgen.Seek`, and 4-column `Sort:sqlgen.Order(maintenance_margin_cents, unrealized_pnl_cents, account_id, position_id)`).
+    - Level 1 (`EligibleAccountsSubquery` with `{?FilterTiers: tier IN (:Tiers:[]string ASC)}`, `{?FilterJurisdictions: jurisdiction IN (:Jurisdictions:[]string DESC)}`, `{?ExcludeFrozen: status != 'FROZEN'}`, `{?RequireKYC: kyc_verified = 1}`) and Level 1 (`ActiveInstrumentsSubquery` with `{?FilterAssetClasses: asset_class IN (:AssetClasses:[]string ASC)}` and `{?MaxInitialMarginBps: initial_margin_bps <= :MaxMarginBps:int64}`).
+    - Level 2 (`FilteredPositionsSubquery` composing both Level 1 subqueries via `WITH eligible_accts AS (...), active_insts AS (...)` plus `{?OnlyNonZero: p.net_quantity != 0}` and `{?MinNotionalExposure: ABS(p.net_quantity * i.mark_price_cents) >= :MinNotionalCents:int64}`).
+    - Level 3 (`QueryRiskPositionsPage` composing Level 2 with coupled `{?IncludeAccountMeta: ...}` and `{?IncludeMarginMetrics: ...}` across `SELECT`, `JOIN`, and `WHERE`, bitmask `SelectCols`, `:After:sqlgen.Seek`, and 4-column `:Sort:sqlgen.Order(maintenance_margin_cents, unrealized_pnl_cents, account_id, position_id)`).
   - **3-Level Nested `PipelineTx` Control Flow (`If`/`Then`/`Else`, `RowFuture`, `SliceFuture.WhereCol`, `ExecFuture`, `Abort`, `UPDATE`/`DELETE`/`INSERT` Branch Guards)**:
     - Validates active instrument (`RowFuture`), checks pre-trade risk flags on both counterparties (`SliceFuture.WhereCol` $\rightarrow$ `Abort(ErrKillSwitchActive)`), verifies both counterparties' margin sufficiency (`ExecFuture` $\rightarrow$ `If/Else` recording `REJECTED_SELLER_MARGIN` or `REJECTED_BUYER_MARGIN`), and in the 3rd-level `Then` branch atomically debits/credits collateral, upserts buyer/seller derivative positions, deletes consumed resting orders, and inserts the immutable trade fill and audit log.
   - **Multi-Dimensional Presorted Batching & Streaming with Extra Scalar Parameters and `RETURNING`**:
-    - `UpsertInstrumentMarksBatch` (`Marks:[]InstrumentMarkInput(Symbol:string ASC, ...)` + scalar `UpdatedAt:int64` + `RETURNING` via `Batch`, `BatchInto`, `BatchSeq`, `BatchEach`, `Stream`, `StreamSeq`).
-    - `BatchAdjustCollateralBatch` (`Adjustments:[]CollateralAdjustment(DeskID:int64 ASC, AccountID:int64 DESC, DeltaCollateralCents:int64, DeltaLockedCents:int64)` + scalar `UpdatedAt:int64` + `RETURNING`).
-    - `LookupPositionsByKeysBatch` (`Keys:[]PositionKey(AccountID:int64 ASC, Symbol:string DESC)` + `{?ExcludeFlat: p.net_quantity != 0}`).
-    - `BulkCancelOrdersByIDsBatch` (`OrderIDs:[]int64 ASC` + scalar `CancelReason:string` + `RETURNING`).
-    - Streaming settlement archival (`StreamUnarchivedFills` / `Seq` / `Each` $\rightarrow$ `runtime.MapSeq2` $\rightarrow$ `ArchiveSettlementBatchStreamSeq` $\rightarrow$ `MarkFillsArchivedByIDsBatch`).
+    - `UpsertInstrumentMarksBatch` (`:Marks:[]InstrumentMarkInput(Symbol:string ASC, ...)` + scalar `:UpdatedAt:int64` + `RETURNING` via `Batch`, `BatchInto`, `BatchSeq`, `BatchEach`, `Stream`, `StreamSeq`).
+    - `BatchAdjustCollateralBatch` (`:Adjustments:[]CollateralAdjustment(DeskID:int64 ASC, AccountID:int64 DESC, DeltaCollateralCents:int64, DeltaLockedCents:int64)` + scalar `:UpdatedAt:int64` + `RETURNING`).
+    - `LookupPositionsByKeysBatch` (`:Keys:[]PositionKey(AccountID:int64 ASC, Symbol:string DESC)` + `{?ExcludeFlat: p.net_quantity != 0}`).
+    - `BulkCancelOrdersByIDsBatch` (`:OrderIDs:[]int64 ASC` + scalar `:CancelReason:string` + `RETURNING`).
+    - Streaming settlement archival (`StreamUnarchivedFills` / `Seq` / `Each` $\rightarrow$ `runtime.MapSeq2` $\rightarrow$ `ArchiveSettlementBatchStream` $\rightarrow$ `MarkFillsArchivedByIDsBatch`).
 - **Mandatory End-to-End Test (`examples/clearing_exchange/engine_test.go`)**:
   - Runs identically against both `SequentialTx` and `WirePipeliner`, verifying 12goroutine concurrent bilateral clearing + mark-to-market shocks + collateral sweeps, strict **zero-sum net position conservation** ($\sum \text{net\_quantity} \equiv 0$ per symbol), **exact collateral & fee conservation** ($\sum \text{available\_collateral\_cents} == \text{Initial} + \sum \text{Adjustments} - \sum \text{NetFees}$), and 16-direction 4-column keyset pagination equivalence over the 3-level nested subquery hierarchy.
 
@@ -992,7 +964,7 @@ To validate ergonomics, documentation completeness, and end-to-end reliability u
    - **Real-engine differentials (`integration/`, PostgreSQL 15/18 + CockroachDB, pgxwire vs plain pgx, in `PipelineTx`, standalone `Flush` and a user-managed tx)**: `TestRealEnginePipelineWireMatchesSequential` (named scenarios), `TestRealEnginePipelineGuardMatrix` (statement kind x assertion x 0-3 conditions x row present/absent), `TestRealEnginePipelineCompoundConditions` (conditions over several operations), `TestRealEnginePipelineUserOverflowIsNotAnAssertion`, `TestRealEnginePipelineUserTransactionAfterFailure`, `TestRealEnginePipelineArgumentsMatchPreparedStatements` (Go type x column type), and the seeded, bounded `TestRealEnginePipelineDifferentialFuzz` (`SQLGEN_FUZZ_SEEDS`, default 100 fixed seeds per mode and engine, about 300 random pipelines per engine in well under a minute; a failure prints the seed and the generated pipeline). The oracle is always the sequential path. The MySQL-protocol counterparts (`integration/wire_my_*_test.go`, MySQL 8.4/9.7 and MariaDB 10.11/12.3, mysqlwire vs plain go-sql-driver) are `TestRealEngineMySQLPipelineWireMatchesSequential`, `TestRealEngineMySQLPipelineGuardMatrix`, `TestRealEngineMySQLPipelineCompoundConditions`, `TestRealEngineMySQLPipelineArgumentLiterals` (Go type x column type x 9 session variants incl. NO_BACKSLASH_ESCAPES, ANSI_QUOTES, latin1, gbk, binary, a non-UTC loc, utf8mb4_bin) and `TestRealEngineMySQLPipelineDifferentialFuzz` (statements limited to what the engine supports: no RETURNING on MySQL, INSERT/DELETE only on MariaDB).
    - **Seeded differential tests of the generated code against an in-memory oracle (`integration/fuzz_*_test.go`, all seven server engines, each also through `pgxwire` on the PostgreSQL protocol, plus in-process SQLite)**: three generated fixtures with the same statements (`fzpg`, `fzmy`, `fzsl`; `TestFuzzFixturesInSync` keeps them and their adapters identical) over one table, driven through the engine-agnostic `fzAPI`. The oracle is plain Go over rows the test wrote and reads back with hand-written SQL, never through the product. Every case derives from one seed (`SQLGEN_FUZZ_SEED=<n>` replays it; a failure prints it; `SQLGEN_FUZZ_SCALE=<n>` multiplies the case counts for soak runs). Covered: all 256 combinations of eight `{?Flag:}` blocks (shared scalars, 1D and tuple slices, NULL-able columns, enabled-but-empty lists -> `ErrEmptySliceParam`, disabled blocks ignoring their parameters) on the default, prepare-early and tiny evicting caches; every `SelectCols` subset; multi-row inserts (presorted ASC/DESC, unsorted, literal tuple templates; plain, `Batch`, `Stream`) and `IN` / tuple-`IN` lookups at sizes around the chunk boundary with small `WithMaxBatchParams` budgets; keyset pagination over random `Order` specs of 0..12 columns (mixed directions, tie-breaker named, implied or mid-list, int64 extremes, direction-flipped twin, random cursors) walked page by page against the oracle's total sort; composed sub-queries to depth 3 with flags, a slot referenced twice, conditional JOIN/columns; `UPDATE` / `DELETE` with `IN` lists (plain and `Batch`) and every supported `RETURNING` form; user transactions (`WithTx`) with commit and rollback; `Into` / `Seq` / `Each` flavours including early exit and cancelled contexts (no connection left checked out); concurrent readers sharing one `Queries`; SQL-looking and non-ASCII strings round-tripping. Text columns hold lowercase ASCII only because engines collate text differently; every other sort key is numeric.
 4. **Native Go Fuzzing Suite (`testing.F`)**:
-   - `FuzzParseSQL`: Seeded with 25 valid and malformed SQL queries; asserts zero panics and `len(Segments) == len(Occurrences) + 1`.
+   - `FuzzParseSQL` (`parse_internal_test.go`): seeded with valid and malformed annotated SQL, including every retired spelling; asserts zero panics and that whatever `Generate` accepts is syntactically valid Go.
    - `FuzzParseYAML`: Fuzzes `ParseYAML` across arbitrary byte inputs; asserts zero panics.
    - `FuzzEstimateOpBytesUpperBound`: Fuzzes SQL rendering inputs; asserts `len(sql) <= EstimateOpBytes`.
    - `FuzzVariantKeyAndSubqueryShapeBijectivity`: Fuzzes `MakeVariantKey` and `ComputeSubqueryShape`; asserts zero collisions whenever `IsExact() == true`.

@@ -19,25 +19,24 @@ func FuzzGeneratedCodeTypeChecks(f *testing.F) {
 		dialect           uint8
 		paramsStruct      bool
 	}{
-		{"SELECT id:int64, email:string FROM users WHERE id = ID:int64", "GetUser", "", 0, 0, false},
-		{"SELECT id:int64, bio:*string, n:sql.NullInt64 FROM users WHERE id IN (IDs:[]int64 ASC)", "ListUsers", "User", 1, 1, false},
-		{"INSERT INTO items (id, name) VALUES Rows:[]ItemInput(ID:int64 ASC, Name:string)", "InsertItems", "", 2, 0, false},
-		{"INSERT INTO items (id, name) VALUES Rows:[]ItemInput(ID:int64 ASC, Name:string) RETURNING id:int64, name:string", "InsertItemsRet", "", 1, 1, true},
-		{"SELECT id:int64, role:string FROM u WHERE Seek:sqlgen.Seek {?RoleFilter: AND role = FilterRole:string} ORDER BY Order:sqlgen.Order(role, id) LIMIT Limit:int64", "Page", "", 1, 1, true},
-		{"SELECT id:int64 FROM t WHERE (a = X:int64 OR b = X:int64) AND k IN (Ks:[]string)", "Dup", "", 1, 0, false},
-		{"SELECT u.id:int64 {?WithBio: , u.bio:string } FROM users u WHERE u.org IN (Sub:sqlgen.Query)", "Opt", "", 1, 1, false},
-		{"SELECT id FROM t WHERE x = MinID:int64", "Sub", "", 3, 0, false},
-		{"DELETE FROM t WHERE (a, b) IN (Keys:[]Key(A:int64 ASC, B:string))", "DelKeys", "", 2, 1, false},
+		{"SELECT id:int64, email:string FROM users WHERE id = :ID:int64", "GetUser", "", 0, 0, false},
+		{"SELECT id:int64, bio:*string, n:sql.NullInt64 FROM users WHERE id IN (:IDs:[]int64 ASC)", "ListUsers", "User", 1, 1, false},
+		{"INSERT INTO items (id, name) VALUES :Rows:[]ItemInput(ID:int64 ASC, Name:string)", "InsertItems", "", 2, 0, false},
+		{"INSERT INTO items (id, name) VALUES :Rows:[]ItemInput(ID:int64 ASC, Name:string) RETURNING id:int64, name:string", "InsertItemsRet", "", 1, 1, true},
+		{"SELECT id:int64, role:string FROM u WHERE :Seek:sqlgen.Seek {?RoleFilter: AND role = :FilterRole:string} ORDER BY :Order:sqlgen.Order(role, id) LIMIT :Limit:int64", "Page", "", 1, 1, true},
+		{"SELECT id:int64 FROM t WHERE (a = :X:int64 OR b = :X:int64) AND k IN (:Ks:[]string)", "Dup", "", 1, 0, false},
+		{"SELECT u.id:int64 {?WithBio: , u.bio:string } FROM users u WHERE u.org IN (:Sub:sqlgen.Query)", "Opt", "", 1, 1, false},
+		{"SELECT id FROM t WHERE x = :MinID:int64", "Sub", "", 3, 0, false},
+		{"DELETE FROM t WHERE (a, b) IN (:Keys:[]Key(A:int64 ASC, B:string))", "DelKeys", "", 2, 1, false},
 		{"SELECT 'ünï:cödé' AS s:string FROM t WHERE ж = Я:int64", "Üni", "Рез", 1, 0, false},
 	}
 	for _, s := range seeds {
 		f.Add(s.sql, s.name, s.result, s.kind, s.dialect, s.paramsStruct)
 	}
-	kinds := []sqlgen.StatementKind{sqlgen.KindOne, sqlgen.KindMany, sqlgen.KindExec, sqlgen.KindSubquery}
-	dialects := []sqlgen.Dialect{"postgres", "sqlite", "mysql"}
+	kinds := []sqlgen.QueryKind{sqlgen.KindOne, sqlgen.KindMany, sqlgen.KindExec, sqlgen.KindSubquery}
+	dialects := []string{"postgres", "sqlite", "mysql"}
 	f.Fuzz(func(t *testing.T, sqlText, name, result string, kind, dialect uint8, paramsStruct bool) {
 		cfg := sqlgen.Config{
-			Version:     "1",
 			PackageName: "fuzzpkg",
 			Dialect:     dialects[int(dialect)%len(dialects)],
 			Statements: []sqlgen.StatementSpec{

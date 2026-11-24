@@ -1,4 +1,3 @@
-version: "1"
 package: ecommerce_inventory
 out: inventory_gen.go
 dialect: sqlite

@@ -722,8 +722,8 @@ func exerciseRemainingExchangeVariants(t *testing.T, ctx context.Context, mode s
 	if _, err := eng.StreamSettleMargins(ctx, runtime.FromSlice(streamZeroSettlements)); err != nil {
 		t.Fatalf("[%s] 260-row StreamSettleMargins: %v", mode, err)
 	}
-	if _, err := q.ApplyMarginSettlementsStreamSeq(ctx, runtime.FromSlice([]MarginSettlement(nil))); err != nil {
-		t.Fatalf("[%s] empty ApplyMarginSettlementsStreamSeq: %v", mode, err)
+	if _, err := q.ApplyMarginSettlementsStream(ctx, runtime.FromSlice([]MarginSettlement(nil))); err != nil {
+		t.Fatalf("[%s] empty ApplyMarginSettlementsStream: %v", mode, err)
 	}
 
 	// Exercise IngestOrdersSeq, IngestOrdersBatchSeq, IngestOrdersStream, IngestOrdersStreamSeq (including >256 rows)
@@ -912,7 +912,7 @@ func exerciseRemainingExchangeVariants(t *testing.T, ctx context.Context, mode s
 		_ = cq.Expand(&dummyArgs, runtime.DialectQuestion, &cq)
 	}
 
-	if err := q.InTxOpts(ctx, nil, func(txQ *Queries) error {
+	if err := q.InTx(ctx, nil, func(txQ *Queries) error {
 		p := txQ.Pipeline(ctx)
 		_ = p.UpsertInstrument("EUR-FX", "fx", 1, 200, 1)
 		_ = p.UpsertFirm(4, "Delta Retail Custody", "ESMA-EU", 500)

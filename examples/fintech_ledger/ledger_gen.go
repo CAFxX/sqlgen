@@ -102,11 +102,6 @@ func (q *Queries) InTx(ctx context.Context, txOpts *sql.TxOptions, fn func(*Quer
 	})
 }
 
-// InTxOpts is an alias for InTx.
-func (q *Queries) InTxOpts(ctx context.Context, txOpts *sql.TxOptions, fn func(*Queries) error, opts ...runtime.TxOption) error {
-	return q.InTx(ctx, txOpts, fn, opts...)
-}
-
 // Pipeline queues strongly-typed SQL operations for single-roundtrip execution or sequential fallback.
 type Pipeline struct {
 	*runtime.Pipeline
@@ -1090,8 +1085,4 @@ func (q *Queries) UpsertAccountBalancesStream(ctx context.Context, seq iter.Seq2
 		return nil, err
 	}
 	return batchRes, nil
-}
-
-func (q *Queries) UpsertAccountBalancesStreamSeq(ctx context.Context, seq iter.Seq2[AccountSettlement, error]) (sql.Result, error) {
-	return q.UpsertAccountBalancesStream(ctx, seq)
 }

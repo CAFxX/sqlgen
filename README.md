@@ -6,10 +6,9 @@
 `database/sql`, backed by a small zero-reflection runtime.
 
 ```yaml
-version: "1"
 package: store
 out: store_gen.go
-dialect: postgres          # postgres | mysql | sqlite (aliases accepted, see DOCS.md)
+dialect: postgres          # required: postgres | cockroachdb | mysql | mariadb | sqlite
 statements:
   - name: GetItem
     kind: one

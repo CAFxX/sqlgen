@@ -97,11 +97,6 @@ func (q *Queries) InTx(ctx context.Context, txOpts *sql.TxOptions, fn func(*Quer
 	})
 }
 
-// InTxOpts is an alias for InTx.
-func (q *Queries) InTxOpts(ctx context.Context, txOpts *sql.TxOptions, fn func(*Queries) error, opts ...runtime.TxOption) error {
-	return q.InTx(ctx, txOpts, fn, opts...)
-}
-
 // Pipeline queues strongly-typed SQL operations for single-roundtrip execution or sequential fallback.
 type Pipeline struct {
 	*runtime.Pipeline

@@ -66,18 +66,13 @@ statements:
 		t.Fatalf("expected code 2 for unknown flag, got %d", code)
 	}
 
-	// 3. Too many positional args -> exit 2
-	stdout.Reset()
-	stderr.Reset()
-	if code := run([]string{"a.yaml", "b.yaml"}, &stdout, &stderr); code != 2 {
-		t.Fatalf("expected code 2 for extra positional args, got %d", code)
-	}
-
-	// 4. Both -config and positional arg -> exit 2
-	stdout.Reset()
-	stderr.Reset()
-	if code := run([]string{"-config", cfgFile, "b.yaml"}, &stdout, &stderr); code != 2 {
-		t.Fatalf("expected code 2 for -config + positional arg, got %d", code)
+	// 3. The configuration is given with -config only: a positional argument -> exit 2
+	for _, args := range [][]string{{"a.yaml"}, {"a.yaml", "b.yaml"}, {"-config", cfgFile, "b.yaml"}} {
+		stdout.Reset()
+		stderr.Reset()
+		if code := run(args, &stdout, &stderr); code != 2 || !strings.Contains(stderr.String(), "-config") {
+			t.Fatalf("run(%q): expected code 2 pointing at -config, got %d: %s", args, code, stderr.String())
+		}
 	}
 
 	// 5. -stdout and -check mutually exclusive -> exit 2
@@ -94,11 +89,11 @@ statements:
 		t.Fatalf("expected code 2 for missing output file in -check, got %d", code)
 	}
 
-	// 7. Generate via positional argument -> exit 0
+	// 7. Generate -> exit 0
 	stdout.Reset()
 	stderr.Reset()
-	if code := run([]string{cfgFile}, &stdout, &stderr); code != 0 {
-		t.Fatalf("expected code 0 for positional generation, got %d: %s", code, stderr.String())
+	if code := run([]string{"-config", cfgFile}, &stdout, &stderr); code != 0 {
+		t.Fatalf("expected code 0 for generation, got %d: %s", code, stderr.String())
 	}
 	genPath := filepath.Join(tmpDir, "demo_gen.go")
 	if _, err := os.Stat(genPath); err != nil {
@@ -262,7 +257,8 @@ func TestRunCLIDiagnosticsHaveASinglePrefix(t *testing.T) {
 	}
 	for _, tc := range []struct{ name, yaml, want string }{
 		{"bad yaml", "a: [\n", "sqlgen: parse YAML:"},
-		{"bad version", "version: \"2\"\npackage: p\nstatements: []\n", "sqlgen: unsupported config version"},
+		{"removed version key", "version: \"1\"\npackage: p\nstatements: []\n", "sqlgen: parse YAML:"},
+		{"missing dialect", "package: p\nstatements: []\n", "sqlgen: dialect is required; set dialect: to one of postgres, cockroachdb, mysql, mariadb, sqlite"},
 		{"bad dialect", "package: p\ndialect: oracle\nstatements: []\n", `sqlgen: unsupported dialect "oracle" (valid dialects:`},
 	} {
 		for _, mode := range [][]string{nil, {"-check"}, {"-stdout"}} {

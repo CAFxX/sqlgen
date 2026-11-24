@@ -1672,17 +1672,11 @@ func TestPipelineWirePipelinerAndSequentialCoverage(t *testing.T) {
 	if !ifRes.Taken() {
 		t.Fatalf("expected ifRes.Taken() == true")
 	}
-	if val, err := rowFut.Get(); err != nil || val != 42 {
+	if val, err := rowFut.Get(); err != nil || val != 42 || rowFut.Skipped() {
 		t.Fatalf("rowFut.Get() = %d, err=%v", val, err)
 	}
-	if val, err := rowFut.Value(); err != nil || val != 42 || rowFut.Skipped() {
-		t.Fatalf("rowFut.Value() = %d, err=%v", val, err)
-	}
-	if vals, err := sliceFut.Get(); err != nil || len(vals) != 1 || vals[0] != 42 {
+	if vals, err := sliceFut.Get(); err != nil || len(vals) != 1 || vals[0] != 42 || sliceFut.Skipped() {
 		t.Fatalf("sliceFut.Get() = %v, err=%v", vals, err)
-	}
-	if vals, err := sliceFut.Values(); err != nil || len(vals) != 1 || sliceFut.Skipped() {
-		t.Fatalf("sliceFut.Values() = %v, err=%v", vals, err)
 	}
 	if n, err := execFutThen.RowsAffected(); err != nil || n != 1 || execFutThen.Skipped() {
 		t.Fatalf("execFutThen.RowsAffected() = %d, err=%v", n, err)
@@ -1738,7 +1732,7 @@ func TestPipelineWirePipelinerAndSequentialCoverage(t *testing.T) {
 			*abIn = append(*abIn, int64(5))
 			_ = pTx.QueueExec(2, updNoWhereDesc, RenderInput{}, MakeVariantKey(2, 0, 0, 0), nil, abIn, nil)
 		}, nil)
-		return pTx.Exec()
+		return pTx.Flush()
 	}); err != nil {
 		t.Fatalf("PipelineTx wire execution failed: %v", err)
 	}

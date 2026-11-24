@@ -99,11 +99,6 @@ func (q *Queries) InTx(ctx context.Context, txOpts *sql.TxOptions, fn func(*Quer
 	})
 }
 
-// InTxOpts is an alias for InTx.
-func (q *Queries) InTxOpts(ctx context.Context, txOpts *sql.TxOptions, fn func(*Queries) error, opts ...runtime.TxOption) error {
-	return q.InTx(ctx, txOpts, fn, opts...)
-}
-
 // Pipeline queues strongly-typed SQL operations for single-roundtrip execution or sequential fallback.
 type Pipeline struct {
 	*runtime.Pipeline
@@ -622,10 +617,6 @@ func (q *Queries) FzInsertAscStream(ctx context.Context, seq iter.Seq2[FzNew, er
 	return batchRes, nil
 }
 
-func (q *Queries) FzInsertAscStreamSeq(ctx context.Context, seq iter.Seq2[FzNew, error]) (sql.Result, error) {
-	return q.FzInsertAscStream(ctx, seq)
-}
-
 const stmtIDFzInsertDesc uint32 = 2
 
 type paramsFzInsertDesc struct {
@@ -871,10 +862,6 @@ func (q *Queries) FzInsertDescStream(ctx context.Context, seq iter.Seq2[FzNew, e
 	return batchRes, nil
 }
 
-func (q *Queries) FzInsertDescStreamSeq(ctx context.Context, seq iter.Seq2[FzNew, error]) (sql.Result, error) {
-	return q.FzInsertDescStream(ctx, seq)
-}
-
 const stmtIDFzInsertRaw uint32 = 3
 
 type paramsFzInsertRaw struct {
@@ -1071,10 +1058,6 @@ func (q *Queries) FzInsertRawStream(ctx context.Context, seq iter.Seq2[FzNew, er
 		return nil, err
 	}
 	return batchRes, nil
-}
-
-func (q *Queries) FzInsertRawStreamSeq(ctx context.Context, seq iter.Seq2[FzNew, error]) (sql.Result, error) {
-	return q.FzInsertRawStream(ctx, seq)
 }
 
 const stmtIDFzInsertLit uint32 = 4
@@ -1293,10 +1276,6 @@ func (q *Queries) FzInsertLitStream(ctx context.Context, seq iter.Seq2[FzLit, er
 		return nil, err
 	}
 	return batchRes, nil
-}
-
-func (q *Queries) FzInsertLitStreamSeq(ctx context.Context, seq iter.Seq2[FzLit, error]) (sql.Result, error) {
-	return q.FzInsertLitStream(ctx, seq)
 }
 
 const stmtIDFzSearch uint32 = 5
@@ -4779,10 +4758,6 @@ func (q *Queries) FzTypedInsertStream(ctx context.Context, seq iter.Seq2[FzTyped
 		return nil, err
 	}
 	return batchRes, nil
-}
-
-func (q *Queries) FzTypedInsertStreamSeq(ctx context.Context, seq iter.Seq2[FzTypedNew, error]) (sql.Result, error) {
-	return q.FzTypedInsertStream(ctx, seq)
 }
 
 const stmtIDFzTypedSearch uint32 = 18

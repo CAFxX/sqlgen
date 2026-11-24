@@ -33,18 +33,13 @@ func run(args []string, stdout, stderr io.Writer) int {
 
 	var (
 		cfgPath     string
-		cfgExplicit bool
 		outPath     string
 		toStdout    bool
 		checkMode   bool
 		showVersion bool
 	)
 
-	fs.Func("config", "path to sqlgen YAML configuration file (default \"sqlgen.yaml\")", func(val string) error {
-		cfgPath = val
-		cfgExplicit = true
-		return nil
-	})
+	fs.StringVar(&cfgPath, "config", "sqlgen.yaml", "path to sqlgen YAML configuration file")
 	fs.StringVar(&outPath, "out", "", "optional override for generated Go output file path")
 	fs.BoolVar(&toStdout, "stdout", false, "write generated Go code to stdout instead of disk")
 	fs.BoolVar(&checkMode, "check", false, "CI verification mode: compare generated code against disk without writing")
@@ -60,18 +55,8 @@ func run(args []string, stdout, stderr io.Writer) int {
 		return 0
 	}
 
-	if !cfgExplicit {
-		if fs.NArg() > 1 {
-			_, _ = fmt.Fprintf(stderr, "sqlgen: expected at most 1 positional config argument, got %d\n", fs.NArg())
-			return 2
-		}
-		if fs.NArg() == 1 {
-			cfgPath = fs.Arg(0)
-		} else {
-			cfgPath = "sqlgen.yaml"
-		}
-	} else if fs.NArg() > 0 {
-		_, _ = fmt.Fprintf(stderr, "sqlgen: unexpected positional arguments alongside -config\n")
+	if fs.NArg() > 0 {
+		_, _ = fmt.Fprintf(stderr, "sqlgen: unexpected argument %q (the configuration file is given with -config)\n", fs.Arg(0))
 		return 2
 	}
 

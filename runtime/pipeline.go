@@ -345,11 +345,6 @@ func (f *RowFuture[T]) Get() (T, error) {
 	return f.val, nil
 }
 
-// Value is an alias for Get.
-func (f *RowFuture[T]) Value() (T, error) {
-	return f.Get()
-}
-
 // Skipped reports whether this operation was skipped due to an untaken If/Else branch.
 func (f *RowFuture[T]) Skipped() bool {
 	return f.skipped
@@ -438,11 +433,6 @@ func (f *SliceFuture[T]) Get() ([]T, error) {
 	return f.vals, nil
 }
 
-// Values is an alias for Get.
-func (f *SliceFuture[T]) Values() ([]T, error) {
-	return f.Get()
-}
-
 // Skipped reports whether this operation was skipped due to an untaken If/Else branch.
 func (f *SliceFuture[T]) Skipped() bool {
 	return f.skipped
@@ -512,7 +502,7 @@ type CommitError struct{ Err error }
 func (e *CommitError) Error() string { return e.Err.Error() }
 func (e *CommitError) Unwrap() error { return e.Err }
 
-// ErrFlushInPipelineTx is returned by Pipeline.Flush / Exec when called from inside a PipelineTx
+// ErrFlushInPipelineTx is returned by Pipeline.Flush when called from inside a PipelineTx
 // callback: the transaction flushes the pipeline itself once the callback returns.
 var ErrFlushInPipelineTx = errors.New("sqlgen: Flush must not be called inside PipelineTx; the transaction flushes the pipeline itself")
 
@@ -1525,11 +1515,6 @@ func (p *Pipeline) flushOwnTx() error {
 		return &CommitError{Err: err}
 	}
 	return nil
-}
-
-// Exec is an alias for Flush.
-func (p *Pipeline) Exec() error {
-	return p.Flush()
 }
 
 // TxRetryPolicy configures automatic exponential-backoff retries on transient transaction conflicts.

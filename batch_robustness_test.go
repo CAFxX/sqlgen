@@ -138,7 +138,7 @@ func TestParametersNamedLikeGeneratedIdentifiersStillCompile(t *testing.T) {
 	for _, name := range names {
 		for shape, body := range shapes {
 			for _, ps := range []bool{false, true} {
-				y := fmt.Sprintf("version: \"1\"\npackage: p\ndialect: postgres\nstatements:\n  - name: Foo\n    params_struct: %v\n    %s\n", ps, fmt.Sprintf(body, name))
+				y := fmt.Sprintf("package: p\ndialect: postgres\nstatements:\n  - name: Foo\n    params_struct: %v\n    %s\n", ps, fmt.Sprintf(body, name))
 				src, err := sqlgen.GenerateFromYAML([]byte(y))
 				if err != nil {
 					t.Fatalf("%s/%s ps=%v: %v", name, shape, ps, err)

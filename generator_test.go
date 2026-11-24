@@ -26,10 +26,8 @@ import (
 )
 
 // e2eYAML is the canonical YAML specification used to generate e2e_gen_test.go.
-const e2eYAML = `version: "1"
-package: sqlgen_test
+const e2eYAML = `package: sqlgen_test
 out: e2e_gen_test.go
-runtime_import: github.com/CAFxX/sqlgen/runtime
 dialect: sqlite
 
 statements:
@@ -37,7 +35,7 @@ statements:
     kind: exec
     sql: |
       INSERT INTO users (id, org_id, email, role, score, bio)
-      VALUES (ID:int64, OrgID:int64, Email:string, Role:string, Score:int64, Bio:string)
+      VALUES (:ID:int64, :OrgID:int64, :Email:string, :Role:string, :Score:int64, :Bio:string)
 
   - name: GetUserByID
     kind: one
@@ -45,7 +43,7 @@ statements:
     sql: |
       SELECT id:int64, org_id:int64, email:string, role:string, score:int64, bio:string
       FROM users
-      WHERE id = ID:int64
+      WHERE id = :ID:int64
 
   - name: ListUsersByIDs
     kind: many
@@ -53,7 +51,7 @@ statements:
     sql: |
       SELECT id:int64, org_id:int64, email:string, role:string, score:int64, bio:string
       FROM users
-      WHERE id IN (IDs:[]int64 ASC)
+      WHERE id IN (:IDs:[]int64 ASC)
       ORDER BY id ASC
 
   - name: SelectUserProfileSubset
@@ -63,7 +61,7 @@ statements:
       SELECT u.id:int64, u.email:string, u.role:string, u.score:int64
       {?WithExtra: , u.bio:string }
       FROM users u
-      WHERE u.org_id = OrgID:int64
+      WHERE u.org_id = :OrgID:int64
       ORDER BY u.id ASC
 
   - name: SearchUsersCoupled
@@ -74,14 +72,14 @@ statements:
       FROM users u
       {?WithOrg: LEFT JOIN orgs o ON o.id = u.org_id }
       WHERE 1=1
-      {?WithOrg: AND o.tier IN (OrgTiers:[]string) AND u.org_id IN (OrgSub:sqlgen.Query) }
-      {?WithRoles: AND u.role IN (Roles:[]string) }
+      {?WithOrg: AND o.tier IN (:OrgTiers:[]string) AND u.org_id IN (:OrgSub:sqlgen.Query) }
+      {?WithRoles: AND u.role IN (:Roles:[]string) }
       ORDER BY u.id ASC
 
   - name: SubOrgsByMinID
     kind: subquery
     sql: |
-      SELECT id FROM orgs WHERE id >= MinID:int64 {?OnlyActive: AND active = ActiveVal:int64 }
+      SELECT id FROM orgs WHERE id >= :MinID:int64 {?OnlyActive: AND active = :ActiveVal:int64 }
 
   - name: PageUsers
     kind: many
@@ -89,37 +87,37 @@ statements:
     sql: |
       SELECT id:int64, role:string, score:int64, email:string
       FROM users
-      WHERE Seek:sqlgen.Seek
-      {?RoleFilter: AND role = FilterRole:string }
-      ORDER BY Order:sqlgen.Order(role, score, id)
-      LIMIT Limit:int64
+      WHERE :Seek:sqlgen.Seek
+      {?RoleFilter: AND role = :FilterRole:string }
+      ORDER BY :Order:sqlgen.Order(role, score, id)
+      LIMIT :Limit:int64
 
   - name: UsersFromCTEAndInSubquery
     kind: many
     sql: |
-      WITH filtered AS (CTESub:sqlgen.Query)
+      WITH filtered AS (:CTESub:sqlgen.Query)
       SELECT f.id:int64, f.email:string
       FROM filtered f
-      WHERE f.id IN (IDSub:sqlgen.Query)
+      WHERE f.id IN (:IDSub:sqlgen.Query)
       ORDER BY f.id ASC
 
   - name: SubUserIDsByScore
     kind: subquery
     sql: |
-      SELECT id FROM users WHERE score >= MinScore:int64
+      SELECT id FROM users WHERE score >= :MinScore:int64
 
   - name: InsertUsersBatchReturning
     kind: many
     sql: |
       INSERT INTO batch_users (id, name, points)
-      VALUES Rows:[]BatchUserInput(ID:int64 ASC, Name:string, Points:int64)
+      VALUES :Rows:[]BatchUserInput(ID:int64 ASC, Name:string, Points:int64)
       RETURNING id:int64, name:string, points:int64
 
   - name: UpdateUsersBatchFromValues
     kind: exec
     sql: |
       WITH updates(id, bonus) AS (
-        VALUES Rows:[]BatchBonusInput(ID:int64 ASC, Bonus:int64)
+        VALUES :Rows:[]BatchBonusInput(ID:int64 ASC, Bonus:int64)
       )
       UPDATE batch_users
       SET points = batch_users.points + (SELECT u.bonus FROM updates u WHERE u.id = batch_users.id)
@@ -129,7 +127,7 @@ statements:
     kind: exec
     sql: |
       INSERT INTO quad_items (id, group_key, priority, created_ts)
-      VALUES Rows:[]QuadInput(ID:int64 ASC, GroupKey:string, Priority:int64, CreatedTS:int64)
+      VALUES :Rows:[]QuadInput(ID:int64 ASC, GroupKey:string, Priority:int64, CreatedTS:int64)
 
   - name: UserIDsNearScore
     kind: many
@@ -144,14 +142,13 @@ statements:
     sql: |
       SELECT id:int64, group_key:string, priority:int64, created_ts:int64
       FROM quad_items
-      WHERE Seek:sqlgen.Seek
-      ORDER BY Order:sqlgen.Order(group_key, priority, created_ts, id)
-      LIMIT Limit:int64
+      WHERE :Seek:sqlgen.Seek
+      ORDER BY :Order:sqlgen.Order(group_key, priority, created_ts, id)
+      LIMIT :Limit:int64
 `
 
 func TestParserProtectedContexts(t *testing.T) {
-	yamlStr := `version: "1"
-package: store
+	yamlStr := `package: store
 dialect: postgres
 statements:
   - name: ProtectedQuery
@@ -170,7 +167,7 @@ statements:
         arr[1:3] AS slice_expr:string,
         u.score::bigint AS casted_score:int64
       FROM users u
-      WHERE u.id = ID:int64
+      WHERE u.id = :ID:int64
         AND (u.meta := 'x:y') IS NOT NULL
 `
 	src, err := sqlgen.GenerateFromYAML([]byte(yamlStr))
@@ -220,7 +217,6 @@ func TestParserUnclosedProtectedContexts(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			cfg := sqlgen.Config{
-				Version:     "1",
 				PackageName: "store",
 				Dialect:     "postgres",
 				Statements: []sqlgen.StatementSpec{
@@ -235,25 +231,24 @@ func TestParserUnclosedProtectedContexts(t *testing.T) {
 }
 
 func TestProjectionDisambiguation(t *testing.T) {
-	yamlStr := `version: "1"
-package: store
+	yamlStr := `package: store
 dialect: postgres
 statements:
   - name: ComplexProjection
     kind: many
     sql: |
       WITH cte AS (
-        SELECT c.id, c.amount * Rate:float64 AS scaled
+        SELECT c.id, c.amount * :Rate:float64 AS scaled
         FROM charges c
-        WHERE c.org_id = OrgID:int64
+        WHERE c.org_id = :OrgID:int64
       )
       SELECT
         u.id:int64,
-        u.price * Tax:float64 AS total:float64
-        {?WithBonus: , u.bonus + BonusAdd:float64 AS final_bonus:float64 }
+        u.price * :Tax:float64 AS total:float64
+        {?WithBonus: , u.bonus + :BonusAdd:float64 AS final_bonus:float64 }
       FROM users u
       JOIN cte ON cte.id = u.id
-      WHERE u.active = Active:bool
+      WHERE u.active = :Active:bool
 `
 	src, err := sqlgen.GenerateFromYAML([]byte(yamlStr))
 	if err != nil {
@@ -274,8 +269,7 @@ statements:
 }
 
 func TestYAMLStrictValidationAndForms(t *testing.T) {
-	yamlStr := `version: "1"
-package: store
+	yamlStr := `package: store
 dialect: postgres
 extra_imports:
   - time
@@ -283,24 +277,13 @@ statements:
   - name: GetAuditRecord
     kind: many
     sql: |
-      SELECT id, created_at, payload, amount, ip_addr, endpoint
+      SELECT id:int64, created_at:time.Time, payload:json.RawMessage, amount:*big.Int, ip_addr:netip.Addr, endpoint:*url.URL
       FROM audits
-      WHERE id = :ID AND org_id IN (:org_ids...) AND tag IN (:tags)
-    params:
-      - { name: ID, type: int64 }
-      - org_ids...: int64
-      - "tags:string..."
-    columns:
-      - { name: id, type: int64 }
-      - created_at: time.Time
-      - "payload:json.RawMessage"
-      - "amount:*big.Int"
-      - "ip_addr:netip.Addr"
-      - "endpoint:*url.URL"
+      WHERE id = :ID:int64 AND org_id IN (:org_ids:[]int64) AND tag IN (:tags:[]string)
 `
 	src, err := sqlgen.GenerateFromYAML([]byte(yamlStr))
 	if err != nil {
-		t.Fatalf("valid 3-form YAML failed: %v", err)
+		t.Fatalf("valid YAML failed: %v", err)
 	}
 	code := string(src)
 	for _, imp := range []string{`"time"`, `"encoding/json"`, `"math/big"`, `"net/netip"`, `"net/url"`, `"iter"`} {
@@ -312,38 +295,20 @@ statements:
 		t.Fatalf("expected deduplicated \"time\" import, got count=%d", strings.Count(code, `"time"`))
 	}
 
-	if _, err := sqlgen.ParseYAML([]byte("version: \"1\"\nunknown_top_key: true\n")); err == nil {
+	if _, err := sqlgen.ParseYAML([]byte("unknown_top_key: true\n")); err == nil {
 		t.Fatalf("expected error on unknown top-level YAML key")
 	}
 
-	badParamYAML := `version: "1"
-package: store
-statements:
-  - name: S1
-    kind: exec
-    sql: DELETE FROM t WHERE id = :ID
-    params:
-      - name: ID
-        type: int64
-        bogus_key: 123
-`
-	if _, err := sqlgen.ParseYAML([]byte(badParamYAML)); err == nil || !strings.Contains(err.Error(), "line") {
-		t.Fatalf("expected error with line number on unknown ParamSpec key, got: %v", err)
-	}
-
-	badColYAML := `version: "1"
-package: store
-statements:
-  - name: S1
-    kind: one
-    sql: SELECT id FROM t
-    columns:
-      - name: id
-        type: int64
-        extra_col_key: abc
-`
-	if _, err := sqlgen.ParseYAML([]byte(badColYAML)); err == nil || !strings.Contains(err.Error(), "line") {
-		t.Fatalf("expected error with line number on unknown ColumnSpec key, got: %v", err)
+	// Keys that used to exist are rejected, with the line they are on.
+	for key, doc := range map[string]string{
+		"version":        "version: \"1\"\npackage: store\n",
+		"runtime_import": "runtime_import: example.com/rt\npackage: store\n",
+		"params":         "package: store\nstatements:\n  - name: S1\n    kind: exec\n    sql: DELETE FROM t\n    params:\n      - ID:int64\n",
+		"columns":        "package: store\nstatements:\n  - name: S1\n    kind: one\n    sql: SELECT id FROM t\n    columns:\n      - id:int64\n",
+	} {
+		if _, err := sqlgen.ParseYAML([]byte(doc)); err == nil || !strings.Contains(err.Error(), "line") || !strings.Contains(err.Error(), key) {
+			t.Fatalf("expected a line-numbered error naming the removed key %q, got: %v", key, err)
+		}
 	}
 }
 
@@ -356,13 +321,13 @@ func TestCompileTimeValidationErrors(t *testing.T) {
 		{
 			name: "typoed predeclared type suggests string",
 			cfg: sqlgen.Config{
-				Version:     "1",
 				PackageName: "store",
+				Dialect:     "postgres",
 				Statements: []sqlgen.StatementSpec{
 					{
 						Name: "GetUser",
 						Kind: sqlgen.KindOne,
-						SQL:  "SELECT id:int64, name:stirng FROM users WHERE id = ID:int64",
+						SQL:  "SELECT id:int64, name:stirng FROM users WHERE id = :ID:int64",
 					},
 				},
 			},
@@ -371,13 +336,13 @@ func TestCompileTimeValidationErrors(t *testing.T) {
 		{
 			name: "nullable pointer sort column in Order with Seek rejected",
 			cfg: sqlgen.Config{
-				Version:     "1",
 				PackageName: "store",
+				Dialect:     "postgres",
 				Statements: []sqlgen.StatementSpec{
 					{
 						Name: "ListUsers",
 						Kind: sqlgen.KindMany,
-						SQL:  "SELECT id:int64, nickname:*string FROM users WHERE Seek:sqlgen.Seek ORDER BY Order:sqlgen.Order(nickname, id)",
+						SQL:  "SELECT id:int64, nickname:*string FROM users WHERE :Seek:sqlgen.Seek ORDER BY :Order:sqlgen.Order(nickname, id)",
 					},
 				},
 			},
@@ -386,13 +351,13 @@ func TestCompileTimeValidationErrors(t *testing.T) {
 		{
 			name: "nullable sql.NullString sort column in Order with Seek rejected",
 			cfg: sqlgen.Config{
-				Version:     "1",
 				PackageName: "store",
+				Dialect:     "postgres",
 				Statements: []sqlgen.StatementSpec{
 					{
 						Name: "ListUsersNull",
 						Kind: sqlgen.KindMany,
-						SQL:  "SELECT id:int64, nickname:sql.NullString FROM users WHERE Seek:sqlgen.Seek ORDER BY Order:sqlgen.Order(nickname, id)",
+						SQL:  "SELECT id:int64, nickname:sql.NullString FROM users WHERE :Seek:sqlgen.Seek ORDER BY :Order:sqlgen.Order(nickname, id)",
 					},
 				},
 			},
@@ -401,8 +366,8 @@ func TestCompileTimeValidationErrors(t *testing.T) {
 		{
 			name: "duplicate column names rejected",
 			cfg: sqlgen.Config{
-				Version:     "1",
 				PackageName: "store",
+				Dialect:     "postgres",
 				Statements: []sqlgen.StatementSpec{
 					{
 						Name: "DupCols",
@@ -416,20 +381,20 @@ func TestCompileTimeValidationErrors(t *testing.T) {
 		{
 			name: "conflicting shared result_type structs rejected",
 			cfg: sqlgen.Config{
-				Version:     "1",
 				PackageName: "store",
+				Dialect:     "postgres",
 				Statements: []sqlgen.StatementSpec{
 					{
 						Name:       "GetUserA",
 						Kind:       sqlgen.KindOne,
 						ResultType: "SharedUser",
-						SQL:        "SELECT id:int64, email:string FROM users WHERE id = ID:int64",
+						SQL:        "SELECT id:int64, email:string FROM users WHERE id = :ID:int64",
 					},
 					{
 						Name:       "GetUserB",
 						Kind:       sqlgen.KindOne,
 						ResultType: "SharedUser",
-						SQL:        "SELECT id:int64, email:int64 FROM users WHERE id = ID:int64",
+						SQL:        "SELECT id:int64, email:int64 FROM users WHERE id = :ID:int64",
 					},
 				},
 			},
@@ -438,8 +403,8 @@ func TestCompileTimeValidationErrors(t *testing.T) {
 		{
 			name: "nested conditional blocks rejected",
 			cfg: sqlgen.Config{
-				Version:     "1",
 				PackageName: "store",
+				Dialect:     "postgres",
 				Statements: []sqlgen.StatementSpec{
 					{
 						Name: "NestedOpt",
@@ -467,12 +432,12 @@ func TestCompileTimeValidationErrors(t *testing.T) {
 
 func TestPostgresSQLGeneration(t *testing.T) {
 	q1 := GetUserByIDQuery(42)
-	if got := q1.BuildSQL(runtime.DialectPostgres); got != "SELECT id, org_id, email, role, score, bio\nFROM users\nWHERE id = $1" {
+	if got := q1.BuildSQL(runtime.DialectDollar); got != "SELECT id, org_id, email, role, score, bio\nFROM users\nWHERE id = $1" {
 		t.Fatalf("GetUserByID Postgres SQL mismatch:\ngot:  %q", got)
 	}
 
 	q2 := ListUsersByIDsQuery([]int64{10, 20, 30})
-	if got := q2.BuildSQL(runtime.DialectPostgres); got != "SELECT id, org_id, email, role, score, bio\nFROM users\nWHERE id IN ($1, $2, $3)\nORDER BY id ASC" {
+	if got := q2.BuildSQL(runtime.DialectDollar); got != "SELECT id, org_id, email, role, score, bio\nFROM users\nWHERE id IN ($1, $2, $3)\nORDER BY id ASC" {
 		t.Fatalf("ListUsersByIDs Postgres SQL mismatch:\ngot:  %q", got)
 	}
 
@@ -482,7 +447,7 @@ func TestPostgresSQLGeneration(t *testing.T) {
 		SelectCols: SelectUserProfileSubsetColID | SelectUserProfileSubsetColScore,
 	})
 	wantQ3 := "SELECT u.id, u.score\n , u.bio \nFROM users u\nWHERE u.org_id = $1\nORDER BY u.id ASC"
-	if got := q3.BuildSQL(runtime.DialectPostgres); got != wantQ3 {
+	if got := q3.BuildSQL(runtime.DialectDollar); got != wantQ3 {
 		t.Fatalf("SelectUserProfileSubset Postgres SQL mismatch:\ngot:  %q\nwant: %q", got, wantQ3)
 	}
 
@@ -495,7 +460,7 @@ func TestPostgresSQLGeneration(t *testing.T) {
 	})
 	idSub := SubUserIDsByScoreQuery(30)
 	composed := UsersFromCTEAndInSubqueryQuery(cteSub, idSub)
-	gotComposed := composed.BuildSQL(runtime.DialectPostgres)
+	gotComposed := composed.BuildSQL(runtime.DialectDollar)
 	if !strings.Contains(gotComposed, "(score, id) < ($1, $2)") {
 		t.Fatalf("expected Row-Value Constructor keyset predicate in composed Postgres SQL, got:\n%s", gotComposed)
 	}
@@ -956,8 +921,7 @@ func TestCompilationIsolationMatrix(t *testing.T) {
 	}{
 		{
 			name: "1_exec_zero_params",
-			yaml: `version: "1"
-package: iso1
+			yaml: `package: iso1
 dialect: postgres
 statements:
   - name: VacuumItems
@@ -967,41 +931,37 @@ statements:
 		},
 		{
 			name: "2_one_scalar_params",
-			yaml: `version: "1"
-package: iso2
+			yaml: `package: iso2
 dialect: postgres
 statements:
   - name: GetItem
     kind: one
-    sql: SELECT id:int64, name:string FROM items WHERE id = ID:int64
+    sql: SELECT id:int64, name:string FROM items WHERE id = :ID:int64
 `,
 		},
 		{
 			name: "3_many_scalar_params",
-			yaml: `version: "1"
-package: iso3
+			yaml: `package: iso3
 dialect: sqlite
 statements:
   - name: ListItemsByScore
     kind: many
-    sql: SELECT id:int64, score:float64 FROM items WHERE score >= MinScore:float64
+    sql: SELECT id:int64, score:float64 FROM items WHERE score >= :MinScore:float64
 `,
 		},
 		{
 			name: "4_many_slice_param_presorted",
-			yaml: `version: "1"
-package: iso4
+			yaml: `package: iso4
 dialect: postgres
 statements:
   - name: ListItemsByIDs
     kind: many
-    sql: SELECT id:int64 FROM items WHERE id IN (IDs:[]int64 ASC)
+    sql: SELECT id:int64 FROM items WHERE id IN (:IDs:[]int64 ASC)
 `,
 		},
 		{
 			name: "5_many_conditional_block_only",
-			yaml: `version: "1"
-package: iso5
+			yaml: `package: iso5
 dialect: mysql
 statements:
   - name: ListItemsOpt
@@ -1012,8 +972,7 @@ statements:
 		},
 		{
 			name: "6_many_select_cols_only",
-			yaml: `version: "1"
-package: iso6
+			yaml: `package: iso6
 dialect: postgres
 statements:
   - name: ListItemsProjection
@@ -1024,75 +983,69 @@ statements:
 		},
 		{
 			name: "7_many_order_only",
-			yaml: `version: "1"
-package: iso7
+			yaml: `package: iso7
 dialect: postgres
 statements:
   - name: ListItemsOrdered
     kind: many
-    sql: SELECT id:int64, score:int64 FROM items ORDER BY Order:sqlgen.Order(score, id)
+    sql: SELECT id:int64, score:int64 FROM items ORDER BY :Order:sqlgen.Order(score, id)
 `,
 		},
 		{
 			name: "8_many_order_and_seek",
-			yaml: `version: "1"
-package: iso8
+			yaml: `package: iso8
 dialect: sqlite
 statements:
   - name: PageItems
     kind: many
-    sql: SELECT id:int64, score:int64 FROM items WHERE Seek:sqlgen.Seek ORDER BY Order:sqlgen.Order(score, id) LIMIT Limit:int64
+    sql: SELECT id:int64, score:int64 FROM items WHERE :Seek:sqlgen.Seek ORDER BY :Order:sqlgen.Order(score, id) LIMIT :Limit:int64
 `,
 		},
 		{
 			name: "9_subquery_and_parent_query",
-			yaml: `version: "1"
-package: iso9
+			yaml: `package: iso9
 dialect: postgres
 statements:
   - name: SubActiveIDs
     kind: subquery
-    sql: SELECT id FROM items WHERE active = Active:bool
+    sql: SELECT id FROM items WHERE active = :Active:bool
   - name: ListFromSub
     kind: many
-    sql: SELECT id:int64 FROM items WHERE id IN (Sub:sqlgen.Query)
+    sql: SELECT id:int64 FROM items WHERE id IN (:Sub:sqlgen.Query)
 `,
 		},
 		{
 			name: "10_exec_tuple_batch_and_stream",
-			yaml: `version: "1"
-package: iso10
+			yaml: `package: iso10
 dialect: postgres
 statements:
   - name: InsertItemsBatch
     kind: exec
-    sql: INSERT INTO items (id, name) VALUES Rows:[]ItemInput(ID:int64 ASC, Name:string)
+    sql: INSERT INTO items (id, name) VALUES :Rows:[]ItemInput(ID:int64 ASC, Name:string)
 `,
 		},
 		{
 			name: "11_many_tuple_batch_returning",
-			yaml: `version: "1"
-package: iso11
+			yaml: `package: iso11
 dialect: postgres
 statements:
   - name: InsertItemsReturning
     kind: many
-    sql: INSERT INTO items (id, payload) VALUES Rows:[]ItemPayload(ID:int64, Payload:[]byte ASC) RETURNING id:int64
+    sql: INSERT INTO items (id, payload) VALUES :Rows:[]ItemPayload(ID:int64, Payload:[]byte ASC) RETURNING id:int64
 `,
 		},
 		{
 			name: "12_pipeline_scalar_and_row_types",
-			yaml: `version: "1"
-package: iso12
+			yaml: `package: iso12
 dialect: postgres
 statements:
   - name: TouchItem
     kind: exec
-    sql: UPDATE items SET updated_at = UpdatedAt:time.Time WHERE id = ID:int64
+    sql: UPDATE items SET updated_at = :UpdatedAt:time.Time WHERE id = :ID:int64
   - name: GetItemScore
     kind: one
     result_type: int64
-    sql: SELECT score:int64 FROM items WHERE id = ID:int64
+    sql: SELECT score:int64 FROM items WHERE id = :ID:int64
 `,
 		},
 	}
@@ -1204,9 +1157,9 @@ func TestPropertyKeysetPaginationEquivalence(t *testing.T) {
 			Order: orderSpec,
 			Limit: 10,
 		})
-		pgSQL := qCurried.BuildSQL(runtime.DialectPostgres)
+		pgSQL := qCurried.BuildSQL(runtime.DialectDollar)
 		pgArgs := runtime.AcquireArgsCap(16)
-		if err := qCurried.AppendArgs(pgArgs, runtime.DialectPostgres); err != nil {
+		if err := qCurried.AppendArgs(pgArgs, runtime.DialectDollar); err != nil {
 			t.Fatalf("AppendArgs(DialectPostgres): %v", err)
 		}
 		// In Postgres, 4-column seek uses 4 args ($1..$4) + 1 Limit arg ($5) = 5 args total
@@ -1541,7 +1494,7 @@ func TestMaxOpenConns1DeadlockGate(t *testing.T) {
 		})); err != nil {
 			return err
 		}
-		return txQ.InTxOpts(ctx, nil, func(innerQ *Queries) error {
+		return txQ.InTx(ctx, nil, func(innerQ *Queries) error {
 			_, err := innerQ.GetUserByID(ctx, 2)
 			return err
 		})
@@ -1623,8 +1576,8 @@ func TestGeneratorAndE2EAdditionalCoverage(t *testing.T) {
 	if _, err := q.UpdateUsersBatchFromValues(ctx, bonusIn); err != nil {
 		t.Fatalf("UpdateUsersBatchFromValues: %v", err)
 	}
-	if _, err := q.UpdateUsersBatchFromValuesStreamSeq(ctx, runtime.FromSlice(bonusIn)); err != nil {
-		t.Fatalf("UpdateUsersBatchFromValuesStreamSeq: %v", err)
+	if _, err := q.UpdateUsersBatchFromValuesStream(ctx, runtime.FromSlice(bonusIn)); err != nil {
+		t.Fatalf("UpdateUsersBatchFromValuesStream: %v", err)
 	}
 
 	quadIn := []QuadInput{{ID: 100, GroupKey: "g", Priority: 1, CreatedTs: 1}}
@@ -1634,8 +1587,8 @@ func TestGeneratorAndE2EAdditionalCoverage(t *testing.T) {
 	if _, err := q.InsertQuadBatchStream(ctx, runtime.FromSlice([]QuadInput{{ID: 101, GroupKey: "g", Priority: 1, CreatedTs: 2}})); err != nil {
 		t.Fatalf("InsertQuadBatchStream: %v", err)
 	}
-	if _, err := q.InsertQuadBatchStreamSeq(ctx, runtime.FromSlice([]QuadInput{{ID: 102, GroupKey: "g", Priority: 1, CreatedTs: 3}})); err != nil {
-		t.Fatalf("InsertQuadBatchStreamSeq: %v", err)
+	if _, err := q.InsertQuadBatchStream(ctx, runtime.FromSlice([]QuadInput{{ID: 102, GroupKey: "g", Priority: 1, CreatedTs: 3}})); err != nil {
+		t.Fatalf("InsertQuadBatchStream: %v", err)
 	}
 
 	_, _ = q.CreateUser(ctx, 1, 1, "u1@c.com", "admin", 10, "bio")
@@ -1691,55 +1644,55 @@ func TestGeneratorAndE2EAdditionalCoverage(t *testing.T) {
 	_ = pl.UpdateUsersBatchFromValues([]BatchBonusInput{{ID: 20, Bonus: 1}})
 	_ = pl.InsertQuadBatch([]QuadInput{{ID: 200, GroupKey: "g", Priority: 1, CreatedTs: 1}})
 	_ = pl.PageQuad(PageQuadParams{Limit: 5})
-	if err := pl.Exec(); err != nil {
-		t.Fatalf("pl.Exec(): %v", err)
+	if err := pl.Flush(); err != nil {
+		t.Fatalf("pl.Flush(): %v", err)
 	}
 }
 
 func TestGeneratorValidatorAndParserBranches(t *testing.T) {
 	// Exercise remaining validation and parser branches in generator.go
 	errCases := []sqlgen.Config{
-		{Version: "99", PackageName: "p", Statements: []sqlgen.StatementSpec{{Name: "S", Kind: sqlgen.KindExec, SQL: "DELETE FROM t"}}},
-		{Version: "1", PackageName: "123bad", Statements: []sqlgen.StatementSpec{{Name: "S", Kind: sqlgen.KindExec, SQL: "DELETE FROM t"}}},
-		{Version: "1", PackageName: "p", Dialect: "oracle", Statements: []sqlgen.StatementSpec{{Name: "S", Kind: sqlgen.KindExec, SQL: "DELETE FROM t"}}},
-		{Version: "1", PackageName: "p", Statements: nil},
-		{Version: "1", PackageName: "p", Statements: []sqlgen.StatementSpec{
+		{PackageName: "p", Statements: []sqlgen.StatementSpec{{Name: "S", Kind: sqlgen.KindExec, SQL: "DELETE FROM t"}}},
+		{PackageName: "123bad", Dialect: "postgres", Statements: []sqlgen.StatementSpec{{Name: "S", Kind: sqlgen.KindExec, SQL: "DELETE FROM t"}}},
+		{PackageName: "p", Dialect: "oracle", Statements: []sqlgen.StatementSpec{{Name: "S", Kind: sqlgen.KindExec, SQL: "DELETE FROM t"}}},
+		{PackageName: "p", Dialect: "postgres", Statements: nil},
+		{PackageName: "p", Dialect: "postgres", Statements: []sqlgen.StatementSpec{
 			{Name: "Dup", Kind: sqlgen.KindExec, SQL: "DELETE FROM t"},
 			{Name: "Dup", Kind: sqlgen.KindExec, SQL: "DELETE FROM t"},
 		}},
-		{Version: "1", PackageName: "p", Statements: []sqlgen.StatementSpec{
+		{PackageName: "p", Dialect: "postgres", Statements: []sqlgen.StatementSpec{
 			{Name: "123bad", Kind: sqlgen.KindExec, SQL: "DELETE FROM t"},
 		}},
-		{Version: "1", PackageName: "p", Statements: []sqlgen.StatementSpec{
+		{PackageName: "p", Dialect: "postgres", Statements: []sqlgen.StatementSpec{
 			{Name: "EmptySQL", Kind: sqlgen.KindExec, SQL: "   "},
 		}},
-		{Version: "1", PackageName: "p", Statements: []sqlgen.StatementSpec{
+		{PackageName: "p", Dialect: "postgres", Statements: []sqlgen.StatementSpec{
 			{Name: "BadKind", Kind: "invalid_kind", SQL: "SELECT 1"},
 		}},
-		{Version: "1", PackageName: "p", Statements: []sqlgen.StatementSpec{
+		{PackageName: "p", Dialect: "postgres", Statements: []sqlgen.StatementSpec{
 			{Name: "ExecWithCols", Kind: sqlgen.KindExec, SQL: "SELECT id:int64 FROM t"},
 		}},
-		{Version: "1", PackageName: "p", Statements: []sqlgen.StatementSpec{
+		{PackageName: "p", Dialect: "postgres", Statements: []sqlgen.StatementSpec{
 			{Name: "OneNoCols", Kind: sqlgen.KindOne, SQL: "UPDATE t SET a = 1"},
 		}},
-		{Version: "1", PackageName: "p", Statements: []sqlgen.StatementSpec{
-			{Name: "SeekWithoutOrder", Kind: sqlgen.KindMany, SQL: "SELECT id:int64 FROM t WHERE Seek:sqlgen.Seek"},
+		{PackageName: "p", Dialect: "postgres", Statements: []sqlgen.StatementSpec{
+			{Name: "SeekWithoutOrder", Kind: sqlgen.KindMany, SQL: "SELECT id:int64 FROM t WHERE :Seek:sqlgen.Seek"},
 		}},
-		{Version: "1", PackageName: "p", Statements: []sqlgen.StatementSpec{
-			{Name: "OrderUnknownCol", Kind: sqlgen.KindMany, SQL: "SELECT id:int64 FROM t ORDER BY Order:sqlgen.Order(missing_col)"},
+		{PackageName: "p", Dialect: "postgres", Statements: []sqlgen.StatementSpec{
+			{Name: "OrderUnknownCol", Kind: sqlgen.KindMany, SQL: "SELECT id:int64 FROM t ORDER BY :Order:sqlgen.Order(missing_col)"},
 		}},
-		{Version: "1", PackageName: "p", Statements: []sqlgen.StatementSpec{
-			{Name: "NonOrderablePresort", Kind: sqlgen.KindMany, SQL: "SELECT id:int64 FROM t WHERE meta IN (Metas:[]json.RawMessage ASC)"},
+		{PackageName: "p", Dialect: "postgres", Statements: []sqlgen.StatementSpec{
+			{Name: "NonOrderablePresort", Kind: sqlgen.KindMany, SQL: "SELECT id:int64 FROM t WHERE meta IN (:Metas:[]json.RawMessage ASC)"},
 		}},
-		{Version: "1", PackageName: "p", Statements: []sqlgen.StatementSpec{
-			{Name: "ConflictingParamTypes", Kind: sqlgen.KindMany, SQL: "SELECT id:int64 FROM t WHERE id = ID:int64 OR id = ID:string"},
+		{PackageName: "p", Dialect: "postgres", Statements: []sqlgen.StatementSpec{
+			{Name: "ConflictingParamTypes", Kind: sqlgen.KindMany, SQL: "SELECT id:int64 FROM t WHERE id = :ID:int64 OR id = :ID:string"},
 		}},
-		{Version: "1", PackageName: "p", Statements: []sqlgen.StatementSpec{
-			{Name: "ConflictingSortDirs", Kind: sqlgen.KindMany, SQL: "SELECT id:int64 FROM t WHERE id IN (IDs:[]int64 ASC) OR id IN (IDs:[]int64 DESC)"},
+		{PackageName: "p", Dialect: "postgres", Statements: []sqlgen.StatementSpec{
+			{Name: "ConflictingSortDirs", Kind: sqlgen.KindMany, SQL: "SELECT id:int64 FROM t WHERE id IN (:IDs:[]int64 ASC) OR id IN (:IDs:[]int64 DESC)"},
 		}},
-		{Version: "1", PackageName: "p", Statements: []sqlgen.StatementSpec{
-			{Name: "T1", Kind: sqlgen.KindExec, SQL: "INSERT INTO t (a, b) VALUES Rows:[]SharedTup(A:int64, B:string)"},
-			{Name: "T2", Kind: sqlgen.KindExec, SQL: "INSERT INTO t (a, b) VALUES Rows:[]SharedTup(A:int64, B:int64)"},
+		{PackageName: "p", Dialect: "postgres", Statements: []sqlgen.StatementSpec{
+			{Name: "T1", Kind: sqlgen.KindExec, SQL: "INSERT INTO t (a, b) VALUES :Rows:[]SharedTup(A:int64, B:string)"},
+			{Name: "T2", Kind: sqlgen.KindExec, SQL: "INSERT INTO t (a, b) VALUES :Rows:[]SharedTup(A:int64, B:int64)"},
 		}},
 	}
 	for i, cfg := range errCases {
@@ -1748,10 +1701,8 @@ func TestGeneratorValidatorAndParserBranches(t *testing.T) {
 		}
 	}
 
-	// Test custom runtime_import alias, DESC slice presort, time.Time / []byte tuple presort, and scalar_result on kind: many
-	advYAML := `version: "1"
-package: adv
-runtime_import: example.com/custom/sqlgenrt
+	// Test DESC slice presort, time.Time / []byte tuple presort, and scalar_result on kind: many
+	advYAML := `package: adv
 dialect: mariadb
 statements:
   - name: ListScoresDesc
@@ -1760,73 +1711,64 @@ statements:
     sql: |
       SELECT score:int64
       FROM items
-      WHERE tag IN (Tags:[]string DESC)
-        AND created_at IN (Times:[]time.Time ASC)
-        AND hash IN (Hashes:[][]byte DESC)
+      WHERE tag IN (:Tags:[]string DESC)
+        AND created_at IN (:Times:[]time.Time ASC)
+        AND hash IN (:Hashes:[][]byte DESC)
   - name: UpsertEvents
     kind: exec
     sql: |
       INSERT INTO events (id, ts, raw_hash)
-      VALUES Rows:[]EventTuple('const ''lit''', "dq""col", ` + "`bt``col`" + `, ID:int64::bigint DESC, TS:time.Time::timestamptz(6) ASC, RawHash:[]byte::bytea[] DESC)
+      VALUES :Rows:[]EventTuple('const ''lit''', "dq""col", ` + "`bt``col`" + `, ID:int64::bigint DESC, TS:time.Time::timestamptz(6) ASC, RawHash:[]byte::bytea[] DESC)
       ON DUPLICATE KEY UPDATE ts = VALUES(ts)
   - name: DeleteBatchWithFlags
     kind: exec
     params_struct: true
     sql: |
       DELETE FROM events
-      WHERE org_id = OrgID:int64::bigint
-        AND id IN (IDs:[]int64 ASC)
+      WHERE org_id = :OrgID:int64::bigint
+        AND id IN (:IDs:[]int64 ASC)
         {?WithCutoff: AND 'a''b' = 'a''b' AND "c""d" = "c""d" AND ` + "`e``f` = `e``f`" + ` AND $$dlr$$ = $$dlr$$ -- line cmt
-        /* block cmt */ AND ts < Cutoff:int64 }
+        /* block cmt */ AND ts < :Cutoff:int64 }
   - name: ComplexParenTuple
     kind: many
     sql: |
       INSERT INTO events (id, meta)
-      VALUES Rows:[]ParenTuple((1 + 2), 'x''y', "a""b", ` + "`c``d`" + `, $$tag$$, -- cmt
+      VALUES :Rows:[]ParenTuple((1 + 2), 'x''y', "a""b", ` + "`c``d`" + `, $$tag$$, -- cmt
       /* blk */ ID:int64, Meta:string)
       RETURNING id:int64 -- trailing comment
       /* block comment before terminator */ ;
   - name: ReuseInlineSliceAndNonValuesTuple
     kind: many
     sql: |
-      SELECT u.id:int64, u.http_server_url:string AS HTTPServerVal:string
+      SELECT u.id:int64, u.name AS HTTPServerVal:string
       FROM users u
-      WHERE u.id IN (IDs:[]int64)
+      WHERE u.id IN (:IDs:[]int64)
+        AND u.url = :http_server_url:string
         AND u.id IN (:IDs ASC)
-        AND u.id = _type:int64
+        AND u.id = :_type:int64
         AND u.id = :_type
-        AND u.hash IN (Hashes...:[]byte)
-        AND u.code IN (:Codes)
+        AND u.hash IN (:Hashes:[][]byte)
+        AND u.code IN (:Codes:[]int64 DESC)
+        AND u.code IN (:Codes DESC)
+        AND u.tag IN (:Tags:[]string)
         AND u.tag IN (:Tags)
-        AND (u.id, u.name) IN (Pairs:[]PairItem(UserIDVal:int64, Name:string))
-    params:
-      - "Codes:[]int64 DESC"
-      - "Tags:string..."
+        AND (u.id, u.name) IN (:Pairs:[]PairItem(UserIDVal:int64, Name:string))
   - name: StreamTupleWithExtraScalar
     kind: exec
     sql: |
       INSERT INTO events (id, meta)
-      VALUES Rows:[]ParenTuple(ID:int64, Meta:string)
-      ON CONFLICT (id) DO UPDATE SET meta = Fallback:string
+      VALUES :Rows:[]ParenTuple(ID:int64, Meta:string)
+      ON CONFLICT (id) DO UPDATE SET meta = :Fallback:string
 `
 	if _, err := sqlgen.GenerateFromYAML([]byte(advYAML)); err != nil {
 		t.Fatalf("GenerateFromYAML(advYAML) failed: %v", err)
 	}
 
-	// Test ParseSQL directly
-	if parsed, err := sqlgen.ParseSQL("SELECT id:int64 FROM users WHERE id = ID:int64"); err != nil || len(parsed.Segments) == 0 {
-		t.Fatalf("ParseSQL failed: %v", err)
-	}
-	if _, err := sqlgen.ParseSQL("SELECT 'unclosed FROM users"); err == nil {
-		t.Fatalf("expected ParseSQL error on unclosed literal")
-	}
-
-	// Test WriteFileAtomic, GenerateFromYAMLFile, and GenerateFile
+	// Test WriteFileAtomic and GenerateFromYAMLFile
 	tmpDir := t.TempDir()
 	cfgFile := filepath.Join(tmpDir, "sqlgen.yaml")
 	outFile := filepath.Join(tmpDir, "custom_out.go")
-	validFileYAML := `version: "1"
-package: filepkg
+	validFileYAML := `package: filepkg
 dialect: sqlite
 statements:
   - name: Ping
@@ -1836,8 +1778,8 @@ statements:
 	if err := sqlgen.WriteFileAtomic(cfgFile, []byte(validFileYAML)); err != nil {
 		t.Fatalf("WriteFileAtomic: %v", err)
 	}
-	if err := sqlgen.GenerateFile(cfgFile); err != nil {
-		t.Fatalf("GenerateFile: %v", err)
+	if err := sqlgen.GenerateFromYAMLFile(cfgFile, ""); err != nil {
+		t.Fatalf("GenerateFromYAMLFile(default out): %v", err)
 	}
 	if err := sqlgen.GenerateFromYAMLFile(cfgFile, outFile); err != nil {
 		t.Fatalf("GenerateFromYAMLFile: %v", err)
@@ -1846,12 +1788,12 @@ statements:
 		t.Fatalf("expected error on missing YAML file")
 	}
 	badCfgFile := filepath.Join(tmpDir, "bad_yaml.yaml")
-	_ = sqlgen.WriteFileAtomic(badCfgFile, []byte("version: \"2\"\n"))
+	_ = sqlgen.WriteFileAtomic(badCfgFile, []byte("unknown_key: 1\n"))
 	if err := sqlgen.GenerateFromYAMLFile(badCfgFile, ""); err == nil {
 		t.Fatalf("expected error on invalid YAML file")
 	}
 	badSQLCfgFile := filepath.Join(tmpDir, "bad_sql.yaml")
-	_ = sqlgen.WriteFileAtomic(badSQLCfgFile, []byte("version: \"1\"\npackage: p\nstatements:\n  - name: S\n    kind: one\n    sql: SELECT 1\n"))
+	_ = sqlgen.WriteFileAtomic(badSQLCfgFile, []byte("package: p\ndialect: sqlite\nstatements:\n  - name: S\n    kind: one\n    sql: SELECT 1\n"))
 	if err := sqlgen.GenerateFromYAMLFile(badSQLCfgFile, ""); err == nil {
 		t.Fatalf("expected error on invalid SQL in YAML file")
 	}
@@ -1866,95 +1808,30 @@ statements:
 		t.Fatalf("expected WriteFileAtomic error when a parent is a regular file")
 	}
 
-	// Test YAML error paths in ParseYAML, ParamSpec.UnmarshalYAML, and ColumnSpec.UnmarshalYAML
+	// Test YAML error paths in ParseYAML and Generate
 	badYAMLs := []string{
 		"",
-		"version: \"2\"\npackage: p\nstatements:\n  - name: S\n    kind: exec\n    sql: DELETE FROM t\n",
-		"version: \"1\"\npackage: p\n---\nextra: doc\n",
-		"version: \"1\"\npackage: p\nstatements:\n  - name: S\n    kind: exec\n    sql: DELETE FROM t\n    params:\n      - \"invalid_no_colon\"\n",
-		"version: \"1\"\npackage: p\nstatements:\n  - name: S\n    kind: exec\n    sql: DELETE FROM t\n    params:\n      - \":int64\"\n",
-		"version: \"1\"\npackage: p\nstatements:\n  - name: S\n    kind: exec\n    sql: DELETE FROM t\n    params:\n      - [1, 2]\n",
-		"version: \"1\"\npackage: p\nstatements:\n  - name: S\n    kind: exec\n    sql: DELETE FROM t\n    params:\n      - { name: ID, type: int64, slice: true }\n      - { name: [bad], type: int64 }\n",
-		"version: \"1\"\npackage: p\nstatements:\n  - name: S\n    kind: exec\n    sql: DELETE FROM t\n    params:\n      - { name: ID, type: [bad] }\n",
-		"version: \"1\"\npackage: p\nstatements:\n  - name: S\n    kind: exec\n    sql: DELETE FROM t\n    params:\n      - { name: ID, type: int64, slice: notabool }\n",
-		"version: \"1\"\npackage: p\nstatements:\n  - name: S\n    kind: exec\n    sql: DELETE FROM t\n    params:\n      - { name: ID }\n",
-		"version: \"1\"\npackage: p\nstatements:\n  - name: S\n    kind: exec\n    sql: DELETE FROM t\n    params:\n      - ID: [bad]\n",
-		"version: \"1\"\npackage: p\nstatements:\n  - name: S\n    kind: one\n    sql: SELECT id FROM t\n    columns:\n      - \"bad_col\"\n",
-		"version: \"1\"\npackage: p\nstatements:\n  - name: S\n    kind: one\n    sql: SELECT id FROM t\n    columns:\n      - [1, 2]\n",
-		"version: \"1\"\npackage: p\nstatements:\n  - name: S\n    kind: one\n    sql: SELECT id FROM t\n    columns:\n      - id: [bad]\n",
-		"version: \"1\"\npackage: p\nstatements:\n  - name: S\n    kind: one\n    sql: SELECT id FROM t\n    columns:\n      - { name: [bad], type: int64 }\n",
-		"version: \"1\"\npackage: p\nstatements:\n  - name: S\n    kind: one\n    sql: SELECT id FROM t\n    columns:\n      - { name: id, type: [bad] }\n",
-		"version: \"1\"\npackage: p\nstatements:\n  - name: S\n    kind: one\n    sql: SELECT id FROM t\n    columns:\n      - { name: id }\n",
+		"package: p\n---\nextra: doc\n",
+		"package: p\nstatements:\n  - name: S\n    kind: exec\n    sql: DELETE FROM t\n",                    // dialect is required
+		"package: p\ndialect: pg\nstatements:\n  - name: S\n    kind: exec\n    sql: DELETE FROM t\n",       // aliases are gone
+		"package: p\ndialect: dollar\nstatements:\n  - name: S\n    kind: exec\n    sql: DELETE FROM t\n",   // aliases are gone
+		"package: p\ndialect: Postgres\nstatements:\n  - name: S\n    kind: exec\n    sql: DELETE FROM t\n", // exact names only
+		"package: p\ndialect: sqlite\nstatements:\n  - name: S\n    kind: query\n    sql: SELECT 1\n",       // kind: query is gone (use subquery)
 	}
 	for i, by := range badYAMLs {
 		if _, err := sqlgen.GenerateFromYAML([]byte(by)); err == nil {
 			t.Fatalf("badYAML[%d] expected error, got nil:\n%s", i, by)
 		}
 	}
-
-	// Test parseTupleBody and findConditionalBlockClose error paths via ParseSQL
-	badSQLs := []string{
-		"INSERT INTO t VALUES Rows:[]123Bad(A:int64)",
-		"INSERT INTO t VALUES Rows:[]Tup('unclosed, A:int64)",
-		"INSERT INTO t VALUES Rows:[]Tup(\"unclosed, A:int64)",
-		"INSERT INTO t VALUES Rows:[]Tup(`unclosed, A:int64)",
-		"INSERT INTO t VALUES Rows:[]Tup(A:int64...",
-		"INSERT INTO t VALUES Rows:[]Tup(A:[]string)",
-		"INSERT INTO t VALUES Rows:[]Tup(A:int64, a:int64)",
-		"INSERT INTO t VALUES Rows:[]Tup($$unclosed)",
-		"INSERT INTO t VALUES Rows:[]Tup(/* unclosed)",
-		"SELECT id:int64 FROM t WHERE 1=1 {?F: AND x = $$unclosed }",
-		"SELECT id:int64 FROM t WHERE 1=1 {?F: AND x = /* unclosed }",
-		"SELECT id:int64 FROM t WHERE (a, b) IN (Pairs:[]PairItem(A:int64",
-		"SELECT id:int64 FROM t WHERE (a, b) IN (Pairs:[]PairItem(bad))",
-		"SELECT id:int64 FROM t WHERE id IN (IDs:[]int64 ASC) AND id IN (:IDs DESC)",
-	}
-	for i, bsql := range badSQLs {
-		if _, err := sqlgen.ParseSQL(bsql); err == nil {
-			t.Fatalf("badSQL[%d] expected error, got nil: %s", i, bsql)
-		}
-	}
 }
 
 // ============================================================================
-// Section 12.6: Native Go Fuzzing Targets (FuzzParseSQL, FuzzParseYAML)
+// Section 12.6: Native Go Fuzzing Targets (FuzzParseYAML here, FuzzParseSQL in parse_internal_test.go)
 // ============================================================================
-
-func FuzzParseSQL(f *testing.F) {
-	f.Add("SELECT id:int64, email:string FROM users WHERE id = ID:int64")
-	f.Add("SELECT u.id:int64 {?WithBio: , u.bio:string } FROM users u WHERE Seek:sqlgen.Seek ORDER BY Order:sqlgen.Order(id) LIMIT Limit:int64")
-	f.Add("INSERT INTO items (id, name) VALUES Rows:[]ItemInput(ID:int64 ASC, Name:string) RETURNING id:int64")
-	f.Add("SELECT 'quoted :not_param {?NoFlag: 1}', $$dollar :not_param$$, /* comment :bad */ u.id::bigint AS id:int64 FROM users u")
-
-	f.Fuzz(func(t *testing.T, sqlText string) {
-		_, _ = sqlgen.ParseSQL(sqlText)
-		for _, kind := range []sqlgen.StatementKind{sqlgen.KindOne, sqlgen.KindMany, sqlgen.KindExec, sqlgen.KindSubquery} {
-			cfg := sqlgen.Config{
-				Version:     "1",
-				PackageName: "fuzzpkg",
-				Dialect:     "postgres",
-				Statements: []sqlgen.StatementSpec{
-					{
-						Name: "FuzzStmt",
-						Kind: kind,
-						SQL:  sqlText,
-					},
-				},
-			}
-			src, err := sqlgen.Generate(cfg)
-			if err == nil && len(src) > 0 {
-				fset := token.NewFileSet()
-				if _, parseErr := parser.ParseFile(fset, "fuzz.go", src, parser.AllErrors); parseErr != nil {
-					t.Fatalf("Generate succeeded but emitted invalid Go syntax: %v\nSQL: %q\nCode:\n%s", parseErr, sqlText, string(src))
-				}
-			}
-		}
-	})
-}
 
 func FuzzParseYAML(f *testing.F) {
 	f.Add([]byte(e2eYAML))
-	f.Add([]byte("version: \"1\"\npackage: p\ndialect: sqlite\nstatements:\n  - name: S1\n    kind: one\n    sql: SELECT id:int64 FROM t WHERE id = :ID\n    params:\n      - ID: int64\n"))
+	f.Add([]byte("package: p\ndialect: sqlite\nstatements:\n  - name: S1\n    kind: one\n    sql: SELECT id:int64 FROM t WHERE id = :ID:int64\n"))
 
 	f.Fuzz(func(t *testing.T, data []byte) {
 		cfg, err := sqlgen.ParseYAML(data)
@@ -1988,7 +1865,7 @@ statements:
     sql: UPDATE t SET name = :name:string WHERE id = :id:int64
 `
 	gen := func(dialect string) string {
-		out, err := sqlgen.GenerateFromYAML([]byte("version: \"1\"\npackage: p\nout: p_gen.go\ndialect: " + dialect + "\n" + stmts))
+		out, err := sqlgen.GenerateFromYAML([]byte("package: p\nout: p_gen.go\ndialect: " + dialect + "\n" + stmts))
 		if err != nil {
 			t.Fatalf("%s: %v", dialect, err)
 		}
@@ -2020,7 +1897,7 @@ statements:
 // ----------------------------------------------------------------------------------------------
 
 func genYAML(dialect, statements string) ([]byte, error) {
-	return sqlgen.GenerateFromYAML([]byte("version: \"1\"\npackage: p\nout: p_gen.go\ndialect: " + dialect + "\nstatements:\n" + statements))
+	return sqlgen.GenerateFromYAML([]byte("package: p\nout: p_gen.go\ndialect: " + dialect + "\nstatements:\n" + statements))
 }
 
 func TestGeneratorRejectsInputsThatCannotGenerateCorrectCode(t *testing.T) {
@@ -2126,7 +2003,7 @@ func TestGeneratorDiagnosticsAreActionable(t *testing.T) {
 		{"expression annotation without alias, later column", "  - name: Q\n    kind: one\n    sql: SELECT id:int64, SUM(a + b):float64 FROM t\n",
 			`output column expression "SUM(a + b)" needs an alias: write SUM(a + b) AS name:float64`},
 		{"untyped parameter hint", "  - name: Q\n    kind: many\n    sql: SELECT id:int64 FROM t WHERE x = :x\n",
-			`declare its type inline (:x:int64) or list it under params:`},
+			`parameter :x is used before it is declared; declare its type at its first use (:x:int64)`},
 		{"package not imported", "  - name: Q\n    kind: many\n    sql: SELECT id:uuid.UUID FROM t\n",
 			`type "uuid.UUID" uses package "uuid" which is not imported; add its import path to extra_imports`},
 		{"package not imported in a param", "  - name: Q\n    kind: many\n    sql: SELECT id:int64 FROM t WHERE x = :x:[]decimal.Decimal\n",
@@ -2140,7 +2017,7 @@ func TestGeneratorDiagnosticsAreActionable(t *testing.T) {
 	}
 	// With the import declared (any version/major-suffix spelling) the same statement generates and type-checks.
 	for _, imp := range []string{"github.com/google/uuid", "github.com/gofrs/uuid/v5", "gopkg.in/x/uuid.v1", "github.com/x/go-uuid"} {
-		src, err := sqlgen.GenerateFromYAML([]byte("version: \"1\"\npackage: p\nout: p_gen.go\ndialect: postgres\nextra_imports:\n  - " + imp +
+		src, err := sqlgen.GenerateFromYAML([]byte("package: p\nout: p_gen.go\ndialect: postgres\nextra_imports:\n  - " + imp +
 			"\nstatements:\n  - name: Q\n    kind: many\n    sql: SELECT id:uuid.UUID FROM t\n"))
 		if err != nil {
 			t.Errorf("%s: %v", imp, err)

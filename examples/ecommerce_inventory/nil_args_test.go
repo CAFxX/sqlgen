@@ -30,7 +30,6 @@ func TestNilIteratorAndCallbackArgumentsAreErrors(t *testing.T) {
 	}
 
 	_, execStream := q.InsertOrderItemsStream(ctx, nil)
-	_, execStreamSeq := q.InsertOrderItemsStreamSeq(ctx, nil)
 	_, manyStream := q.GetInventoryBySKUsStream(ctx, nil)
 	var manyStreamSeq error
 	for _, err := range q.GetInventoryBySKUsStreamSeq(ctx, nil) {
@@ -38,14 +37,12 @@ func TestNilIteratorAndCallbackArgumentsAreErrors(t *testing.T) {
 	}
 	for name, err := range map[string]error{
 		"exec Stream":     execStream,
-		"exec StreamSeq":  execStreamSeq,
 		"many Stream":     manyStream,
 		"many StreamSeq":  manyStreamSeq,
 		"Each":            q.GetInventoryBySKUsEach(ctx, keys, nil),
 		"BatchEach":       q.GetInventoryBySKUsBatchEach(ctx, keys, nil),
 		"single-row Each": q.StreamFulfilledOrdersEach(ctx, 1, nil),
 		"InTx":            q.InTx(ctx, nil, nil),
-		"InTxOpts":        q.InTxOpts(ctx, nil, nil),
 		"PipelineTx":      q.PipelineTx(ctx, nil, nil),
 	} {
 		if !errors.Is(err, runtime.ErrNilArgument) {

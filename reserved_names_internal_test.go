@@ -107,8 +107,7 @@ func TestReservedNamesCoverGeneratedLocals(t *testing.T) {
 // package-level name or a method on *Queries / *Pipeline that is not in the reserved lists, so a
 // statement, result_type or tuple struct could silently collide with it.
 func TestReservedNamesCoverGeneratedDeclarations(t *testing.T) {
-	src, err := GenerateFromYAML([]byte(`version: "1"
-package: zz
+	src, err := GenerateFromYAML([]byte(`package: zz
 dialect: postgres
 statements:
   - name: Zzz

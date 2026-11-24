@@ -255,8 +255,8 @@ func TestEcommerceInventoryWorkerEndToEnd(t *testing.T) {
 	if _, err := q.InsertOrderItemsStream(ctx, runtime.FromSlice(makeOrderItems(9100, 260))); err != nil {
 		t.Fatalf("InsertOrderItemsStream(260): %v", err)
 	}
-	if _, err := q.InsertOrderItemsStreamSeq(ctx, runtime.FromSlice([]NewOrderItem(nil))); err != nil {
-		t.Fatalf("InsertOrderItemsStreamSeq(empty): %v", err)
+	if _, err := q.InsertOrderItemsStream(ctx, runtime.FromSlice([]NewOrderItem(nil))); err != nil {
+		t.Fatalf("InsertOrderItemsStream(empty): %v", err)
 	}
 	_, _ = q.InsertOrderItemsStream(ctx, func(yield func(NewOrderItem, error) bool) {
 		yield(NewOrderItem{}, errStop)
@@ -281,7 +281,7 @@ func TestEcommerceInventoryWorkerEndToEnd(t *testing.T) {
 	}
 	_, _ = q.InsertArchivedOrders(ctx, nil)
 	_, _ = q.InsertArchivedOrdersBatch(ctx, nil)
-	_, _ = q.InsertArchivedOrdersStreamSeq(ctx, runtime.FromSlice([]ArchivedOrderRow(nil)))
+	_, _ = q.InsertArchivedOrdersStream(ctx, runtime.FromSlice([]ArchivedOrderRow(nil)))
 	_, _ = q.InsertArchivedOrdersStream(ctx, func(yield func(ArchivedOrderRow, error) bool) {
 		yield(ArchivedOrderRow{}, errStop)
 	})
@@ -352,7 +352,7 @@ func TestEcommerceInventoryWorkerEndToEnd(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("PipelineTx: %v", err)
 	}
-	_ = q.InTxOpts(ctx, nil, func(txQ *Queries) error { return nil })
+	_ = q.InTx(ctx, nil, func(txQ *Queries) error { return nil })
 	_ = q.PipelineTx(ctx, nil, func(p *Pipeline) error { return errStop })
 	tx, err := db.BeginTx(ctx, nil)
 	if err != nil {

@@ -210,17 +210,17 @@ func TestRunPipelineTxBuildErrorsNeverTouchTheDatabase(t *testing.T) {
 func TestFlushInsidePipelineTxIsRejected(t *testing.T) {
 	cfg := &mockDriverConfig{enableWireTx: true}
 	db, cache := newWireTxDB(t, cfg)
-	var flushErr, execErr error
+	var flushErr error
 	err := pipelineTx(context.Background(), db, cache, nil, nil, func(p *Pipeline) error {
 		queueTestExec(p)
-		flushErr, execErr = p.Flush(), p.Exec()
+		flushErr = p.Flush()
 		return nil
 	})
 	if err != nil {
 		t.Fatalf("PipelineTx: %v", err)
 	}
-	if !errors.Is(flushErr, ErrFlushInPipelineTx) || !errors.Is(execErr, ErrFlushInPipelineTx) {
-		t.Fatalf("Flush/Exec inside PipelineTx = %v / %v", flushErr, execErr)
+	if !errors.Is(flushErr, ErrFlushInPipelineTx) {
+		t.Fatalf("Flush inside PipelineTx = %v", flushErr)
 	}
 	if cfg.wireTxCalls.Load() != 1 {
 		t.Fatalf("the transaction must still flush the pipeline once, calls = %d", cfg.wireTxCalls.Load())

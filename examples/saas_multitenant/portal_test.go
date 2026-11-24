@@ -461,11 +461,11 @@ func TestSaaSMultitenantPortalEndToEnd(t *testing.T) {
 	}); !errors.Is(err, errStop) {
 		t.Fatalf("expected errStop from PipelineTx, got %v", err)
 	}
-	if err := q.InTxOpts(ctx, nil, func(txQ *Queries) error {
+	if err := q.InTx(ctx, nil, func(txQ *Queries) error {
 		_, err := txQ.SearchMembers(ctx, SearchMembersParams{OrgID: 1})
 		return err
 	}); err != nil {
-		t.Fatalf("InTxOpts: %v", err)
+		t.Fatalf("InTx: %v", err)
 	}
 	tx, err := db.BeginTx(ctx, nil)
 	if err != nil {

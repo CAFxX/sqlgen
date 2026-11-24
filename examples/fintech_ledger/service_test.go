@@ -441,8 +441,8 @@ func runFintechLedgerSuite(t *testing.T, mode string, db *sql.DB) {
 	if _, err := q.UpsertAccountBalancesStream(ctx, zeroSumStream); err != nil {
 		t.Fatalf("[%s] UpsertAccountBalancesStream: %v", mode, err)
 	}
-	if _, err := q.UpsertAccountBalancesStreamSeq(ctx, runtime.FromSlice([]AccountSettlement(nil))); err != nil {
-		t.Fatalf("[%s] empty UpsertAccountBalancesStreamSeq: %v", mode, err)
+	if _, err := q.UpsertAccountBalancesStream(ctx, runtime.FromSlice([]AccountSettlement(nil))); err != nil {
+		t.Fatalf("[%s] empty UpsertAccountBalancesStream: %v", mode, err)
 	}
 	bigZeroSum := make([]AccountSettlement, 260)
 	for i := range bigZeroSum {
@@ -481,7 +481,7 @@ func runFintechLedgerSuite(t *testing.T, mode string, db *sql.DB) {
 	if _, err := unprepQ.TotalSupplyByOrg(ctx, orgID); err != nil {
 		t.Fatalf("[%s] unprepQ.TotalSupplyByOrg: %v", mode, err)
 	}
-	if err := q.InTxOpts(ctx, nil, func(txQ *Queries) error {
+	if err := q.InTx(ctx, nil, func(txQ *Queries) error {
 		p := txQ.Pipeline(ctx)
 		_ = p.GetAccount(orgID, 1)
 		_ = p.SetAccountStatus("active", orgID, 1)

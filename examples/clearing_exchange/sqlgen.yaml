@@ -1,4 +1,3 @@
-version: "1"
 package: clearing_exchange
 out: exchange_gen.go
 dialect: sqlite
@@ -7,7 +6,7 @@ statements:
     kind: exec
     sql: |
       INSERT INTO instruments (symbol, asset_class, is_marginable, haircut_bps, tick_size_cents)
-      VALUES (Symbol:string, AssetClass:string, IsMarginable:int64, HaircutBps:int64, TickSizeCents:int64)
+      VALUES (:Symbol:string, :AssetClass:string, :IsMarginable:int64, :HaircutBps:int64, :TickSizeCents:int64)
       ON CONFLICT (symbol) DO UPDATE SET
         asset_class = excluded.asset_class,
         is_marginable = excluded.is_marginable,
@@ -18,7 +17,7 @@ statements:
     kind: exec
     sql: |
       INSERT INTO firms (firm_id, firm_name, regulator_code, max_leverage_bps)
-      VALUES (FirmID:int64, FirmName:string, RegulatorCode:string, MaxLeverageBps:int64)
+      VALUES (:FirmID:int64, :FirmName:string, :RegulatorCode:string, :MaxLeverageBps:int64)
       ON CONFLICT (firm_id) DO UPDATE SET
         firm_name = excluded.firm_name,
         regulator_code = excluded.regulator_code,
@@ -30,7 +29,7 @@ statements:
       INSERT INTO margin_accounts (
         firm_id, account_id, status, collateral_cents, realized_pnl_cents, margin_ratio_bps, kyc_verified, updated_seq
       )
-      VALUES Rows:[]MarginSettlement(
+      VALUES :Rows:[]MarginSettlement(
         FirmID:int64 ASC,
         AccountID:int64 ASC,
         Status:string,
@@ -61,7 +60,7 @@ statements:
         kyc_verified:int64,
         updated_seq:int64
       FROM margin_accounts
-      WHERE firm_id = FirmID:int64 AND account_id = AccountID:int64
+      WHERE firm_id = :FirmID:int64 AND account_id = :AccountID:int64
 
   - name: GetAccountCollateralCents
     kind: one
@@ -69,14 +68,14 @@ statements:
     sql: |
       SELECT collateral_cents:int64
       FROM margin_accounts
-      WHERE firm_id = FirmID:int64 AND account_id = AccountID:int64
+      WHERE firm_id = :FirmID:int64 AND account_id = :AccountID:int64
 
   - name: SetAccountStatus
     kind: exec
     sql: |
       UPDATE margin_accounts
-      SET status = Status:string, updated_seq = Seq:int64
-      WHERE firm_id = FirmID:int64 AND account_id = AccountID:int64
+      SET status = :Status:string, updated_seq = :Seq:int64
+      WHERE firm_id = :FirmID:int64 AND account_id = :AccountID:int64
 
   - name: IngestOrders
     kind: many
@@ -85,7 +84,7 @@ statements:
       INSERT INTO orders (
         firm_id, account_id, symbol, side, limit_price_cents, quantity, status, client_order_id, updated_seq
       )
-      VALUES Rows:[]OrderSubmission(
+      VALUES :Rows:[]OrderSubmission(
         FirmID:int64 ASC,
         AccountID:int64 ASC,
         Symbol:string ASC,
@@ -100,7 +99,7 @@ statements:
         quantity = excluded.quantity,
         limit_price_cents = excluded.limit_price_cents,
         status = excluded.status,
-        updated_seq = EpochSeq:int64
+        updated_seq = :EpochSeq:int64
       RETURNING
         order_id:int64,
         firm_id:int64,
@@ -114,10 +113,10 @@ statements:
     result_type: OrderAck
     sql: |
       UPDATE orders
-      SET status = 'cancelled', updated_seq = CancelSeq:int64
-      WHERE firm_id = FirmID:int64
+      SET status = 'cancelled', updated_seq = :CancelSeq:int64
+      WHERE firm_id = :FirmID:int64
         AND status = 'open'
-        AND order_id IN (OrderIDs:[]int64 ASC)
+        AND order_id IN (:OrderIDs:[]int64 ASC)
       RETURNING
         order_id:int64,
         firm_id:int64,
@@ -140,31 +139,31 @@ statements:
         quantity:int64,
         status:string
       FROM orders
-      WHERE symbol = Symbol:string
-        AND side = Side:string
+      WHERE symbol = :Symbol:string
+        AND side = :Side:string
         AND status = 'open'
       ORDER BY limit_price_cents DESC, order_id ASC
-      LIMIT Limit:int64
+      LIMIT :Limit:int64
 
   - name: AdjustAccountMarginAndPnl
     kind: exec
     sql: |
       UPDATE margin_accounts
-      SET collateral_cents = collateral_cents + CollateralDelta:int64,
-          realized_pnl_cents = realized_pnl_cents + PnlDelta:int64,
-          updated_seq = Seq:int64
-      WHERE firm_id = FirmID:int64
-        AND account_id = AccountID:int64
+      SET collateral_cents = collateral_cents + :CollateralDelta:int64,
+          realized_pnl_cents = realized_pnl_cents + :PnlDelta:int64,
+          updated_seq = :Seq:int64
+      WHERE firm_id = :FirmID:int64
+        AND account_id = :AccountID:int64
         AND status = 'active'
 
   - name: MarkOrderFilled
     kind: exec
     sql: |
       UPDATE orders
-      SET status = NewStatus:string,
-          quantity = RemainingQty:int64,
-          updated_seq = Seq:int64
-      WHERE order_id = OrderID:int64
+      SET status = :NewStatus:string,
+          quantity = :RemainingQty:int64,
+          updated_seq = :Seq:int64
+      WHERE order_id = :OrderID:int64
         AND status = 'open'
 
   - name: UpsertPositionSnapshot
@@ -175,8 +174,8 @@ statements:
         notional_cents, unrealized_pnl_cents, delta_bps, gamma_bps, updated_seq
       )
       VALUES (
-        PositionID:int64, FirmID:int64, AccountID:int64, Symbol:string, NetQuantity:int64, AvgEntryCents:int64,
-        NotionalCents:int64, UnrealizedPnlCents:int64, DeltaBps:int64, GammaBps:int64, UpdatedSeq:int64
+        :PositionID:int64, :FirmID:int64, :AccountID:int64, :Symbol:string, :NetQuantity:int64, :AvgEntryCents:int64,
+        :NotionalCents:int64, :UnrealizedPnlCents:int64, :DeltaBps:int64, :GammaBps:int64, :UpdatedSeq:int64
       )
       ON CONFLICT (position_id) DO UPDATE SET
         net_quantity = positions.net_quantity + excluded.net_quantity,
@@ -195,8 +194,8 @@ statements:
         symbol, price_cents, quantity, notional_cents, seq
       )
       VALUES (
-        FillID:string, BuyOrderID:int64, SellOrderID:int64, BuyerAccountID:int64, SellerAccountID:int64,
-        Symbol:string, PriceCents:int64, Quantity:int64, NotionalCents:int64, Seq:int64
+        :FillID:string, :BuyOrderID:int64, :SellOrderID:int64, :BuyerAccountID:int64, :SellerAccountID:int64,
+        :Symbol:string, :PriceCents:int64, :Quantity:int64, :NotionalCents:int64, :Seq:int64
       )
 
   - name: InsertComplianceNotice
@@ -206,14 +205,14 @@ statements:
         fill_id, firm_id, account_id, notice_kind, notional_cents, seq
       )
       VALUES (
-        FillID:string, FirmID:int64, AccountID:int64, NoticeKind:string, NotionalCents:int64, Seq:int64
+        :FillID:string, :FirmID:int64, :AccountID:int64, :NoticeKind:string, :NotionalCents:int64, :Seq:int64
       )
 
   - name: TouchExchangeHeartbeat
     kind: exec
     sql: |
       UPDATE exchange_heartbeat
-      SET last_seq = Seq:int64,
+      SET last_seq = :Seq:int64,
           total_events = total_events + 1
 
   - name: PurgeExpiredLocks
@@ -227,14 +226,10 @@ statements:
       -- Level-1 subquery filtering margin accounts by presorted FirmIDs and optional KYC / margin gates
       SELECT account_id
       FROM margin_accounts
-      WHERE firm_id IN (:FirmIDs ASC)
-        AND status = :RequiredStatus
+      WHERE firm_id IN (:FirmIDs:[]int64 ASC)
+        AND status = :RequiredStatus:string
         {?RequireKYC: AND kyc_verified = 1 }
-        {?MinMarginRatio: AND margin_ratio_bps >= :MinMarginRatioBps }
-    params:
-      - { name: FirmIDs, type: int64, slice: true }
-      - RequiredStatus: string
-      - "MinMarginRatioBps:int64"
+        {?MinMarginRatio: AND margin_ratio_bps >= :MinMarginRatioBps:int64 }
 
   - name: ActiveInstrumentsSubquery
     kind: subquery
@@ -242,9 +237,9 @@ statements:
       /* Level-1 subquery filtering tradeable instruments */
       SELECT symbol
       FROM instruments
-      WHERE asset_class IN (AssetClasses:[]string ASC)
+      WHERE asset_class IN (:AssetClasses:[]string ASC)
         {?OnlyMarginable: AND is_marginable = 1 }
-        {?MaxHaircut: AND haircut_bps <= MaxHaircutBps:int64 }
+        {?MaxHaircut: AND haircut_bps <= :MaxHaircutBps:int64 }
 
   - name: FilteredPositionsSubquery
     kind: subquery
@@ -252,9 +247,9 @@ statements:
       -- Level-2 subquery composing EligibleAccountsSubquery and ActiveInstrumentsSubquery
       SELECT position_id
       FROM positions
-      WHERE account_id IN (EligibleAccounts:sqlgen.Query)
-        AND symbol IN (ActiveInstruments:sqlgen.Query)
-        {?MinAbsQuantity: AND abs(net_quantity) >= MinAbsQty:int64 }
+      WHERE account_id IN (:EligibleAccounts:sqlgen.Query)
+        AND symbol IN (:ActiveInstruments:sqlgen.Query)
+        {?MinAbsQuantity: AND abs(net_quantity) >= :MinAbsQty:int64 }
 
   - name: QueryRiskPositionsPage
     kind: many
@@ -273,12 +268,12 @@ statements:
         {?IncludeFirmInfo: , f.firm_name:string, f.regulator_code:string }
       FROM positions p
       {?IncludeFirmInfo: INNER JOIN firms f ON f.firm_id = p.firm_id }
-      WHERE p.position_id IN (MatchingPositions:sqlgen.Query)
-        {?FilterAccounts: AND p.account_id IN (AccountIDs:[]int64 ASC) }
-        {?MinNotional: AND p.notional_cents >= MinNotionalCents:int64 }
-        AND Seek:sqlgen.Seek
-      ORDER BY Order:sqlgen.Order(notional_cents, unrealized_pnl_cents, updated_seq, position_id)
-      LIMIT Limit:int64
+      WHERE p.position_id IN (:MatchingPositions:sqlgen.Query)
+        {?FilterAccounts: AND p.account_id IN (:AccountIDs:[]int64 ASC) }
+        {?MinNotional: AND p.notional_cents >= :MinNotionalCents:int64 }
+        AND :Seek:sqlgen.Seek
+      ORDER BY :Order:sqlgen.Order(notional_cents, unrealized_pnl_cents, updated_seq, position_id)
+      LIMIT :Limit:int64
 
   - name: TotalExchangeEquityCents
     kind: one
@@ -293,7 +288,7 @@ statements:
     sql: |
       SELECT COALESCE(SUM(net_quantity), 0) AS net_qty:int64
       FROM positions
-      WHERE symbol = Symbol:string
+      WHERE symbol = :Symbol:string
 
   - name: CountClearingFills
     kind: one
@@ -308,4 +303,4 @@ statements:
     sql: |
       SELECT COUNT(*) AS cnt:int64
       FROM compliance_notices
-      WHERE notice_kind = NoticeKind:string
+      WHERE notice_kind = :NoticeKind:string

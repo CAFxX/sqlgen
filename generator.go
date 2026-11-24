@@ -63,7 +63,6 @@ const (
 var (
 	ErrEmptySliceParam    = runtime.ErrEmptySliceParam
 	ErrUninitializedQuery = runtime.ErrUninitializedQuery
-	ErrNilQuery           = runtime.ErrNilQuery
 	ErrAssertionFailed    = runtime.ErrAssertionFailed
 	ErrBranchNotTaken     = runtime.ErrBranchNotTaken
 	ErrFlushInPipelineTx  = runtime.ErrFlushInPipelineTx
@@ -92,250 +91,41 @@ var (
 // QueryKind specifies the execution and return cardinality of a SQL statement.
 type QueryKind string
 
-// StatementKind is an alias for QueryKind.
-type StatementKind = QueryKind
-
 const (
 	KindExec     QueryKind = "exec"
 	KindOne      QueryKind = "one"
 	KindMany     QueryKind = "many"
 	KindSubquery QueryKind = "subquery"
-	KindQuery    QueryKind = "query" // alias for KindSubquery
 )
 
-// Dialect specifies the SQL placeholder syntax in sqlgen.yaml.
-type Dialect string
-
-const (
-	DialectQuestion Dialect = "question" // ? (SQLite, MySQL, MariaDB)
-	DialectDollar   Dialect = "dollar"   // $1, $2, ... (PostgreSQL, CockroachDB)
-	DialectPostgres Dialect = "dollar"
-)
-
-// ColumnSpec defines a fallback output column declaration in YAML.
-type ColumnSpec struct {
-	Name     string `yaml:"name"`
-	GoType   string `yaml:"type"`
-	SQLExpr  string `yaml:"-"`
-	FlagName string `yaml:"-"`
-	FlagBit  uint64 `yaml:"-"`
+// engineStyle maps the five dialect names accepted by the dialect: key of sqlgen.yaml (and no others) to
+// the placeholder style the engine uses.
+var engineStyle = map[string]runtime.Dialect{
+	"postgres":    runtime.DialectDollar,
+	"cockroachdb": runtime.DialectDollar,
+	"mysql":       runtime.DialectQuestion,
+	"mariadb":     runtime.DialectQuestion,
+	"sqlite":      runtime.DialectQuestion,
 }
 
-// ParamSpec defines a fallback parameter declaration in YAML.
-type ParamSpec struct {
-	Name    string `yaml:"name"`
-	GoType  string `yaml:"type"`
-	Slice   bool   `yaml:"slice"`
-	HasSort bool   `yaml:"-"`
-	Desc    bool   `yaml:"-"`
-}
+const dialectList = "postgres, cockroachdb, mysql, mariadb, sqlite"
 
 // StatementSpec defines a single SQL statement in the YAML configuration.
 type StatementSpec struct {
-	Name         string       `yaml:"name"`
-	Kind         QueryKind    `yaml:"kind"`
-	ResultType   string       `yaml:"result_type"`
-	ParamsStruct bool         `yaml:"params_struct"`
-	SQL          string       `yaml:"sql"`
-	Params       []ParamSpec  `yaml:"params"`
-	Columns      []ColumnSpec `yaml:"columns"`
+	Name         string    `yaml:"name"`
+	Kind         QueryKind `yaml:"kind"`
+	ResultType   string    `yaml:"result_type"`
+	ParamsStruct bool      `yaml:"params_struct"`
+	SQL          string    `yaml:"sql"`
 }
 
 // Config represents the top-level YAML configuration schema (sqlgen.yaml).
 type Config struct {
-	Version       string          `yaml:"version"`
-	PackageName   string          `yaml:"package"`
-	Out           string          `yaml:"out"`
-	RuntimeImport string          `yaml:"runtime_import"`
-	ExtraImports  []string        `yaml:"extra_imports"`
-	Dialect       Dialect         `yaml:"dialect"`
-	Statements    []StatementSpec `yaml:"statements"`
-}
-
-func parseParamScalarString(line int, raw string) (ParamSpec, error) {
-	raw = strings.TrimSpace(raw)
-	colon := strings.IndexByte(raw, ':')
-	if colon <= 0 || colon == len(raw)-1 {
-		return ParamSpec{}, fmt.Errorf("line %d: invalid compact param spec %q (expected \"name:type\")", line, raw)
-	}
-	namePart := strings.TrimSpace(raw[:colon])
-	typePart := strings.TrimSpace(raw[colon+1:])
-	isSlice := false
-	hasSort := false
-	desc := false
-
-	if strings.HasSuffix(namePart, "...") {
-		isSlice = true
-		namePart = strings.TrimSpace(strings.TrimSuffix(namePart, "..."))
-	}
-	// Check for trailing ASC / DESC modifier on typePart
-	if fields := strings.Fields(typePart); len(fields) == 2 {
-		mod := strings.ToLower(fields[1])
-		if mod == "asc" || mod == "desc" {
-			hasSort = true
-			desc = mod == "desc"
-			typePart = fields[0]
-		}
-	}
-	if strings.HasSuffix(typePart, "...") {
-		isSlice = true
-		typePart = strings.TrimSpace(strings.TrimSuffix(typePart, "..."))
-	}
-	if namePart == "" || typePart == "" {
-		return ParamSpec{}, fmt.Errorf("line %d: invalid compact param spec %q", line, raw)
-	}
-	return ParamSpec{
-		Name:    namePart,
-		GoType:  typePart,
-		Slice:   isSlice,
-		HasSort: hasSort,
-		Desc:    desc,
-	}, nil
-}
-
-// UnmarshalYAML supports 3 YAML forms for ParamSpec:
-// 1. Mapping: { name: ID, type: int64, slice: true }
-// 2. Single-key shorthand map: - ID: int64 (or - org_ids...: int64)
-// 3. Compact scalar string: - "ID:int64" (or - "org_ids...:int64")
-func (p *ParamSpec) UnmarshalYAML(value *yaml.Node) error {
-	switch value.Kind {
-	case yaml.ScalarNode:
-		ps, err := parseParamScalarString(value.Line, value.Value)
-		if err != nil {
-			return err
-		}
-		*p = ps
-		return nil
-
-	case yaml.MappingNode:
-		if len(value.Content) == 2 {
-			kNode := value.Content[0]
-			vNode := value.Content[1]
-			if kNode.Value != "name" && kNode.Value != "type" && kNode.Value != "slice" {
-				if vNode.Kind != yaml.ScalarNode {
-					return fmt.Errorf("line %d: shorthand param %q value must be a scalar type", vNode.Line, kNode.Value)
-				}
-				ps, err := parseParamScalarString(kNode.Line, kNode.Value+":"+vNode.Value)
-				if err != nil {
-					return err
-				}
-				*p = ps
-				return nil
-			}
-		}
-
-		var name, typ string
-		var slice bool
-		for i := 0; i+1 < len(value.Content); i += 2 {
-			kNode := value.Content[i]
-			vNode := value.Content[i+1]
-			switch kNode.Value {
-			case "name":
-				if vNode.Kind != yaml.ScalarNode {
-					return fmt.Errorf("line %d: param \"name\" must be a string", vNode.Line)
-				}
-				name = strings.TrimSpace(vNode.Value)
-			case "type":
-				if vNode.Kind != yaml.ScalarNode {
-					return fmt.Errorf("line %d: param \"type\" must be a string", vNode.Line)
-				}
-				typ = strings.TrimSpace(vNode.Value)
-			case "slice":
-				if vNode.Kind != yaml.ScalarNode || (vNode.Value != "true" && vNode.Value != "false") {
-					return fmt.Errorf("line %d: param \"slice\" must be a boolean", vNode.Line)
-				}
-				slice = vNode.Value == "true"
-			default:
-				return fmt.Errorf("line %d: unknown field %q in param spec", kNode.Line, kNode.Value)
-			}
-		}
-		if name == "" || typ == "" {
-			return fmt.Errorf("line %d: param mapping requires both \"name\" and \"type\"", value.Line)
-		}
-		ps, err := parseParamScalarString(value.Line, name+":"+typ)
-		if err != nil {
-			return err
-		}
-		if slice {
-			ps.Slice = true
-		}
-		*p = ps
-		return nil
-
-	default:
-		return fmt.Errorf("line %d: invalid param spec YAML node kind", value.Line)
-	}
-}
-
-// UnmarshalYAML supports 3 YAML forms for ColumnSpec:
-// 1. Mapping: { name: id, type: int64 }
-// 2. Single-key shorthand map: - id: int64
-// 3. Compact scalar string: - "id:int64"
-func (c *ColumnSpec) UnmarshalYAML(value *yaml.Node) error {
-	switch value.Kind {
-	case yaml.ScalarNode:
-		raw := strings.TrimSpace(value.Value)
-		colon := strings.IndexByte(raw, ':')
-		if colon <= 0 || colon == len(raw)-1 {
-			return fmt.Errorf("line %d: invalid compact column spec %q (expected \"name:type\")", value.Line, raw)
-		}
-		namePart := strings.TrimSpace(raw[:colon])
-		typePart := strings.TrimSpace(raw[colon+1:])
-		if namePart == "" || typePart == "" {
-			return fmt.Errorf("line %d: invalid compact column spec %q", value.Line, raw)
-		}
-		c.Name = namePart
-		c.GoType = typePart
-		return nil
-
-	case yaml.MappingNode:
-		if len(value.Content) == 2 {
-			kNode := value.Content[0]
-			vNode := value.Content[1]
-			if kNode.Value != "name" && kNode.Value != "type" {
-				if vNode.Kind != yaml.ScalarNode {
-					return fmt.Errorf("line %d: shorthand column %q value must be a scalar type", vNode.Line, kNode.Value)
-				}
-				namePart := strings.TrimSpace(kNode.Value)
-				typePart := strings.TrimSpace(vNode.Value)
-				if namePart == "" || typePart == "" {
-					return fmt.Errorf("line %d: shorthand column requires non-empty name and type", kNode.Line)
-				}
-				c.Name = namePart
-				c.GoType = typePart
-				return nil
-			}
-		}
-
-		var name, typ string
-		for i := 0; i+1 < len(value.Content); i += 2 {
-			kNode := value.Content[i]
-			vNode := value.Content[i+1]
-			switch kNode.Value {
-			case "name":
-				if vNode.Kind != yaml.ScalarNode {
-					return fmt.Errorf("line %d: column \"name\" must be a string", vNode.Line)
-				}
-				name = strings.TrimSpace(vNode.Value)
-			case "type":
-				if vNode.Kind != yaml.ScalarNode {
-					return fmt.Errorf("line %d: column \"type\" must be a string", vNode.Line)
-				}
-				typ = strings.TrimSpace(vNode.Value)
-			default:
-				return fmt.Errorf("line %d: unknown field %q in column spec", kNode.Line, kNode.Value)
-			}
-		}
-		if name == "" || typ == "" {
-			return fmt.Errorf("line %d: column mapping requires both \"name\" and \"type\"", value.Line)
-		}
-		c.Name = name
-		c.GoType = typ
-		return nil
-
-	default:
-		return fmt.Errorf("line %d: invalid column spec YAML node kind", value.Line)
-	}
+	PackageName  string          `yaml:"package"`
+	Out          string          `yaml:"out"`
+	ExtraImports []string        `yaml:"extra_imports"`
+	Dialect      string          `yaml:"dialect"`
+	Statements   []StatementSpec `yaml:"statements"`
 }
 
 // ParseYAML strictly decodes a sqlgen YAML configuration using KnownFields(true).
@@ -355,9 +145,6 @@ func ParseYAML(data []byte) (Config, error) {
 			return Config{}, errors.New("sqlgen: trailing YAML document is not allowed")
 		}
 		return Config{}, fmt.Errorf("sqlgen: trailing YAML content: %w", err)
-	}
-	if cfg.Version != "" && cfg.Version != "1" {
-		return Config{}, fmt.Errorf("sqlgen: unsupported config version %q (expected \"1\")", cfg.Version)
 	}
 	return cfg, nil
 }
@@ -531,11 +318,6 @@ func GenerateFromYAMLFile(cfgPath, outOverride string) error {
 		return err
 	}
 	return WriteFileAtomic(outPath, src)
-}
-
-// GenerateFile reads a YAML file from cfgPath, generates Go source code, and writes it to cfg.Out.
-func GenerateFile(cfgPath string) error {
-	return GenerateFromYAMLFile(cfgPath, "")
 }
 
 var predeclaredGoTypes = []string{
@@ -818,8 +600,8 @@ var reservedParamNames = func() map[string]bool {
 var (
 	reservedTypeNames = setOf("DefaultRetryPolicy", "ExecFuture", "IfResult", "New", "NewSeek", "NewWithCache", "Order",
 		"Pipeline", "PipelineCond", "Queries", "Query", "Seek", "TxOption", "TxRetryPolicy", "WhereCol", "WithTxRetry")
-	reservedStatementNames = setOf("Cache", "CacheStats", "Close", "If", "InTx", "InTxOpts", "Pipeline", "PipelineTx",
-		"WithPrepared", "WithTx", "SetBuildError", "QueueExec", "Abort", "Flush", "Exec")
+	reservedStatementNames = setOf("Cache", "CacheStats", "Close", "If", "InTx", "Pipeline", "PipelineTx",
+		"WithPrepared", "WithTx", "SetBuildError", "QueueExec", "Abort", "Flush")
 )
 
 func setOf(names ...string) map[string]bool {
@@ -959,64 +741,24 @@ type compiledStmt struct {
 	TotalSubs      int
 }
 
-// ParsedSQL holds the parsed segments and slot occurrences of a SQL statement for testing/fuzzing.
-type ParsedSQL struct {
-	Segments    []string
-	Occurrences []slotRef
-}
-
-// ParseSQL parses a raw annotated SQL query string and returns its segments and occurrences.
-func ParseSQL(sqlStr string) (*ParsedSQL, error) {
-	cs, err := compileStatement(1, StatementSpec{
-		Name: "FuzzStmt",
-		Kind: KindSubquery,
-		SQL:  sqlStr,
-	}, stmtDialect{})
-	if err != nil {
-		return nil, err
-	}
-	return &ParsedSQL{
-		Segments:    cs.Root.Segments,
-		Occurrences: cs.Root.Slots,
-	}, nil
-}
-
-// dialectFamily returns the canonical engine name of a dialect spelling ("postgres", "cockroachdb", "sqlite",
-// "mysql", "mariadb") or "" for the engine-neutral spellings ("dollar", "question", "$", "?", empty), for
-// which engine-specific diagnostics are skipped.
-func dialectFamily(raw Dialect) string {
-	switch strings.ToLower(strings.TrimSpace(string(raw))) {
-	case "postgres", "postgresql", "pgx":
-		return "postgres"
-	case "cockroach", "cockroachdb":
-		return "cockroachdb"
-	case "sqlite", "sqlite3":
-		return "sqlite"
-	case "mysql":
-		return "mysql"
-	case "mariadb":
-		return "mariadb"
-	}
-	return ""
-}
-
-// stmtDialect tells the statement compiler which placeholder style and engine it is generating for. The
-// zero value (used by ParseSQL) disables every dialect-dependent diagnostic.
+// stmtDialect tells the statement compiler which engine it is generating for. The zero value (used by
+// the SQL-only parser tests) disables every dialect-dependent diagnostic.
 type stmtDialect struct {
 	known  bool
 	style  runtime.Dialect
-	family string
+	family string // the dialect name
 }
 
-func parseDialect(raw Dialect) (runtime.Dialect, error) {
-	switch strings.ToLower(strings.TrimSpace(string(raw))) {
-	case "", "dollar", "postgres", "postgresql", "pgx", "cockroach", "cockroachdb", "$":
-		return runtime.DialectDollar, nil
-	case "question", "sqlite", "sqlite3", "mysql", "mariadb", "?":
-		return runtime.DialectQuestion, nil
-	default:
-		return runtime.DialectDollar, fmt.Errorf("sqlgen: unsupported dialect %q (valid dialects: postgres, cockroachdb, sqlite, mysql, mariadb; aliases: postgresql, pgx, cockroach, sqlite3, dollar, question, $, ?)", raw)
+// parseDialect validates the dialect: key, which is required, and returns the engine's placeholder style.
+func parseDialect(name string) (runtime.Dialect, error) {
+	if name == "" {
+		return 0, fmt.Errorf("sqlgen: dialect is required; set dialect: to one of %s", dialectList)
 	}
+	style, ok := engineStyle[name]
+	if !ok {
+		return 0, fmt.Errorf("sqlgen: unsupported dialect %q (valid dialects: %s)", name, dialectList)
+	}
+	return style, nil
 }
 
 var tupleSliceContextRE = regexp.MustCompile(`(?is)(\bin\s*\(|\bvalues)\s*$`)
@@ -1214,7 +956,7 @@ func isEndOfProjectionItem(span string, pos int) bool {
 	return false
 }
 
-func scanGoType(s string, pos int) (goType string, hasEllipsis bool, nextPos int, ok bool) {
+func scanGoType(s string, pos int) (goType string, nextPos int, ok bool) {
 	i := pos
 	for i < len(s) {
 		if strings.HasPrefix(s[i:], "[]") {
@@ -1228,7 +970,7 @@ func scanGoType(s string, pos int) (goType string, hasEllipsis bool, nextPos int
 		break
 	}
 	if i >= len(s) || !isIdentStartByte(s[i]) {
-		return "", false, pos, false
+		return "", pos, false
 	}
 	id1End := i + 1
 	for id1End < len(s) && isIdentContByte(s[id1End]) {
@@ -1243,15 +985,10 @@ func scanGoType(s string, pos int) (goType string, hasEllipsis bool, nextPos int
 			}
 			end = id2End
 		} else {
-			return "", false, pos, false
+			return "", pos, false
 		}
 	}
-	goType = s[pos:end]
-	if strings.HasPrefix(s[end:], "...") {
-		hasEllipsis = true
-		end += 3
-	}
-	return goType, hasEllipsis, end, true
+	return s[pos:end], end, true
 }
 
 // scanOptionalSortModifier checks if s[pos:] has horizontal whitespace followed by ASC or DESC.
@@ -1298,23 +1035,18 @@ func scanOptionalTypecastSuffix(s string, pos int) (suffix string, nextPos int) 
 	return s[pos:end], end
 }
 
-func normalizeScalarOrSliceType(rawType string, explicitSlice bool) (isSlice bool, fullGoType string, elemGoType string, err error) {
+// normalizeScalarOrSliceType classifies a declared parameter type: a []T (other than []byte, which is a
+// scalar) is a slice of T, anything else a scalar.
+func normalizeScalarOrSliceType(rawType string) (isSlice bool, fullGoType string, elemGoType string, err error) {
 	t := strings.TrimSpace(rawType)
 	if err := validateGoType(t); err != nil {
 		return false, "", "", err
 	}
-	if !explicitSlice && (t == "[]byte" || t == "[]uint8") {
+	if t == "[]byte" || t == "[]uint8" {
 		return false, t, "", nil
 	}
-	if strings.HasPrefix(t, "[]") {
-		elem := strings.TrimPrefix(t, "[]")
-		if explicitSlice && (t == "[]byte" || t == "[]uint8") {
-			return true, "[][]byte", t, nil
-		}
+	if elem, ok := strings.CutPrefix(t, "[]"); ok {
 		return true, t, elem, nil
-	}
-	if explicitSlice {
-		return true, "[]" + t, t, nil
 	}
 	return false, t, "", nil
 }
@@ -1536,8 +1268,8 @@ func parseTupleBody(structName, body string) (*tupleStructDef, error) {
 			}
 			ident := body[i:wEnd]
 			if wEnd < len(body) && body[wEnd] == ':' && (wEnd+1 >= len(body) || (body[wEnd+1] != ':' && body[wEnd+1] != '=')) {
-				goType, hasEllipsis, nextPos, ok := scanGoType(body, wEnd+1)
-				if !ok || hasEllipsis {
+				goType, nextPos, ok := scanGoType(body, wEnd+1)
+				if !ok || strings.HasPrefix(body[nextPos:], "...") {
 					return nil, fmt.Errorf("invalid tuple field type annotation for %q in %s", ident, structName)
 				}
 				if err := validateGoType(goType); err != nil {
@@ -1597,7 +1329,6 @@ func parseTupleBody(structName, body string) (*tupleStructDef, error) {
 type stmtParser struct {
 	spec          StatementSpec
 	prevWordLow   string // previous plain SQL word, lower-cased (for IS [NOT] DISTINCT FROM)
-	yamlParams    map[string]ParamSpec
 	paramsByCanon map[string]int
 	flagsByName   map[string]uint8
 	rawOrderCols  []string
@@ -2049,7 +1780,8 @@ func (p *stmtParser) scanSpan(span string, blk *parsedBlock, isTopLevel bool) er
 			continue
 		}
 
-		// Annotated token with leading ':' or normal word / annotated token without leading ':'
+		// An annotated token is a parameter (":name:Type", or ":name" to repeat one) or an output column
+		// ("col:Type"). A plain word is copied through.
 		hasLeadingColon := false
 		tokenStart := i
 		identStart := i
@@ -2065,10 +1797,8 @@ func (p *stmtParser) scanSpan(span string, blk *parsedBlock, isTopLevel bool) er
 			}
 			ident := span[identStart:identEnd]
 			afterIdent := identEnd
-			hasPreEllipsis := false
-			if strings.HasPrefix(span[afterIdent:], "...") {
-				hasPreEllipsis = true
-				afterIdent += 3
+			if strings.HasPrefix(span[afterIdent:], "...") && (hasLeadingColon || (afterIdent+3 < len(span) && span[afterIdent+3] == ':')) {
+				return fmt.Errorf("statement %s: %q: the \"...\" slice spelling is not supported; declare a slice as :%s:[]Type", p.spec.Name, ident+"...", ident)
 			}
 
 			hasTypeColon := afterIdent < len(span) && span[afterIdent] == ':' &&
@@ -2076,67 +1806,42 @@ func (p *stmtParser) scanSpan(span string, blk *parsedBlock, isTopLevel bool) er
 
 			if !hasTypeColon {
 				if hasLeadingColon {
-					// yaml_ref_param (:ident or :ident... [ASC|DESC])
+					// Repeat reference ":name" (optionally ":name ASC|DESC" for a slice) to a parameter
+					// declared earlier in the statement.
 					canonKey := strings.ToLower(toGoParamName(ident))
-					yp, ok := p.yamlParams[canonKey]
-					if !ok {
-						if existingIdx, exists := p.paramsByCanon[canonKey]; exists {
-							ep := p.cs.Params[existingIdx]
-							sk := runtime.SlotScalar
-							if ep.Kind == paramSlice {
-								sk = runtime.SlotSlice
-							}
-							hasSort, desc, nextAfterSort := scanOptionalSortModifier(span, afterIdent)
-							if hasSort && sk == runtime.SlotSlice {
-								if _, err := p.addOrGetParam(ident, ep.Kind, ep.GoType, ep.ElemGoType, nil, hasSort, desc); err != nil {
-									return err
-								}
-								afterIdent = nextAfterSort
-							}
-							emitSlot(slotRef{Kind: sk, ParamIdx: existingIdx})
-							i = afterIdent
-							continue
+					if existingIdx, exists := p.paramsByCanon[canonKey]; exists {
+						ep := p.cs.Params[existingIdx]
+						if ep.Kind != paramScalar && ep.Kind != paramSlice {
+							return fmt.Errorf("statement %s: parameter %q cannot be referenced again as :%s; only scalar and slice parameters can", p.spec.Name, ident, ident)
 						}
-						if p.inProjection && p.parenDepth == 0 && p.bracketDepth == 0 && i > 0 && span[i-1] == ')' {
-							// "COUNT(*):int64": a type annotation can only follow a plain column name or alias.
-							expr := strings.TrimSpace(string(seg))
-							if !p.inOptBlock && p.projActive {
-								expr = extractCurrentItemExpr(blk.Segments, string(seg), p.projItemStartSeg, p.projItemStartByte)
-							}
-							typ := ident
-							if gt, _, _, okT := scanGoType(span, identStart); okT {
-								typ = gt
-							}
-							return fmt.Errorf("statement %s: output column expression %q needs an alias: write %s AS name:%s", p.spec.Name, expr, expr, typ)
+						sk := runtime.SlotScalar
+						if ep.Kind == paramSlice {
+							sk = runtime.SlotSlice
 						}
-						return fmt.Errorf("statement %s: parameter %q referenced as :%s is not declared in params; declare its type inline (:%s:int64) or list it under params:", p.spec.Name, ident, ident, ident)
-					}
-					isSlice, fullType, elemType, err := normalizeScalarOrSliceType(yp.GoType, yp.Slice || hasPreEllipsis)
-					if err != nil {
-						return fmt.Errorf("statement %s param %q: %w", p.spec.Name, ident, err)
-					}
-					pk := paramScalar
-					sk := runtime.SlotScalar
-					if isSlice {
-						pk = paramSlice
-						sk = runtime.SlotSlice
-					}
-					hasSort := yp.HasSort
-					desc := yp.Desc
-					if isSlice {
-						if hs, d, nextAfterSort := scanOptionalSortModifier(span, afterIdent); hs {
-							hasSort = true
-							desc = d
+						hasSort, desc, nextAfterSort := scanOptionalSortModifier(span, afterIdent)
+						if hasSort && sk == runtime.SlotSlice {
+							if _, err := p.addOrGetParam(ident, ep.Kind, ep.GoType, ep.ElemGoType, nil, hasSort, desc); err != nil {
+								return err
+							}
 							afterIdent = nextAfterSort
 						}
+						emitSlot(slotRef{Kind: sk, ParamIdx: existingIdx})
+						i = afterIdent
+						continue
 					}
-					pIdx, err := p.addOrGetParam(ident, pk, fullType, elemType, nil, hasSort, desc)
-					if err != nil {
-						return err
+					if p.inProjection && p.parenDepth == 0 && p.bracketDepth == 0 && i > 0 && span[i-1] == ')' {
+						// "COUNT(*):int64": a type annotation can only follow a plain column name or alias.
+						expr := strings.TrimSpace(string(seg))
+						if !p.inOptBlock && p.projActive {
+							expr = extractCurrentItemExpr(blk.Segments, string(seg), p.projItemStartSeg, p.projItemStartByte)
+						}
+						typ := ident
+						if gt, _, ok := scanGoType(span, identStart); ok {
+							typ = gt
+						}
+						return fmt.Errorf("statement %s: output column expression %q needs an alias: write %s AS name:%s", p.spec.Name, expr, expr, typ)
 					}
-					emitSlot(slotRef{Kind: sk, ParamIdx: pIdx})
-					i = afterIdent
-					continue
+					return fmt.Errorf("statement %s: parameter :%s is used before it is declared; declare its type at its first use (:%s:int64)", p.spec.Name, ident, ident)
 				}
 
 				// Plain SQL word (identifier or keyword)
@@ -2254,12 +1959,9 @@ func (p *stmtParser) scanSpan(span string, blk *parsedBlock, isTopLevel bool) er
 									continue
 								}
 							}
-						} else if j < len(span) && (span[j] == ':' || isIdentStartByte(span[j])) {
-							// Check if VALUES is followed by a tuple_slice_param: [":"] ident ":" "[]" go_ident "(" ... ")"
-							tStart := j
-							if span[tStart] == ':' {
-								tStart++
-							}
+						} else if j < len(span) && span[j] == ':' {
+							// Check if VALUES is followed by a tuple_slice_param: ":" ident ":" "[]" go_ident "(" ... ")"
+							tStart := j + 1
 							tEnd := tStart
 							for tEnd < len(span) && isIdentContByte(span[tEnd]) {
 								tEnd++
@@ -2305,150 +2007,19 @@ func (p *stmtParser) scanSpan(span string, blk *parsedBlock, isTopLevel bool) er
 				continue
 			}
 
-			// We have ':' at afterIdent! Parse rhs starting at rhsStart = afterIdent + 1
+			// ident is followed by a type annotation: ':' at afterIdent, the type starts at rhsStart.
 			rhsStart := afterIdent + 1
-			rhs := span[rhsStart:]
-
-			// 1. Check tuple_slice_param: ":" "[]" go_ident "(" tuple_body ")"
-			if !hasPreEllipsis && strings.HasPrefix(rhs, "[]") {
-				stStart := rhsStart + 2
-				if stStart < len(span) && isIdentStartByte(span[stStart]) {
-					stEnd := stStart + 1
-					for stEnd < len(span) && isIdentContByte(span[stEnd]) {
-						stEnd++
-					}
-					if stEnd < len(span) && span[stEnd] == '(' {
-						structName := span[stStart:stEnd]
-						closeParen, err := findMatchingParen(span, stEnd)
-						if err != nil {
-							return fmt.Errorf("statement %s tuple %s: %w", p.spec.Name, ident, err)
-						}
-						tupleBody := span[stEnd+1 : closeParen]
-						td, err := parseTupleBody(structName, tupleBody)
-						if err != nil {
-							return fmt.Errorf("statement %s: %w", p.spec.Name, err)
-						}
-						if !tupleSliceContextOK(seg) {
-							return fmt.Errorf("statement %s: tuple slice parameter :%s:[]%s(...) is only valid after VALUES or inside IN (...): it expands to a comma-separated list of parenthesised rows", p.spec.Name, ident, structName)
-						}
-						pIdx, err := p.addOrGetParam(ident, paramTupleSlice, "[]"+structName, structName, td, td.HasSort, false)
-						if err != nil {
-							return err
-						}
-						emitSlot(slotRef{
-							Kind:     runtime.SlotTupleSlice,
-							ParamIdx: pIdx,
-							Tuple:    td,
-						})
-						i = closeParen + 1
-						continue
-					}
-				}
-			}
-
-			// 2. Check order_directive: (sqlgen.Order|runtime.Order)(col1, col2, ...)
-			if !hasPreEllipsis {
-				orderPrefix := ""
-				if strings.HasPrefix(rhs, "sqlgen.Order(") {
-					orderPrefix = "sqlgen.Order"
-				} else if strings.HasPrefix(rhs, "runtime.Order(") {
-					orderPrefix = "runtime.Order"
-				}
-				if orderPrefix != "" {
-					openParen := rhsStart + len(orderPrefix)
-					closeParen, err := findMatchingParen(span, openParen)
-					if err != nil {
-						return fmt.Errorf("statement %s Order directive: %w", p.spec.Name, err)
-					}
-					colListStr := strings.TrimSpace(span[openParen+1 : closeParen])
-					if colListStr == "" {
-						return fmt.Errorf("statement %s: sqlgen.Order(...) requires at least one column", p.spec.Name)
-					}
-					parts := strings.Split(colListStr, ",")
-					if len(parts) > runtime.MaxOrderCols {
-						return fmt.Errorf("statement %s: sqlgen.Order(...) supports at most %d columns (got %d)", p.spec.Name, runtime.MaxOrderCols, len(parts))
-					}
-					var cols []string
-					for _, pt := range parts {
-						cRef := strings.TrimSpace(pt)
-						if cRef == "" {
-							return fmt.Errorf("statement %s: empty column in sqlgen.Order(...)", p.spec.Name)
-						}
-						cols = append(cols, cRef)
-					}
-					p.rawOrderCols = cols
-					p.cs.HasOrder = true
-					pIdx, err := p.addOrGetParam(ident, paramOrder, "runtime.Order", "", nil, false, false)
-					if err != nil {
-						return err
-					}
-					emitSlot(slotRef{
-						Kind:     runtime.SlotOrder,
-						ParamIdx: pIdx,
-					})
-					i = closeParen + 1
-					continue
-				}
-			}
-
-			// Scan go_type and optional trailing '...'
-			goType, hasPostEllipsis, nextPos, ok := scanGoType(span, rhsStart)
+			goType, nextPos, ok := scanGoType(span, rhsStart)
 			if !ok {
 				return fmt.Errorf("statement %s: invalid type annotation after %q", p.spec.Name, ident+":")
 			}
 
-			// 3. Check seek_directive: sqlgen.Seek | runtime.Seek
-			if !hasPreEllipsis && !hasPostEllipsis && (goType == "sqlgen.Seek" || goType == "runtime.Seek") {
-				p.cs.HasSeek = true
-				pIdx, err := p.addOrGetParam(ident, paramSeek, "runtime.Seek", "", nil, false, false)
-				if err != nil {
-					return err
+			if !hasLeadingColon {
+				// Without a leading ':' the annotation can only declare an output column: the last thing in a
+				// top-level SELECT / RETURNING item, as in "col:Type" or "expr AS alias:Type".
+				if !(p.inProjection && p.parenDepth == 0 && p.bracketDepth == 0 && isEndOfProjectionItem(span, nextPos)) {
+					return fmt.Errorf("statement %s: %s:%s is not an output column (\"col:Type\" declares one only at the end of a top-level SELECT/RETURNING item); declare a parameter with a leading colon: :%s:%s", p.spec.Name, ident, goType, ident, goType)
 				}
-				emitSlot(slotRef{
-					Kind:     runtime.SlotSeek,
-					ParamIdx: pIdx,
-				})
-				i = nextPos
-				continue
-			}
-
-			// 4. Check query_param: sqlgen.Query | runtime.Query | Query
-			if !hasPreEllipsis && !hasPostEllipsis && (goType == "sqlgen.Query" || goType == "runtime.Query" || goType == "Query") {
-				pIdx, err := p.addOrGetParam(ident, paramSubquery, "runtime.Query", "", nil, false, false)
-				if err != nil {
-					return err
-				}
-				emitSlot(slotRef{
-					Kind:     runtime.SlotQuery,
-					ParamIdx: pIdx,
-				})
-				i = nextPos
-				continue
-			}
-
-			// Check if this is a 1D slice parameter or has a sort modifier
-			isSliceCandidate := hasPreEllipsis || hasPostEllipsis || (strings.HasPrefix(goType, "[]") && goType != "[]byte" && goType != "[]uint8")
-			hasSort := false
-			desc := false
-			if isSliceCandidate {
-				if hs, d, afterSort := scanOptionalSortModifier(span, nextPos); hs {
-					hasSort = true
-					desc = d
-					nextPos = afterSort
-				}
-			}
-
-			// 5. Disambiguate Output Column vs Input Parameter (Section 4.3)
-			isOutputCol := !hasLeadingColon &&
-				!hasPreEllipsis &&
-				!hasPostEllipsis &&
-				!hasSort &&
-				p.inProjection &&
-				p.parenDepth == 0 &&
-				p.bracketDepth == 0 &&
-				isEndOfProjectionItem(span, nextPos)
-
-			if isOutputCol {
 				seg = append(seg, ident...)
 				var colExpr string
 				if !p.inOptBlock && p.projActive {
@@ -2465,16 +2036,129 @@ func (p *stmtParser) scanSpan(span string, blk *parsedBlock, isTopLevel bool) er
 				continue
 			}
 
-			// Classified as Input Parameter (SlotScalar or SlotSlice)
-			isSlice, fullType, elemType, err := normalizeScalarOrSliceType(goType, hasPreEllipsis || hasPostEllipsis)
+			// ":name:Type": a parameter.
+			rhs := span[rhsStart:]
+
+			// Tuple slice ":name:[]Struct(tuple_body)".
+			if strings.HasPrefix(rhs, "[]") && nextPos < len(span) && span[nextPos] == '(' && isIdentStartByte(span[rhsStart+2]) && !strings.Contains(goType, ".") {
+				structName := goType[2:]
+				stEnd := nextPos
+				closeParen, err := findMatchingParen(span, stEnd)
+				if err != nil {
+					return fmt.Errorf("statement %s tuple %s: %w", p.spec.Name, ident, err)
+				}
+				tupleBody := span[stEnd+1 : closeParen]
+				td, err := parseTupleBody(structName, tupleBody)
+				if err != nil {
+					return fmt.Errorf("statement %s: %w", p.spec.Name, err)
+				}
+				if !tupleSliceContextOK(seg) {
+					return fmt.Errorf("statement %s: tuple slice parameter :%s:[]%s(...) is only valid after VALUES or inside IN (...): it expands to a comma-separated list of parenthesised rows", p.spec.Name, ident, structName)
+				}
+				pIdx, err := p.addOrGetParam(ident, paramTupleSlice, "[]"+structName, structName, td, td.HasSort, false)
+				if err != nil {
+					return err
+				}
+				emitSlot(slotRef{
+					Kind:     runtime.SlotTupleSlice,
+					ParamIdx: pIdx,
+					Tuple:    td,
+				})
+				i = closeParen + 1
+				continue
+			}
+
+			// Order directive ":name:sqlgen.Order(col1, col2, ...)".
+			if strings.HasPrefix(rhs, "sqlgen.Order(") {
+				openParen := rhsStart + len("sqlgen.Order")
+				closeParen, err := findMatchingParen(span, openParen)
+				if err != nil {
+					return fmt.Errorf("statement %s Order directive: %w", p.spec.Name, err)
+				}
+				colListStr := strings.TrimSpace(span[openParen+1 : closeParen])
+				if colListStr == "" {
+					return fmt.Errorf("statement %s: sqlgen.Order(...) requires at least one column", p.spec.Name)
+				}
+				parts := strings.Split(colListStr, ",")
+				if len(parts) > runtime.MaxOrderCols {
+					return fmt.Errorf("statement %s: sqlgen.Order(...) supports at most %d columns (got %d)", p.spec.Name, runtime.MaxOrderCols, len(parts))
+				}
+				var cols []string
+				for _, pt := range parts {
+					cRef := strings.TrimSpace(pt)
+					if cRef == "" {
+						return fmt.Errorf("statement %s: empty column in sqlgen.Order(...)", p.spec.Name)
+					}
+					cols = append(cols, cRef)
+				}
+				p.rawOrderCols = cols
+				p.cs.HasOrder = true
+				pIdx, err := p.addOrGetParam(ident, paramOrder, "runtime.Order", "", nil, false, false)
+				if err != nil {
+					return err
+				}
+				emitSlot(slotRef{
+					Kind:     runtime.SlotOrder,
+					ParamIdx: pIdx,
+				})
+				i = closeParen + 1
+				continue
+			}
+
+			if strings.HasPrefix(span[nextPos:], "...") {
+				return fmt.Errorf("statement %s: %q: the \"...\" slice spelling is not supported; declare a slice as :%s:[]%s", p.spec.Name, ident+":"+goType+"...", ident, goType)
+			}
+
+			switch goType {
+			case "Query", "Seek", "Order", "runtime.Query", "runtime.Seek", "runtime.Order", "sqlgen.Order":
+				return fmt.Errorf("statement %s: %q is not a parameter type; the directives are spelled :name:sqlgen.Query, :name:sqlgen.Seek and :name:sqlgen.Order(col, ...)", p.spec.Name, goType)
+			}
+
+			// Seek directive ":name:sqlgen.Seek".
+			if goType == "sqlgen.Seek" {
+				p.cs.HasSeek = true
+				pIdx, err := p.addOrGetParam(ident, paramSeek, "runtime.Seek", "", nil, false, false)
+				if err != nil {
+					return err
+				}
+				emitSlot(slotRef{
+					Kind:     runtime.SlotSeek,
+					ParamIdx: pIdx,
+				})
+				i = nextPos
+				continue
+			}
+
+			// Composed query ":name:sqlgen.Query".
+			if goType == "sqlgen.Query" {
+				pIdx, err := p.addOrGetParam(ident, paramSubquery, "runtime.Query", "", nil, false, false)
+				if err != nil {
+					return err
+				}
+				emitSlot(slotRef{
+					Kind:     runtime.SlotQuery,
+					ParamIdx: pIdx,
+				})
+				i = nextPos
+				continue
+			}
+
+			// Scalar ":name:Type" or slice ":name:[]Type" with an optional ASC / DESC presort modifier.
+			isSlice, fullType, elemType, err := normalizeScalarOrSliceType(goType)
 			if err != nil {
 				return fmt.Errorf("statement %s param %q: %w", p.spec.Name, ident, err)
 			}
 			pk := paramScalar
 			sk := runtime.SlotScalar
+			hasSort, desc := false, false
 			if isSlice {
 				pk = paramSlice
 				sk = runtime.SlotSlice
+				if hs, d, afterSort := scanOptionalSortModifier(span, nextPos); hs {
+					hasSort = true
+					desc = d
+					nextPos = afterSort
+				}
 			}
 			pIdx, err := p.addOrGetParam(ident, pk, fullType, elemType, nil, hasSort, desc)
 			if err != nil {
@@ -2517,9 +2201,6 @@ func compileStatement(id uint32, spec StatementSpec, sd stmtDialect) (*compiledS
 		return nil, fmt.Errorf("statement name %q collides with a method generated on *Queries / *Pipeline; rename it", spec.Name)
 	}
 	kind := spec.Kind
-	if kind == KindQuery {
-		kind = KindSubquery
-	}
 	switch kind {
 	case KindExec, KindOne, KindMany, KindSubquery:
 	default:
@@ -2541,18 +2222,6 @@ func compileStatement(id uint32, spec StatementSpec, sd stmtDialect) (*compiledS
 		return nil, fmt.Errorf("statement %s: SQL is empty", spec.Name)
 	}
 
-	yamlParams := make(map[string]ParamSpec, len(spec.Params))
-	for _, ps := range spec.Params {
-		if !isValidGoIdent(ps.Name) {
-			return nil, fmt.Errorf("statement %s: invalid YAML param name %q", spec.Name, ps.Name)
-		}
-		canon := strings.ToLower(toGoParamName(ps.Name))
-		if _, exists := yamlParams[canon]; exists {
-			return nil, fmt.Errorf("statement %s: duplicate YAML param %q", spec.Name, ps.Name)
-		}
-		yamlParams[canon] = ps
-	}
-
 	cs := &compiledStmt{
 		ID:            id,
 		Name:          spec.Name,
@@ -2562,7 +2231,6 @@ func compileStatement(id uint32, spec StatementSpec, sd stmtDialect) (*compiledS
 
 	parser := &stmtParser{
 		spec:          spec,
-		yamlParams:    yamlParams,
 		paramsByCanon: make(map[string]int),
 		flagsByName:   make(map[string]uint8),
 		cs:            cs,
@@ -2571,14 +2239,6 @@ func compileStatement(id uint32, spec StatementSpec, sd stmtDialect) (*compiledS
 
 	if err := parser.scanSpan(trimmedSQL, &cs.Root, true); err != nil {
 		return nil, err
-	}
-
-	if len(cs.Cols) == 0 && len(spec.Columns) > 0 {
-		for _, cSpec := range spec.Columns {
-			if err := parser.addColumn(cSpec.Name, cSpec.GoType, cSpec.Name); err != nil {
-				return nil, err
-			}
-		}
 	}
 
 	if kind == KindExec && len(cs.Cols) > 0 {
@@ -2644,8 +2304,8 @@ func compileStatement(id uint32, spec StatementSpec, sd stmtDialect) (*compiledS
 		}
 	}
 
-	// Section 4.4: Unconditional SlotSelectCols splicing whenever len(UncondCols) > 1 && len(spec.Columns) == 0
-	if len(cs.UncondCols) > 1 && len(spec.Columns) == 0 && parser.projActive && !parser.projHasParamSlot &&
+	// Section 4.4: Unconditional SlotSelectCols splicing whenever len(UncondCols) > 1
+	if len(cs.UncondCols) > 1 && parser.projActive && !parser.projHasParamSlot &&
 		parser.projStartSegIdx == parser.projEndSegIdx {
 		segIdx := parser.projStartSegIdx
 		origSeg := cs.Root.Segments[segIdx]
@@ -2947,9 +2607,6 @@ func emitCompareExpr(b *bytes.Buffer, goType, lhs, rhs string, desc bool) {
 
 // Generate validates cfg and generates formatted Go source code.
 func Generate(cfg Config) ([]byte, error) {
-	if cfg.Version != "" && cfg.Version != "1" {
-		return nil, fmt.Errorf("sqlgen: unsupported config version %q (expected \"1\")", cfg.Version)
-	}
 	if !isValidGoIdent(cfg.PackageName) {
 		return nil, fmt.Errorf("sqlgen: invalid package name %q", cfg.PackageName)
 	}
@@ -2961,10 +2618,7 @@ func Generate(cfg Config) ([]byte, error) {
 		return nil, errors.New("sqlgen: configuration must contain at least one statement")
 	}
 
-	runtimeImport := strings.TrimSpace(cfg.RuntimeImport)
-	if runtimeImport == "" {
-		runtimeImport = "github.com/CAFxX/sqlgen/runtime"
-	}
+	const runtimeImport = "github.com/CAFxX/sqlgen/runtime"
 
 	seenStmts := make(map[string]bool, len(cfg.Statements))
 	compiled := make([]*compiledStmt, 0, len(cfg.Statements))
@@ -2982,7 +2636,7 @@ func Generate(cfg Config) ([]byte, error) {
 		}
 		seenStmts[spec.Name] = true
 
-		cs, err := compileStatement(uint32(i+1), spec, stmtDialect{known: true, style: dialect, family: dialectFamily(cfg.Dialect)})
+		cs, err := compileStatement(uint32(i+1), spec, stmtDialect{known: true, style: dialect, family: cfg.Dialect})
 		if err != nil {
 			return nil, err
 		}
@@ -3071,11 +2725,7 @@ func Generate(cfg Config) ([]byte, error) {
 	fmt.Fprintf(&b, "package %s\n\n", cfg.PackageName)
 	b.WriteString("import (\n")
 	for _, imp := range imports {
-		if imp == runtimeImport && filepath.Base(imp) != "runtime" {
-			fmt.Fprintf(&b, "\truntime %s\n", strconv.Quote(imp))
-		} else {
-			fmt.Fprintf(&b, "\t%s\n", strconv.Quote(imp))
-		}
+		fmt.Fprintf(&b, "\t%s\n", strconv.Quote(imp))
 	}
 	b.WriteString(")\n\n")
 
@@ -3182,11 +2832,6 @@ func Generate(cfg Config) ([]byte, error) {
 	b.WriteString("\t\ttxQ.txCache = tc\n")
 	b.WriteString("\t\treturn fn(&txQ)\n")
 	b.WriteString("\t})\n")
-	b.WriteString("}\n\n")
-
-	b.WriteString("// InTxOpts is an alias for InTx.\n")
-	b.WriteString("func (q *Queries) InTxOpts(ctx context.Context, txOpts *sql.TxOptions, fn func(*Queries) error, opts ...runtime.TxOption) error {\n")
-	b.WriteString("\treturn q.InTx(ctx, txOpts, fn, opts...)\n")
 	b.WriteString("}\n\n")
 
 	// Emit Pipeline wrapper type
@@ -4316,23 +3961,6 @@ func emitExecBatchAndStreamMethods(
 		b.WriteString("\t\t}\n\t}\n")
 		b.WriteString("\tif err := flushChunk(); err != nil {\n\t\treturn nil, err\n\t}\n")
 		b.WriteString("\treturn batchRes, nil\n")
-		b.WriteString("}\n\n")
-
-		fmt.Fprintf(b, "func (q *Queries) %sStreamSeq(ctx context.Context%s) (sql.Result, error) {\n", cs.Name, sigStream)
-		if cs.UseParamsStruct {
-			fmt.Fprintf(b, "\treturn q.%sStream(ctx, p, seq)\n", cs.Name)
-		} else {
-			var forwardArgs []byte
-			for i, p := range cs.Params {
-				forwardArgs = append(forwardArgs, ", "...)
-				if i == cs.BatchParamIdx {
-					forwardArgs = append(forwardArgs, "seq"...)
-				} else {
-					forwardArgs = append(forwardArgs, p.ParamName...)
-				}
-			}
-			fmt.Fprintf(b, "\treturn q.%sStream(ctx%s)\n", cs.Name, string(forwardArgs))
-		}
 		b.WriteString("}\n\n")
 	}
 }

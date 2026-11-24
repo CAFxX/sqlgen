@@ -31,14 +31,8 @@ func TestFuturesReadBeforeFlushReturnErrFutureNotReady(t *testing.T) {
 		if _, err := row.Get(); !errors.Is(err, ErrFutureNotReady) || errors.Is(err, sql.ErrNoRows) {
 			t.Errorf("%s: RowFuture.Get err = %v", stage, err)
 		}
-		if _, err := row.Value(); !errors.Is(err, ErrFutureNotReady) {
-			t.Errorf("%s: RowFuture.Value err = %v", stage, err)
-		}
 		if _, err := sl.Get(); !errors.Is(err, ErrFutureNotReady) {
 			t.Errorf("%s: SliceFuture.Get err = %v", stage, err)
-		}
-		if _, err := sl.Values(); !errors.Is(err, ErrFutureNotReady) {
-			t.Errorf("%s: SliceFuture.Values err = %v", stage, err)
 		}
 	}
 	check("queued")

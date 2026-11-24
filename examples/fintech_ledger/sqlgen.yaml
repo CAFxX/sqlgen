@@ -1,4 +1,3 @@
-version: "1"
 package: fintech_ledger
 out: ledger_gen.go
 dialect: sqlite
