@@ -50,7 +50,7 @@ func TestSaaSMultitenantPortalEndToEnd(t *testing.T) {
 		t.Fatalf("schema DDL: %v", err)
 	}
 
-	svc := NewPortalService(db, runtime.WithPromoteThreshold(2))
+	svc := NewPortalService(db)
 	defer func() { _ = svc.Close() }()
 	q := svc.Queries()
 
@@ -428,7 +428,7 @@ func TestSaaSMultitenantPortalEndToEnd(t *testing.T) {
 	}
 
 	// Pipeline, PipelineTx, InTxOpts, WithPrepared, WithTx, Cache, CacheStats
-	_ = NewWithCache(db, nil)
+	_ = New(db, runtime.WithCache(nil))
 	_ = q.Cache()
 	_ = q.CacheStats()
 	_ = (&runtime.RowFuture[int]{}).WhereCol("1=1", nil)

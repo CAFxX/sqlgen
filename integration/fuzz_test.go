@@ -43,8 +43,8 @@ func TestFuzzConditionalFlags(t *testing.T) {
 		f.reset(rows)
 		apis := []fzAPI{}
 		// Third pass: a tiny cache, so statements are constantly evicted, demoted and re-prepared.
-		for _, opts := range [][]runtime.CacheOption{nil, {runtime.WithPromoteThreshold(1)},
-			{runtime.WithPromoteThreshold(1), runtime.WithMaxSQLVariants(3), runtime.WithMaxPreparedStmts(2), runtime.WithMaxPartialBytes(512)}} {
+		for _, opts := range [][]runtime.CacheOption{nil,
+			{runtime.WithMaxSQLVariants(3), runtime.WithMaxPreparedStmts(2)}} {
 			a, _ := newFzAPI(e, db, opts...)
 			defer a.Close()
 			apis = append(apis, a)
@@ -707,7 +707,7 @@ func TestFuzzConcurrentReaders(t *testing.T) {
 		f := newFz(t, e, db, seed)
 		rows := f.genRows(120)
 		f.reset(rows)
-		a, _ := newFzAPI(e, db, runtime.WithMaxBatchParams(40), runtime.WithPromoteThreshold(2))
+		a, _ := newFzAPI(e, db, runtime.WithMaxBatchParams(40))
 		defer a.Close()
 		db.SetMaxOpenConns(8)
 		done := make(chan struct{})

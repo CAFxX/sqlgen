@@ -547,7 +547,7 @@ func setupE2EDB(t testing.TB) (*sql.DB, *Queries) {
 		}
 	}
 
-	q := New(db, runtime.WithPromoteThreshold(2))
+	q := New(db)
 	t.Cleanup(func() {
 		_ = q.Close()
 	})
@@ -1612,7 +1612,7 @@ func TestGeneratorAndE2EAdditionalCoverage(t *testing.T) {
 	ctx := context.Background()
 
 	// Exercise Stream methods, Pipeline methods, and helper methods on e2e_gen_test.go
-	_ = NewWithCache(nil, nil)
+	_ = New(nil, runtime.WithCache(nil))
 	_ = q.CacheStats()
 	_ = q.WithPrepared(false)
 

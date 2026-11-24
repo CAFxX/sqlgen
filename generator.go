@@ -570,7 +570,7 @@ var reservedParamNames = func() map[string]bool {
 // *Queries and *Pipeline (including those promoted from runtime.Pipeline).
 // TestReservedNamesCoverGeneratedDeclarations checks both against real generated output.
 var (
-	reservedTypeNames      = setOf("New", "NewWithCache", "Pipeline", "Queries")
+	reservedTypeNames      = setOf("New", "Pipeline", "Queries")
 	reservedStatementNames = setOf("Cache", "CacheStats", "Close", "If", "InTx", "Pipeline", "PipelineTx",
 		"WithPrepared", "WithTx", "SetBuildError", "QueueExec", "QueueExecNoop", "Abort", "Flush")
 )
@@ -2746,19 +2746,12 @@ func Generate(cfg Config) ([]byte, error) {
 	}
 	b.WriteString("}\n\n")
 
-	b.WriteString("// New creates a new Queries instance with a dedicated StmtCache.\n")
+	b.WriteString("// New creates a new Queries instance with a dedicated StmtCache (configured by opts), or the shared one\n")
+	b.WriteString("// given by runtime.WithCache.\n")
 	b.WriteString("func New(db *sql.DB, opts ...runtime.CacheOption) *Queries {\n")
-	b.WriteString("\treturn NewWithCache(db, runtime.NewStmtCache(opts...))\n")
-	b.WriteString("}\n\n")
-
-	b.WriteString("// NewWithCache creates a new Queries instance using the provided StmtCache.\n")
-	b.WriteString("func NewWithCache(db *sql.DB, cache *runtime.StmtCache) *Queries {\n")
-	b.WriteString("\tif cache == nil {\n")
-	b.WriteString("\t\tcache = runtime.NewStmtCache()\n")
-	b.WriteString("\t}\n")
 	b.WriteString("\treturn &Queries{\n")
 	b.WriteString("\t\tdb:          db,\n")
-	b.WriteString("\t\tcache:       cache,\n")
+	b.WriteString("\t\tcache:       runtime.NewStmtCache(opts...),\n")
 	b.WriteString("\t\tusePrepared: true,\n")
 	if numStatic > 0 {
 		fmt.Fprintf(&b, "\t\tfastSlots:   new([%d]atomic.Pointer[runtime.ManagedStmt]),\n", numStatic)

@@ -348,11 +348,11 @@ const (
 )
 
 const (
-	DefaultMaxPreparedStmts = 256
-	DefaultMaxSQLVariants   = 4096
-	DefaultMaxPartialBytes  = 16 << 20 // 16 MB
-	DefaultPromoteThreshold = 2
-	DefaultMaxBatchParams   = 16384
+	defaultMaxPreparedStmts = 256
+	defaultMaxSQLVariants   = 4096
+	defaultMaxPartialBytes  = 16 << 20 // 16 MB
+	defaultPromoteThreshold = 2
+	defaultMaxBatchParams   = 16384
 	maxPowerOfTwoChunk      = 32768
 	inexactKeyBit           = uint64(1) << 63
 )
@@ -861,7 +861,7 @@ For each statement `<Name>` in `sqlgen.yaml`, `Generate` emits into a single `by
 3. Output row struct (`<RowType>`), `<RowType>Col` bitmask constants (`1 << iota`), and `<RowType>Order` / `<RowType>SortCol` / `<RowType>SortTerm` / `Order<RowType>(...)` helpers (`Order<RowType>` takes `<RowType>SortTerm`, so the sort tokens of another statement do not compile; a repeated or out-of-range term yields `runtime.ErrInvalidOrder`).
 4. `<Name>Params` struct (when `StructArgs == true`, i.e. `args: struct`, or `args: auto` with `{?Flag: ...}` blocks).
 5. Static `QueryDescriptor` (`<name>Desc`) and non-capturing `expand<Name>Args` function.
-6. Currying constructors: `func <Name>Query(...) runtime.Query` and `func (q *Queries) <Name>Query(...) runtime.Query`. The generated file never declares aliases or wrappers of runtime symbols (no `type Query = runtime.Query`, no `WhereCol` helper): signatures spell `runtime.X`, and applications import `runtime` for the user-facing API. The only package-level names it declares are `Queries`, `Pipeline`, `New`, `NewWithCache` and the per-statement names (`reservedTypeNames`).
+6. Currying constructors: `func <Name>Query(...) runtime.Query` and `func (q *Queries) <Name>Query(...) runtime.Query`. The generated file never declares aliases or wrappers of runtime symbols (no `type Query = runtime.Query`, no `WhereCol` helper): signatures spell `runtime.X`, and applications import `runtime` for the user-facing API. The only package-level names it declares are `Queries`, `Pipeline`, `New` and the per-statement names (`reservedTypeNames`).
 7. Direct execution methods on `*Queries`:
    - `kind: exec`: `<Name>` (chunked when `CanBatch`), `<Name>Stream` (if `CanStream`).
    - `kind: one`: `<Name>`.
@@ -886,7 +886,7 @@ Because the Clean-Room Dogfooding Protocol (Section 11) requires users/sub-agent
    - Chunking & Streaming: automatic chunking of the plain `<Name>`, `<Name>Stream`, `<Name>StreamSeq`, and `runtime.FromSeq` / `runtime.MapSeq2`; empty-collection rules (2.3).
    - Transactions & Retries: `q.WithTx(tx)`, `q.InTx(ctx, txOpts, fn, runtime.WithTxRetry(runtime.DefaultRetryPolicy()))`.
    - Pipelining & Conditional Control Flow: `q.Pipeline(ctx)`, `q.PipelineTx(...)`, futures (`ExecFuture`, `RowFuture[T]`, `SliceFuture[T]`), `.AssertRowsAffected(n)`, `.AssertFound()`, `p.If(cond, thenFn, elseFn)`, `WhereCol`, `p.Abort(err)`, and `IfResult.Taken()`.
-   - Cache Tuning & Observability: `WithMaxPreparedStmts`, `WithMaxSQLVariants`, `WithMaxPartialBytes`, `WithPromoteThreshold`, `WithMaxBatchParams`, and `q.CacheStats()`.
+   - Cache Tuning & Observability: `WithMaxPreparedStmts`, `WithMaxSQLVariants`, `WithMaxBatchParams`, `WithCache` (share a `StmtCache`; replaces the former `NewWithCache`), `q.WithPrepared(false)` (the one way to disable Tier-2 prepared statements; a non-positive `WithMaxPreparedStmts` is ignored), and `q.CacheStats()`. The Tier-1 byte budget (`defaultMaxPartialBytes`, 16 MiB) and the promotion threshold (`defaultPromoteThreshold`, 2) are fixed constants; the runtime tests reach them through test-only options (`runtime/options_test.go`).
 
 ---
 

@@ -487,58 +487,52 @@ func (s *cacheShard) initEntry(e *cacheEntry, exact bool, key VariantKey, sqlStr
 	e.fastSlot = fastSlot
 }
 
-// CacheConfig configures StmtCache capacities and promotion behavior.
-type CacheConfig struct {
+// cacheConfig is what the CacheOptions configure.
+type cacheConfig struct {
 	MaxSQLVariants   int
 	MaxPartialBytes  int
 	MaxPreparedStmts int
 	PromoteThreshold uint8
 	MaxBatchParams   int
+	shared           *StmtCache
 }
 
-// CacheOption configures a StmtCache.
-type CacheOption func(*CacheConfig)
+// CacheOption configures a StmtCache (and, through the generated New, a Queries).
+type CacheOption func(*cacheConfig)
 
 // WithMaxSQLVariants sets the maximum number of Tier-1 SQL strings cached across all shards.
 func WithMaxSQLVariants(n int) CacheOption {
-	return func(cfg *CacheConfig) {
+	return func(cfg *cacheConfig) {
 		cfg.MaxSQLVariants = n
 	}
 }
 
-// WithMaxPartialBytes sets the maximum total byte budget for Tier-1 SQL strings across all shards.
-func WithMaxPartialBytes(bytes int) CacheOption {
-	return func(cfg *CacheConfig) {
-		cfg.MaxPartialBytes = bytes
-	}
-}
-
 // WithMaxPreparedStmts sets the maximum number of Tier-2 prepared *sql.Stmt handles across all shards.
+// A non-positive n is ignored: prepared statements are switched off with the generated
+// (*Queries).WithPrepared(false), the one way to do so.
 func WithMaxPreparedStmts(n int) CacheOption {
-	return func(cfg *CacheConfig) {
-		cfg.MaxPreparedStmts = n
-	}
-}
-
-// WithPromoteThreshold sets the W-TinyLFU frequency threshold (1..15) required to promote a statement to Tier 2.
-func WithPromoteThreshold(threshold uint8) CacheOption {
-	return func(cfg *CacheConfig) {
-		if threshold < 1 {
-			threshold = 1
+	return func(cfg *cacheConfig) {
+		if n > 0 {
+			cfg.MaxPreparedStmts = n
 		}
-		if threshold > 15 {
-			threshold = 15
-		}
-		cfg.PromoteThreshold = threshold
 	}
 }
 
 // WithMaxBatchParams sets the maximum number of bind parameters per batch chunk statement.
 func WithMaxBatchParams(n int) CacheOption {
-	return func(cfg *CacheConfig) {
+	return func(cfg *cacheConfig) {
 		if n > 0 {
 			cfg.MaxBatchParams = n
 		}
+	}
+}
+
+// WithCache makes NewStmtCache (and so the generated New) use the given, already configured cache
+// instead of creating one, so several Queries share their statement tiers; the other options are then
+// ignored. A nil c is ignored.
+func WithCache(c *StmtCache) CacheOption {
+	return func(cfg *cacheConfig) {
+		cfg.shared = c
 	}
 }
 
@@ -590,19 +584,23 @@ type StmtCache struct {
 	batchTrackers map[batchShapeKey]*batchShapeTracker
 }
 
-// NewStmtCache creates a new 16-shard two-tier adaptive statement cache.
+// NewStmtCache creates a new 16-shard two-tier adaptive statement cache, or returns the cache given by
+// WithCache.
 func NewStmtCache(opts ...CacheOption) *StmtCache {
-	cfg := CacheConfig{
-		MaxSQLVariants:   DefaultMaxSQLVariants,
-		MaxPartialBytes:  DefaultMaxPartialBytes,
-		MaxPreparedStmts: DefaultMaxPreparedStmts,
-		PromoteThreshold: DefaultPromoteThreshold,
-		MaxBatchParams:   DefaultMaxBatchParams,
+	cfg := cacheConfig{
+		MaxSQLVariants:   defaultMaxSQLVariants,
+		MaxPartialBytes:  defaultMaxPartialBytes,
+		MaxPreparedStmts: defaultMaxPreparedStmts,
+		PromoteThreshold: defaultPromoteThreshold,
+		MaxBatchParams:   defaultMaxBatchParams,
 	}
 	for _, opt := range opts {
 		if opt != nil {
 			opt(&cfg)
 		}
+	}
+	if cfg.shared != nil {
+		return cfg.shared
 	}
 
 	c := &StmtCache{
@@ -659,7 +657,7 @@ func NewStmtCache(opts ...CacheOption) *StmtCache {
 // MaxBatchParams returns the configured maximum bind parameters per batch chunk.
 func (c *StmtCache) MaxBatchParams() int {
 	if c == nil || c.maxBatchParams <= 0 {
-		return DefaultMaxBatchParams
+		return defaultMaxBatchParams
 	}
 	return c.maxBatchParams
 }

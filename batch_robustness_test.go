@@ -76,7 +76,7 @@ func TestRowIteratorsReleaseResourcesWhenUserCodePanics(t *testing.T) {
 // budget raised to the engine's limit, a chunk sized for one `Score` overflowed SQLite's variable limit.
 func TestBatchChunkBudgetCountsRepeatedParameterOccurrences(t *testing.T) {
 	db, _ := setupE2EDB(t)
-	q := New(db, runtime.WithMaxBatchParams(32766), runtime.WithPromoteThreshold(1))
+	q := New(db, runtime.WithMaxBatchParams(32766))
 	t.Cleanup(func() { _ = q.Close() })
 	ctx := context.Background()
 	if _, err := q.CreateUser(ctx, 7, 1, "a@x", "member", 10, "b"); err != nil {

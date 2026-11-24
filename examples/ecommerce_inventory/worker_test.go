@@ -28,7 +28,7 @@ func TestEcommerceInventoryWorkerEndToEnd(t *testing.T) {
 		t.Fatalf("schema DDL: %v", err)
 	}
 
-	worker := NewInventoryWorker(db, runtime.WithPromoteThreshold(2))
+	worker := NewInventoryWorker(db)
 	defer func() { _ = worker.Close() }()
 	q := worker.Queries()
 
@@ -340,7 +340,7 @@ func TestEcommerceInventoryWorkerEndToEnd(t *testing.T) {
 	sfoQ := q.StreamFulfilledOrdersQuery(cutoffTS)
 	_ = sfoQ.Expand(&dummyArgs, runtime.DialectQuestion, &sfoQ)
 	_ = (&runtime.RowFuture[int]{}).WhereCol("1=1", nil)
-	_ = NewWithCache(db, nil)
+	_ = New(db, runtime.WithCache(nil))
 	_ = q.CacheStats()
 	_ = q.WithPrepared(false)
 

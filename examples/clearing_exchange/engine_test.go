@@ -203,7 +203,7 @@ func runClearingExchangeStressSuite(t *testing.T, mode string, db *sql.DB) {
 		t.Fatalf("[%s] SchemaDDL: %v", mode, err)
 	}
 
-	eng := NewClearingEngine(db, runtime.WithPromoteThreshold(2))
+	eng := NewClearingEngine(db)
 	defer func() { _ = eng.Close() }()
 	q := eng.Queries()
 
@@ -987,7 +987,7 @@ func exerciseRemainingExchangeVariants(t *testing.T, ctx context.Context, mode s
 		t.Fatalf("[%s] pipelined CancelOrdersByIDs: %v", mode, err)
 	}
 
-	_ = NewWithCache(db, nil)
+	_ = New(db, runtime.WithCache(nil))
 	_ = q.Cache()
 	_ = q.CacheStats()
 	unprepQ := q.WithPrepared(false)

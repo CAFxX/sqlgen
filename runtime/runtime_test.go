@@ -449,7 +449,7 @@ func TestMockDriverFaultInjectionAndHandleAccounting(t *testing.T) {
 	cache := NewStmtCache(
 		WithMaxPreparedStmts(1),
 		WithMaxSQLVariants(16),
-		WithPromoteThreshold(1),
+		withPromoteThreshold(1),
 	)
 
 	ctx := context.Background()
@@ -579,7 +579,7 @@ func TestSingleflightThunderingHerdPromotion(t *testing.T) {
 		rowsData:     [][]driver.Value{{int64(1)}},
 	}
 	db := newMockDB(t, cfg)
-	cache := NewStmtCache(WithPromoteThreshold(2))
+	cache := NewStmtCache(withPromoteThreshold(2))
 	defer func() { _ = cache.Close() }()
 
 	ctx := context.Background()
@@ -896,7 +896,7 @@ func TestPropertyEstimateOpBytesStrictUpperBound(t *testing.T) {
 }
 
 func TestPlanBatchChunkFitsOneStatement(t *testing.T) {
-	for _, c := range []*StmtCache{nil, NewStmtCache(WithPromoteThreshold(2))} {
+	for _, c := range []*StmtCache{nil, NewStmtCache(withPromoteThreshold(2))} {
 		for _, n := range []int{1, 2, 3, 5, 7, 100, 257, 1400, 5000} {
 			// Cold, then recurring (and promoted): always exactly n when it fits.
 			for call := 0; call < 4; call++ {
@@ -923,7 +923,7 @@ func TestPlanBatchChunkFitsOneStatement(t *testing.T) {
 		}
 	}
 	// A recurring size is promoted exactly at the threshold; a one-off size is not.
-	c := NewStmtCache(WithPromoteThreshold(2))
+	c := NewStmtCache(withPromoteThreshold(2))
 	defer func() { _ = c.Close() }()
 	tag := ComputeBatchShapeTag(3, 1)
 	c.PlanBatchChunk(9, 3, 1, 7, 100, true)
@@ -942,7 +942,7 @@ func TestPropertyBatchChunkDecompositionConservation(t *testing.T) {
 
 	for trial := 0; trial < 200; trial++ {
 		cache := NewStmtCache(
-			WithPromoteThreshold(2),
+			withPromoteThreshold(2),
 			WithMaxBatchParams(16384),
 		)
 		stmtID := uint32(trial + 1)
@@ -1193,8 +1193,8 @@ func FuzzStmtCacheAdversarialStateTransitions(f *testing.F) {
 		cache := NewStmtCache(
 			WithMaxPreparedStmts(32),
 			WithMaxSQLVariants(64),
-			WithMaxPartialBytes(16*1024),
-			WithPromoteThreshold(2),
+			withMaxPartialBytes(16*1024),
+			withPromoteThreshold(2),
 		)
 		defer func() { _ = cache.Close() }()
 
@@ -1498,9 +1498,9 @@ func TestWTinyLFUScanFloodResistance(t *testing.T) {
 	)
 	cache := NewStmtCache(
 		WithMaxSQLVariants(maxPartial),
-		WithMaxPartialBytes(maxPartialBytes),
+		withMaxPartialBytes(maxPartialBytes),
 		WithMaxPreparedStmts(maxPrepared),
-		WithPromoteThreshold(2),
+		withPromoteThreshold(2),
 	)
 	defer func() { _ = cache.Close() }()
 
@@ -1624,7 +1624,7 @@ func TestPipelineWirePipelinerAndSequentialCoverage(t *testing.T) {
 	}
 
 	db := newMockDB(t, cfg)
-	cache := NewStmtCache(WithPromoteThreshold(1))
+	cache := NewStmtCache(withPromoteThreshold(1))
 	defer func() { _ = cache.Close() }()
 
 	selDesc := &QueryDescriptor{
@@ -1782,14 +1782,14 @@ func TestPipelineWirePipelinerAndSequentialCoverage(t *testing.T) {
 	// 4. Test Sequential Pipeline execution against live SQLite (covering executeSequential, EvalGoFn, WhereCol, Abort, AssertRows, TxStmtCache)
 	sqliteDB := openTestDB(t)
 	sqliteCache := NewStmtCache(
-		WithPromoteThreshold(0),
-		WithPromoteThreshold(20),
-		WithPromoteThreshold(1),
+		withPromoteThreshold(0),
+		withPromoteThreshold(20),
+		withPromoteThreshold(1),
 		WithMaxBatchParams(1024),
 	)
 	defer func() { _ = sqliteCache.Close() }()
 
-	if sqliteCache.MaxBatchParams() != 1024 || (*StmtCache)(nil).MaxBatchParams() != DefaultMaxBatchParams {
+	if sqliteCache.MaxBatchParams() != 1024 || (*StmtCache)(nil).MaxBatchParams() != defaultMaxBatchParams {
 		t.Fatalf("unexpected MaxBatchParams")
 	}
 	_ = sqliteCache.MaxRowsPerBatch(DialectDollar, 0, 0)
@@ -1931,7 +1931,7 @@ func TestPipelineWirePipelinerAndSequentialCoverage(t *testing.T) {
 	}
 
 	// Test globalMaxPrep < 16 cross-shard eviction (evictGlobalPreparedVictim)
-	smallGlobalCache := NewStmtCache(WithMaxPreparedStmts(2), WithPromoteThreshold(1))
+	smallGlobalCache := NewStmtCache(WithMaxPreparedStmts(2), withPromoteThreshold(1))
 	defer func() { _ = smallGlobalCache.Close() }()
 	for i := uint32(1); i <= 8; i++ {
 		k := MakeVariantKey(i, 0, 0, 0, uint64(i))
@@ -2033,7 +2033,7 @@ func TestPipelineWirePipelinerAndSequentialCoverage(t *testing.T) {
 	})
 
 	// Test isPromotedBatchSize path (PromoteThreshold=3, promote batchSize=7 via PlanBatchChunk, then Resolve with batchSize=7)
-	batchCache := NewStmtCache(WithPromoteThreshold(3))
+	batchCache := NewStmtCache(withPromoteThreshold(3))
 	defer func() { _ = batchCache.Close() }()
 	shapeTag7 := ComputeBatchShapeTag(0, 0)
 	for range 3 {
@@ -2102,7 +2102,7 @@ func TestPipelineWirePipelinerAndSequentialCoverage(t *testing.T) {
 		failQuery: errors.New("query fail"),
 	}
 	errDB := newMockDB(t, errMockCfg)
-	errCache := NewStmtCache(WithPromoteThreshold(1))
+	errCache := NewStmtCache(withPromoteThreshold(1))
 	defer func() { _ = errCache.Close() }()
 
 	// Tier-2 prepared Query error & Exec error
@@ -2223,7 +2223,7 @@ func TestPipelineWirePipelinerAndSequentialCoverage(t *testing.T) {
 	inexactCache := NewStmtCache(
 		WithMaxSQLVariants(64),
 		WithMaxPreparedStmts(64),
-		WithPromoteThreshold(3),
+		withPromoteThreshold(3),
 	)
 	for i := uint32(1); i <= 24; i++ {
 		inexactVK := MakeVariantKey(i, 0, 0, 0, 1, 2, 3, 4, 5)
@@ -2272,16 +2272,16 @@ func TestPipelineWirePipelinerAndSequentialCoverage(t *testing.T) {
 	// Exercise partialProt touch non-head and step-down, plus NewStmtCache small variants/bytes
 	protCache := NewStmtCache(
 		WithMaxSQLVariants(4),
-		WithMaxPartialBytes(8),
+		withMaxPartialBytes(8),
 		WithMaxPreparedStmts(32),
-		WithPromoteThreshold(10),
+		withPromoteThreshold(10),
 	)
 	_ = protCache.Close()
 	protCache2 := NewStmtCache(
 		WithMaxSQLVariants(64),
-		WithMaxPartialBytes(65536),
+		withMaxPartialBytes(65536),
 		WithMaxPreparedStmts(32),
-		WithPromoteThreshold(10),
+		withPromoteThreshold(10),
 	)
 	for round := 0; round < 4; round++ {
 		for i := uint32(1); i <= 32; i++ {
@@ -2298,7 +2298,7 @@ func TestPipelineWirePipelinerAndSequentialCoverage(t *testing.T) {
 
 	// Evict inexact VariantKeys from Tier 1 (exercising delete(s.bySQL, e.sqlStr))
 	// and demote with MaxSQLVariants(0), fastSlot != nil, and batchSize > 0
-	inexactEvictCache := NewStmtCache(WithMaxSQLVariants(16), WithPromoteThreshold(10))
+	inexactEvictCache := NewStmtCache(WithMaxSQLVariants(16), withPromoteThreshold(10))
 	for i := uint32(1); i <= 64; i++ {
 		inexactVK := MakeVariantKey(i, 0, 0, 0, 1, 2, 3, 4, 5)
 		d := &QueryDescriptor{
@@ -2310,7 +2310,7 @@ func TestPipelineWirePipelinerAndSequentialCoverage(t *testing.T) {
 	}
 	_ = inexactEvictCache.Close()
 
-	noPartialCache := NewStmtCache(WithMaxSQLVariants(0), WithMaxPreparedStmts(1), WithPromoteThreshold(1))
+	noPartialCache := NewStmtCache(WithMaxSQLVariants(0), WithMaxPreparedStmts(1), withPromoteThreshold(1))
 	for i := uint32(1); i <= 32; i++ {
 		var fs atomic.Pointer[ManagedStmt]
 		k := MakeVariantKey(i, 0, 0, 0, uint64(i))
@@ -2382,7 +2382,7 @@ func TestPipelineWirePipelinerAndSequentialCoverage(t *testing.T) {
 
 	// PlanBatchChunk never substitutes a prepared size for the real one: a collection that fits one statement is
 	// planned as exactly one chunk of its own size.
-	greedyCache := NewStmtCache(WithPromoteThreshold(2))
+	greedyCache := NewStmtCache(withPromoteThreshold(2))
 	shapeGreedy := ComputeBatchShapeTag(1, 0)
 	for range 2 {
 		msG, _, err := greedyCache.Resolve(ctx, sqliteDB, nil, true, MakeVariantKey(77, 1, 0, 0, 16), 77, shapeGreedy, 16, nil, DialectQuestion, qSelDesc, &RenderInput{ColMask: 1})
@@ -2403,7 +2403,7 @@ func TestPipelineWirePipelinerAndSequentialCoverage(t *testing.T) {
 
 func BenchmarkStaticQueryHit(b *testing.B) {
 	db := openTestDB(b)
-	cache := NewStmtCache(WithPromoteThreshold(1))
+	cache := NewStmtCache(withPromoteThreshold(1))
 	defer func() { _ = cache.Close() }()
 
 	ctx := context.Background()
@@ -2448,7 +2448,7 @@ func BenchmarkStaticQueryHit(b *testing.B) {
 
 func BenchmarkDynamicSliceHit(b *testing.B) {
 	db := openTestDB(b)
-	cache := NewStmtCache(WithPromoteThreshold(1))
+	cache := NewStmtCache(withPromoteThreshold(1))
 	defer func() { _ = cache.Close() }()
 
 	ctx := context.Background()
@@ -2506,7 +2506,7 @@ type benchItemRow struct {
 
 func BenchmarkSelectColsScan(b *testing.B) {
 	db := openTestDB(b)
-	cache := NewStmtCache(WithPromoteThreshold(1))
+	cache := NewStmtCache(withPromoteThreshold(1))
 	defer func() { _ = cache.Close() }()
 
 	ctx := context.Background()
@@ -2649,7 +2649,7 @@ func TestPromotionEntryRecycledDuringPrepare(t *testing.T) {
 	cfg.prepareHook = hook
 	defer release()
 	db := newMockDB(t, cfg)
-	cache := NewStmtCache(WithMaxPreparedStmts(64), WithMaxSQLVariants(16), WithPromoteThreshold(1))
+	cache := NewStmtCache(WithMaxPreparedStmts(64), WithMaxSQLVariants(16), withPromoteThreshold(1))
 	defer cache.Close()
 	ctx := context.Background()
 	vkA, vkB := sameShardKeys(t)
@@ -2718,7 +2718,7 @@ func TestPromotionCacheClosedDuringPrepare(t *testing.T) {
 	cfg.prepareHook = hook
 	defer release()
 	db := newMockDB(t, cfg)
-	cache := NewStmtCache(WithMaxPreparedStmts(64), WithMaxSQLVariants(16), WithPromoteThreshold(1))
+	cache := NewStmtCache(WithMaxPreparedStmts(64), WithMaxSQLVariants(16), withPromoteThreshold(1))
 	ctx := context.Background()
 	vkA, _ := sameShardKeys(t)
 	in := RenderInput{}
@@ -2744,7 +2744,7 @@ func TestPromotionCacheClosedDuringPrepare(t *testing.T) {
 func TestPromotionPrepareFailureDoesNotWedgeEntry(t *testing.T) {
 	cfg := &mockDriverConfig{}
 	db := newMockDB(t, cfg)
-	cache := NewStmtCache(WithMaxPreparedStmts(64), WithMaxSQLVariants(16), WithPromoteThreshold(1))
+	cache := NewStmtCache(WithMaxPreparedStmts(64), WithMaxSQLVariants(16), withPromoteThreshold(1))
 	defer cache.Close()
 	ctx := context.Background()
 	vkA, _ := sameShardKeys(t)
@@ -2800,7 +2800,7 @@ func TestStmtCacheConcurrentAdversarialStress(t *testing.T) {
 			}
 			db := newMockDB(t, cfg)
 			db.SetMaxOpenConns(32)
-			cache := NewStmtCache(WithMaxPreparedStmts(tc.prepared), WithMaxSQLVariants(tc.variants), WithPromoteThreshold(tc.threshold))
+			cache := NewStmtCache(WithMaxPreparedStmts(tc.prepared), WithMaxSQLVariants(tc.variants), withPromoteThreshold(tc.threshold))
 
 			keys := make([]VariantKey, variants)
 			descs := make([]*QueryDescriptor, variants)

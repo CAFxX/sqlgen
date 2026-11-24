@@ -51,11 +51,11 @@ const (
 )
 
 const (
-	DefaultMaxPreparedStmts = 256
-	DefaultMaxSQLVariants   = 4096
-	DefaultMaxPartialBytes  = 16 << 20 // 16 MB
-	DefaultPromoteThreshold = 2
-	DefaultMaxBatchParams   = 16384
+	defaultMaxPreparedStmts = 256
+	defaultMaxSQLVariants   = 4096
+	defaultMaxPartialBytes  = 16 << 20 // 16 MB
+	defaultPromoteThreshold = 2
+	defaultMaxBatchParams   = 16384
 	maxPowerOfTwoChunk      = 32768
 	inexactKeyBit           = uint64(1) << 63
 )

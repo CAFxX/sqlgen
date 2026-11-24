@@ -438,7 +438,7 @@ func TestRealEngineSingleConnectionPoolNoLeaks(t *testing.T) {
 		setupItems(t, db)
 		db.SetMaxOpenConns(1)
 		ctx := ctxT(t)
-		a := newAPI(e, db, runtime.WithPromoteThreshold(1), runtime.WithMaxPreparedStmts(64))
+		a := newAPI(e, db, runtime.WithMaxPreparedStmts(64))
 		defer a.Close()
 		all := genItems(1, 300)
 		if err := a.Insert(ctx, all); err != nil {
@@ -471,7 +471,7 @@ func TestRealEnginePreparedStatementPromotion(t *testing.T) {
 	forEachEngine(t, func(t *testing.T, e engine, db *sql.DB) {
 		setupItems(t, db)
 		ctx := ctxT(t)
-		a := newAPI(e, db, runtime.WithPromoteThreshold(2), runtime.WithMaxPreparedStmts(64))
+		a := newAPI(e, db, runtime.WithMaxPreparedStmts(64))
 		all := genItems(1, 100)
 		if err := a.Insert(ctx, all); err != nil {
 			t.Fatal(err)
@@ -503,7 +503,7 @@ func TestRealEnginePreparedStatementChurnUnderConcurrency(t *testing.T) {
 		db.SetMaxOpenConns(24)
 		ctx := ctxT(t)
 		baseline := serverPreparedStmts(t, e, db)
-		a := newAPI(e, db, runtime.WithPromoteThreshold(1), runtime.WithMaxPreparedStmts(16), runtime.WithMaxSQLVariants(32))
+		a := newAPI(e, db, runtime.WithMaxPreparedStmts(16), runtime.WithMaxSQLVariants(32))
 		all := genItems(1, 400)
 		if err := a.Insert(ctx, all); err != nil {
 			t.Fatal(err)

@@ -229,7 +229,7 @@ func runFintechLedgerSuite(t *testing.T, mode string, db *sql.DB) {
 		t.Fatalf("[%s] schema DDL: %v", mode, err)
 	}
 
-	svc := NewLedgerService(db, runtime.WithPromoteThreshold(2))
+	svc := NewLedgerService(db)
 	defer func() { _ = svc.Close() }()
 	q := svc.Queries()
 
@@ -477,7 +477,7 @@ func runFintechLedgerSuite(t *testing.T, mode string, db *sql.DB) {
 	_ = q1.Expand(&dummyArgs, runtime.DialectQuestion, &q1)
 	q2 := q.TotalSupplyByOrgQuery(orgID)
 	_ = q2.Expand(&dummyArgs, runtime.DialectQuestion, &q2)
-	_ = NewWithCache(db, nil)
+	_ = New(db, runtime.WithCache(nil))
 	_ = q.Cache()
 	_ = q.CacheStats()
 	unprepQ := q.WithPrepared(false)

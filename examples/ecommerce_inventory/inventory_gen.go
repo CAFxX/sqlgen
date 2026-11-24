@@ -23,19 +23,12 @@ type Queries struct {
 	fastSlots   *[1]atomic.Pointer[runtime.ManagedStmt]
 }
 
-// New creates a new Queries instance with a dedicated StmtCache.
+// New creates a new Queries instance with a dedicated StmtCache (configured by opts), or the shared one
+// given by runtime.WithCache.
 func New(db *sql.DB, opts ...runtime.CacheOption) *Queries {
-	return NewWithCache(db, runtime.NewStmtCache(opts...))
-}
-
-// NewWithCache creates a new Queries instance using the provided StmtCache.
-func NewWithCache(db *sql.DB, cache *runtime.StmtCache) *Queries {
-	if cache == nil {
-		cache = runtime.NewStmtCache()
-	}
 	return &Queries{
 		db:          db,
-		cache:       cache,
+		cache:       runtime.NewStmtCache(opts...),
 		usePrepared: true,
 		fastSlots:   new([1]atomic.Pointer[runtime.ManagedStmt]),
 	}

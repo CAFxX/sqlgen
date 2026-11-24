@@ -118,11 +118,11 @@ func TestOrderDefaultsAndFirstPageSeek(t *testing.T) {
 func TestMaxRowsPerBatchDefaultsAndWireLimits(t *testing.T) {
 	c := NewStmtCache()
 	defer func() { _ = c.Close() }()
-	// Default budget (DefaultMaxBatchParams) binds on both placeholder styles.
-	if got := c.MaxRowsPerBatch(DialectDollar, 0, 2); got != DefaultMaxBatchParams/2 {
+	// Default budget (defaultMaxBatchParams) binds on both placeholder styles.
+	if got := c.MaxRowsPerBatch(DialectDollar, 0, 2); got != defaultMaxBatchParams/2 {
 		t.Errorf("dollar default = %d", got)
 	}
-	if got := c.MaxRowsPerBatch(DialectQuestion, 0, 2); got != DefaultMaxBatchParams/2 {
+	if got := c.MaxRowsPerBatch(DialectQuestion, 0, 2); got != defaultMaxBatchParams/2 {
 		t.Errorf("question default = %d", got)
 	}
 	// A larger budget is clamped to the wire limit of the placeholder style.

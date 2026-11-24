@@ -442,8 +442,6 @@ q := New(db) // uses default cache configuration
 q := New(db,
     runtime.WithMaxPreparedStmts(512),
     runtime.WithMaxSQLVariants(4096),
-    runtime.WithMaxPartialBytes(4<<20),
-    runtime.WithPromoteThreshold(2),
     runtime.WithMaxBatchParams(4000),
 )
 defer q.Close()
@@ -844,11 +842,12 @@ err := q.PipelineTx(ctx, nil, func(p *Pipeline) error {
 
 | Option | Default | Description |
 | :--- | :--- | :--- |
-| `runtime.WithMaxPreparedStmts(n)` | `256` (`16`/shard) | Maximum Tier-2 `*sql.Stmt` handles across all 16 shards (`0` disables Tier 2). |
+| `runtime.WithMaxPreparedStmts(n)` | `256` (`16`/shard) | Maximum Tier-2 `*sql.Stmt` handles across all 16 shards (`n <= 0` is ignored; to switch prepared statements off use `q.WithPrepared(false)`, the one way to do so). |
 | `runtime.WithMaxSQLVariants(n)` | `4096` (`256`/shard) | Maximum Tier-1 rendered SQL strings cached across all 16 shards (`0` disables Tier 1+2). |
-| `runtime.WithMaxPartialBytes(bytes)` | `16 MiB` (`1 MiB`/shard) | Hard memory budget in bytes for Tier-1 cached SQL strings. |
-| `runtime.WithPromoteThreshold(hits)` | `2` | Sketch frequency required before promoting a Tier-1 SQL variant (or recurring batch size) to a Tier-2 `*sql.Stmt`. |
+| `runtime.WithCache(c)` | a new cache | Use the existing `*runtime.StmtCache` `c` (for example `other.Cache()`) instead of creating one, so several `*Queries` share their statement tiers; every other option is then ignored. |
 | `runtime.WithMaxBatchParams(params)` | `16384` | Maximum parameters per batch chunk. It is always clamped to the wire limit of the placeholder style: `65535` for `$N` (PostgreSQL, CockroachDB) and `32766` for `?` (SQLite, MySQL, MariaDB: the SQLite-safe value, below MySQL's own 65535, because the runtime only knows the placeholder style). With the default the limit never binds. |
+
+The Tier-1 byte budget (16 MiB, 1 MiB per shard) and the promotion threshold (a Tier-1 variant, or a recurring batch size, is promoted to a Tier-2 `*sql.Stmt` once its frequency sketch reaches `2`) are fixed. `q.WithPrepared(false)` returns a view of `q` that never prepares (statements always go through `db.QueryContext` / `ExecContext`); `WithPrepared(true)` turns it back on.
 
 Inspect live cache telemetry at any time via `stats := q.CacheStats()`:
 - `stats.PreparedHits`: Tier-2 `*sql.Stmt` cache hits.
@@ -875,7 +874,7 @@ Every generated file declares the same fixed set of top-level names in your pack
 | Kind | Names |
 | :--- | :--- |
 | Types | `Queries`, `Pipeline` |
-| Functions | `New`, `NewWithCache` |
+| Functions | `New` |
 
 The generated file never re-declares runtime symbols: everything user-facing from the runtime (`runtime.Query`, `runtime.Order`, `runtime.Seek`, `runtime.NewSeek`, `runtime.WithTxRetry`, `runtime.DefaultRetryPolicy`, `runtime.PipelineCond`, `runtime.ExecFuture`, `runtime.IfResult`, ...) is spelled `runtime.X` in application code, which imports `github.com/CAFxX/sqlgen/runtime` itself. For example `q.InTx(ctx, nil, fn, runtime.WithTxRetry(runtime.DefaultRetryPolicy()))` and `After: runtime.NewSeek(...)`.
 

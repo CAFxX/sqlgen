@@ -100,7 +100,6 @@ func BenchmarkGetByID(b *testing.B) {
 			opts []runtime.CacheOption
 		}{
 			{"sqlgen", nil},
-			{"sqlgen-promote-1", []runtime.CacheOption{runtime.WithPromoteThreshold(1)}},
 		} {
 			b.Run(v.name, func(b *testing.B) {
 				a := newAPI(e, db, v.opts...)
