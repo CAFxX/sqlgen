@@ -256,7 +256,8 @@ const (
 )
 
 type paramsGetInventoryBySKUs struct {
-	Keys []SKUKey
+	Keys       []SKUKey
+	SelectCols uint64
 }
 
 var descGetInventoryBySKUs = &runtime.QueryDescriptor{
@@ -303,6 +304,10 @@ func expandGetInventoryBySKUsArgs(dst *[]any, dialect runtime.Dialect, q *runtim
 func computeGetInventoryBySKUsKey(p paramsGetInventoryBySKUs) (runtime.VariantKey, uint64, uint64, int) {
 	_ = p
 	var colMask uint64
+	colMask = p.SelectCols & GetInventoryBySKUsColsAll
+	if colMask == GetInventoryBySKUsColsAll {
+		colMask = 0
+	}
 	var flagMask uint64
 	var orderSpec runtime.Order
 	var hasSeek bool
@@ -316,9 +321,10 @@ func computeGetInventoryBySKUsKey(p paramsGetInventoryBySKUs) (runtime.VariantKe
 }
 
 // GetInventoryBySKUsQuery constructs a composable runtime.Query without executing it.
-func GetInventoryBySKUsQuery(keys []SKUKey) runtime.Query {
+func GetInventoryBySKUsQuery(keys []SKUKey, selectCols ...uint64) runtime.Query {
 	p := paramsGetInventoryBySKUs{
-		Keys: keys,
+		Keys:       keys,
+		SelectCols: runtime.OrCols(selectCols),
 	}
 	_, colMask, flagMask, _ := computeGetInventoryBySKUsKey(p)
 	var tupleLensBuf [1]int
@@ -343,8 +349,8 @@ func GetInventoryBySKUsQuery(keys []SKUKey) runtime.Query {
 }
 
 // GetInventoryBySKUsQuery constructs a composable runtime.Query without executing it.
-func (q *Queries) GetInventoryBySKUsQuery(keys []SKUKey) runtime.Query {
-	return GetInventoryBySKUsQuery(keys)
+func (q *Queries) GetInventoryBySKUsQuery(keys []SKUKey, selectCols ...uint64) runtime.Query {
+	return GetInventoryBySKUsQuery(keys, selectCols...)
 }
 
 func scanGetInventoryBySKUsRow(scanner interface{ Scan(...any) error }, dst *InventoryItem, colMask uint64, p paramsGetInventoryBySKUs) error {
@@ -352,11 +358,28 @@ func scanGetInventoryBySKUsRow(scanner interface{ Scan(...any) error }, dst *Inv
 	_ = p
 	var item InventoryItem
 	var scanBuf [4]any
-	scanBuf[0] = &item.WarehouseID
-	scanBuf[1] = &item.SKU
-	scanBuf[2] = &item.Quantity
-	scanBuf[3] = &item.UpdatedAt
-	scanSlice := scanBuf[:4]
+	scanCount := 0
+	effMask := colMask
+	if effMask == 0 {
+		effMask = GetInventoryBySKUsColsAll
+	}
+	if (effMask & (1 << 0)) != 0 {
+		scanBuf[scanCount] = &item.WarehouseID
+		scanCount++
+	}
+	if (effMask & (1 << 1)) != 0 {
+		scanBuf[scanCount] = &item.SKU
+		scanCount++
+	}
+	if (effMask & (1 << 2)) != 0 {
+		scanBuf[scanCount] = &item.Quantity
+		scanCount++
+	}
+	if (effMask & (1 << 3)) != 0 {
+		scanBuf[scanCount] = &item.UpdatedAt
+		scanCount++
+	}
+	scanSlice := scanBuf[:scanCount]
 	if err := scanner.Scan(scanSlice...); err != nil {
 		return err
 	}
@@ -364,10 +387,11 @@ func scanGetInventoryBySKUsRow(scanner interface{ Scan(...any) error }, dst *Inv
 	return nil
 }
 
-func (q *Queries) GetInventoryBySKUs(ctx context.Context, keys []SKUKey) ([]InventoryItem, error) {
+func (q *Queries) GetInventoryBySKUs(ctx context.Context, keys []SKUKey, selectCols ...uint64) ([]InventoryItem, error) {
 	totalRows := len(keys)
 	p := paramsGetInventoryBySKUs{
-		Keys: keys,
+		Keys:       keys,
+		SelectCols: runtime.OrCols(selectCols),
 	}
 	_, colMask, flagMask, _ := computeGetInventoryBySKUsKey(p)
 	maxRows := q.cache.MaxRowsPerBatch(sqlDialect, 0, 2)
@@ -383,7 +407,7 @@ func (q *Queries) GetInventoryBySKUs(ctx context.Context, keys []SKUKey) ([]Inve
 		targetQ = q.WithTx(autoTx)
 		defer func() { _ = targetQ.Close() }()
 	}
-	out, err := runtime.Collect(targetQ.GetInventoryBySKUsSeq(ctx, keys))
+	out, err := runtime.Collect(targetQ.GetInventoryBySKUsSeq(ctx, keys, selectCols...))
 	if autoTx != nil {
 		if err != nil {
 			_ = autoTx.Rollback()
@@ -396,7 +420,7 @@ func (q *Queries) GetInventoryBySKUs(ctx context.Context, keys []SKUKey) ([]Inve
 	return out, err
 }
 
-func (q *Queries) GetInventoryBySKUsSeq(ctx context.Context, keys []SKUKey) iter.Seq2[InventoryItem, error] {
+func (q *Queries) GetInventoryBySKUsSeq(ctx context.Context, keys []SKUKey, selectCols ...uint64) iter.Seq2[InventoryItem, error] {
 	return func(yield func(InventoryItem, error) bool) {
 		var zero InventoryItem
 		totalRows := len(keys)
@@ -405,7 +429,8 @@ func (q *Queries) GetInventoryBySKUsSeq(ctx context.Context, keys []SKUKey) iter
 			return
 		}
 		p := paramsGetInventoryBySKUs{
-			Keys: keys,
+			Keys:       keys,
+			SelectCols: runtime.OrCols(selectCols),
 		}
 		var sortedIdx *[]int
 		if !isSKUKeySorted(keys) {
@@ -475,9 +500,10 @@ func (q *Queries) GetInventoryBySKUsSeq(ctx context.Context, keys []SKUKey) iter
 	}
 }
 
-func (pl *Pipeline) GetInventoryBySKUs(keys []SKUKey) *runtime.SliceFuture[InventoryItem] {
+func (pl *Pipeline) GetInventoryBySKUs(keys []SKUKey, selectCols ...uint64) *runtime.SliceFuture[InventoryItem] {
 	p := paramsGetInventoryBySKUs{
-		Keys: keys,
+		Keys:       keys,
+		SelectCols: runtime.OrCols(selectCols),
 	}
 	vk, colMask, flagMask, approxArgs := computeGetInventoryBySKUsKey(p)
 	argBuf := runtime.AcquireArgsCap(approxArgs)
@@ -494,7 +520,7 @@ func (pl *Pipeline) GetInventoryBySKUs(keys []SKUKey) *runtime.SliceFuture[Inven
 	)
 }
 
-func (q *Queries) GetInventoryBySKUsStreamSeq(ctx context.Context, seq iter.Seq2[SKUKey, error]) iter.Seq2[InventoryItem, error] {
+func (q *Queries) GetInventoryBySKUsStreamSeq(ctx context.Context, seq iter.Seq2[SKUKey, error], selectCols ...uint64) iter.Seq2[InventoryItem, error] {
 	return func(yield func(InventoryItem, error) bool) {
 		var zero InventoryItem
 		if seq == nil {
@@ -513,7 +539,7 @@ func (q *Queries) GetInventoryBySKUsStreamSeq(ctx context.Context, seq iter.Seq2
 			if len(chunk) == 0 {
 				return true
 			}
-			for r, err := range q.GetInventoryBySKUsSeq(ctx, chunk) {
+			for r, err := range q.GetInventoryBySKUsSeq(ctx, chunk, selectCols...) {
 				if err != nil {
 					yield(zero, err)
 					return false
@@ -541,8 +567,8 @@ func (q *Queries) GetInventoryBySKUsStreamSeq(ctx context.Context, seq iter.Seq2
 	}
 }
 
-func (q *Queries) GetInventoryBySKUsStream(ctx context.Context, seq iter.Seq2[SKUKey, error]) ([]InventoryItem, error) {
-	return runtime.Collect(q.GetInventoryBySKUsStreamSeq(ctx, seq))
+func (q *Queries) GetInventoryBySKUsStream(ctx context.Context, seq iter.Seq2[SKUKey, error], selectCols ...uint64) ([]InventoryItem, error) {
+	return runtime.Collect(q.GetInventoryBySKUsStreamSeq(ctx, seq, selectCols...))
 }
 
 const stmtIDInsertOrderItems uint32 = 2
@@ -736,7 +762,8 @@ const (
 )
 
 type paramsStreamFulfilledOrders struct {
-	CutoffTs int64
+	CutoffTs   int64
+	SelectCols uint64
 }
 
 var descStreamFulfilledOrders = &runtime.QueryDescriptor{
@@ -766,6 +793,10 @@ func expandStreamFulfilledOrdersArgs(dst *[]any, dialect runtime.Dialect, q *run
 func computeStreamFulfilledOrdersKey(p paramsStreamFulfilledOrders) (runtime.VariantKey, uint64, uint64, int) {
 	_ = p
 	var colMask uint64
+	colMask = p.SelectCols & StreamFulfilledOrdersColsAll
+	if colMask == StreamFulfilledOrdersColsAll {
+		colMask = 0
+	}
 	var flagMask uint64
 	var orderSpec runtime.Order
 	var hasSeek bool
@@ -776,9 +807,10 @@ func computeStreamFulfilledOrdersKey(p paramsStreamFulfilledOrders) (runtime.Var
 }
 
 // StreamFulfilledOrdersQuery constructs a composable runtime.Query without executing it.
-func StreamFulfilledOrdersQuery(cutoffTs int64) runtime.Query {
+func StreamFulfilledOrdersQuery(cutoffTs int64, selectCols ...uint64) runtime.Query {
 	p := paramsStreamFulfilledOrders{
-		CutoffTs: cutoffTs,
+		CutoffTs:   cutoffTs,
+		SelectCols: runtime.OrCols(selectCols),
 	}
 	_, colMask, flagMask, _ := computeStreamFulfilledOrdersKey(p)
 	in := runtime.RenderInput{
@@ -798,8 +830,8 @@ func StreamFulfilledOrdersQuery(cutoffTs int64) runtime.Query {
 }
 
 // StreamFulfilledOrdersQuery constructs a composable runtime.Query without executing it.
-func (q *Queries) StreamFulfilledOrdersQuery(cutoffTs int64) runtime.Query {
-	return StreamFulfilledOrdersQuery(cutoffTs)
+func (q *Queries) StreamFulfilledOrdersQuery(cutoffTs int64, selectCols ...uint64) runtime.Query {
+	return StreamFulfilledOrdersQuery(cutoffTs, selectCols...)
 }
 
 func scanStreamFulfilledOrdersRow(scanner interface{ Scan(...any) error }, dst *FulfilledOrder, colMask uint64, p paramsStreamFulfilledOrders) error {
@@ -807,11 +839,28 @@ func scanStreamFulfilledOrdersRow(scanner interface{ Scan(...any) error }, dst *
 	_ = p
 	var item FulfilledOrder
 	var scanBuf [4]any
-	scanBuf[0] = &item.ID
-	scanBuf[1] = &item.CustomerID
-	scanBuf[2] = &item.TotalCents
-	scanBuf[3] = &item.FulfilledAt
-	scanSlice := scanBuf[:4]
+	scanCount := 0
+	effMask := colMask
+	if effMask == 0 {
+		effMask = StreamFulfilledOrdersColsAll
+	}
+	if (effMask & (1 << 0)) != 0 {
+		scanBuf[scanCount] = &item.ID
+		scanCount++
+	}
+	if (effMask & (1 << 1)) != 0 {
+		scanBuf[scanCount] = &item.CustomerID
+		scanCount++
+	}
+	if (effMask & (1 << 2)) != 0 {
+		scanBuf[scanCount] = &item.TotalCents
+		scanCount++
+	}
+	if (effMask & (1 << 3)) != 0 {
+		scanBuf[scanCount] = &item.FulfilledAt
+		scanCount++
+	}
+	scanSlice := scanBuf[:scanCount]
 	if err := scanner.Scan(scanSlice...); err != nil {
 		return err
 	}
@@ -819,15 +868,16 @@ func scanStreamFulfilledOrdersRow(scanner interface{ Scan(...any) error }, dst *
 	return nil
 }
 
-func (q *Queries) StreamFulfilledOrders(ctx context.Context, cutoffTs int64) ([]FulfilledOrder, error) {
-	return runtime.Collect(q.StreamFulfilledOrdersSeq(ctx, cutoffTs))
+func (q *Queries) StreamFulfilledOrders(ctx context.Context, cutoffTs int64, selectCols ...uint64) ([]FulfilledOrder, error) {
+	return runtime.Collect(q.StreamFulfilledOrdersSeq(ctx, cutoffTs, selectCols...))
 }
 
-func (q *Queries) StreamFulfilledOrdersSeq(ctx context.Context, cutoffTs int64) iter.Seq2[FulfilledOrder, error] {
+func (q *Queries) StreamFulfilledOrdersSeq(ctx context.Context, cutoffTs int64, selectCols ...uint64) iter.Seq2[FulfilledOrder, error] {
 	return func(yield func(FulfilledOrder, error) bool) {
 		var zero FulfilledOrder
 		p := paramsStreamFulfilledOrders{
-			CutoffTs: cutoffTs,
+			CutoffTs:   cutoffTs,
+			SelectCols: runtime.OrCols(selectCols),
 		}
 		vk, colMask, flagMask, approxArgs := computeStreamFulfilledOrdersKey(p)
 		_ = colMask
@@ -838,7 +888,7 @@ func (q *Queries) StreamFulfilledOrdersSeq(ctx context.Context, cutoffTs int64) 
 			ColMask:  colMask,
 			FlagMask: flagMask,
 		}
-		sqlRows, ms, err := q.cache.Query(ctx, q.db, q.txCache, q.usePrepared, vk, stmtIDStreamFulfilledOrders, runtime.ComputeBatchShapeTag(colMask, flagMask), 0, &q.fastSlots[0], sqlDialect, descStreamFulfilledOrders, &in, (*argBuf)...)
+		sqlRows, ms, err := q.cache.Query(ctx, q.db, q.txCache, q.usePrepared, vk, stmtIDStreamFulfilledOrders, runtime.ComputeBatchShapeTag(colMask, flagMask), 0, runtime.FastSlot(colMask, &q.fastSlots[0]), sqlDialect, descStreamFulfilledOrders, &in, (*argBuf)...)
 		if err != nil {
 			yield(zero, err)
 			return
@@ -863,9 +913,10 @@ func (q *Queries) StreamFulfilledOrdersSeq(ctx context.Context, cutoffTs int64) 
 	}
 }
 
-func (pl *Pipeline) StreamFulfilledOrders(cutoffTs int64) *runtime.SliceFuture[FulfilledOrder] {
+func (pl *Pipeline) StreamFulfilledOrders(cutoffTs int64, selectCols ...uint64) *runtime.SliceFuture[FulfilledOrder] {
 	p := paramsStreamFulfilledOrders{
-		CutoffTs: cutoffTs,
+		CutoffTs:   cutoffTs,
+		SelectCols: runtime.OrCols(selectCols),
 	}
 	vk, colMask, flagMask, approxArgs := computeStreamFulfilledOrdersKey(p)
 	argBuf := runtime.AcquireArgsCap(approxArgs)
@@ -874,7 +925,7 @@ func (pl *Pipeline) StreamFulfilledOrders(cutoffTs int64) *runtime.SliceFuture[F
 		ColMask:  colMask,
 		FlagMask: flagMask,
 	}
-	return runtime.QueueSlice(pl.Pipeline, stmtIDStreamFulfilledOrders, descStreamFulfilledOrders, in, vk, &pl.q.fastSlots[0], argBuf, expandErr,
+	return runtime.QueueSlice(pl.Pipeline, stmtIDStreamFulfilledOrders, descStreamFulfilledOrders, in, vk, runtime.FastSlot(colMask, &pl.q.fastSlots[0]), argBuf, expandErr,
 		func(rs *sql.Rows, dst *FulfilledOrder) error {
 			return scanStreamFulfilledOrdersRow(rs, dst, colMask, p)
 		},

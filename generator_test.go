@@ -56,7 +56,7 @@ statements:
 
   - name: SelectUserProfileSubset
     kind: many
-    params_struct: true
+    args: struct
     sql: |
       SELECT u.id:int64, u.email:string, u.role:string, u.score:int64
       {?WithExtra: , u.bio:string }
@@ -83,7 +83,7 @@ statements:
 
   - name: PageUsers
     kind: many
-    params_struct: true
+    args: struct
     sql: |
       SELECT id:int64, role:string, score:int64, email:string
       FROM users
@@ -153,7 +153,7 @@ statements:
 
   - name: PageQuad
     kind: many
-    params_struct: true
+    args: struct
     result_type: QuadItem
     sql: |
       SELECT id:int64, group_key:string, priority:int64, created_ts:int64
@@ -277,10 +277,14 @@ statements:
 			t.Fatalf("expected row field %q in generated code:\n%s", rowField, code)
 		}
 	}
-	for _, paramField := range []string{"Rate float64", "OrgID int64", "Tax float64", "BonusAdd float64", "Active bool", "WithBonus bool", "SelectCols uint64"} {
+	for _, paramField := range []string{"Rate float64", "OrgID int64", "Tax float64", "BonusAdd float64", "Active bool", "WithBonus bool"} {
 		if !strings.Contains(normalizedCode, paramField) {
 			t.Fatalf("expected param field %q in generated code:\n%s", paramField, code)
 		}
+	}
+	// One unconditional column leaves nothing to project: no SelectCols field.
+	if strings.Contains(normalizedCode, "SelectCols uint64") {
+		t.Fatalf("unexpected SelectCols field for a single unconditional column:\n%s", code)
 	}
 }
 
@@ -1011,7 +1015,7 @@ dialect: postgres
 statements:
   - name: ListItemsProjection
     kind: many
-    params_struct: true
+    args: struct
     sql: SELECT id:int64, name:string, created_at:time.Time FROM items
 `,
 		},
@@ -1782,7 +1786,7 @@ statements:
       ON DUPLICATE KEY UPDATE ts = VALUES(ts)
   - name: DeleteBatchWithFlags
     kind: exec
-    params_struct: true
+    args: struct
     sql: |
       DELETE FROM events
       WHERE org_id = :OrgID:int64::bigint
@@ -1968,7 +1972,7 @@ func TestGeneratorRejectsInputsThatCannotGenerateCorrectCode(t *testing.T) {
 	for _, tc := range []struct{ name, stmts, want string }{
 		{"flag and param share a Go field", "  - name: Q\n    kind: many\n    sql: |\n      SELECT id:int64 FROM t WHERE 1=1 {?Name: AND name = :name:string}\n", `collides with parameter "name"`},
 		{"flag named SelectCols", "  - name: Q\n    kind: many\n    sql: |\n      SELECT id:int64 FROM t WHERE 1=1 {?SelectCols: AND x = 1}\n", "SelectCols projection mask"},
-		{"param named SelectCols in params struct", "  - name: Q\n    kind: many\n    params_struct: true\n    sql: |\n      SELECT id:int64 FROM t WHERE x = :select_cols:int64\n", "SelectCols projection mask"},
+		{"param named SelectCols in params struct", "  - name: Q\n    kind: many\n    args: struct\n    sql: |\n      SELECT id:int64 FROM t WHERE x = :select_cols:int64\n", "SelectCols projection mask"},
 		{"unconditional column after a conditional one", "  - name: Q\n    kind: many\n    sql: |\n      SELECT id:int64 {?WithName: , name:string}, created:time.Time FROM t\n", "follows a conditional"},
 		{"more than 64 columns", "  - name: Q\n    kind: many\n    sql: |\n      SELECT " + strings.Join(sixtyFive, ", ") + " FROM t\n", "more than 64 unconditional output columns"},
 		{"result_type is a predeclared type", "  - name: Q\n    kind: many\n    result_type: int64\n    sql: |\n      SELECT id:int64 FROM t\n", `result_type "int64" is a predeclared Go identifier`},

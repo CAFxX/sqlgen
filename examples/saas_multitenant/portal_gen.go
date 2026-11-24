@@ -268,8 +268,8 @@ func computeSearchMembersKey(p SearchMembersParams) (runtime.VariantKey, uint64,
 	_ = p
 	var colMask uint64
 	colMask = p.SelectCols & SearchMembersColsAll
-	if colMask == 0 {
-		colMask = SearchMembersColsAll
+	if colMask == SearchMembersColsAll {
+		colMask = 0
 	}
 	var flagMask uint64
 	if p.WithOrgDetails {
@@ -335,6 +335,9 @@ func scanSearchMembersRow(scanner interface{ Scan(...any) error }, dst *MemberRo
 	var scanBuf [9]any
 	scanCount := 0
 	effMask := colMask
+	if effMask == 0 {
+		effMask = SearchMembersColsAll
+	}
 	if (effMask & (1 << 0)) != 0 {
 		scanBuf[scanCount] = &item.ID
 		scanCount++
@@ -605,8 +608,8 @@ func computeListMembersPaginatedKey(p ListMembersPaginatedParams) (runtime.Varia
 	_ = p
 	var colMask uint64
 	colMask = p.SelectCols & ListMembersPaginatedColsAll
-	if colMask == 0 {
-		colMask = ListMembersPaginatedColsAll
+	if colMask == ListMembersPaginatedColsAll {
+		colMask = 0
 	}
 	var flagMask uint64
 	var orderSpec runtime.Order
@@ -652,6 +655,9 @@ func scanListMembersPaginatedRow(scanner interface{ Scan(...any) error }, dst *M
 	var scanBuf [6]any
 	scanCount := 0
 	effMask := colMask
+	if effMask == 0 {
+		effMask = ListMembersPaginatedColsAll
+	}
 	if (effMask & (1 << 0)) != 0 {
 		scanBuf[scanCount] = &item.ID
 		scanCount++
@@ -928,6 +934,7 @@ const (
 type paramsAggregateCohortInvoices struct {
 	MemberQuery   runtime.Query
 	InvoiceStatus string
+	SelectCols    uint64
 }
 
 var descAggregateCohortInvoices = &runtime.QueryDescriptor{
@@ -961,6 +968,10 @@ func expandAggregateCohortInvoicesArgs(dst *[]any, dialect runtime.Dialect, q *r
 func computeAggregateCohortInvoicesKey(p paramsAggregateCohortInvoices) (runtime.VariantKey, uint64, uint64, int) {
 	_ = p
 	var colMask uint64
+	colMask = p.SelectCols & AggregateCohortInvoicesColsAll
+	if colMask == AggregateCohortInvoicesColsAll {
+		colMask = 0
+	}
 	var flagMask uint64
 	var orderSpec runtime.Order
 	var hasSeek bool
@@ -973,10 +984,11 @@ func computeAggregateCohortInvoicesKey(p paramsAggregateCohortInvoices) (runtime
 }
 
 // AggregateCohortInvoicesQuery constructs a composable runtime.Query without executing it.
-func AggregateCohortInvoicesQuery(memberQuery runtime.Query, invoiceStatus string) runtime.Query {
+func AggregateCohortInvoicesQuery(memberQuery runtime.Query, invoiceStatus string, selectCols ...uint64) runtime.Query {
 	p := paramsAggregateCohortInvoices{
 		MemberQuery:   memberQuery,
 		InvoiceStatus: invoiceStatus,
+		SelectCols:    runtime.OrCols(selectCols),
 	}
 	_, colMask, flagMask, _ := computeAggregateCohortInvoicesKey(p)
 	var subsBuf [1]runtime.Query
@@ -1003,8 +1015,8 @@ func AggregateCohortInvoicesQuery(memberQuery runtime.Query, invoiceStatus strin
 }
 
 // AggregateCohortInvoicesQuery constructs a composable runtime.Query without executing it.
-func (q *Queries) AggregateCohortInvoicesQuery(memberQuery runtime.Query, invoiceStatus string) runtime.Query {
-	return AggregateCohortInvoicesQuery(memberQuery, invoiceStatus)
+func (q *Queries) AggregateCohortInvoicesQuery(memberQuery runtime.Query, invoiceStatus string, selectCols ...uint64) runtime.Query {
+	return AggregateCohortInvoicesQuery(memberQuery, invoiceStatus, selectCols...)
 }
 
 func scanAggregateCohortInvoicesRow(scanner interface{ Scan(...any) error }, dst *CohortInvoiceSummary, colMask uint64, p paramsAggregateCohortInvoices) error {
@@ -1012,11 +1024,28 @@ func scanAggregateCohortInvoicesRow(scanner interface{ Scan(...any) error }, dst
 	_ = p
 	var item CohortInvoiceSummary
 	var scanBuf [4]any
-	scanBuf[0] = &item.OrgID
-	scanBuf[1] = &item.Role
-	scanBuf[2] = &item.InvoiceCount
-	scanBuf[3] = &item.TotalCents
-	scanSlice := scanBuf[:4]
+	scanCount := 0
+	effMask := colMask
+	if effMask == 0 {
+		effMask = AggregateCohortInvoicesColsAll
+	}
+	if (effMask & (1 << 0)) != 0 {
+		scanBuf[scanCount] = &item.OrgID
+		scanCount++
+	}
+	if (effMask & (1 << 1)) != 0 {
+		scanBuf[scanCount] = &item.Role
+		scanCount++
+	}
+	if (effMask & (1 << 2)) != 0 {
+		scanBuf[scanCount] = &item.InvoiceCount
+		scanCount++
+	}
+	if (effMask & (1 << 3)) != 0 {
+		scanBuf[scanCount] = &item.TotalCents
+		scanCount++
+	}
+	scanSlice := scanBuf[:scanCount]
 	if err := scanner.Scan(scanSlice...); err != nil {
 		return err
 	}
@@ -1024,16 +1053,17 @@ func scanAggregateCohortInvoicesRow(scanner interface{ Scan(...any) error }, dst
 	return nil
 }
 
-func (q *Queries) AggregateCohortInvoices(ctx context.Context, memberQuery runtime.Query, invoiceStatus string) ([]CohortInvoiceSummary, error) {
-	return runtime.Collect(q.AggregateCohortInvoicesSeq(ctx, memberQuery, invoiceStatus))
+func (q *Queries) AggregateCohortInvoices(ctx context.Context, memberQuery runtime.Query, invoiceStatus string, selectCols ...uint64) ([]CohortInvoiceSummary, error) {
+	return runtime.Collect(q.AggregateCohortInvoicesSeq(ctx, memberQuery, invoiceStatus, selectCols...))
 }
 
-func (q *Queries) AggregateCohortInvoicesSeq(ctx context.Context, memberQuery runtime.Query, invoiceStatus string) iter.Seq2[CohortInvoiceSummary, error] {
+func (q *Queries) AggregateCohortInvoicesSeq(ctx context.Context, memberQuery runtime.Query, invoiceStatus string, selectCols ...uint64) iter.Seq2[CohortInvoiceSummary, error] {
 	return func(yield func(CohortInvoiceSummary, error) bool) {
 		var zero CohortInvoiceSummary
 		p := paramsAggregateCohortInvoices{
 			MemberQuery:   memberQuery,
 			InvoiceStatus: invoiceStatus,
+			SelectCols:    runtime.OrCols(selectCols),
 		}
 		vk, colMask, flagMask, approxArgs := computeAggregateCohortInvoicesKey(p)
 		_ = colMask
@@ -1075,10 +1105,11 @@ func (q *Queries) AggregateCohortInvoicesSeq(ctx context.Context, memberQuery ru
 	}
 }
 
-func (pl *Pipeline) AggregateCohortInvoices(memberQuery runtime.Query, invoiceStatus string) *runtime.SliceFuture[CohortInvoiceSummary] {
+func (pl *Pipeline) AggregateCohortInvoices(memberQuery runtime.Query, invoiceStatus string, selectCols ...uint64) *runtime.SliceFuture[CohortInvoiceSummary] {
 	p := paramsAggregateCohortInvoices{
 		MemberQuery:   memberQuery,
 		InvoiceStatus: invoiceStatus,
+		SelectCols:    runtime.OrCols(selectCols),
 	}
 	vk, colMask, flagMask, approxArgs := computeAggregateCohortInvoicesKey(p)
 	argBuf := runtime.AcquireArgsCap(approxArgs)

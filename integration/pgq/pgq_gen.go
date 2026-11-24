@@ -508,7 +508,8 @@ const (
 )
 
 type paramsGetItem struct {
-	ID int64
+	ID         int64
+	SelectCols uint64
 }
 
 var descGetItem = &runtime.QueryDescriptor{
@@ -538,6 +539,10 @@ func expandGetItemArgs(dst *[]any, dialect runtime.Dialect, q *runtime.Query) er
 func computeGetItemKey(p paramsGetItem) (runtime.VariantKey, uint64, uint64, int) {
 	_ = p
 	var colMask uint64
+	colMask = p.SelectCols & GetItemColsAll
+	if colMask == GetItemColsAll {
+		colMask = 0
+	}
 	var flagMask uint64
 	var orderSpec runtime.Order
 	var hasSeek bool
@@ -548,9 +553,10 @@ func computeGetItemKey(p paramsGetItem) (runtime.VariantKey, uint64, uint64, int
 }
 
 // GetItemQuery constructs a composable runtime.Query without executing it.
-func GetItemQuery(id int64) runtime.Query {
+func GetItemQuery(id int64, selectCols ...uint64) runtime.Query {
 	p := paramsGetItem{
-		ID: id,
+		ID:         id,
+		SelectCols: runtime.OrCols(selectCols),
 	}
 	_, colMask, flagMask, _ := computeGetItemKey(p)
 	in := runtime.RenderInput{
@@ -570,8 +576,8 @@ func GetItemQuery(id int64) runtime.Query {
 }
 
 // GetItemQuery constructs a composable runtime.Query without executing it.
-func (q *Queries) GetItemQuery(id int64) runtime.Query {
-	return GetItemQuery(id)
+func (q *Queries) GetItemQuery(id int64, selectCols ...uint64) runtime.Query {
+	return GetItemQuery(id, selectCols...)
 }
 
 func scanGetItemRow(scanner interface{ Scan(...any) error }, dst *Item, colMask uint64, p paramsGetItem) error {
@@ -579,12 +585,32 @@ func scanGetItemRow(scanner interface{ Scan(...any) error }, dst *Item, colMask 
 	_ = p
 	var item Item
 	var scanBuf [5]any
-	scanBuf[0] = &item.ID
-	scanBuf[1] = &item.OrgID
-	scanBuf[2] = &item.Name
-	scanBuf[3] = &item.Score
-	scanBuf[4] = &item.Status
-	scanSlice := scanBuf[:5]
+	scanCount := 0
+	effMask := colMask
+	if effMask == 0 {
+		effMask = GetItemColsAll
+	}
+	if (effMask & (1 << 0)) != 0 {
+		scanBuf[scanCount] = &item.ID
+		scanCount++
+	}
+	if (effMask & (1 << 1)) != 0 {
+		scanBuf[scanCount] = &item.OrgID
+		scanCount++
+	}
+	if (effMask & (1 << 2)) != 0 {
+		scanBuf[scanCount] = &item.Name
+		scanCount++
+	}
+	if (effMask & (1 << 3)) != 0 {
+		scanBuf[scanCount] = &item.Score
+		scanCount++
+	}
+	if (effMask & (1 << 4)) != 0 {
+		scanBuf[scanCount] = &item.Status
+		scanCount++
+	}
+	scanSlice := scanBuf[:scanCount]
 	if err := scanner.Scan(scanSlice...); err != nil {
 		return err
 	}
@@ -592,10 +618,11 @@ func scanGetItemRow(scanner interface{ Scan(...any) error }, dst *Item, colMask 
 	return nil
 }
 
-func (q *Queries) GetItem(ctx context.Context, id int64) (Item, error) {
+func (q *Queries) GetItem(ctx context.Context, id int64, selectCols ...uint64) (Item, error) {
 	var zero Item
 	p := paramsGetItem{
-		ID: id,
+		ID:         id,
+		SelectCols: runtime.OrCols(selectCols),
 	}
 	vk, colMask, flagMask, approxArgs := computeGetItemKey(p)
 	_ = colMask
@@ -606,7 +633,7 @@ func (q *Queries) GetItem(ctx context.Context, id int64) (Item, error) {
 		ColMask:  colMask,
 		FlagMask: flagMask,
 	}
-	sqlRow, ms, err := q.cache.QueryRow(ctx, q.db, q.txCache, q.usePrepared, vk, stmtIDGetItem, runtime.ComputeBatchShapeTag(colMask, flagMask), 0, &q.fastSlots[0], sqlDialect, descGetItem, &in, (*argBuf)...)
+	sqlRow, ms, err := q.cache.QueryRow(ctx, q.db, q.txCache, q.usePrepared, vk, stmtIDGetItem, runtime.ComputeBatchShapeTag(colMask, flagMask), 0, runtime.FastSlot(colMask, &q.fastSlots[0]), sqlDialect, descGetItem, &in, (*argBuf)...)
 	if err != nil {
 		return zero, err
 	}
@@ -619,9 +646,10 @@ func (q *Queries) GetItem(ctx context.Context, id int64) (Item, error) {
 	return item, nil
 }
 
-func (pl *Pipeline) GetItem(id int64) *runtime.RowFuture[Item] {
+func (pl *Pipeline) GetItem(id int64, selectCols ...uint64) *runtime.RowFuture[Item] {
 	p := paramsGetItem{
-		ID: id,
+		ID:         id,
+		SelectCols: runtime.OrCols(selectCols),
 	}
 	vk, colMask, flagMask, approxArgs := computeGetItemKey(p)
 	argBuf := runtime.AcquireArgsCap(approxArgs)
@@ -630,7 +658,7 @@ func (pl *Pipeline) GetItem(id int64) *runtime.RowFuture[Item] {
 		ColMask:  colMask,
 		FlagMask: flagMask,
 	}
-	return runtime.QueueRow(pl.Pipeline, stmtIDGetItem, descGetItem, in, vk, &pl.q.fastSlots[0], argBuf, expandErr,
+	return runtime.QueueRow(pl.Pipeline, stmtIDGetItem, descGetItem, in, vk, runtime.FastSlot(colMask, &pl.q.fastSlots[0]), argBuf, expandErr,
 		func(r *sql.Row, dst *Item) error { return scanGetItemRow(r, dst, colMask, p) },
 		func(rs *sql.Rows, dst *Item) error { return scanGetItemRow(rs, dst, colMask, p) },
 	)
@@ -648,7 +676,8 @@ const (
 )
 
 type paramsItemsByIDs struct {
-	IDs []int64
+	IDs        []int64
+	SelectCols uint64
 }
 
 var descItemsByIDs = &runtime.QueryDescriptor{
@@ -693,6 +722,10 @@ func expandItemsByIDsArgs(dst *[]any, dialect runtime.Dialect, q *runtime.Query)
 func computeItemsByIDsKey(p paramsItemsByIDs) (runtime.VariantKey, uint64, uint64, int) {
 	_ = p
 	var colMask uint64
+	colMask = p.SelectCols & ItemsByIDsColsAll
+	if colMask == ItemsByIDsColsAll {
+		colMask = 0
+	}
 	var flagMask uint64
 	var orderSpec runtime.Order
 	var hasSeek bool
@@ -706,9 +739,10 @@ func computeItemsByIDsKey(p paramsItemsByIDs) (runtime.VariantKey, uint64, uint6
 }
 
 // ItemsByIDsQuery constructs a composable runtime.Query without executing it.
-func ItemsByIDsQuery(ids []int64) runtime.Query {
+func ItemsByIDsQuery(ids []int64, selectCols ...uint64) runtime.Query {
 	p := paramsItemsByIDs{
-		IDs: ids,
+		IDs:        ids,
+		SelectCols: runtime.OrCols(selectCols),
 	}
 	_, colMask, flagMask, _ := computeItemsByIDsKey(p)
 	var sliceLensBuf [1]int
@@ -733,8 +767,8 @@ func ItemsByIDsQuery(ids []int64) runtime.Query {
 }
 
 // ItemsByIDsQuery constructs a composable runtime.Query without executing it.
-func (q *Queries) ItemsByIDsQuery(ids []int64) runtime.Query {
-	return ItemsByIDsQuery(ids)
+func (q *Queries) ItemsByIDsQuery(ids []int64, selectCols ...uint64) runtime.Query {
+	return ItemsByIDsQuery(ids, selectCols...)
 }
 
 func scanItemsByIDsRow(scanner interface{ Scan(...any) error }, dst *Item, colMask uint64, p paramsItemsByIDs) error {
@@ -742,12 +776,32 @@ func scanItemsByIDsRow(scanner interface{ Scan(...any) error }, dst *Item, colMa
 	_ = p
 	var item Item
 	var scanBuf [5]any
-	scanBuf[0] = &item.ID
-	scanBuf[1] = &item.OrgID
-	scanBuf[2] = &item.Name
-	scanBuf[3] = &item.Score
-	scanBuf[4] = &item.Status
-	scanSlice := scanBuf[:5]
+	scanCount := 0
+	effMask := colMask
+	if effMask == 0 {
+		effMask = ItemsByIDsColsAll
+	}
+	if (effMask & (1 << 0)) != 0 {
+		scanBuf[scanCount] = &item.ID
+		scanCount++
+	}
+	if (effMask & (1 << 1)) != 0 {
+		scanBuf[scanCount] = &item.OrgID
+		scanCount++
+	}
+	if (effMask & (1 << 2)) != 0 {
+		scanBuf[scanCount] = &item.Name
+		scanCount++
+	}
+	if (effMask & (1 << 3)) != 0 {
+		scanBuf[scanCount] = &item.Score
+		scanCount++
+	}
+	if (effMask & (1 << 4)) != 0 {
+		scanBuf[scanCount] = &item.Status
+		scanCount++
+	}
+	scanSlice := scanBuf[:scanCount]
 	if err := scanner.Scan(scanSlice...); err != nil {
 		return err
 	}
@@ -755,10 +809,11 @@ func scanItemsByIDsRow(scanner interface{ Scan(...any) error }, dst *Item, colMa
 	return nil
 }
 
-func (q *Queries) ItemsByIDs(ctx context.Context, ids []int64) ([]Item, error) {
+func (q *Queries) ItemsByIDs(ctx context.Context, ids []int64, selectCols ...uint64) ([]Item, error) {
 	totalRows := len(ids)
 	p := paramsItemsByIDs{
-		IDs: ids,
+		IDs:        ids,
+		SelectCols: runtime.OrCols(selectCols),
 	}
 	_, colMask, flagMask, _ := computeItemsByIDsKey(p)
 	maxRows := q.cache.MaxRowsPerBatch(sqlDialect, 0, 1)
@@ -774,7 +829,7 @@ func (q *Queries) ItemsByIDs(ctx context.Context, ids []int64) ([]Item, error) {
 		targetQ = q.WithTx(autoTx)
 		defer func() { _ = targetQ.Close() }()
 	}
-	out, err := runtime.Collect(targetQ.ItemsByIDsSeq(ctx, ids))
+	out, err := runtime.Collect(targetQ.ItemsByIDsSeq(ctx, ids, selectCols...))
 	if autoTx != nil {
 		if err != nil {
 			_ = autoTx.Rollback()
@@ -787,7 +842,7 @@ func (q *Queries) ItemsByIDs(ctx context.Context, ids []int64) ([]Item, error) {
 	return out, err
 }
 
-func (q *Queries) ItemsByIDsSeq(ctx context.Context, ids []int64) iter.Seq2[Item, error] {
+func (q *Queries) ItemsByIDsSeq(ctx context.Context, ids []int64, selectCols ...uint64) iter.Seq2[Item, error] {
 	return func(yield func(Item, error) bool) {
 		var zero Item
 		totalRows := len(ids)
@@ -796,7 +851,8 @@ func (q *Queries) ItemsByIDsSeq(ctx context.Context, ids []int64) iter.Seq2[Item
 			return
 		}
 		p := paramsItemsByIDs{
-			IDs: ids,
+			IDs:        ids,
+			SelectCols: runtime.OrCols(selectCols),
 		}
 		var sortedIdx *[]int
 		if !isint64AscSorted(ids) {
@@ -865,9 +921,10 @@ func (q *Queries) ItemsByIDsSeq(ctx context.Context, ids []int64) iter.Seq2[Item
 	}
 }
 
-func (pl *Pipeline) ItemsByIDs(ids []int64) *runtime.SliceFuture[Item] {
+func (pl *Pipeline) ItemsByIDs(ids []int64, selectCols ...uint64) *runtime.SliceFuture[Item] {
 	p := paramsItemsByIDs{
-		IDs: ids,
+		IDs:        ids,
+		SelectCols: runtime.OrCols(selectCols),
 	}
 	vk, colMask, flagMask, approxArgs := computeItemsByIDsKey(p)
 	argBuf := runtime.AcquireArgsCap(approxArgs)
@@ -967,8 +1024,8 @@ func computeSearchItemsKey(p SearchItemsParams) (runtime.VariantKey, uint64, uin
 	_ = p
 	var colMask uint64
 	colMask = p.SelectCols & SearchItemsColsAll
-	if colMask == 0 {
-		colMask = SearchItemsColsAll
+	if colMask == SearchItemsColsAll {
+		colMask = 0
 	}
 	var flagMask uint64
 	if p.FilterOrg {
@@ -1031,6 +1088,9 @@ func scanSearchItemsRow(scanner interface{ Scan(...any) error }, dst *Item, colM
 	var scanBuf [5]any
 	scanCount := 0
 	effMask := colMask
+	if effMask == 0 {
+		effMask = SearchItemsColsAll
+	}
 	if (effMask & (1 << 0)) != 0 {
 		scanBuf[scanCount] = &item.ID
 		scanCount++
@@ -1257,8 +1317,8 @@ func computePageItemsKey(p PageItemsParams) (runtime.VariantKey, uint64, uint64,
 	_ = p
 	var colMask uint64
 	colMask = p.SelectCols & PageItemsColsAll
-	if colMask == 0 {
-		colMask = PageItemsColsAll
+	if colMask == PageItemsColsAll {
+		colMask = 0
 	}
 	var flagMask uint64
 	var orderSpec runtime.Order
@@ -1304,6 +1364,9 @@ func scanPageItemsRow(scanner interface{ Scan(...any) error }, dst *PagedItem, c
 	var scanBuf [5]any
 	scanCount := 0
 	effMask := colMask
+	if effMask == 0 {
+		effMask = PageItemsColsAll
+	}
 	if (effMask & (1 << 0)) != 0 {
 		scanBuf[scanCount] = &item.ID
 		scanCount++
@@ -1635,8 +1698,8 @@ func computeWideRowsKey(p WideRowsParams) (runtime.VariantKey, uint64, uint64, i
 	_ = p
 	var colMask uint64
 	colMask = p.SelectCols & WideRowsColsAll
-	if colMask == 0 {
-		colMask = WideRowsColsAll
+	if colMask == WideRowsColsAll {
+		colMask = 0
 	}
 	var flagMask uint64
 	var orderSpec runtime.Order
@@ -1682,6 +1745,9 @@ func scanWideRowsRow(scanner interface{ Scan(...any) error }, dst *Wide, colMask
 	var scanBuf [12]any
 	scanCount := 0
 	effMask := colMask
+	if effMask == 0 {
+		effMask = WideRowsColsAll
+	}
 	if (effMask & (1 << 0)) != 0 {
 		scanBuf[scanCount] = &item.C1
 		scanCount++
@@ -2261,8 +2327,9 @@ const (
 )
 
 type paramsOrgStats struct {
-	Orgs   runtime.Query
-	Status string
+	Orgs       runtime.Query
+	Status     string
+	SelectCols uint64
 }
 
 var descOrgStats = &runtime.QueryDescriptor{
@@ -2296,6 +2363,10 @@ func expandOrgStatsArgs(dst *[]any, dialect runtime.Dialect, q *runtime.Query) e
 func computeOrgStatsKey(p paramsOrgStats) (runtime.VariantKey, uint64, uint64, int) {
 	_ = p
 	var colMask uint64
+	colMask = p.SelectCols & OrgStatsColsAll
+	if colMask == OrgStatsColsAll {
+		colMask = 0
+	}
 	var flagMask uint64
 	var orderSpec runtime.Order
 	var hasSeek bool
@@ -2308,10 +2379,11 @@ func computeOrgStatsKey(p paramsOrgStats) (runtime.VariantKey, uint64, uint64, i
 }
 
 // OrgStatsQuery constructs a composable runtime.Query without executing it.
-func OrgStatsQuery(orgs runtime.Query, status string) runtime.Query {
+func OrgStatsQuery(orgs runtime.Query, status string, selectCols ...uint64) runtime.Query {
 	p := paramsOrgStats{
-		Orgs:   orgs,
-		Status: status,
+		Orgs:       orgs,
+		Status:     status,
+		SelectCols: runtime.OrCols(selectCols),
 	}
 	_, colMask, flagMask, _ := computeOrgStatsKey(p)
 	var subsBuf [1]runtime.Query
@@ -2338,8 +2410,8 @@ func OrgStatsQuery(orgs runtime.Query, status string) runtime.Query {
 }
 
 // OrgStatsQuery constructs a composable runtime.Query without executing it.
-func (q *Queries) OrgStatsQuery(orgs runtime.Query, status string) runtime.Query {
-	return OrgStatsQuery(orgs, status)
+func (q *Queries) OrgStatsQuery(orgs runtime.Query, status string, selectCols ...uint64) runtime.Query {
+	return OrgStatsQuery(orgs, status, selectCols...)
 }
 
 func scanOrgStatsRow(scanner interface{ Scan(...any) error }, dst *OrgStat, colMask uint64, p paramsOrgStats) error {
@@ -2347,10 +2419,24 @@ func scanOrgStatsRow(scanner interface{ Scan(...any) error }, dst *OrgStat, colM
 	_ = p
 	var item OrgStat
 	var scanBuf [3]any
-	scanBuf[0] = &item.OrgID
-	scanBuf[1] = &item.N
-	scanBuf[2] = &item.Total
-	scanSlice := scanBuf[:3]
+	scanCount := 0
+	effMask := colMask
+	if effMask == 0 {
+		effMask = OrgStatsColsAll
+	}
+	if (effMask & (1 << 0)) != 0 {
+		scanBuf[scanCount] = &item.OrgID
+		scanCount++
+	}
+	if (effMask & (1 << 1)) != 0 {
+		scanBuf[scanCount] = &item.N
+		scanCount++
+	}
+	if (effMask & (1 << 2)) != 0 {
+		scanBuf[scanCount] = &item.Total
+		scanCount++
+	}
+	scanSlice := scanBuf[:scanCount]
 	if err := scanner.Scan(scanSlice...); err != nil {
 		return err
 	}
@@ -2358,16 +2444,17 @@ func scanOrgStatsRow(scanner interface{ Scan(...any) error }, dst *OrgStat, colM
 	return nil
 }
 
-func (q *Queries) OrgStats(ctx context.Context, orgs runtime.Query, status string) ([]OrgStat, error) {
-	return runtime.Collect(q.OrgStatsSeq(ctx, orgs, status))
+func (q *Queries) OrgStats(ctx context.Context, orgs runtime.Query, status string, selectCols ...uint64) ([]OrgStat, error) {
+	return runtime.Collect(q.OrgStatsSeq(ctx, orgs, status, selectCols...))
 }
 
-func (q *Queries) OrgStatsSeq(ctx context.Context, orgs runtime.Query, status string) iter.Seq2[OrgStat, error] {
+func (q *Queries) OrgStatsSeq(ctx context.Context, orgs runtime.Query, status string, selectCols ...uint64) iter.Seq2[OrgStat, error] {
 	return func(yield func(OrgStat, error) bool) {
 		var zero OrgStat
 		p := paramsOrgStats{
-			Orgs:   orgs,
-			Status: status,
+			Orgs:       orgs,
+			Status:     status,
+			SelectCols: runtime.OrCols(selectCols),
 		}
 		vk, colMask, flagMask, approxArgs := computeOrgStatsKey(p)
 		_ = colMask
@@ -2409,10 +2496,11 @@ func (q *Queries) OrgStatsSeq(ctx context.Context, orgs runtime.Query, status st
 	}
 }
 
-func (pl *Pipeline) OrgStats(orgs runtime.Query, status string) *runtime.SliceFuture[OrgStat] {
+func (pl *Pipeline) OrgStats(orgs runtime.Query, status string, selectCols ...uint64) *runtime.SliceFuture[OrgStat] {
 	p := paramsOrgStats{
-		Orgs:   orgs,
-		Status: status,
+		Orgs:       orgs,
+		Status:     status,
+		SelectCols: runtime.OrCols(selectCols),
 	}
 	vk, colMask, flagMask, approxArgs := computeOrgStatsKey(p)
 	argBuf := runtime.AcquireArgsCap(approxArgs)
@@ -2597,7 +2685,8 @@ const (
 )
 
 type paramsUpsertItemsReturning struct {
-	Rows []NewItem
+	Rows       []NewItem
+	SelectCols uint64
 }
 
 var descUpsertItemsReturning = &runtime.QueryDescriptor{
@@ -2653,6 +2742,10 @@ func expandUpsertItemsReturningArgs(dst *[]any, dialect runtime.Dialect, q *runt
 func computeUpsertItemsReturningKey(p paramsUpsertItemsReturning) (runtime.VariantKey, uint64, uint64, int) {
 	_ = p
 	var colMask uint64
+	colMask = p.SelectCols & UpsertItemsReturningColsAll
+	if colMask == UpsertItemsReturningColsAll {
+		colMask = 0
+	}
 	var flagMask uint64
 	var orderSpec runtime.Order
 	var hasSeek bool
@@ -2666,9 +2759,10 @@ func computeUpsertItemsReturningKey(p paramsUpsertItemsReturning) (runtime.Varia
 }
 
 // UpsertItemsReturningQuery constructs a composable runtime.Query without executing it.
-func UpsertItemsReturningQuery(rows []NewItem) runtime.Query {
+func UpsertItemsReturningQuery(rows []NewItem, selectCols ...uint64) runtime.Query {
 	p := paramsUpsertItemsReturning{
-		Rows: rows,
+		Rows:       rows,
+		SelectCols: runtime.OrCols(selectCols),
 	}
 	_, colMask, flagMask, _ := computeUpsertItemsReturningKey(p)
 	var tupleLensBuf [1]int
@@ -2693,8 +2787,8 @@ func UpsertItemsReturningQuery(rows []NewItem) runtime.Query {
 }
 
 // UpsertItemsReturningQuery constructs a composable runtime.Query without executing it.
-func (q *Queries) UpsertItemsReturningQuery(rows []NewItem) runtime.Query {
-	return UpsertItemsReturningQuery(rows)
+func (q *Queries) UpsertItemsReturningQuery(rows []NewItem, selectCols ...uint64) runtime.Query {
+	return UpsertItemsReturningQuery(rows, selectCols...)
 }
 
 func scanUpsertItemsReturningRow(scanner interface{ Scan(...any) error }, dst *Written, colMask uint64, p paramsUpsertItemsReturning) error {
@@ -2702,9 +2796,20 @@ func scanUpsertItemsReturningRow(scanner interface{ Scan(...any) error }, dst *W
 	_ = p
 	var item Written
 	var scanBuf [2]any
-	scanBuf[0] = &item.ID
-	scanBuf[1] = &item.Score
-	scanSlice := scanBuf[:2]
+	scanCount := 0
+	effMask := colMask
+	if effMask == 0 {
+		effMask = UpsertItemsReturningColsAll
+	}
+	if (effMask & (1 << 0)) != 0 {
+		scanBuf[scanCount] = &item.ID
+		scanCount++
+	}
+	if (effMask & (1 << 1)) != 0 {
+		scanBuf[scanCount] = &item.Score
+		scanCount++
+	}
+	scanSlice := scanBuf[:scanCount]
 	if err := scanner.Scan(scanSlice...); err != nil {
 		return err
 	}
@@ -2712,13 +2817,14 @@ func scanUpsertItemsReturningRow(scanner interface{ Scan(...any) error }, dst *W
 	return nil
 }
 
-func (q *Queries) UpsertItemsReturning(ctx context.Context, rows []NewItem) ([]Written, error) {
+func (q *Queries) UpsertItemsReturning(ctx context.Context, rows []NewItem, selectCols ...uint64) ([]Written, error) {
 	if len(rows) == 0 {
 		return nil, nil
 	}
 	totalRows := len(rows)
 	p := paramsUpsertItemsReturning{
-		Rows: rows,
+		Rows:       rows,
+		SelectCols: runtime.OrCols(selectCols),
 	}
 	_, colMask, flagMask, _ := computeUpsertItemsReturningKey(p)
 	maxRows := q.cache.MaxRowsPerBatch(sqlDialect, 0, 5)
@@ -2734,7 +2840,7 @@ func (q *Queries) UpsertItemsReturning(ctx context.Context, rows []NewItem) ([]W
 		targetQ = q.WithTx(autoTx)
 		defer func() { _ = targetQ.Close() }()
 	}
-	out, err := runtime.Collect(targetQ.UpsertItemsReturningSeq(ctx, rows))
+	out, err := runtime.Collect(targetQ.UpsertItemsReturningSeq(ctx, rows, selectCols...))
 	if autoTx != nil {
 		if err != nil {
 			_ = autoTx.Rollback()
@@ -2747,7 +2853,7 @@ func (q *Queries) UpsertItemsReturning(ctx context.Context, rows []NewItem) ([]W
 	return out, err
 }
 
-func (q *Queries) UpsertItemsReturningSeq(ctx context.Context, rows []NewItem) iter.Seq2[Written, error] {
+func (q *Queries) UpsertItemsReturningSeq(ctx context.Context, rows []NewItem, selectCols ...uint64) iter.Seq2[Written, error] {
 	return func(yield func(Written, error) bool) {
 		var zero Written
 		totalRows := len(rows)
@@ -2755,7 +2861,8 @@ func (q *Queries) UpsertItemsReturningSeq(ctx context.Context, rows []NewItem) i
 			return
 		}
 		p := paramsUpsertItemsReturning{
-			Rows: rows,
+			Rows:       rows,
+			SelectCols: runtime.OrCols(selectCols),
 		}
 		var sortedIdx *[]int
 		if !isNewItemSorted(rows) {
@@ -2828,12 +2935,13 @@ func (q *Queries) UpsertItemsReturningSeq(ctx context.Context, rows []NewItem) i
 	}
 }
 
-func (pl *Pipeline) UpsertItemsReturning(rows []NewItem) *runtime.SliceFuture[Written] {
+func (pl *Pipeline) UpsertItemsReturning(rows []NewItem, selectCols ...uint64) *runtime.SliceFuture[Written] {
 	if len(rows) == 0 {
 		return runtime.QueueSliceNoop[Written](pl.Pipeline)
 	}
 	p := paramsUpsertItemsReturning{
-		Rows: rows,
+		Rows:       rows,
+		SelectCols: runtime.OrCols(selectCols),
 	}
 	vk, colMask, flagMask, approxArgs := computeUpsertItemsReturningKey(p)
 	argBuf := runtime.AcquireArgsCap(approxArgs)
@@ -2850,7 +2958,7 @@ func (pl *Pipeline) UpsertItemsReturning(rows []NewItem) *runtime.SliceFuture[Wr
 	)
 }
 
-func (q *Queries) UpsertItemsReturningStreamSeq(ctx context.Context, seq iter.Seq2[NewItem, error]) iter.Seq2[Written, error] {
+func (q *Queries) UpsertItemsReturningStreamSeq(ctx context.Context, seq iter.Seq2[NewItem, error], selectCols ...uint64) iter.Seq2[Written, error] {
 	return func(yield func(Written, error) bool) {
 		var zero Written
 		if seq == nil {
@@ -2869,7 +2977,7 @@ func (q *Queries) UpsertItemsReturningStreamSeq(ctx context.Context, seq iter.Se
 			if len(chunk) == 0 {
 				return true
 			}
-			for r, err := range q.UpsertItemsReturningSeq(ctx, chunk) {
+			for r, err := range q.UpsertItemsReturningSeq(ctx, chunk, selectCols...) {
 				if err != nil {
 					yield(zero, err)
 					return false
@@ -2897,8 +3005,8 @@ func (q *Queries) UpsertItemsReturningStreamSeq(ctx context.Context, seq iter.Se
 	}
 }
 
-func (q *Queries) UpsertItemsReturningStream(ctx context.Context, seq iter.Seq2[NewItem, error]) ([]Written, error) {
-	return runtime.Collect(q.UpsertItemsReturningStreamSeq(ctx, seq))
+func (q *Queries) UpsertItemsReturningStream(ctx context.Context, seq iter.Seq2[NewItem, error], selectCols ...uint64) ([]Written, error) {
+	return runtime.Collect(q.UpsertItemsReturningStreamSeq(ctx, seq, selectCols...))
 }
 
 const stmtIDBumpScoresReturning uint32 = 15
@@ -2910,8 +3018,9 @@ const (
 )
 
 type paramsBumpScoresReturning struct {
-	Delta int64
-	IDs   []int64
+	Delta      int64
+	IDs        []int64
+	SelectCols uint64
 }
 
 var descBumpScoresReturning = &runtime.QueryDescriptor{
@@ -2961,6 +3070,10 @@ func expandBumpScoresReturningArgs(dst *[]any, dialect runtime.Dialect, q *runti
 func computeBumpScoresReturningKey(p paramsBumpScoresReturning) (runtime.VariantKey, uint64, uint64, int) {
 	_ = p
 	var colMask uint64
+	colMask = p.SelectCols & BumpScoresReturningColsAll
+	if colMask == BumpScoresReturningColsAll {
+		colMask = 0
+	}
 	var flagMask uint64
 	var orderSpec runtime.Order
 	var hasSeek bool
@@ -2974,10 +3087,11 @@ func computeBumpScoresReturningKey(p paramsBumpScoresReturning) (runtime.Variant
 }
 
 // BumpScoresReturningQuery constructs a composable runtime.Query without executing it.
-func BumpScoresReturningQuery(delta int64, ids []int64) runtime.Query {
+func BumpScoresReturningQuery(delta int64, ids []int64, selectCols ...uint64) runtime.Query {
 	p := paramsBumpScoresReturning{
-		Delta: delta,
-		IDs:   ids,
+		Delta:      delta,
+		IDs:        ids,
+		SelectCols: runtime.OrCols(selectCols),
 	}
 	_, colMask, flagMask, _ := computeBumpScoresReturningKey(p)
 	var sliceLensBuf [1]int
@@ -3002,8 +3116,8 @@ func BumpScoresReturningQuery(delta int64, ids []int64) runtime.Query {
 }
 
 // BumpScoresReturningQuery constructs a composable runtime.Query without executing it.
-func (q *Queries) BumpScoresReturningQuery(delta int64, ids []int64) runtime.Query {
-	return BumpScoresReturningQuery(delta, ids)
+func (q *Queries) BumpScoresReturningQuery(delta int64, ids []int64, selectCols ...uint64) runtime.Query {
+	return BumpScoresReturningQuery(delta, ids, selectCols...)
 }
 
 func scanBumpScoresReturningRow(scanner interface{ Scan(...any) error }, dst *Written, colMask uint64, p paramsBumpScoresReturning) error {
@@ -3011,9 +3125,20 @@ func scanBumpScoresReturningRow(scanner interface{ Scan(...any) error }, dst *Wr
 	_ = p
 	var item Written
 	var scanBuf [2]any
-	scanBuf[0] = &item.ID
-	scanBuf[1] = &item.Score
-	scanSlice := scanBuf[:2]
+	scanCount := 0
+	effMask := colMask
+	if effMask == 0 {
+		effMask = BumpScoresReturningColsAll
+	}
+	if (effMask & (1 << 0)) != 0 {
+		scanBuf[scanCount] = &item.ID
+		scanCount++
+	}
+	if (effMask & (1 << 1)) != 0 {
+		scanBuf[scanCount] = &item.Score
+		scanCount++
+	}
+	scanSlice := scanBuf[:scanCount]
 	if err := scanner.Scan(scanSlice...); err != nil {
 		return err
 	}
@@ -3021,11 +3146,12 @@ func scanBumpScoresReturningRow(scanner interface{ Scan(...any) error }, dst *Wr
 	return nil
 }
 
-func (q *Queries) BumpScoresReturning(ctx context.Context, delta int64, ids []int64) ([]Written, error) {
+func (q *Queries) BumpScoresReturning(ctx context.Context, delta int64, ids []int64, selectCols ...uint64) ([]Written, error) {
 	totalRows := len(ids)
 	p := paramsBumpScoresReturning{
-		Delta: delta,
-		IDs:   ids,
+		Delta:      delta,
+		IDs:        ids,
+		SelectCols: runtime.OrCols(selectCols),
 	}
 	_, colMask, flagMask, _ := computeBumpScoresReturningKey(p)
 	maxRows := q.cache.MaxRowsPerBatch(sqlDialect, 1, 1)
@@ -3041,7 +3167,7 @@ func (q *Queries) BumpScoresReturning(ctx context.Context, delta int64, ids []in
 		targetQ = q.WithTx(autoTx)
 		defer func() { _ = targetQ.Close() }()
 	}
-	out, err := runtime.Collect(targetQ.BumpScoresReturningSeq(ctx, delta, ids))
+	out, err := runtime.Collect(targetQ.BumpScoresReturningSeq(ctx, delta, ids, selectCols...))
 	if autoTx != nil {
 		if err != nil {
 			_ = autoTx.Rollback()
@@ -3054,7 +3180,7 @@ func (q *Queries) BumpScoresReturning(ctx context.Context, delta int64, ids []in
 	return out, err
 }
 
-func (q *Queries) BumpScoresReturningSeq(ctx context.Context, delta int64, ids []int64) iter.Seq2[Written, error] {
+func (q *Queries) BumpScoresReturningSeq(ctx context.Context, delta int64, ids []int64, selectCols ...uint64) iter.Seq2[Written, error] {
 	return func(yield func(Written, error) bool) {
 		var zero Written
 		totalRows := len(ids)
@@ -3063,8 +3189,9 @@ func (q *Queries) BumpScoresReturningSeq(ctx context.Context, delta int64, ids [
 			return
 		}
 		p := paramsBumpScoresReturning{
-			Delta: delta,
-			IDs:   ids,
+			Delta:      delta,
+			IDs:        ids,
+			SelectCols: runtime.OrCols(selectCols),
 		}
 		var sortedIdx *[]int
 		if !isint64AscSorted(ids) {
@@ -3134,10 +3261,11 @@ func (q *Queries) BumpScoresReturningSeq(ctx context.Context, delta int64, ids [
 	}
 }
 
-func (pl *Pipeline) BumpScoresReturning(delta int64, ids []int64) *runtime.SliceFuture[Written] {
+func (pl *Pipeline) BumpScoresReturning(delta int64, ids []int64, selectCols ...uint64) *runtime.SliceFuture[Written] {
 	p := paramsBumpScoresReturning{
-		Delta: delta,
-		IDs:   ids,
+		Delta:      delta,
+		IDs:        ids,
+		SelectCols: runtime.OrCols(selectCols),
 	}
 	vk, colMask, flagMask, approxArgs := computeBumpScoresReturningKey(p)
 	argBuf := runtime.AcquireArgsCap(approxArgs)
@@ -3163,7 +3291,8 @@ const (
 )
 
 type paramsDeleteReturning struct {
-	IDs []int64
+	IDs        []int64
+	SelectCols uint64
 }
 
 var descDeleteReturning = &runtime.QueryDescriptor{
@@ -3211,6 +3340,10 @@ func expandDeleteReturningArgs(dst *[]any, dialect runtime.Dialect, q *runtime.Q
 func computeDeleteReturningKey(p paramsDeleteReturning) (runtime.VariantKey, uint64, uint64, int) {
 	_ = p
 	var colMask uint64
+	colMask = p.SelectCols & DeleteReturningColsAll
+	if colMask == DeleteReturningColsAll {
+		colMask = 0
+	}
 	var flagMask uint64
 	var orderSpec runtime.Order
 	var hasSeek bool
@@ -3224,9 +3357,10 @@ func computeDeleteReturningKey(p paramsDeleteReturning) (runtime.VariantKey, uin
 }
 
 // DeleteReturningQuery constructs a composable runtime.Query without executing it.
-func DeleteReturningQuery(ids []int64) runtime.Query {
+func DeleteReturningQuery(ids []int64, selectCols ...uint64) runtime.Query {
 	p := paramsDeleteReturning{
-		IDs: ids,
+		IDs:        ids,
+		SelectCols: runtime.OrCols(selectCols),
 	}
 	_, colMask, flagMask, _ := computeDeleteReturningKey(p)
 	var sliceLensBuf [1]int
@@ -3251,8 +3385,8 @@ func DeleteReturningQuery(ids []int64) runtime.Query {
 }
 
 // DeleteReturningQuery constructs a composable runtime.Query without executing it.
-func (q *Queries) DeleteReturningQuery(ids []int64) runtime.Query {
-	return DeleteReturningQuery(ids)
+func (q *Queries) DeleteReturningQuery(ids []int64, selectCols ...uint64) runtime.Query {
+	return DeleteReturningQuery(ids, selectCols...)
 }
 
 func scanDeleteReturningRow(scanner interface{ Scan(...any) error }, dst *Written, colMask uint64, p paramsDeleteReturning) error {
@@ -3260,9 +3394,20 @@ func scanDeleteReturningRow(scanner interface{ Scan(...any) error }, dst *Writte
 	_ = p
 	var item Written
 	var scanBuf [2]any
-	scanBuf[0] = &item.ID
-	scanBuf[1] = &item.Score
-	scanSlice := scanBuf[:2]
+	scanCount := 0
+	effMask := colMask
+	if effMask == 0 {
+		effMask = DeleteReturningColsAll
+	}
+	if (effMask & (1 << 0)) != 0 {
+		scanBuf[scanCount] = &item.ID
+		scanCount++
+	}
+	if (effMask & (1 << 1)) != 0 {
+		scanBuf[scanCount] = &item.Score
+		scanCount++
+	}
+	scanSlice := scanBuf[:scanCount]
 	if err := scanner.Scan(scanSlice...); err != nil {
 		return err
 	}
@@ -3270,10 +3415,11 @@ func scanDeleteReturningRow(scanner interface{ Scan(...any) error }, dst *Writte
 	return nil
 }
 
-func (q *Queries) DeleteReturning(ctx context.Context, ids []int64) ([]Written, error) {
+func (q *Queries) DeleteReturning(ctx context.Context, ids []int64, selectCols ...uint64) ([]Written, error) {
 	totalRows := len(ids)
 	p := paramsDeleteReturning{
-		IDs: ids,
+		IDs:        ids,
+		SelectCols: runtime.OrCols(selectCols),
 	}
 	_, colMask, flagMask, _ := computeDeleteReturningKey(p)
 	maxRows := q.cache.MaxRowsPerBatch(sqlDialect, 0, 1)
@@ -3289,7 +3435,7 @@ func (q *Queries) DeleteReturning(ctx context.Context, ids []int64) ([]Written, 
 		targetQ = q.WithTx(autoTx)
 		defer func() { _ = targetQ.Close() }()
 	}
-	out, err := runtime.Collect(targetQ.DeleteReturningSeq(ctx, ids))
+	out, err := runtime.Collect(targetQ.DeleteReturningSeq(ctx, ids, selectCols...))
 	if autoTx != nil {
 		if err != nil {
 			_ = autoTx.Rollback()
@@ -3302,7 +3448,7 @@ func (q *Queries) DeleteReturning(ctx context.Context, ids []int64) ([]Written, 
 	return out, err
 }
 
-func (q *Queries) DeleteReturningSeq(ctx context.Context, ids []int64) iter.Seq2[Written, error] {
+func (q *Queries) DeleteReturningSeq(ctx context.Context, ids []int64, selectCols ...uint64) iter.Seq2[Written, error] {
 	return func(yield func(Written, error) bool) {
 		var zero Written
 		totalRows := len(ids)
@@ -3311,7 +3457,8 @@ func (q *Queries) DeleteReturningSeq(ctx context.Context, ids []int64) iter.Seq2
 			return
 		}
 		p := paramsDeleteReturning{
-			IDs: ids,
+			IDs:        ids,
+			SelectCols: runtime.OrCols(selectCols),
 		}
 		var sortedIdx *[]int
 		if !isint64DescSorted(ids) {
@@ -3380,9 +3527,10 @@ func (q *Queries) DeleteReturningSeq(ctx context.Context, ids []int64) iter.Seq2
 	}
 }
 
-func (pl *Pipeline) DeleteReturning(ids []int64) *runtime.SliceFuture[Written] {
+func (pl *Pipeline) DeleteReturning(ids []int64, selectCols ...uint64) *runtime.SliceFuture[Written] {
 	p := paramsDeleteReturning{
-		IDs: ids,
+		IDs:        ids,
+		SelectCols: runtime.OrCols(selectCols),
 	}
 	vk, colMask, flagMask, approxArgs := computeDeleteReturningKey(p)
 	argBuf := runtime.AcquireArgsCap(approxArgs)

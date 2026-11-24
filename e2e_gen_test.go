@@ -420,7 +420,8 @@ const (
 )
 
 type paramsGetUserByID struct {
-	ID int64
+	ID         int64
+	SelectCols uint64
 }
 
 var descGetUserByID = &runtime.QueryDescriptor{
@@ -450,6 +451,10 @@ func expandGetUserByIDArgs(dst *[]any, dialect runtime.Dialect, q *runtime.Query
 func computeGetUserByIDKey(p paramsGetUserByID) (runtime.VariantKey, uint64, uint64, int) {
 	_ = p
 	var colMask uint64
+	colMask = p.SelectCols & GetUserByIDColsAll
+	if colMask == GetUserByIDColsAll {
+		colMask = 0
+	}
 	var flagMask uint64
 	var orderSpec runtime.Order
 	var hasSeek bool
@@ -460,9 +465,10 @@ func computeGetUserByIDKey(p paramsGetUserByID) (runtime.VariantKey, uint64, uin
 }
 
 // GetUserByIDQuery constructs a composable runtime.Query without executing it.
-func GetUserByIDQuery(id int64) runtime.Query {
+func GetUserByIDQuery(id int64, selectCols ...uint64) runtime.Query {
 	p := paramsGetUserByID{
-		ID: id,
+		ID:         id,
+		SelectCols: runtime.OrCols(selectCols),
 	}
 	_, colMask, flagMask, _ := computeGetUserByIDKey(p)
 	in := runtime.RenderInput{
@@ -482,8 +488,8 @@ func GetUserByIDQuery(id int64) runtime.Query {
 }
 
 // GetUserByIDQuery constructs a composable runtime.Query without executing it.
-func (q *Queries) GetUserByIDQuery(id int64) runtime.Query {
-	return GetUserByIDQuery(id)
+func (q *Queries) GetUserByIDQuery(id int64, selectCols ...uint64) runtime.Query {
+	return GetUserByIDQuery(id, selectCols...)
 }
 
 func scanGetUserByIDRow(scanner interface{ Scan(...any) error }, dst *User, colMask uint64, p paramsGetUserByID) error {
@@ -491,13 +497,36 @@ func scanGetUserByIDRow(scanner interface{ Scan(...any) error }, dst *User, colM
 	_ = p
 	var item User
 	var scanBuf [6]any
-	scanBuf[0] = &item.ID
-	scanBuf[1] = &item.OrgID
-	scanBuf[2] = &item.Email
-	scanBuf[3] = &item.Role
-	scanBuf[4] = &item.Score
-	scanBuf[5] = &item.Bio
-	scanSlice := scanBuf[:6]
+	scanCount := 0
+	effMask := colMask
+	if effMask == 0 {
+		effMask = GetUserByIDColsAll
+	}
+	if (effMask & (1 << 0)) != 0 {
+		scanBuf[scanCount] = &item.ID
+		scanCount++
+	}
+	if (effMask & (1 << 1)) != 0 {
+		scanBuf[scanCount] = &item.OrgID
+		scanCount++
+	}
+	if (effMask & (1 << 2)) != 0 {
+		scanBuf[scanCount] = &item.Email
+		scanCount++
+	}
+	if (effMask & (1 << 3)) != 0 {
+		scanBuf[scanCount] = &item.Role
+		scanCount++
+	}
+	if (effMask & (1 << 4)) != 0 {
+		scanBuf[scanCount] = &item.Score
+		scanCount++
+	}
+	if (effMask & (1 << 5)) != 0 {
+		scanBuf[scanCount] = &item.Bio
+		scanCount++
+	}
+	scanSlice := scanBuf[:scanCount]
 	if err := scanner.Scan(scanSlice...); err != nil {
 		return err
 	}
@@ -505,10 +534,11 @@ func scanGetUserByIDRow(scanner interface{ Scan(...any) error }, dst *User, colM
 	return nil
 }
 
-func (q *Queries) GetUserByID(ctx context.Context, id int64) (User, error) {
+func (q *Queries) GetUserByID(ctx context.Context, id int64, selectCols ...uint64) (User, error) {
 	var zero User
 	p := paramsGetUserByID{
-		ID: id,
+		ID:         id,
+		SelectCols: runtime.OrCols(selectCols),
 	}
 	vk, colMask, flagMask, approxArgs := computeGetUserByIDKey(p)
 	_ = colMask
@@ -519,7 +549,7 @@ func (q *Queries) GetUserByID(ctx context.Context, id int64) (User, error) {
 		ColMask:  colMask,
 		FlagMask: flagMask,
 	}
-	sqlRow, ms, err := q.cache.QueryRow(ctx, q.db, q.txCache, q.usePrepared, vk, stmtIDGetUserByID, runtime.ComputeBatchShapeTag(colMask, flagMask), 0, &q.fastSlots[1], sqlDialect, descGetUserByID, &in, (*argBuf)...)
+	sqlRow, ms, err := q.cache.QueryRow(ctx, q.db, q.txCache, q.usePrepared, vk, stmtIDGetUserByID, runtime.ComputeBatchShapeTag(colMask, flagMask), 0, runtime.FastSlot(colMask, &q.fastSlots[1]), sqlDialect, descGetUserByID, &in, (*argBuf)...)
 	if err != nil {
 		return zero, err
 	}
@@ -532,9 +562,10 @@ func (q *Queries) GetUserByID(ctx context.Context, id int64) (User, error) {
 	return item, nil
 }
 
-func (pl *Pipeline) GetUserByID(id int64) *runtime.RowFuture[User] {
+func (pl *Pipeline) GetUserByID(id int64, selectCols ...uint64) *runtime.RowFuture[User] {
 	p := paramsGetUserByID{
-		ID: id,
+		ID:         id,
+		SelectCols: runtime.OrCols(selectCols),
 	}
 	vk, colMask, flagMask, approxArgs := computeGetUserByIDKey(p)
 	argBuf := runtime.AcquireArgsCap(approxArgs)
@@ -543,7 +574,7 @@ func (pl *Pipeline) GetUserByID(id int64) *runtime.RowFuture[User] {
 		ColMask:  colMask,
 		FlagMask: flagMask,
 	}
-	return runtime.QueueRow(pl.Pipeline, stmtIDGetUserByID, descGetUserByID, in, vk, &pl.q.fastSlots[1], argBuf, expandErr,
+	return runtime.QueueRow(pl.Pipeline, stmtIDGetUserByID, descGetUserByID, in, vk, runtime.FastSlot(colMask, &pl.q.fastSlots[1]), argBuf, expandErr,
 		func(r *sql.Row, dst *User) error { return scanGetUserByIDRow(r, dst, colMask, p) },
 		func(rs *sql.Rows, dst *User) error { return scanGetUserByIDRow(rs, dst, colMask, p) },
 	)
@@ -562,7 +593,8 @@ const (
 )
 
 type paramsListUsersByIDs struct {
-	IDs []int64
+	IDs        []int64
+	SelectCols uint64
 }
 
 var descListUsersByIDs = &runtime.QueryDescriptor{
@@ -607,6 +639,10 @@ func expandListUsersByIDsArgs(dst *[]any, dialect runtime.Dialect, q *runtime.Qu
 func computeListUsersByIDsKey(p paramsListUsersByIDs) (runtime.VariantKey, uint64, uint64, int) {
 	_ = p
 	var colMask uint64
+	colMask = p.SelectCols & ListUsersByIDsColsAll
+	if colMask == ListUsersByIDsColsAll {
+		colMask = 0
+	}
 	var flagMask uint64
 	var orderSpec runtime.Order
 	var hasSeek bool
@@ -620,9 +656,10 @@ func computeListUsersByIDsKey(p paramsListUsersByIDs) (runtime.VariantKey, uint6
 }
 
 // ListUsersByIDsQuery constructs a composable runtime.Query without executing it.
-func ListUsersByIDsQuery(ids []int64) runtime.Query {
+func ListUsersByIDsQuery(ids []int64, selectCols ...uint64) runtime.Query {
 	p := paramsListUsersByIDs{
-		IDs: ids,
+		IDs:        ids,
+		SelectCols: runtime.OrCols(selectCols),
 	}
 	_, colMask, flagMask, _ := computeListUsersByIDsKey(p)
 	var sliceLensBuf [1]int
@@ -647,8 +684,8 @@ func ListUsersByIDsQuery(ids []int64) runtime.Query {
 }
 
 // ListUsersByIDsQuery constructs a composable runtime.Query without executing it.
-func (q *Queries) ListUsersByIDsQuery(ids []int64) runtime.Query {
-	return ListUsersByIDsQuery(ids)
+func (q *Queries) ListUsersByIDsQuery(ids []int64, selectCols ...uint64) runtime.Query {
+	return ListUsersByIDsQuery(ids, selectCols...)
 }
 
 func scanListUsersByIDsRow(scanner interface{ Scan(...any) error }, dst *User, colMask uint64, p paramsListUsersByIDs) error {
@@ -656,13 +693,36 @@ func scanListUsersByIDsRow(scanner interface{ Scan(...any) error }, dst *User, c
 	_ = p
 	var item User
 	var scanBuf [6]any
-	scanBuf[0] = &item.ID
-	scanBuf[1] = &item.OrgID
-	scanBuf[2] = &item.Email
-	scanBuf[3] = &item.Role
-	scanBuf[4] = &item.Score
-	scanBuf[5] = &item.Bio
-	scanSlice := scanBuf[:6]
+	scanCount := 0
+	effMask := colMask
+	if effMask == 0 {
+		effMask = ListUsersByIDsColsAll
+	}
+	if (effMask & (1 << 0)) != 0 {
+		scanBuf[scanCount] = &item.ID
+		scanCount++
+	}
+	if (effMask & (1 << 1)) != 0 {
+		scanBuf[scanCount] = &item.OrgID
+		scanCount++
+	}
+	if (effMask & (1 << 2)) != 0 {
+		scanBuf[scanCount] = &item.Email
+		scanCount++
+	}
+	if (effMask & (1 << 3)) != 0 {
+		scanBuf[scanCount] = &item.Role
+		scanCount++
+	}
+	if (effMask & (1 << 4)) != 0 {
+		scanBuf[scanCount] = &item.Score
+		scanCount++
+	}
+	if (effMask & (1 << 5)) != 0 {
+		scanBuf[scanCount] = &item.Bio
+		scanCount++
+	}
+	scanSlice := scanBuf[:scanCount]
 	if err := scanner.Scan(scanSlice...); err != nil {
 		return err
 	}
@@ -670,10 +730,11 @@ func scanListUsersByIDsRow(scanner interface{ Scan(...any) error }, dst *User, c
 	return nil
 }
 
-func (q *Queries) ListUsersByIDs(ctx context.Context, ids []int64) ([]User, error) {
+func (q *Queries) ListUsersByIDs(ctx context.Context, ids []int64, selectCols ...uint64) ([]User, error) {
 	totalRows := len(ids)
 	p := paramsListUsersByIDs{
-		IDs: ids,
+		IDs:        ids,
+		SelectCols: runtime.OrCols(selectCols),
 	}
 	_, colMask, flagMask, _ := computeListUsersByIDsKey(p)
 	maxRows := q.cache.MaxRowsPerBatch(sqlDialect, 0, 1)
@@ -689,7 +750,7 @@ func (q *Queries) ListUsersByIDs(ctx context.Context, ids []int64) ([]User, erro
 		targetQ = q.WithTx(autoTx)
 		defer func() { _ = targetQ.Close() }()
 	}
-	out, err := runtime.Collect(targetQ.ListUsersByIDsSeq(ctx, ids))
+	out, err := runtime.Collect(targetQ.ListUsersByIDsSeq(ctx, ids, selectCols...))
 	if autoTx != nil {
 		if err != nil {
 			_ = autoTx.Rollback()
@@ -702,7 +763,7 @@ func (q *Queries) ListUsersByIDs(ctx context.Context, ids []int64) ([]User, erro
 	return out, err
 }
 
-func (q *Queries) ListUsersByIDsSeq(ctx context.Context, ids []int64) iter.Seq2[User, error] {
+func (q *Queries) ListUsersByIDsSeq(ctx context.Context, ids []int64, selectCols ...uint64) iter.Seq2[User, error] {
 	return func(yield func(User, error) bool) {
 		var zero User
 		totalRows := len(ids)
@@ -711,7 +772,8 @@ func (q *Queries) ListUsersByIDsSeq(ctx context.Context, ids []int64) iter.Seq2[
 			return
 		}
 		p := paramsListUsersByIDs{
-			IDs: ids,
+			IDs:        ids,
+			SelectCols: runtime.OrCols(selectCols),
 		}
 		var sortedIdx *[]int
 		if !isint64AscSorted(ids) {
@@ -780,9 +842,10 @@ func (q *Queries) ListUsersByIDsSeq(ctx context.Context, ids []int64) iter.Seq2[
 	}
 }
 
-func (pl *Pipeline) ListUsersByIDs(ids []int64) *runtime.SliceFuture[User] {
+func (pl *Pipeline) ListUsersByIDs(ids []int64, selectCols ...uint64) *runtime.SliceFuture[User] {
 	p := paramsListUsersByIDs{
-		IDs: ids,
+		IDs:        ids,
+		SelectCols: runtime.OrCols(selectCols),
 	}
 	vk, colMask, flagMask, approxArgs := computeListUsersByIDsKey(p)
 	argBuf := runtime.AcquireArgsCap(approxArgs)
@@ -855,8 +918,8 @@ func computeSelectUserProfileSubsetKey(p SelectUserProfileSubsetParams) (runtime
 	_ = p
 	var colMask uint64
 	colMask = p.SelectCols & SelectUserProfileSubsetColsAll
-	if colMask == 0 {
-		colMask = SelectUserProfileSubsetColsAll
+	if colMask == SelectUserProfileSubsetColsAll {
+		colMask = 0
 	}
 	var flagMask uint64
 	if p.WithExtra {
@@ -901,6 +964,9 @@ func scanSelectUserProfileSubsetRow(scanner interface{ Scan(...any) error }, dst
 	var scanBuf [5]any
 	scanCount := 0
 	effMask := colMask
+	if effMask == 0 {
+		effMask = SelectUserProfileSubsetColsAll
+	}
 	if (effMask & (1 << 0)) != 0 {
 		scanBuf[scanCount] = &item.ID
 		scanCount++
@@ -1080,8 +1146,8 @@ func computeSearchUsersCoupledKey(p SearchUsersCoupledParams) (runtime.VariantKe
 	_ = p
 	var colMask uint64
 	colMask = p.SelectCols & SearchUsersCoupledColsAll
-	if colMask == 0 {
-		colMask = SearchUsersCoupledColsAll
+	if colMask == SearchUsersCoupledColsAll {
+		colMask = 0
 	}
 	var flagMask uint64
 	if p.WithOrg {
@@ -1161,6 +1227,9 @@ func scanSearchUsersCoupledRow(scanner interface{ Scan(...any) error }, dst *Sea
 	var scanBuf [3]any
 	scanCount := 0
 	effMask := colMask
+	if effMask == 0 {
+		effMask = SearchUsersCoupledColsAll
+	}
 	if (effMask & (1 << 0)) != 0 {
 		scanBuf[scanCount] = &item.ID
 		scanCount++
@@ -1494,8 +1563,8 @@ func computePageUsersKey(p PageUsersParams) (runtime.VariantKey, uint64, uint64,
 	_ = p
 	var colMask uint64
 	colMask = p.SelectCols & PageUsersColsAll
-	if colMask == 0 {
-		colMask = PageUsersColsAll
+	if colMask == PageUsersColsAll {
+		colMask = 0
 	}
 	var flagMask uint64
 	if p.RoleFilter {
@@ -1544,6 +1613,9 @@ func scanPageUsersRow(scanner interface{ Scan(...any) error }, dst *PageUsersRow
 	var scanBuf [4]any
 	scanCount := 0
 	effMask := colMask
+	if effMask == 0 {
+		effMask = PageUsersColsAll
+	}
 	if (effMask & (1 << 0)) != 0 {
 		scanBuf[scanCount] = &item.ID
 		scanCount++
@@ -1644,8 +1716,9 @@ const (
 )
 
 type paramsUsersFromCTEAndInSubquery struct {
-	Ctesub runtime.Query
-	Idsub  runtime.Query
+	Ctesub     runtime.Query
+	Idsub      runtime.Query
+	SelectCols uint64
 }
 
 var descUsersFromCTEAndInSubquery = &runtime.QueryDescriptor{
@@ -1681,6 +1754,10 @@ func expandUsersFromCTEAndInSubqueryArgs(dst *[]any, dialect runtime.Dialect, q 
 func computeUsersFromCTEAndInSubqueryKey(p paramsUsersFromCTEAndInSubquery) (runtime.VariantKey, uint64, uint64, int) {
 	_ = p
 	var colMask uint64
+	colMask = p.SelectCols & UsersFromCTEAndInSubqueryColsAll
+	if colMask == UsersFromCTEAndInSubqueryColsAll {
+		colMask = 0
+	}
 	var flagMask uint64
 	var orderSpec runtime.Order
 	var hasSeek bool
@@ -1695,10 +1772,11 @@ func computeUsersFromCTEAndInSubqueryKey(p paramsUsersFromCTEAndInSubquery) (run
 }
 
 // UsersFromCTEAndInSubqueryQuery constructs a composable runtime.Query without executing it.
-func UsersFromCTEAndInSubqueryQuery(ctesub runtime.Query, idsub runtime.Query) runtime.Query {
+func UsersFromCTEAndInSubqueryQuery(ctesub runtime.Query, idsub runtime.Query, selectCols ...uint64) runtime.Query {
 	p := paramsUsersFromCTEAndInSubquery{
-		Ctesub: ctesub,
-		Idsub:  idsub,
+		Ctesub:     ctesub,
+		Idsub:      idsub,
+		SelectCols: runtime.OrCols(selectCols),
 	}
 	_, colMask, flagMask, _ := computeUsersFromCTEAndInSubqueryKey(p)
 	var subsBuf [2]runtime.Query
@@ -1726,8 +1804,8 @@ func UsersFromCTEAndInSubqueryQuery(ctesub runtime.Query, idsub runtime.Query) r
 }
 
 // UsersFromCTEAndInSubqueryQuery constructs a composable runtime.Query without executing it.
-func (q *Queries) UsersFromCTEAndInSubqueryQuery(ctesub runtime.Query, idsub runtime.Query) runtime.Query {
-	return UsersFromCTEAndInSubqueryQuery(ctesub, idsub)
+func (q *Queries) UsersFromCTEAndInSubqueryQuery(ctesub runtime.Query, idsub runtime.Query, selectCols ...uint64) runtime.Query {
+	return UsersFromCTEAndInSubqueryQuery(ctesub, idsub, selectCols...)
 }
 
 func scanUsersFromCTEAndInSubqueryRow(scanner interface{ Scan(...any) error }, dst *UsersFromCTEAndInSubqueryRow, colMask uint64, p paramsUsersFromCTEAndInSubquery) error {
@@ -1735,9 +1813,20 @@ func scanUsersFromCTEAndInSubqueryRow(scanner interface{ Scan(...any) error }, d
 	_ = p
 	var item UsersFromCTEAndInSubqueryRow
 	var scanBuf [2]any
-	scanBuf[0] = &item.ID
-	scanBuf[1] = &item.Email
-	scanSlice := scanBuf[:2]
+	scanCount := 0
+	effMask := colMask
+	if effMask == 0 {
+		effMask = UsersFromCTEAndInSubqueryColsAll
+	}
+	if (effMask & (1 << 0)) != 0 {
+		scanBuf[scanCount] = &item.ID
+		scanCount++
+	}
+	if (effMask & (1 << 1)) != 0 {
+		scanBuf[scanCount] = &item.Email
+		scanCount++
+	}
+	scanSlice := scanBuf[:scanCount]
 	if err := scanner.Scan(scanSlice...); err != nil {
 		return err
 	}
@@ -1745,16 +1834,17 @@ func scanUsersFromCTEAndInSubqueryRow(scanner interface{ Scan(...any) error }, d
 	return nil
 }
 
-func (q *Queries) UsersFromCTEAndInSubquery(ctx context.Context, ctesub runtime.Query, idsub runtime.Query) ([]UsersFromCTEAndInSubqueryRow, error) {
-	return runtime.Collect(q.UsersFromCTEAndInSubquerySeq(ctx, ctesub, idsub))
+func (q *Queries) UsersFromCTEAndInSubquery(ctx context.Context, ctesub runtime.Query, idsub runtime.Query, selectCols ...uint64) ([]UsersFromCTEAndInSubqueryRow, error) {
+	return runtime.Collect(q.UsersFromCTEAndInSubquerySeq(ctx, ctesub, idsub, selectCols...))
 }
 
-func (q *Queries) UsersFromCTEAndInSubquerySeq(ctx context.Context, ctesub runtime.Query, idsub runtime.Query) iter.Seq2[UsersFromCTEAndInSubqueryRow, error] {
+func (q *Queries) UsersFromCTEAndInSubquerySeq(ctx context.Context, ctesub runtime.Query, idsub runtime.Query, selectCols ...uint64) iter.Seq2[UsersFromCTEAndInSubqueryRow, error] {
 	return func(yield func(UsersFromCTEAndInSubqueryRow, error) bool) {
 		var zero UsersFromCTEAndInSubqueryRow
 		p := paramsUsersFromCTEAndInSubquery{
-			Ctesub: ctesub,
-			Idsub:  idsub,
+			Ctesub:     ctesub,
+			Idsub:      idsub,
+			SelectCols: runtime.OrCols(selectCols),
 		}
 		vk, colMask, flagMask, approxArgs := computeUsersFromCTEAndInSubqueryKey(p)
 		_ = colMask
@@ -1797,10 +1887,11 @@ func (q *Queries) UsersFromCTEAndInSubquerySeq(ctx context.Context, ctesub runti
 	}
 }
 
-func (pl *Pipeline) UsersFromCTEAndInSubquery(ctesub runtime.Query, idsub runtime.Query) *runtime.SliceFuture[UsersFromCTEAndInSubqueryRow] {
+func (pl *Pipeline) UsersFromCTEAndInSubquery(ctesub runtime.Query, idsub runtime.Query, selectCols ...uint64) *runtime.SliceFuture[UsersFromCTEAndInSubqueryRow] {
 	p := paramsUsersFromCTEAndInSubquery{
-		Ctesub: ctesub,
-		Idsub:  idsub,
+		Ctesub:     ctesub,
+		Idsub:      idsub,
+		SelectCols: runtime.OrCols(selectCols),
 	}
 	vk, colMask, flagMask, approxArgs := computeUsersFromCTEAndInSubqueryKey(p)
 	argBuf := runtime.AcquireArgsCap(approxArgs)
@@ -1904,7 +1995,8 @@ const (
 )
 
 type paramsInsertUsersBatchReturning struct {
-	Rows []BatchUserInput
+	Rows       []BatchUserInput
+	SelectCols uint64
 }
 
 var descInsertUsersBatchReturning = &runtime.QueryDescriptor{
@@ -1956,6 +2048,10 @@ func expandInsertUsersBatchReturningArgs(dst *[]any, dialect runtime.Dialect, q 
 func computeInsertUsersBatchReturningKey(p paramsInsertUsersBatchReturning) (runtime.VariantKey, uint64, uint64, int) {
 	_ = p
 	var colMask uint64
+	colMask = p.SelectCols & InsertUsersBatchReturningColsAll
+	if colMask == InsertUsersBatchReturningColsAll {
+		colMask = 0
+	}
 	var flagMask uint64
 	var orderSpec runtime.Order
 	var hasSeek bool
@@ -1969,9 +2065,10 @@ func computeInsertUsersBatchReturningKey(p paramsInsertUsersBatchReturning) (run
 }
 
 // InsertUsersBatchReturningQuery constructs a composable runtime.Query without executing it.
-func InsertUsersBatchReturningQuery(rows []BatchUserInput) runtime.Query {
+func InsertUsersBatchReturningQuery(rows []BatchUserInput, selectCols ...uint64) runtime.Query {
 	p := paramsInsertUsersBatchReturning{
-		Rows: rows,
+		Rows:       rows,
+		SelectCols: runtime.OrCols(selectCols),
 	}
 	_, colMask, flagMask, _ := computeInsertUsersBatchReturningKey(p)
 	var tupleLensBuf [1]int
@@ -1996,8 +2093,8 @@ func InsertUsersBatchReturningQuery(rows []BatchUserInput) runtime.Query {
 }
 
 // InsertUsersBatchReturningQuery constructs a composable runtime.Query without executing it.
-func (q *Queries) InsertUsersBatchReturningQuery(rows []BatchUserInput) runtime.Query {
-	return InsertUsersBatchReturningQuery(rows)
+func (q *Queries) InsertUsersBatchReturningQuery(rows []BatchUserInput, selectCols ...uint64) runtime.Query {
+	return InsertUsersBatchReturningQuery(rows, selectCols...)
 }
 
 func scanInsertUsersBatchReturningRow(scanner interface{ Scan(...any) error }, dst *InsertUsersBatchReturningRow, colMask uint64, p paramsInsertUsersBatchReturning) error {
@@ -2005,10 +2102,24 @@ func scanInsertUsersBatchReturningRow(scanner interface{ Scan(...any) error }, d
 	_ = p
 	var item InsertUsersBatchReturningRow
 	var scanBuf [3]any
-	scanBuf[0] = &item.ID
-	scanBuf[1] = &item.Name
-	scanBuf[2] = &item.Points
-	scanSlice := scanBuf[:3]
+	scanCount := 0
+	effMask := colMask
+	if effMask == 0 {
+		effMask = InsertUsersBatchReturningColsAll
+	}
+	if (effMask & (1 << 0)) != 0 {
+		scanBuf[scanCount] = &item.ID
+		scanCount++
+	}
+	if (effMask & (1 << 1)) != 0 {
+		scanBuf[scanCount] = &item.Name
+		scanCount++
+	}
+	if (effMask & (1 << 2)) != 0 {
+		scanBuf[scanCount] = &item.Points
+		scanCount++
+	}
+	scanSlice := scanBuf[:scanCount]
 	if err := scanner.Scan(scanSlice...); err != nil {
 		return err
 	}
@@ -2016,13 +2127,14 @@ func scanInsertUsersBatchReturningRow(scanner interface{ Scan(...any) error }, d
 	return nil
 }
 
-func (q *Queries) InsertUsersBatchReturning(ctx context.Context, rows []BatchUserInput) ([]InsertUsersBatchReturningRow, error) {
+func (q *Queries) InsertUsersBatchReturning(ctx context.Context, rows []BatchUserInput, selectCols ...uint64) ([]InsertUsersBatchReturningRow, error) {
 	if len(rows) == 0 {
 		return nil, nil
 	}
 	totalRows := len(rows)
 	p := paramsInsertUsersBatchReturning{
-		Rows: rows,
+		Rows:       rows,
+		SelectCols: runtime.OrCols(selectCols),
 	}
 	_, colMask, flagMask, _ := computeInsertUsersBatchReturningKey(p)
 	maxRows := q.cache.MaxRowsPerBatch(sqlDialect, 0, 3)
@@ -2038,7 +2150,7 @@ func (q *Queries) InsertUsersBatchReturning(ctx context.Context, rows []BatchUse
 		targetQ = q.WithTx(autoTx)
 		defer func() { _ = targetQ.Close() }()
 	}
-	out, err := runtime.Collect(targetQ.InsertUsersBatchReturningSeq(ctx, rows))
+	out, err := runtime.Collect(targetQ.InsertUsersBatchReturningSeq(ctx, rows, selectCols...))
 	if autoTx != nil {
 		if err != nil {
 			_ = autoTx.Rollback()
@@ -2051,7 +2163,7 @@ func (q *Queries) InsertUsersBatchReturning(ctx context.Context, rows []BatchUse
 	return out, err
 }
 
-func (q *Queries) InsertUsersBatchReturningSeq(ctx context.Context, rows []BatchUserInput) iter.Seq2[InsertUsersBatchReturningRow, error] {
+func (q *Queries) InsertUsersBatchReturningSeq(ctx context.Context, rows []BatchUserInput, selectCols ...uint64) iter.Seq2[InsertUsersBatchReturningRow, error] {
 	return func(yield func(InsertUsersBatchReturningRow, error) bool) {
 		var zero InsertUsersBatchReturningRow
 		totalRows := len(rows)
@@ -2059,7 +2171,8 @@ func (q *Queries) InsertUsersBatchReturningSeq(ctx context.Context, rows []Batch
 			return
 		}
 		p := paramsInsertUsersBatchReturning{
-			Rows: rows,
+			Rows:       rows,
+			SelectCols: runtime.OrCols(selectCols),
 		}
 		var sortedIdx *[]int
 		if !isBatchUserInputSorted(rows) {
@@ -2130,12 +2243,13 @@ func (q *Queries) InsertUsersBatchReturningSeq(ctx context.Context, rows []Batch
 	}
 }
 
-func (pl *Pipeline) InsertUsersBatchReturning(rows []BatchUserInput) *runtime.SliceFuture[InsertUsersBatchReturningRow] {
+func (pl *Pipeline) InsertUsersBatchReturning(rows []BatchUserInput, selectCols ...uint64) *runtime.SliceFuture[InsertUsersBatchReturningRow] {
 	if len(rows) == 0 {
 		return runtime.QueueSliceNoop[InsertUsersBatchReturningRow](pl.Pipeline)
 	}
 	p := paramsInsertUsersBatchReturning{
-		Rows: rows,
+		Rows:       rows,
+		SelectCols: runtime.OrCols(selectCols),
 	}
 	vk, colMask, flagMask, approxArgs := computeInsertUsersBatchReturningKey(p)
 	argBuf := runtime.AcquireArgsCap(approxArgs)
@@ -2154,7 +2268,7 @@ func (pl *Pipeline) InsertUsersBatchReturning(rows []BatchUserInput) *runtime.Sl
 	)
 }
 
-func (q *Queries) InsertUsersBatchReturningStreamSeq(ctx context.Context, seq iter.Seq2[BatchUserInput, error]) iter.Seq2[InsertUsersBatchReturningRow, error] {
+func (q *Queries) InsertUsersBatchReturningStreamSeq(ctx context.Context, seq iter.Seq2[BatchUserInput, error], selectCols ...uint64) iter.Seq2[InsertUsersBatchReturningRow, error] {
 	return func(yield func(InsertUsersBatchReturningRow, error) bool) {
 		var zero InsertUsersBatchReturningRow
 		if seq == nil {
@@ -2173,7 +2287,7 @@ func (q *Queries) InsertUsersBatchReturningStreamSeq(ctx context.Context, seq it
 			if len(chunk) == 0 {
 				return true
 			}
-			for r, err := range q.InsertUsersBatchReturningSeq(ctx, chunk) {
+			for r, err := range q.InsertUsersBatchReturningSeq(ctx, chunk, selectCols...) {
 				if err != nil {
 					yield(zero, err)
 					return false
@@ -2201,8 +2315,8 @@ func (q *Queries) InsertUsersBatchReturningStreamSeq(ctx context.Context, seq it
 	}
 }
 
-func (q *Queries) InsertUsersBatchReturningStream(ctx context.Context, seq iter.Seq2[BatchUserInput, error]) ([]InsertUsersBatchReturningRow, error) {
-	return runtime.Collect(q.InsertUsersBatchReturningStreamSeq(ctx, seq))
+func (q *Queries) InsertUsersBatchReturningStream(ctx context.Context, seq iter.Seq2[BatchUserInput, error], selectCols ...uint64) ([]InsertUsersBatchReturningRow, error) {
+	return runtime.Collect(q.InsertUsersBatchReturningStreamSeq(ctx, seq, selectCols...))
 }
 
 const stmtIDUpdateUsersBatchFromValues uint32 = 11
@@ -3367,8 +3481,8 @@ func computePageQuadKey(p PageQuadParams) (runtime.VariantKey, uint64, uint64, i
 	_ = p
 	var colMask uint64
 	colMask = p.SelectCols & PageQuadColsAll
-	if colMask == 0 {
-		colMask = PageQuadColsAll
+	if colMask == PageQuadColsAll {
+		colMask = 0
 	}
 	var flagMask uint64
 	var orderSpec runtime.Order
@@ -3414,6 +3528,9 @@ func scanPageQuadRow(scanner interface{ Scan(...any) error }, dst *QuadItem, col
 	var scanBuf [4]any
 	scanCount := 0
 	effMask := colMask
+	if effMask == 0 {
+		effMask = PageQuadColsAll
+	}
 	if (effMask & (1 << 0)) != 0 {
 		scanBuf[scanCount] = &item.ID
 		scanCount++

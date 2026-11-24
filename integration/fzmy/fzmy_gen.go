@@ -1383,8 +1383,8 @@ func computeFzSearchKey(p FzSearchParams) (runtime.VariantKey, uint64, uint64, i
 	_ = p
 	var colMask uint64
 	colMask = p.SelectCols & FzSearchColsAll
-	if colMask == 0 {
-		colMask = FzSearchColsAll
+	if colMask == FzSearchColsAll {
+		colMask = 0
 	}
 	var flagMask uint64
 	if p.ByGrp {
@@ -1481,6 +1481,9 @@ func scanFzSearchRow(scanner interface{ Scan(...any) error }, dst *FzRow, colMas
 	var scanBuf [13]any
 	scanCount := 0
 	effMask := colMask
+	if effMask == 0 {
+		effMask = FzSearchColsAll
+	}
 	if (effMask & (1 << 0)) != 0 {
 		scanBuf[scanCount] = &item.ID
 		scanCount++
@@ -1689,8 +1692,8 @@ func computeFzNarrowKey(p FzNarrowParams) (runtime.VariantKey, uint64, uint64, i
 	_ = p
 	var colMask uint64
 	colMask = p.SelectCols & FzNarrowColsAll
-	if colMask == 0 {
-		colMask = FzNarrowColsAll
+	if colMask == FzNarrowColsAll {
+		colMask = 0
 	}
 	var flagMask uint64
 	if p.ByGrp {
@@ -1735,6 +1738,9 @@ func scanFzNarrowRow(scanner interface{ Scan(...any) error }, dst *FzNarrowRow, 
 	var scanBuf [6]any
 	scanCount := 0
 	effMask := colMask
+	if effMask == 0 {
+		effMask = FzNarrowColsAll
+	}
 	if (effMask & (1 << 0)) != 0 {
 		scanBuf[scanCount] = &item.ID
 		scanCount++
@@ -2095,8 +2101,8 @@ func computeFzPageKey(p FzPageParams) (runtime.VariantKey, uint64, uint64, int) 
 	_ = p
 	var colMask uint64
 	colMask = p.SelectCols & FzPageColsAll
-	if colMask == 0 {
-		colMask = FzPageColsAll
+	if colMask == FzPageColsAll {
+		colMask = 0
 	}
 	var flagMask uint64
 	if p.ByGrps {
@@ -2175,6 +2181,9 @@ func scanFzPageRow(scanner interface{ Scan(...any) error }, dst *FzRow, colMask 
 	var scanBuf [13]any
 	scanCount := 0
 	effMask := colMask
+	if effMask == 0 {
+		effMask = FzPageColsAll
+	}
 	if (effMask & (1 << 0)) != 0 {
 		scanBuf[scanCount] = &item.ID
 		scanCount++
@@ -2558,8 +2567,8 @@ func computeFzAggKey(p FzAggParams) (runtime.VariantKey, uint64, uint64, int) {
 	_ = p
 	var colMask uint64
 	colMask = p.SelectCols & FzAggColsAll
-	if colMask == 0 {
-		colMask = FzAggColsAll
+	if colMask == FzAggColsAll {
+		colMask = 0
 	}
 	var flagMask uint64
 	if p.ByTag {
@@ -2613,6 +2622,9 @@ func scanFzAggRow(scanner interface{ Scan(...any) error }, dst *FzAggRow, colMas
 	var scanBuf [3]any
 	scanCount := 0
 	effMask := colMask
+	if effMask == 0 {
+		effMask = FzAggColsAll
+	}
 	if (effMask & (1 << 0)) != 0 {
 		scanBuf[scanCount] = &item.Grp
 		scanCount++
@@ -2716,7 +2728,8 @@ const (
 )
 
 type paramsFzByKeys struct {
-	Keys []FzKey
+	Keys       []FzKey
+	SelectCols uint64
 }
 
 var descFzByKeys = &runtime.QueryDescriptor{
@@ -2763,6 +2776,10 @@ func expandFzByKeysArgs(dst *[]any, dialect runtime.Dialect, q *runtime.Query) e
 func computeFzByKeysKey(p paramsFzByKeys) (runtime.VariantKey, uint64, uint64, int) {
 	_ = p
 	var colMask uint64
+	colMask = p.SelectCols & FzByKeysColsAll
+	if colMask == FzByKeysColsAll {
+		colMask = 0
+	}
 	var flagMask uint64
 	var orderSpec runtime.Order
 	var hasSeek bool
@@ -2776,9 +2793,10 @@ func computeFzByKeysKey(p paramsFzByKeys) (runtime.VariantKey, uint64, uint64, i
 }
 
 // FzByKeysQuery constructs a composable runtime.Query without executing it.
-func FzByKeysQuery(keys []FzKey) runtime.Query {
+func FzByKeysQuery(keys []FzKey, selectCols ...uint64) runtime.Query {
 	p := paramsFzByKeys{
-		Keys: keys,
+		Keys:       keys,
+		SelectCols: runtime.OrCols(selectCols),
 	}
 	_, colMask, flagMask, _ := computeFzByKeysKey(p)
 	var tupleLensBuf [1]int
@@ -2803,8 +2821,8 @@ func FzByKeysQuery(keys []FzKey) runtime.Query {
 }
 
 // FzByKeysQuery constructs a composable runtime.Query without executing it.
-func (q *Queries) FzByKeysQuery(keys []FzKey) runtime.Query {
-	return FzByKeysQuery(keys)
+func (q *Queries) FzByKeysQuery(keys []FzKey, selectCols ...uint64) runtime.Query {
+	return FzByKeysQuery(keys, selectCols...)
 }
 
 func scanFzByKeysRow(scanner interface{ Scan(...any) error }, dst *FzRow, colMask uint64, p paramsFzByKeys) error {
@@ -2812,20 +2830,64 @@ func scanFzByKeysRow(scanner interface{ Scan(...any) error }, dst *FzRow, colMas
 	_ = p
 	var item FzRow
 	var scanBuf [13]any
-	scanBuf[0] = &item.ID
-	scanBuf[1] = &item.Grp
-	scanBuf[2] = &item.K1
-	scanBuf[3] = &item.K2
-	scanBuf[4] = &item.K3
-	scanBuf[5] = &item.K4
-	scanBuf[6] = &item.K5
-	scanBuf[7] = &item.K6
-	scanBuf[8] = &item.K7
-	scanBuf[9] = &item.K8
-	scanBuf[10] = &item.Tag
-	scanBuf[11] = &item.Tag2
-	scanBuf[12] = &item.Note
-	scanSlice := scanBuf[:13]
+	scanCount := 0
+	effMask := colMask
+	if effMask == 0 {
+		effMask = FzByKeysColsAll
+	}
+	if (effMask & (1 << 0)) != 0 {
+		scanBuf[scanCount] = &item.ID
+		scanCount++
+	}
+	if (effMask & (1 << 1)) != 0 {
+		scanBuf[scanCount] = &item.Grp
+		scanCount++
+	}
+	if (effMask & (1 << 2)) != 0 {
+		scanBuf[scanCount] = &item.K1
+		scanCount++
+	}
+	if (effMask & (1 << 3)) != 0 {
+		scanBuf[scanCount] = &item.K2
+		scanCount++
+	}
+	if (effMask & (1 << 4)) != 0 {
+		scanBuf[scanCount] = &item.K3
+		scanCount++
+	}
+	if (effMask & (1 << 5)) != 0 {
+		scanBuf[scanCount] = &item.K4
+		scanCount++
+	}
+	if (effMask & (1 << 6)) != 0 {
+		scanBuf[scanCount] = &item.K5
+		scanCount++
+	}
+	if (effMask & (1 << 7)) != 0 {
+		scanBuf[scanCount] = &item.K6
+		scanCount++
+	}
+	if (effMask & (1 << 8)) != 0 {
+		scanBuf[scanCount] = &item.K7
+		scanCount++
+	}
+	if (effMask & (1 << 9)) != 0 {
+		scanBuf[scanCount] = &item.K8
+		scanCount++
+	}
+	if (effMask & (1 << 10)) != 0 {
+		scanBuf[scanCount] = &item.Tag
+		scanCount++
+	}
+	if (effMask & (1 << 11)) != 0 {
+		scanBuf[scanCount] = &item.Tag2
+		scanCount++
+	}
+	if (effMask & (1 << 12)) != 0 {
+		scanBuf[scanCount] = &item.Note
+		scanCount++
+	}
+	scanSlice := scanBuf[:scanCount]
 	if err := scanner.Scan(scanSlice...); err != nil {
 		return err
 	}
@@ -2833,10 +2895,11 @@ func scanFzByKeysRow(scanner interface{ Scan(...any) error }, dst *FzRow, colMas
 	return nil
 }
 
-func (q *Queries) FzByKeys(ctx context.Context, keys []FzKey) ([]FzRow, error) {
+func (q *Queries) FzByKeys(ctx context.Context, keys []FzKey, selectCols ...uint64) ([]FzRow, error) {
 	totalRows := len(keys)
 	p := paramsFzByKeys{
-		Keys: keys,
+		Keys:       keys,
+		SelectCols: runtime.OrCols(selectCols),
 	}
 	_, colMask, flagMask, _ := computeFzByKeysKey(p)
 	maxRows := q.cache.MaxRowsPerBatch(sqlDialect, 0, 2)
@@ -2852,7 +2915,7 @@ func (q *Queries) FzByKeys(ctx context.Context, keys []FzKey) ([]FzRow, error) {
 		targetQ = q.WithTx(autoTx)
 		defer func() { _ = targetQ.Close() }()
 	}
-	out, err := runtime.Collect(targetQ.FzByKeysSeq(ctx, keys))
+	out, err := runtime.Collect(targetQ.FzByKeysSeq(ctx, keys, selectCols...))
 	if autoTx != nil {
 		if err != nil {
 			_ = autoTx.Rollback()
@@ -2865,7 +2928,7 @@ func (q *Queries) FzByKeys(ctx context.Context, keys []FzKey) ([]FzRow, error) {
 	return out, err
 }
 
-func (q *Queries) FzByKeysSeq(ctx context.Context, keys []FzKey) iter.Seq2[FzRow, error] {
+func (q *Queries) FzByKeysSeq(ctx context.Context, keys []FzKey, selectCols ...uint64) iter.Seq2[FzRow, error] {
 	return func(yield func(FzRow, error) bool) {
 		var zero FzRow
 		totalRows := len(keys)
@@ -2874,7 +2937,8 @@ func (q *Queries) FzByKeysSeq(ctx context.Context, keys []FzKey) iter.Seq2[FzRow
 			return
 		}
 		p := paramsFzByKeys{
-			Keys: keys,
+			Keys:       keys,
+			SelectCols: runtime.OrCols(selectCols),
 		}
 		var sortedIdx *[]int
 		if !isFzKeySorted(keys) {
@@ -2944,9 +3008,10 @@ func (q *Queries) FzByKeysSeq(ctx context.Context, keys []FzKey) iter.Seq2[FzRow
 	}
 }
 
-func (pl *Pipeline) FzByKeys(keys []FzKey) *runtime.SliceFuture[FzRow] {
+func (pl *Pipeline) FzByKeys(keys []FzKey, selectCols ...uint64) *runtime.SliceFuture[FzRow] {
 	p := paramsFzByKeys{
-		Keys: keys,
+		Keys:       keys,
+		SelectCols: runtime.OrCols(selectCols),
 	}
 	vk, colMask, flagMask, approxArgs := computeFzByKeysKey(p)
 	argBuf := runtime.AcquireArgsCap(approxArgs)
@@ -2963,7 +3028,7 @@ func (pl *Pipeline) FzByKeys(keys []FzKey) *runtime.SliceFuture[FzRow] {
 	)
 }
 
-func (q *Queries) FzByKeysStreamSeq(ctx context.Context, seq iter.Seq2[FzKey, error]) iter.Seq2[FzRow, error] {
+func (q *Queries) FzByKeysStreamSeq(ctx context.Context, seq iter.Seq2[FzKey, error], selectCols ...uint64) iter.Seq2[FzRow, error] {
 	return func(yield func(FzRow, error) bool) {
 		var zero FzRow
 		if seq == nil {
@@ -2982,7 +3047,7 @@ func (q *Queries) FzByKeysStreamSeq(ctx context.Context, seq iter.Seq2[FzKey, er
 			if len(chunk) == 0 {
 				return true
 			}
-			for r, err := range q.FzByKeysSeq(ctx, chunk) {
+			for r, err := range q.FzByKeysSeq(ctx, chunk, selectCols...) {
 				if err != nil {
 					yield(zero, err)
 					return false
@@ -3010,8 +3075,8 @@ func (q *Queries) FzByKeysStreamSeq(ctx context.Context, seq iter.Seq2[FzKey, er
 	}
 }
 
-func (q *Queries) FzByKeysStream(ctx context.Context, seq iter.Seq2[FzKey, error]) ([]FzRow, error) {
-	return runtime.Collect(q.FzByKeysStreamSeq(ctx, seq))
+func (q *Queries) FzByKeysStream(ctx context.Context, seq iter.Seq2[FzKey, error], selectCols ...uint64) ([]FzRow, error) {
+	return runtime.Collect(q.FzByKeysStreamSeq(ctx, seq, selectCols...))
 }
 
 const stmtIDFzByIDs uint32 = 12
@@ -3034,7 +3099,8 @@ const (
 )
 
 type paramsFzByIDs struct {
-	IDs []int64
+	IDs        []int64
+	SelectCols uint64
 }
 
 var descFzByIDs = &runtime.QueryDescriptor{
@@ -3069,6 +3135,10 @@ func expandFzByIDsArgs(dst *[]any, dialect runtime.Dialect, q *runtime.Query) er
 func computeFzByIDsKey(p paramsFzByIDs) (runtime.VariantKey, uint64, uint64, int) {
 	_ = p
 	var colMask uint64
+	colMask = p.SelectCols & FzByIDsColsAll
+	if colMask == FzByIDsColsAll {
+		colMask = 0
+	}
 	var flagMask uint64
 	var orderSpec runtime.Order
 	var hasSeek bool
@@ -3082,9 +3152,10 @@ func computeFzByIDsKey(p paramsFzByIDs) (runtime.VariantKey, uint64, uint64, int
 }
 
 // FzByIDsQuery constructs a composable runtime.Query without executing it.
-func FzByIDsQuery(ids []int64) runtime.Query {
+func FzByIDsQuery(ids []int64, selectCols ...uint64) runtime.Query {
 	p := paramsFzByIDs{
-		IDs: ids,
+		IDs:        ids,
+		SelectCols: runtime.OrCols(selectCols),
 	}
 	_, colMask, flagMask, _ := computeFzByIDsKey(p)
 	var sliceLensBuf [1]int
@@ -3109,8 +3180,8 @@ func FzByIDsQuery(ids []int64) runtime.Query {
 }
 
 // FzByIDsQuery constructs a composable runtime.Query without executing it.
-func (q *Queries) FzByIDsQuery(ids []int64) runtime.Query {
-	return FzByIDsQuery(ids)
+func (q *Queries) FzByIDsQuery(ids []int64, selectCols ...uint64) runtime.Query {
+	return FzByIDsQuery(ids, selectCols...)
 }
 
 func scanFzByIDsRow(scanner interface{ Scan(...any) error }, dst *FzRow, colMask uint64, p paramsFzByIDs) error {
@@ -3118,20 +3189,64 @@ func scanFzByIDsRow(scanner interface{ Scan(...any) error }, dst *FzRow, colMask
 	_ = p
 	var item FzRow
 	var scanBuf [13]any
-	scanBuf[0] = &item.ID
-	scanBuf[1] = &item.Grp
-	scanBuf[2] = &item.K1
-	scanBuf[3] = &item.K2
-	scanBuf[4] = &item.K3
-	scanBuf[5] = &item.K4
-	scanBuf[6] = &item.K5
-	scanBuf[7] = &item.K6
-	scanBuf[8] = &item.K7
-	scanBuf[9] = &item.K8
-	scanBuf[10] = &item.Tag
-	scanBuf[11] = &item.Tag2
-	scanBuf[12] = &item.Note
-	scanSlice := scanBuf[:13]
+	scanCount := 0
+	effMask := colMask
+	if effMask == 0 {
+		effMask = FzByIDsColsAll
+	}
+	if (effMask & (1 << 0)) != 0 {
+		scanBuf[scanCount] = &item.ID
+		scanCount++
+	}
+	if (effMask & (1 << 1)) != 0 {
+		scanBuf[scanCount] = &item.Grp
+		scanCount++
+	}
+	if (effMask & (1 << 2)) != 0 {
+		scanBuf[scanCount] = &item.K1
+		scanCount++
+	}
+	if (effMask & (1 << 3)) != 0 {
+		scanBuf[scanCount] = &item.K2
+		scanCount++
+	}
+	if (effMask & (1 << 4)) != 0 {
+		scanBuf[scanCount] = &item.K3
+		scanCount++
+	}
+	if (effMask & (1 << 5)) != 0 {
+		scanBuf[scanCount] = &item.K4
+		scanCount++
+	}
+	if (effMask & (1 << 6)) != 0 {
+		scanBuf[scanCount] = &item.K5
+		scanCount++
+	}
+	if (effMask & (1 << 7)) != 0 {
+		scanBuf[scanCount] = &item.K6
+		scanCount++
+	}
+	if (effMask & (1 << 8)) != 0 {
+		scanBuf[scanCount] = &item.K7
+		scanCount++
+	}
+	if (effMask & (1 << 9)) != 0 {
+		scanBuf[scanCount] = &item.K8
+		scanCount++
+	}
+	if (effMask & (1 << 10)) != 0 {
+		scanBuf[scanCount] = &item.Tag
+		scanCount++
+	}
+	if (effMask & (1 << 11)) != 0 {
+		scanBuf[scanCount] = &item.Tag2
+		scanCount++
+	}
+	if (effMask & (1 << 12)) != 0 {
+		scanBuf[scanCount] = &item.Note
+		scanCount++
+	}
+	scanSlice := scanBuf[:scanCount]
 	if err := scanner.Scan(scanSlice...); err != nil {
 		return err
 	}
@@ -3139,10 +3254,11 @@ func scanFzByIDsRow(scanner interface{ Scan(...any) error }, dst *FzRow, colMask
 	return nil
 }
 
-func (q *Queries) FzByIDs(ctx context.Context, ids []int64) ([]FzRow, error) {
+func (q *Queries) FzByIDs(ctx context.Context, ids []int64, selectCols ...uint64) ([]FzRow, error) {
 	totalRows := len(ids)
 	p := paramsFzByIDs{
-		IDs: ids,
+		IDs:        ids,
+		SelectCols: runtime.OrCols(selectCols),
 	}
 	_, colMask, flagMask, _ := computeFzByIDsKey(p)
 	maxRows := q.cache.MaxRowsPerBatch(sqlDialect, 0, 1)
@@ -3158,7 +3274,7 @@ func (q *Queries) FzByIDs(ctx context.Context, ids []int64) ([]FzRow, error) {
 		targetQ = q.WithTx(autoTx)
 		defer func() { _ = targetQ.Close() }()
 	}
-	out, err := runtime.Collect(targetQ.FzByIDsSeq(ctx, ids))
+	out, err := runtime.Collect(targetQ.FzByIDsSeq(ctx, ids, selectCols...))
 	if autoTx != nil {
 		if err != nil {
 			_ = autoTx.Rollback()
@@ -3171,7 +3287,7 @@ func (q *Queries) FzByIDs(ctx context.Context, ids []int64) ([]FzRow, error) {
 	return out, err
 }
 
-func (q *Queries) FzByIDsSeq(ctx context.Context, ids []int64) iter.Seq2[FzRow, error] {
+func (q *Queries) FzByIDsSeq(ctx context.Context, ids []int64, selectCols ...uint64) iter.Seq2[FzRow, error] {
 	return func(yield func(FzRow, error) bool) {
 		var zero FzRow
 		totalRows := len(ids)
@@ -3180,7 +3296,8 @@ func (q *Queries) FzByIDsSeq(ctx context.Context, ids []int64) iter.Seq2[FzRow, 
 			return
 		}
 		p := paramsFzByIDs{
-			IDs: ids,
+			IDs:        ids,
+			SelectCols: runtime.OrCols(selectCols),
 		}
 		_, colMask, flagMask, _ := computeFzByIDsKey(p)
 		shapeTag := runtime.ComputeBatchShapeTag(colMask, flagMask)
@@ -3236,9 +3353,10 @@ func (q *Queries) FzByIDsSeq(ctx context.Context, ids []int64) iter.Seq2[FzRow, 
 	}
 }
 
-func (pl *Pipeline) FzByIDs(ids []int64) *runtime.SliceFuture[FzRow] {
+func (pl *Pipeline) FzByIDs(ids []int64, selectCols ...uint64) *runtime.SliceFuture[FzRow] {
 	p := paramsFzByIDs{
-		IDs: ids,
+		IDs:        ids,
+		SelectCols: runtime.OrCols(selectCols),
 	}
 	vk, colMask, flagMask, approxArgs := computeFzByIDsKey(p)
 	argBuf := runtime.AcquireArgsCap(approxArgs)
@@ -3662,8 +3780,8 @@ func computeFzSubsKey(p FzSubsParams) (runtime.VariantKey, uint64, uint64, int) 
 	_ = p
 	var colMask uint64
 	colMask = p.SelectCols & FzSubsColsAll
-	if colMask == 0 {
-		colMask = FzSubsColsAll
+	if colMask == FzSubsColsAll {
+		colMask = 0
 	}
 	var flagMask uint64
 	if p.ExcludeB {
@@ -3734,6 +3852,9 @@ func scanFzSubsRow(scanner interface{ Scan(...any) error }, dst *FzRow, colMask 
 	var scanBuf [13]any
 	scanCount := 0
 	effMask := colMask
+	if effMask == 0 {
+		effMask = FzSubsColsAll
+	}
 	if (effMask & (1 << 0)) != 0 {
 		scanBuf[scanCount] = &item.ID
 		scanCount++
@@ -3944,8 +4065,8 @@ func computeFzJoinKey(p FzJoinParams) (runtime.VariantKey, uint64, uint64, int) 
 	_ = p
 	var colMask uint64
 	colMask = p.SelectCols & FzJoinColsAll
-	if colMask == 0 {
-		colMask = FzJoinColsAll
+	if colMask == FzJoinColsAll {
+		colMask = 0
 	}
 	var flagMask uint64
 	if p.WithPeer {
@@ -3993,6 +4114,9 @@ func scanFzJoinRow(scanner interface{ Scan(...any) error }, dst *FzJoinRow, colM
 	var scanBuf [5]any
 	scanCount := 0
 	effMask := colMask
+	if effMask == 0 {
+		effMask = FzJoinColsAll
+	}
 	if (effMask & (1 << 0)) != 0 {
 		scanBuf[scanCount] = &item.ID
 		scanCount++
@@ -4404,8 +4528,8 @@ func computeFzTypedSearchKey(p FzTypedSearchParams) (runtime.VariantKey, uint64,
 	_ = p
 	var colMask uint64
 	colMask = p.SelectCols & FzTypedSearchColsAll
-	if colMask == 0 {
-		colMask = FzTypedSearchColsAll
+	if colMask == FzTypedSearchColsAll {
+		colMask = 0
 	}
 	var flagMask uint64
 	if p.ByI32s {
@@ -4482,6 +4606,9 @@ func scanFzTypedSearchRow(scanner interface{ Scan(...any) error }, dst *FzTypedR
 	var scanBuf [6]any
 	scanCount := 0
 	effMask := colMask
+	if effMask == 0 {
+		effMask = FzTypedSearchColsAll
+	}
 	if (effMask & (1 << 0)) != 0 {
 		scanBuf[scanCount] = &item.ID
 		scanCount++
@@ -4688,9 +4815,10 @@ func SeekFzTypedPage(row FzTypedRow) runtime.Seek {
 }
 
 type paramsFzTypedPage struct {
-	After runtime.Seek
-	Sort  runtime.Order
-	Limit int64
+	After      runtime.Seek
+	Sort       runtime.Order
+	Limit      int64
+	SelectCols uint64
 }
 
 var descFzTypedPage = &runtime.QueryDescriptor{
@@ -4731,6 +4859,10 @@ func expandFzTypedPageArgs(dst *[]any, dialect runtime.Dialect, q *runtime.Query
 func computeFzTypedPageKey(p paramsFzTypedPage) (runtime.VariantKey, uint64, uint64, int) {
 	_ = p
 	var colMask uint64
+	colMask = p.SelectCols & FzTypedPageColsAll
+	if colMask == FzTypedPageColsAll {
+		colMask = 0
+	}
 	var flagMask uint64
 	var orderSpec runtime.Order
 	var hasSeek bool
@@ -4743,11 +4875,12 @@ func computeFzTypedPageKey(p paramsFzTypedPage) (runtime.VariantKey, uint64, uin
 }
 
 // FzTypedPageQuery constructs a composable runtime.Query without executing it.
-func FzTypedPageQuery(after runtime.Seek, sort runtime.Order, limit int64) runtime.Query {
+func FzTypedPageQuery(after runtime.Seek, sort runtime.Order, limit int64, selectCols ...uint64) runtime.Query {
 	p := paramsFzTypedPage{
-		After: after,
-		Sort:  sort,
-		Limit: limit,
+		After:      after,
+		Sort:       sort,
+		Limit:      limit,
+		SelectCols: runtime.OrCols(selectCols),
 	}
 	_, colMask, flagMask, _ := computeFzTypedPageKey(p)
 	in := runtime.RenderInput{
@@ -4769,8 +4902,8 @@ func FzTypedPageQuery(after runtime.Seek, sort runtime.Order, limit int64) runti
 }
 
 // FzTypedPageQuery constructs a composable runtime.Query without executing it.
-func (q *Queries) FzTypedPageQuery(after runtime.Seek, sort runtime.Order, limit int64) runtime.Query {
-	return FzTypedPageQuery(after, sort, limit)
+func (q *Queries) FzTypedPageQuery(after runtime.Seek, sort runtime.Order, limit int64, selectCols ...uint64) runtime.Query {
+	return FzTypedPageQuery(after, sort, limit, selectCols...)
 }
 
 func scanFzTypedPageRow(scanner interface{ Scan(...any) error }, dst *FzTypedRow, colMask uint64, p paramsFzTypedPage) error {
@@ -4778,13 +4911,36 @@ func scanFzTypedPageRow(scanner interface{ Scan(...any) error }, dst *FzTypedRow
 	_ = p
 	var item FzTypedRow
 	var scanBuf [6]any
-	scanBuf[0] = &item.ID
-	scanBuf[1] = &item.I32
-	scanBuf[2] = &item.F64
-	scanBuf[3] = &item.Flag
-	scanBuf[4] = &item.Bin
-	scanBuf[5] = &item.Ni
-	scanSlice := scanBuf[:6]
+	scanCount := 0
+	effMask := colMask
+	if effMask == 0 {
+		effMask = FzTypedPageColsAll
+	}
+	if (effMask & (1 << 0)) != 0 {
+		scanBuf[scanCount] = &item.ID
+		scanCount++
+	}
+	if (effMask & (1 << 1)) != 0 {
+		scanBuf[scanCount] = &item.I32
+		scanCount++
+	}
+	if (effMask & (1 << 2)) != 0 {
+		scanBuf[scanCount] = &item.F64
+		scanCount++
+	}
+	if (effMask & (1 << 3)) != 0 {
+		scanBuf[scanCount] = &item.Flag
+		scanCount++
+	}
+	if (effMask & (1 << 4)) != 0 {
+		scanBuf[scanCount] = &item.Bin
+		scanCount++
+	}
+	if (effMask & (1 << 5)) != 0 {
+		scanBuf[scanCount] = &item.Ni
+		scanCount++
+	}
+	scanSlice := scanBuf[:scanCount]
 	if err := scanner.Scan(scanSlice...); err != nil {
 		return err
 	}
@@ -4792,17 +4948,18 @@ func scanFzTypedPageRow(scanner interface{ Scan(...any) error }, dst *FzTypedRow
 	return nil
 }
 
-func (q *Queries) FzTypedPage(ctx context.Context, after runtime.Seek, sort runtime.Order, limit int64) ([]FzTypedRow, error) {
-	return runtime.Collect(q.FzTypedPageSeq(ctx, after, sort, limit))
+func (q *Queries) FzTypedPage(ctx context.Context, after runtime.Seek, sort runtime.Order, limit int64, selectCols ...uint64) ([]FzTypedRow, error) {
+	return runtime.Collect(q.FzTypedPageSeq(ctx, after, sort, limit, selectCols...))
 }
 
-func (q *Queries) FzTypedPageSeq(ctx context.Context, after runtime.Seek, sort runtime.Order, limit int64) iter.Seq2[FzTypedRow, error] {
+func (q *Queries) FzTypedPageSeq(ctx context.Context, after runtime.Seek, sort runtime.Order, limit int64, selectCols ...uint64) iter.Seq2[FzTypedRow, error] {
 	return func(yield func(FzTypedRow, error) bool) {
 		var zero FzTypedRow
 		p := paramsFzTypedPage{
-			After: after,
-			Sort:  sort,
-			Limit: limit,
+			After:      after,
+			Sort:       sort,
+			Limit:      limit,
+			SelectCols: runtime.OrCols(selectCols),
 		}
 		vk, colMask, flagMask, approxArgs := computeFzTypedPageKey(p)
 		_ = colMask
@@ -4843,11 +5000,12 @@ func (q *Queries) FzTypedPageSeq(ctx context.Context, after runtime.Seek, sort r
 	}
 }
 
-func (pl *Pipeline) FzTypedPage(after runtime.Seek, sort runtime.Order, limit int64) *runtime.SliceFuture[FzTypedRow] {
+func (pl *Pipeline) FzTypedPage(after runtime.Seek, sort runtime.Order, limit int64, selectCols ...uint64) *runtime.SliceFuture[FzTypedRow] {
 	p := paramsFzTypedPage{
-		After: after,
-		Sort:  sort,
-		Limit: limit,
+		After:      after,
+		Sort:       sort,
+		Limit:      limit,
+		SelectCols: runtime.OrCols(selectCols),
 	}
 	vk, colMask, flagMask, approxArgs := computeFzTypedPageKey(p)
 	argBuf := runtime.AcquireArgsCap(approxArgs)
@@ -4878,7 +5036,8 @@ const (
 )
 
 type paramsFzInsertRet struct {
-	Rows []FzNew
+	Rows       []FzNew
+	SelectCols uint64
 }
 
 var descFzInsertRet = &runtime.QueryDescriptor{
@@ -4950,6 +5109,10 @@ func expandFzInsertRetArgs(dst *[]any, dialect runtime.Dialect, q *runtime.Query
 func computeFzInsertRetKey(p paramsFzInsertRet) (runtime.VariantKey, uint64, uint64, int) {
 	_ = p
 	var colMask uint64
+	colMask = p.SelectCols & FzInsertRetColsAll
+	if colMask == FzInsertRetColsAll {
+		colMask = 0
+	}
 	var flagMask uint64
 	var orderSpec runtime.Order
 	var hasSeek bool
@@ -4963,9 +5126,10 @@ func computeFzInsertRetKey(p paramsFzInsertRet) (runtime.VariantKey, uint64, uin
 }
 
 // FzInsertRetQuery constructs a composable runtime.Query without executing it.
-func FzInsertRetQuery(rows []FzNew) runtime.Query {
+func FzInsertRetQuery(rows []FzNew, selectCols ...uint64) runtime.Query {
 	p := paramsFzInsertRet{
-		Rows: rows,
+		Rows:       rows,
+		SelectCols: runtime.OrCols(selectCols),
 	}
 	_, colMask, flagMask, _ := computeFzInsertRetKey(p)
 	var tupleLensBuf [1]int
@@ -4990,8 +5154,8 @@ func FzInsertRetQuery(rows []FzNew) runtime.Query {
 }
 
 // FzInsertRetQuery constructs a composable runtime.Query without executing it.
-func (q *Queries) FzInsertRetQuery(rows []FzNew) runtime.Query {
-	return FzInsertRetQuery(rows)
+func (q *Queries) FzInsertRetQuery(rows []FzNew, selectCols ...uint64) runtime.Query {
+	return FzInsertRetQuery(rows, selectCols...)
 }
 
 func scanFzInsertRetRow(scanner interface{ Scan(...any) error }, dst *FzOut, colMask uint64, p paramsFzInsertRet) error {
@@ -4999,9 +5163,20 @@ func scanFzInsertRetRow(scanner interface{ Scan(...any) error }, dst *FzOut, col
 	_ = p
 	var item FzOut
 	var scanBuf [2]any
-	scanBuf[0] = &item.ID
-	scanBuf[1] = &item.K1
-	scanSlice := scanBuf[:2]
+	scanCount := 0
+	effMask := colMask
+	if effMask == 0 {
+		effMask = FzInsertRetColsAll
+	}
+	if (effMask & (1 << 0)) != 0 {
+		scanBuf[scanCount] = &item.ID
+		scanCount++
+	}
+	if (effMask & (1 << 1)) != 0 {
+		scanBuf[scanCount] = &item.K1
+		scanCount++
+	}
+	scanSlice := scanBuf[:scanCount]
 	if err := scanner.Scan(scanSlice...); err != nil {
 		return err
 	}
@@ -5009,13 +5184,14 @@ func scanFzInsertRetRow(scanner interface{ Scan(...any) error }, dst *FzOut, col
 	return nil
 }
 
-func (q *Queries) FzInsertRet(ctx context.Context, rows []FzNew) ([]FzOut, error) {
+func (q *Queries) FzInsertRet(ctx context.Context, rows []FzNew, selectCols ...uint64) ([]FzOut, error) {
 	if len(rows) == 0 {
 		return nil, nil
 	}
 	totalRows := len(rows)
 	p := paramsFzInsertRet{
-		Rows: rows,
+		Rows:       rows,
+		SelectCols: runtime.OrCols(selectCols),
 	}
 	_, colMask, flagMask, _ := computeFzInsertRetKey(p)
 	maxRows := q.cache.MaxRowsPerBatch(sqlDialect, 0, 13)
@@ -5031,7 +5207,7 @@ func (q *Queries) FzInsertRet(ctx context.Context, rows []FzNew) ([]FzOut, error
 		targetQ = q.WithTx(autoTx)
 		defer func() { _ = targetQ.Close() }()
 	}
-	out, err := runtime.Collect(targetQ.FzInsertRetSeq(ctx, rows))
+	out, err := runtime.Collect(targetQ.FzInsertRetSeq(ctx, rows, selectCols...))
 	if autoTx != nil {
 		if err != nil {
 			_ = autoTx.Rollback()
@@ -5044,7 +5220,7 @@ func (q *Queries) FzInsertRet(ctx context.Context, rows []FzNew) ([]FzOut, error
 	return out, err
 }
 
-func (q *Queries) FzInsertRetSeq(ctx context.Context, rows []FzNew) iter.Seq2[FzOut, error] {
+func (q *Queries) FzInsertRetSeq(ctx context.Context, rows []FzNew, selectCols ...uint64) iter.Seq2[FzOut, error] {
 	return func(yield func(FzOut, error) bool) {
 		var zero FzOut
 		totalRows := len(rows)
@@ -5052,7 +5228,8 @@ func (q *Queries) FzInsertRetSeq(ctx context.Context, rows []FzNew) iter.Seq2[Fz
 			return
 		}
 		p := paramsFzInsertRet{
-			Rows: rows,
+			Rows:       rows,
+			SelectCols: runtime.OrCols(selectCols),
 		}
 		var sortedIdx *[]int
 		if !isFzNewSorted(rows) {
@@ -5133,12 +5310,13 @@ func (q *Queries) FzInsertRetSeq(ctx context.Context, rows []FzNew) iter.Seq2[Fz
 	}
 }
 
-func (pl *Pipeline) FzInsertRet(rows []FzNew) *runtime.SliceFuture[FzOut] {
+func (pl *Pipeline) FzInsertRet(rows []FzNew, selectCols ...uint64) *runtime.SliceFuture[FzOut] {
 	if len(rows) == 0 {
 		return runtime.QueueSliceNoop[FzOut](pl.Pipeline)
 	}
 	p := paramsFzInsertRet{
-		Rows: rows,
+		Rows:       rows,
+		SelectCols: runtime.OrCols(selectCols),
 	}
 	vk, colMask, flagMask, approxArgs := computeFzInsertRetKey(p)
 	argBuf := runtime.AcquireArgsCap(approxArgs)
@@ -5155,7 +5333,7 @@ func (pl *Pipeline) FzInsertRet(rows []FzNew) *runtime.SliceFuture[FzOut] {
 	)
 }
 
-func (q *Queries) FzInsertRetStreamSeq(ctx context.Context, seq iter.Seq2[FzNew, error]) iter.Seq2[FzOut, error] {
+func (q *Queries) FzInsertRetStreamSeq(ctx context.Context, seq iter.Seq2[FzNew, error], selectCols ...uint64) iter.Seq2[FzOut, error] {
 	return func(yield func(FzOut, error) bool) {
 		var zero FzOut
 		if seq == nil {
@@ -5174,7 +5352,7 @@ func (q *Queries) FzInsertRetStreamSeq(ctx context.Context, seq iter.Seq2[FzNew,
 			if len(chunk) == 0 {
 				return true
 			}
-			for r, err := range q.FzInsertRetSeq(ctx, chunk) {
+			for r, err := range q.FzInsertRetSeq(ctx, chunk, selectCols...) {
 				if err != nil {
 					yield(zero, err)
 					return false
@@ -5202,8 +5380,8 @@ func (q *Queries) FzInsertRetStreamSeq(ctx context.Context, seq iter.Seq2[FzNew,
 	}
 }
 
-func (q *Queries) FzInsertRetStream(ctx context.Context, seq iter.Seq2[FzNew, error]) ([]FzOut, error) {
-	return runtime.Collect(q.FzInsertRetStreamSeq(ctx, seq))
+func (q *Queries) FzInsertRetStream(ctx context.Context, seq iter.Seq2[FzNew, error], selectCols ...uint64) ([]FzOut, error) {
+	return runtime.Collect(q.FzInsertRetStreamSeq(ctx, seq, selectCols...))
 }
 
 const stmtIDFzDeleteRet uint32 = 21
@@ -5276,8 +5454,8 @@ func computeFzDeleteRetKey(p FzDeleteRetParams) (runtime.VariantKey, uint64, uin
 	_ = p
 	var colMask uint64
 	colMask = p.SelectCols & FzDeleteRetColsAll
-	if colMask == 0 {
-		colMask = FzDeleteRetColsAll
+	if colMask == FzDeleteRetColsAll {
+		colMask = 0
 	}
 	var flagMask uint64
 	if p.OnlyTag {
@@ -5330,6 +5508,9 @@ func scanFzDeleteRetRow(scanner interface{ Scan(...any) error }, dst *FzOut, col
 	var scanBuf [2]any
 	scanCount := 0
 	effMask := colMask
+	if effMask == 0 {
+		effMask = FzDeleteRetColsAll
+	}
 	if (effMask & (1 << 0)) != 0 {
 		scanBuf[scanCount] = &item.ID
 		scanCount++

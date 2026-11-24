@@ -730,8 +730,9 @@ const (
 )
 
 type paramsGetMarginAccount struct {
-	FirmID    int64
-	AccountID int64
+	FirmID     int64
+	AccountID  int64
+	SelectCols uint64
 }
 
 var descGetMarginAccount = &runtime.QueryDescriptor{
@@ -763,6 +764,10 @@ func expandGetMarginAccountArgs(dst *[]any, dialect runtime.Dialect, q *runtime.
 func computeGetMarginAccountKey(p paramsGetMarginAccount) (runtime.VariantKey, uint64, uint64, int) {
 	_ = p
 	var colMask uint64
+	colMask = p.SelectCols & GetMarginAccountColsAll
+	if colMask == GetMarginAccountColsAll {
+		colMask = 0
+	}
 	var flagMask uint64
 	var orderSpec runtime.Order
 	var hasSeek bool
@@ -773,10 +778,11 @@ func computeGetMarginAccountKey(p paramsGetMarginAccount) (runtime.VariantKey, u
 }
 
 // GetMarginAccountQuery constructs a composable runtime.Query without executing it.
-func GetMarginAccountQuery(firmID int64, accountID int64) runtime.Query {
+func GetMarginAccountQuery(firmID int64, accountID int64, selectCols ...uint64) runtime.Query {
 	p := paramsGetMarginAccount{
-		FirmID:    firmID,
-		AccountID: accountID,
+		FirmID:     firmID,
+		AccountID:  accountID,
+		SelectCols: runtime.OrCols(selectCols),
 	}
 	_, colMask, flagMask, _ := computeGetMarginAccountKey(p)
 	in := runtime.RenderInput{
@@ -796,8 +802,8 @@ func GetMarginAccountQuery(firmID int64, accountID int64) runtime.Query {
 }
 
 // GetMarginAccountQuery constructs a composable runtime.Query without executing it.
-func (q *Queries) GetMarginAccountQuery(firmID int64, accountID int64) runtime.Query {
-	return GetMarginAccountQuery(firmID, accountID)
+func (q *Queries) GetMarginAccountQuery(firmID int64, accountID int64, selectCols ...uint64) runtime.Query {
+	return GetMarginAccountQuery(firmID, accountID, selectCols...)
 }
 
 func scanGetMarginAccountRow(scanner interface{ Scan(...any) error }, dst *MarginAccount, colMask uint64, p paramsGetMarginAccount) error {
@@ -805,15 +811,44 @@ func scanGetMarginAccountRow(scanner interface{ Scan(...any) error }, dst *Margi
 	_ = p
 	var item MarginAccount
 	var scanBuf [8]any
-	scanBuf[0] = &item.FirmID
-	scanBuf[1] = &item.AccountID
-	scanBuf[2] = &item.Status
-	scanBuf[3] = &item.CollateralCents
-	scanBuf[4] = &item.RealizedPnlCents
-	scanBuf[5] = &item.MarginRatioBps
-	scanBuf[6] = &item.KycVerified
-	scanBuf[7] = &item.UpdatedSeq
-	scanSlice := scanBuf[:8]
+	scanCount := 0
+	effMask := colMask
+	if effMask == 0 {
+		effMask = GetMarginAccountColsAll
+	}
+	if (effMask & (1 << 0)) != 0 {
+		scanBuf[scanCount] = &item.FirmID
+		scanCount++
+	}
+	if (effMask & (1 << 1)) != 0 {
+		scanBuf[scanCount] = &item.AccountID
+		scanCount++
+	}
+	if (effMask & (1 << 2)) != 0 {
+		scanBuf[scanCount] = &item.Status
+		scanCount++
+	}
+	if (effMask & (1 << 3)) != 0 {
+		scanBuf[scanCount] = &item.CollateralCents
+		scanCount++
+	}
+	if (effMask & (1 << 4)) != 0 {
+		scanBuf[scanCount] = &item.RealizedPnlCents
+		scanCount++
+	}
+	if (effMask & (1 << 5)) != 0 {
+		scanBuf[scanCount] = &item.MarginRatioBps
+		scanCount++
+	}
+	if (effMask & (1 << 6)) != 0 {
+		scanBuf[scanCount] = &item.KycVerified
+		scanCount++
+	}
+	if (effMask & (1 << 7)) != 0 {
+		scanBuf[scanCount] = &item.UpdatedSeq
+		scanCount++
+	}
+	scanSlice := scanBuf[:scanCount]
 	if err := scanner.Scan(scanSlice...); err != nil {
 		return err
 	}
@@ -821,11 +856,12 @@ func scanGetMarginAccountRow(scanner interface{ Scan(...any) error }, dst *Margi
 	return nil
 }
 
-func (q *Queries) GetMarginAccount(ctx context.Context, firmID int64, accountID int64) (MarginAccount, error) {
+func (q *Queries) GetMarginAccount(ctx context.Context, firmID int64, accountID int64, selectCols ...uint64) (MarginAccount, error) {
 	var zero MarginAccount
 	p := paramsGetMarginAccount{
-		FirmID:    firmID,
-		AccountID: accountID,
+		FirmID:     firmID,
+		AccountID:  accountID,
+		SelectCols: runtime.OrCols(selectCols),
 	}
 	vk, colMask, flagMask, approxArgs := computeGetMarginAccountKey(p)
 	_ = colMask
@@ -836,7 +872,7 @@ func (q *Queries) GetMarginAccount(ctx context.Context, firmID int64, accountID 
 		ColMask:  colMask,
 		FlagMask: flagMask,
 	}
-	sqlRow, ms, err := q.cache.QueryRow(ctx, q.db, q.txCache, q.usePrepared, vk, stmtIDGetMarginAccount, runtime.ComputeBatchShapeTag(colMask, flagMask), 0, &q.fastSlots[2], sqlDialect, descGetMarginAccount, &in, (*argBuf)...)
+	sqlRow, ms, err := q.cache.QueryRow(ctx, q.db, q.txCache, q.usePrepared, vk, stmtIDGetMarginAccount, runtime.ComputeBatchShapeTag(colMask, flagMask), 0, runtime.FastSlot(colMask, &q.fastSlots[2]), sqlDialect, descGetMarginAccount, &in, (*argBuf)...)
 	if err != nil {
 		return zero, err
 	}
@@ -849,10 +885,11 @@ func (q *Queries) GetMarginAccount(ctx context.Context, firmID int64, accountID 
 	return item, nil
 }
 
-func (pl *Pipeline) GetMarginAccount(firmID int64, accountID int64) *runtime.RowFuture[MarginAccount] {
+func (pl *Pipeline) GetMarginAccount(firmID int64, accountID int64, selectCols ...uint64) *runtime.RowFuture[MarginAccount] {
 	p := paramsGetMarginAccount{
-		FirmID:    firmID,
-		AccountID: accountID,
+		FirmID:     firmID,
+		AccountID:  accountID,
+		SelectCols: runtime.OrCols(selectCols),
 	}
 	vk, colMask, flagMask, approxArgs := computeGetMarginAccountKey(p)
 	argBuf := runtime.AcquireArgsCap(approxArgs)
@@ -861,7 +898,7 @@ func (pl *Pipeline) GetMarginAccount(firmID int64, accountID int64) *runtime.Row
 		ColMask:  colMask,
 		FlagMask: flagMask,
 	}
-	return runtime.QueueRow(pl.Pipeline, stmtIDGetMarginAccount, descGetMarginAccount, in, vk, &pl.q.fastSlots[2], argBuf, expandErr,
+	return runtime.QueueRow(pl.Pipeline, stmtIDGetMarginAccount, descGetMarginAccount, in, vk, runtime.FastSlot(colMask, &pl.q.fastSlots[2]), argBuf, expandErr,
 		func(r *sql.Row, dst *MarginAccount) error { return scanGetMarginAccountRow(r, dst, colMask, p) },
 		func(rs *sql.Rows, dst *MarginAccount) error { return scanGetMarginAccountRow(rs, dst, colMask, p) },
 	)
@@ -1107,8 +1144,9 @@ const (
 )
 
 type paramsIngestOrders struct {
-	Rows     []OrderSubmission
-	EpochSeq int64
+	Rows       []OrderSubmission
+	EpochSeq   int64
+	SelectCols uint64
 }
 
 var descIngestOrders = &runtime.QueryDescriptor{
@@ -1174,6 +1212,10 @@ func expandIngestOrdersArgs(dst *[]any, dialect runtime.Dialect, q *runtime.Quer
 func computeIngestOrdersKey(p paramsIngestOrders) (runtime.VariantKey, uint64, uint64, int) {
 	_ = p
 	var colMask uint64
+	colMask = p.SelectCols & IngestOrdersColsAll
+	if colMask == IngestOrdersColsAll {
+		colMask = 0
+	}
 	var flagMask uint64
 	var orderSpec runtime.Order
 	var hasSeek bool
@@ -1187,10 +1229,11 @@ func computeIngestOrdersKey(p paramsIngestOrders) (runtime.VariantKey, uint64, u
 }
 
 // IngestOrdersQuery constructs a composable runtime.Query without executing it.
-func IngestOrdersQuery(rows []OrderSubmission, epochSeq int64) runtime.Query {
+func IngestOrdersQuery(rows []OrderSubmission, epochSeq int64, selectCols ...uint64) runtime.Query {
 	p := paramsIngestOrders{
-		Rows:     rows,
-		EpochSeq: epochSeq,
+		Rows:       rows,
+		EpochSeq:   epochSeq,
+		SelectCols: runtime.OrCols(selectCols),
 	}
 	_, colMask, flagMask, _ := computeIngestOrdersKey(p)
 	var tupleLensBuf [1]int
@@ -1215,8 +1258,8 @@ func IngestOrdersQuery(rows []OrderSubmission, epochSeq int64) runtime.Query {
 }
 
 // IngestOrdersQuery constructs a composable runtime.Query without executing it.
-func (q *Queries) IngestOrdersQuery(rows []OrderSubmission, epochSeq int64) runtime.Query {
-	return IngestOrdersQuery(rows, epochSeq)
+func (q *Queries) IngestOrdersQuery(rows []OrderSubmission, epochSeq int64, selectCols ...uint64) runtime.Query {
+	return IngestOrdersQuery(rows, epochSeq, selectCols...)
 }
 
 func scanIngestOrdersRow(scanner interface{ Scan(...any) error }, dst *OrderAck, colMask uint64, p paramsIngestOrders) error {
@@ -1224,13 +1267,36 @@ func scanIngestOrdersRow(scanner interface{ Scan(...any) error }, dst *OrderAck,
 	_ = p
 	var item OrderAck
 	var scanBuf [6]any
-	scanBuf[0] = &item.OrderID
-	scanBuf[1] = &item.FirmID
-	scanBuf[2] = &item.AccountID
-	scanBuf[3] = &item.Symbol
-	scanBuf[4] = &item.Status
-	scanBuf[5] = &item.UpdatedSeq
-	scanSlice := scanBuf[:6]
+	scanCount := 0
+	effMask := colMask
+	if effMask == 0 {
+		effMask = IngestOrdersColsAll
+	}
+	if (effMask & (1 << 0)) != 0 {
+		scanBuf[scanCount] = &item.OrderID
+		scanCount++
+	}
+	if (effMask & (1 << 1)) != 0 {
+		scanBuf[scanCount] = &item.FirmID
+		scanCount++
+	}
+	if (effMask & (1 << 2)) != 0 {
+		scanBuf[scanCount] = &item.AccountID
+		scanCount++
+	}
+	if (effMask & (1 << 3)) != 0 {
+		scanBuf[scanCount] = &item.Symbol
+		scanCount++
+	}
+	if (effMask & (1 << 4)) != 0 {
+		scanBuf[scanCount] = &item.Status
+		scanCount++
+	}
+	if (effMask & (1 << 5)) != 0 {
+		scanBuf[scanCount] = &item.UpdatedSeq
+		scanCount++
+	}
+	scanSlice := scanBuf[:scanCount]
 	if err := scanner.Scan(scanSlice...); err != nil {
 		return err
 	}
@@ -1238,14 +1304,15 @@ func scanIngestOrdersRow(scanner interface{ Scan(...any) error }, dst *OrderAck,
 	return nil
 }
 
-func (q *Queries) IngestOrders(ctx context.Context, rows []OrderSubmission, epochSeq int64) ([]OrderAck, error) {
+func (q *Queries) IngestOrders(ctx context.Context, rows []OrderSubmission, epochSeq int64, selectCols ...uint64) ([]OrderAck, error) {
 	if len(rows) == 0 {
 		return nil, nil
 	}
 	totalRows := len(rows)
 	p := paramsIngestOrders{
-		Rows:     rows,
-		EpochSeq: epochSeq,
+		Rows:       rows,
+		EpochSeq:   epochSeq,
+		SelectCols: runtime.OrCols(selectCols),
 	}
 	_, colMask, flagMask, _ := computeIngestOrdersKey(p)
 	maxRows := q.cache.MaxRowsPerBatch(sqlDialect, 1, 9)
@@ -1261,7 +1328,7 @@ func (q *Queries) IngestOrders(ctx context.Context, rows []OrderSubmission, epoc
 		targetQ = q.WithTx(autoTx)
 		defer func() { _ = targetQ.Close() }()
 	}
-	out, err := runtime.Collect(targetQ.IngestOrdersSeq(ctx, rows, epochSeq))
+	out, err := runtime.Collect(targetQ.IngestOrdersSeq(ctx, rows, epochSeq, selectCols...))
 	if autoTx != nil {
 		if err != nil {
 			_ = autoTx.Rollback()
@@ -1274,7 +1341,7 @@ func (q *Queries) IngestOrders(ctx context.Context, rows []OrderSubmission, epoc
 	return out, err
 }
 
-func (q *Queries) IngestOrdersSeq(ctx context.Context, rows []OrderSubmission, epochSeq int64) iter.Seq2[OrderAck, error] {
+func (q *Queries) IngestOrdersSeq(ctx context.Context, rows []OrderSubmission, epochSeq int64, selectCols ...uint64) iter.Seq2[OrderAck, error] {
 	return func(yield func(OrderAck, error) bool) {
 		var zero OrderAck
 		totalRows := len(rows)
@@ -1282,8 +1349,9 @@ func (q *Queries) IngestOrdersSeq(ctx context.Context, rows []OrderSubmission, e
 			return
 		}
 		p := paramsIngestOrders{
-			Rows:     rows,
-			EpochSeq: epochSeq,
+			Rows:       rows,
+			EpochSeq:   epochSeq,
+			SelectCols: runtime.OrCols(selectCols),
 		}
 		var sortedIdx *[]int
 		if !isOrderSubmissionSorted(rows) {
@@ -1361,13 +1429,14 @@ func (q *Queries) IngestOrdersSeq(ctx context.Context, rows []OrderSubmission, e
 	}
 }
 
-func (pl *Pipeline) IngestOrders(rows []OrderSubmission, epochSeq int64) *runtime.SliceFuture[OrderAck] {
+func (pl *Pipeline) IngestOrders(rows []OrderSubmission, epochSeq int64, selectCols ...uint64) *runtime.SliceFuture[OrderAck] {
 	if len(rows) == 0 {
 		return runtime.QueueSliceNoop[OrderAck](pl.Pipeline)
 	}
 	p := paramsIngestOrders{
-		Rows:     rows,
-		EpochSeq: epochSeq,
+		Rows:       rows,
+		EpochSeq:   epochSeq,
+		SelectCols: runtime.OrCols(selectCols),
 	}
 	vk, colMask, flagMask, approxArgs := computeIngestOrdersKey(p)
 	argBuf := runtime.AcquireArgsCap(approxArgs)
@@ -1384,7 +1453,7 @@ func (pl *Pipeline) IngestOrders(rows []OrderSubmission, epochSeq int64) *runtim
 	)
 }
 
-func (q *Queries) IngestOrdersStreamSeq(ctx context.Context, seq iter.Seq2[OrderSubmission, error], epochSeq int64) iter.Seq2[OrderAck, error] {
+func (q *Queries) IngestOrdersStreamSeq(ctx context.Context, seq iter.Seq2[OrderSubmission, error], epochSeq int64, selectCols ...uint64) iter.Seq2[OrderAck, error] {
 	return func(yield func(OrderAck, error) bool) {
 		var zero OrderAck
 		if seq == nil {
@@ -1403,7 +1472,7 @@ func (q *Queries) IngestOrdersStreamSeq(ctx context.Context, seq iter.Seq2[Order
 			if len(chunk) == 0 {
 				return true
 			}
-			for r, err := range q.IngestOrdersSeq(ctx, chunk, epochSeq) {
+			for r, err := range q.IngestOrdersSeq(ctx, chunk, epochSeq, selectCols...) {
 				if err != nil {
 					yield(zero, err)
 					return false
@@ -1431,8 +1500,8 @@ func (q *Queries) IngestOrdersStreamSeq(ctx context.Context, seq iter.Seq2[Order
 	}
 }
 
-func (q *Queries) IngestOrdersStream(ctx context.Context, seq iter.Seq2[OrderSubmission, error], epochSeq int64) ([]OrderAck, error) {
-	return runtime.Collect(q.IngestOrdersStreamSeq(ctx, seq, epochSeq))
+func (q *Queries) IngestOrdersStream(ctx context.Context, seq iter.Seq2[OrderSubmission, error], epochSeq int64, selectCols ...uint64) ([]OrderAck, error) {
+	return runtime.Collect(q.IngestOrdersStreamSeq(ctx, seq, epochSeq, selectCols...))
 }
 
 const stmtIDCancelOrdersByIDs uint32 = 8
@@ -1448,9 +1517,10 @@ const (
 )
 
 type paramsCancelOrdersByIDs struct {
-	CancelSeq int64
-	FirmID    int64
-	OrderIDs  []int64
+	CancelSeq  int64
+	FirmID     int64
+	OrderIDs   []int64
+	SelectCols uint64
 }
 
 var descCancelOrdersByIDs = &runtime.QueryDescriptor{
@@ -1502,6 +1572,10 @@ func expandCancelOrdersByIDsArgs(dst *[]any, dialect runtime.Dialect, q *runtime
 func computeCancelOrdersByIDsKey(p paramsCancelOrdersByIDs) (runtime.VariantKey, uint64, uint64, int) {
 	_ = p
 	var colMask uint64
+	colMask = p.SelectCols & CancelOrdersByIDsColsAll
+	if colMask == CancelOrdersByIDsColsAll {
+		colMask = 0
+	}
 	var flagMask uint64
 	var orderSpec runtime.Order
 	var hasSeek bool
@@ -1515,11 +1589,12 @@ func computeCancelOrdersByIDsKey(p paramsCancelOrdersByIDs) (runtime.VariantKey,
 }
 
 // CancelOrdersByIDsQuery constructs a composable runtime.Query without executing it.
-func CancelOrdersByIDsQuery(cancelSeq int64, firmID int64, orderIDs []int64) runtime.Query {
+func CancelOrdersByIDsQuery(cancelSeq int64, firmID int64, orderIDs []int64, selectCols ...uint64) runtime.Query {
 	p := paramsCancelOrdersByIDs{
-		CancelSeq: cancelSeq,
-		FirmID:    firmID,
-		OrderIDs:  orderIDs,
+		CancelSeq:  cancelSeq,
+		FirmID:     firmID,
+		OrderIDs:   orderIDs,
+		SelectCols: runtime.OrCols(selectCols),
 	}
 	_, colMask, flagMask, _ := computeCancelOrdersByIDsKey(p)
 	var sliceLensBuf [1]int
@@ -1544,8 +1619,8 @@ func CancelOrdersByIDsQuery(cancelSeq int64, firmID int64, orderIDs []int64) run
 }
 
 // CancelOrdersByIDsQuery constructs a composable runtime.Query without executing it.
-func (q *Queries) CancelOrdersByIDsQuery(cancelSeq int64, firmID int64, orderIDs []int64) runtime.Query {
-	return CancelOrdersByIDsQuery(cancelSeq, firmID, orderIDs)
+func (q *Queries) CancelOrdersByIDsQuery(cancelSeq int64, firmID int64, orderIDs []int64, selectCols ...uint64) runtime.Query {
+	return CancelOrdersByIDsQuery(cancelSeq, firmID, orderIDs, selectCols...)
 }
 
 func scanCancelOrdersByIDsRow(scanner interface{ Scan(...any) error }, dst *OrderAck, colMask uint64, p paramsCancelOrdersByIDs) error {
@@ -1553,13 +1628,36 @@ func scanCancelOrdersByIDsRow(scanner interface{ Scan(...any) error }, dst *Orde
 	_ = p
 	var item OrderAck
 	var scanBuf [6]any
-	scanBuf[0] = &item.OrderID
-	scanBuf[1] = &item.FirmID
-	scanBuf[2] = &item.AccountID
-	scanBuf[3] = &item.Symbol
-	scanBuf[4] = &item.Status
-	scanBuf[5] = &item.UpdatedSeq
-	scanSlice := scanBuf[:6]
+	scanCount := 0
+	effMask := colMask
+	if effMask == 0 {
+		effMask = CancelOrdersByIDsColsAll
+	}
+	if (effMask & (1 << 0)) != 0 {
+		scanBuf[scanCount] = &item.OrderID
+		scanCount++
+	}
+	if (effMask & (1 << 1)) != 0 {
+		scanBuf[scanCount] = &item.FirmID
+		scanCount++
+	}
+	if (effMask & (1 << 2)) != 0 {
+		scanBuf[scanCount] = &item.AccountID
+		scanCount++
+	}
+	if (effMask & (1 << 3)) != 0 {
+		scanBuf[scanCount] = &item.Symbol
+		scanCount++
+	}
+	if (effMask & (1 << 4)) != 0 {
+		scanBuf[scanCount] = &item.Status
+		scanCount++
+	}
+	if (effMask & (1 << 5)) != 0 {
+		scanBuf[scanCount] = &item.UpdatedSeq
+		scanCount++
+	}
+	scanSlice := scanBuf[:scanCount]
 	if err := scanner.Scan(scanSlice...); err != nil {
 		return err
 	}
@@ -1567,12 +1665,13 @@ func scanCancelOrdersByIDsRow(scanner interface{ Scan(...any) error }, dst *Orde
 	return nil
 }
 
-func (q *Queries) CancelOrdersByIDs(ctx context.Context, cancelSeq int64, firmID int64, orderIDs []int64) ([]OrderAck, error) {
+func (q *Queries) CancelOrdersByIDs(ctx context.Context, cancelSeq int64, firmID int64, orderIDs []int64, selectCols ...uint64) ([]OrderAck, error) {
 	totalRows := len(orderIDs)
 	p := paramsCancelOrdersByIDs{
-		CancelSeq: cancelSeq,
-		FirmID:    firmID,
-		OrderIDs:  orderIDs,
+		CancelSeq:  cancelSeq,
+		FirmID:     firmID,
+		OrderIDs:   orderIDs,
+		SelectCols: runtime.OrCols(selectCols),
 	}
 	_, colMask, flagMask, _ := computeCancelOrdersByIDsKey(p)
 	maxRows := q.cache.MaxRowsPerBatch(sqlDialect, 2, 1)
@@ -1588,7 +1687,7 @@ func (q *Queries) CancelOrdersByIDs(ctx context.Context, cancelSeq int64, firmID
 		targetQ = q.WithTx(autoTx)
 		defer func() { _ = targetQ.Close() }()
 	}
-	out, err := runtime.Collect(targetQ.CancelOrdersByIDsSeq(ctx, cancelSeq, firmID, orderIDs))
+	out, err := runtime.Collect(targetQ.CancelOrdersByIDsSeq(ctx, cancelSeq, firmID, orderIDs, selectCols...))
 	if autoTx != nil {
 		if err != nil {
 			_ = autoTx.Rollback()
@@ -1601,7 +1700,7 @@ func (q *Queries) CancelOrdersByIDs(ctx context.Context, cancelSeq int64, firmID
 	return out, err
 }
 
-func (q *Queries) CancelOrdersByIDsSeq(ctx context.Context, cancelSeq int64, firmID int64, orderIDs []int64) iter.Seq2[OrderAck, error] {
+func (q *Queries) CancelOrdersByIDsSeq(ctx context.Context, cancelSeq int64, firmID int64, orderIDs []int64, selectCols ...uint64) iter.Seq2[OrderAck, error] {
 	return func(yield func(OrderAck, error) bool) {
 		var zero OrderAck
 		totalRows := len(orderIDs)
@@ -1610,9 +1709,10 @@ func (q *Queries) CancelOrdersByIDsSeq(ctx context.Context, cancelSeq int64, fir
 			return
 		}
 		p := paramsCancelOrdersByIDs{
-			CancelSeq: cancelSeq,
-			FirmID:    firmID,
-			OrderIDs:  orderIDs,
+			CancelSeq:  cancelSeq,
+			FirmID:     firmID,
+			OrderIDs:   orderIDs,
+			SelectCols: runtime.OrCols(selectCols),
 		}
 		var sortedIdx *[]int
 		if !isint64AscSorted(orderIDs) {
@@ -1683,11 +1783,12 @@ func (q *Queries) CancelOrdersByIDsSeq(ctx context.Context, cancelSeq int64, fir
 	}
 }
 
-func (pl *Pipeline) CancelOrdersByIDs(cancelSeq int64, firmID int64, orderIDs []int64) *runtime.SliceFuture[OrderAck] {
+func (pl *Pipeline) CancelOrdersByIDs(cancelSeq int64, firmID int64, orderIDs []int64, selectCols ...uint64) *runtime.SliceFuture[OrderAck] {
 	p := paramsCancelOrdersByIDs{
-		CancelSeq: cancelSeq,
-		FirmID:    firmID,
-		OrderIDs:  orderIDs,
+		CancelSeq:  cancelSeq,
+		FirmID:     firmID,
+		OrderIDs:   orderIDs,
+		SelectCols: runtime.OrCols(selectCols),
 	}
 	vk, colMask, flagMask, approxArgs := computeCancelOrdersByIDsKey(p)
 	argBuf := runtime.AcquireArgsCap(approxArgs)
@@ -1731,9 +1832,10 @@ const (
 )
 
 type paramsListOpenOrdersForSymbol struct {
-	Symbol string
-	Side   string
-	Limit  int64
+	Symbol     string
+	Side       string
+	Limit      int64
+	SelectCols uint64
 }
 
 var descListOpenOrdersForSymbol = &runtime.QueryDescriptor{
@@ -1767,6 +1869,10 @@ func expandListOpenOrdersForSymbolArgs(dst *[]any, dialect runtime.Dialect, q *r
 func computeListOpenOrdersForSymbolKey(p paramsListOpenOrdersForSymbol) (runtime.VariantKey, uint64, uint64, int) {
 	_ = p
 	var colMask uint64
+	colMask = p.SelectCols & ListOpenOrdersForSymbolColsAll
+	if colMask == ListOpenOrdersForSymbolColsAll {
+		colMask = 0
+	}
 	var flagMask uint64
 	var orderSpec runtime.Order
 	var hasSeek bool
@@ -1777,11 +1883,12 @@ func computeListOpenOrdersForSymbolKey(p paramsListOpenOrdersForSymbol) (runtime
 }
 
 // ListOpenOrdersForSymbolQuery constructs a composable runtime.Query without executing it.
-func ListOpenOrdersForSymbolQuery(symbol string, side string, limit int64) runtime.Query {
+func ListOpenOrdersForSymbolQuery(symbol string, side string, limit int64, selectCols ...uint64) runtime.Query {
 	p := paramsListOpenOrdersForSymbol{
-		Symbol: symbol,
-		Side:   side,
-		Limit:  limit,
+		Symbol:     symbol,
+		Side:       side,
+		Limit:      limit,
+		SelectCols: runtime.OrCols(selectCols),
 	}
 	_, colMask, flagMask, _ := computeListOpenOrdersForSymbolKey(p)
 	in := runtime.RenderInput{
@@ -1801,8 +1908,8 @@ func ListOpenOrdersForSymbolQuery(symbol string, side string, limit int64) runti
 }
 
 // ListOpenOrdersForSymbolQuery constructs a composable runtime.Query without executing it.
-func (q *Queries) ListOpenOrdersForSymbolQuery(symbol string, side string, limit int64) runtime.Query {
-	return ListOpenOrdersForSymbolQuery(symbol, side, limit)
+func (q *Queries) ListOpenOrdersForSymbolQuery(symbol string, side string, limit int64, selectCols ...uint64) runtime.Query {
+	return ListOpenOrdersForSymbolQuery(symbol, side, limit, selectCols...)
 }
 
 func scanListOpenOrdersForSymbolRow(scanner interface{ Scan(...any) error }, dst *OpenOrderRow, colMask uint64, p paramsListOpenOrdersForSymbol) error {
@@ -1810,15 +1917,44 @@ func scanListOpenOrdersForSymbolRow(scanner interface{ Scan(...any) error }, dst
 	_ = p
 	var item OpenOrderRow
 	var scanBuf [8]any
-	scanBuf[0] = &item.OrderID
-	scanBuf[1] = &item.FirmID
-	scanBuf[2] = &item.AccountID
-	scanBuf[3] = &item.Symbol
-	scanBuf[4] = &item.Side
-	scanBuf[5] = &item.LimitPriceCents
-	scanBuf[6] = &item.Quantity
-	scanBuf[7] = &item.Status
-	scanSlice := scanBuf[:8]
+	scanCount := 0
+	effMask := colMask
+	if effMask == 0 {
+		effMask = ListOpenOrdersForSymbolColsAll
+	}
+	if (effMask & (1 << 0)) != 0 {
+		scanBuf[scanCount] = &item.OrderID
+		scanCount++
+	}
+	if (effMask & (1 << 1)) != 0 {
+		scanBuf[scanCount] = &item.FirmID
+		scanCount++
+	}
+	if (effMask & (1 << 2)) != 0 {
+		scanBuf[scanCount] = &item.AccountID
+		scanCount++
+	}
+	if (effMask & (1 << 3)) != 0 {
+		scanBuf[scanCount] = &item.Symbol
+		scanCount++
+	}
+	if (effMask & (1 << 4)) != 0 {
+		scanBuf[scanCount] = &item.Side
+		scanCount++
+	}
+	if (effMask & (1 << 5)) != 0 {
+		scanBuf[scanCount] = &item.LimitPriceCents
+		scanCount++
+	}
+	if (effMask & (1 << 6)) != 0 {
+		scanBuf[scanCount] = &item.Quantity
+		scanCount++
+	}
+	if (effMask & (1 << 7)) != 0 {
+		scanBuf[scanCount] = &item.Status
+		scanCount++
+	}
+	scanSlice := scanBuf[:scanCount]
 	if err := scanner.Scan(scanSlice...); err != nil {
 		return err
 	}
@@ -1826,17 +1962,18 @@ func scanListOpenOrdersForSymbolRow(scanner interface{ Scan(...any) error }, dst
 	return nil
 }
 
-func (q *Queries) ListOpenOrdersForSymbol(ctx context.Context, symbol string, side string, limit int64) ([]OpenOrderRow, error) {
-	return runtime.Collect(q.ListOpenOrdersForSymbolSeq(ctx, symbol, side, limit))
+func (q *Queries) ListOpenOrdersForSymbol(ctx context.Context, symbol string, side string, limit int64, selectCols ...uint64) ([]OpenOrderRow, error) {
+	return runtime.Collect(q.ListOpenOrdersForSymbolSeq(ctx, symbol, side, limit, selectCols...))
 }
 
-func (q *Queries) ListOpenOrdersForSymbolSeq(ctx context.Context, symbol string, side string, limit int64) iter.Seq2[OpenOrderRow, error] {
+func (q *Queries) ListOpenOrdersForSymbolSeq(ctx context.Context, symbol string, side string, limit int64, selectCols ...uint64) iter.Seq2[OpenOrderRow, error] {
 	return func(yield func(OpenOrderRow, error) bool) {
 		var zero OpenOrderRow
 		p := paramsListOpenOrdersForSymbol{
-			Symbol: symbol,
-			Side:   side,
-			Limit:  limit,
+			Symbol:     symbol,
+			Side:       side,
+			Limit:      limit,
+			SelectCols: runtime.OrCols(selectCols),
 		}
 		vk, colMask, flagMask, approxArgs := computeListOpenOrdersForSymbolKey(p)
 		_ = colMask
@@ -1847,7 +1984,7 @@ func (q *Queries) ListOpenOrdersForSymbolSeq(ctx context.Context, symbol string,
 			ColMask:  colMask,
 			FlagMask: flagMask,
 		}
-		sqlRows, ms, err := q.cache.Query(ctx, q.db, q.txCache, q.usePrepared, vk, stmtIDListOpenOrdersForSymbol, runtime.ComputeBatchShapeTag(colMask, flagMask), 0, &q.fastSlots[5], sqlDialect, descListOpenOrdersForSymbol, &in, (*argBuf)...)
+		sqlRows, ms, err := q.cache.Query(ctx, q.db, q.txCache, q.usePrepared, vk, stmtIDListOpenOrdersForSymbol, runtime.ComputeBatchShapeTag(colMask, flagMask), 0, runtime.FastSlot(colMask, &q.fastSlots[5]), sqlDialect, descListOpenOrdersForSymbol, &in, (*argBuf)...)
 		if err != nil {
 			yield(zero, err)
 			return
@@ -1872,11 +2009,12 @@ func (q *Queries) ListOpenOrdersForSymbolSeq(ctx context.Context, symbol string,
 	}
 }
 
-func (pl *Pipeline) ListOpenOrdersForSymbol(symbol string, side string, limit int64) *runtime.SliceFuture[OpenOrderRow] {
+func (pl *Pipeline) ListOpenOrdersForSymbol(symbol string, side string, limit int64, selectCols ...uint64) *runtime.SliceFuture[OpenOrderRow] {
 	p := paramsListOpenOrdersForSymbol{
-		Symbol: symbol,
-		Side:   side,
-		Limit:  limit,
+		Symbol:     symbol,
+		Side:       side,
+		Limit:      limit,
+		SelectCols: runtime.OrCols(selectCols),
 	}
 	vk, colMask, flagMask, approxArgs := computeListOpenOrdersForSymbolKey(p)
 	argBuf := runtime.AcquireArgsCap(approxArgs)
@@ -1885,7 +2023,7 @@ func (pl *Pipeline) ListOpenOrdersForSymbol(symbol string, side string, limit in
 		ColMask:  colMask,
 		FlagMask: flagMask,
 	}
-	return runtime.QueueSlice(pl.Pipeline, stmtIDListOpenOrdersForSymbol, descListOpenOrdersForSymbol, in, vk, &pl.q.fastSlots[5], argBuf, expandErr,
+	return runtime.QueueSlice(pl.Pipeline, stmtIDListOpenOrdersForSymbol, descListOpenOrdersForSymbol, in, vk, runtime.FastSlot(colMask, &pl.q.fastSlots[5]), argBuf, expandErr,
 		func(rs *sql.Rows, dst *OpenOrderRow) error {
 			return scanListOpenOrdersForSymbolRow(rs, dst, colMask, p)
 		},
@@ -3051,8 +3189,8 @@ func computeQueryRiskPositionsPageKey(p QueryRiskPositionsPageParams) (runtime.V
 	_ = p
 	var colMask uint64
 	colMask = p.SelectCols & QueryRiskPositionsPageColsAll
-	if colMask == 0 {
-		colMask = QueryRiskPositionsPageColsAll
+	if colMask == QueryRiskPositionsPageColsAll {
+		colMask = 0
 	}
 	var flagMask uint64
 	if p.IncludeGreeks {
@@ -3130,6 +3268,9 @@ func scanQueryRiskPositionsPageRow(scanner interface{ Scan(...any) error }, dst 
 	var scanBuf [12]any
 	scanCount := 0
 	effMask := colMask
+	if effMask == 0 {
+		effMask = QueryRiskPositionsPageColsAll
+	}
 	if (effMask & (1 << 0)) != 0 {
 		scanBuf[scanCount] = &item.PositionID
 		scanCount++

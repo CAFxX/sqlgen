@@ -53,7 +53,7 @@ statements:
   - name: GetAccount                            # Exported Go identifier (required)
     kind: one                                   # Required: "exec" | "one" | "many" | "subquery"
     result_type: Account                        # Optional custom struct name (or scalar type like "int64") for "one"/"many" (default: "<Name>Row")
-    params_struct: false                        # Optional: set true to always generate <Name>Params struct instead of positional arguments
+    args: auto                                  # Optional argument style: auto (default) | positional | struct (section 2.2)
     sql: |                                      # Output columns and parameters are typed inline (section 2)
       SELECT id:int64, balance:int64, status:string
       FROM accounts
@@ -163,9 +163,15 @@ statements:
 - **Empty collections** (the rule is structural: it depends on what the collection is used for, not on the statement kind):
   - An empty 1D slice (`len(userIDs) == 0`) in an active `IN (...)`/`NOT IN (...)`, and an empty tuple slice anywhere but as the row source of an `INSERT`, returns `runtime.ErrEmptySliceParam` before hitting the database: `IN ()` is invalid SQL, and what an empty list *means* (`NOT IN ()` is true for every row) is a decision for the caller, not the generator.
   - The one exception is the multi-row `VALUES` list of an `INSERT` (section 2.3): inserting nothing is a **successful no-op** (details there).
-- **Function Signature Arity (`params_struct`)**:
-  - By default, if a statement has no `{?Flag: ...}` conditional blocks and `params_struct` is not `true`, parameters are passed inline as positional arguments: `q.GetUsersByIDs(ctx, orgID, userIDs)`.
-  - If a statement has any `{?Flag: ...}` conditional blocks or sets `params_struct: true`, a `<Name>Params` struct is generated (including `SelectCols uint64` for multi-column `SELECT` statements): `q.SearchUsers(ctx, SearchUsersParams{...})`.
+- **Argument style (`args:`)**: the `args:` key of a statement selects how its generated methods take the parameters. The value is an enum, one of:
+
+  | Value | Call shape |
+  |---|---|
+  | `auto` (default when the key is omitted) | `struct` when the statement has `{?Flag: ...}` blocks, `positional` otherwise |
+  | `positional` | each parameter is a Go argument: `q.GetUsersByIDs(ctx, orgID, userIDs)` |
+  | `struct` | one generated `<Name>Params` struct: `q.GetUsersByIDs(ctx, GetUsersByIDsParams{OrgID: orgID, UserIDs: userIDs})` |
+
+  Any other value is a generate-time error that lists the valid ones. The style only changes the signature: `Name`, `NameQuery`, the `Pipeline` method, `NameSeq`/`NameStream` and the SQL and caching behaviour are the same in every style, so switching a statement is a mechanical call-site change. `struct` is always legal. `positional` is rejected (`args: positional is not possible: ...`) for a statement with `{?Flag: ...}` blocks, because the blocks are switched by boolean fields that only the struct carries; `Seek` / `Order` parameters, slices, tuple slices and `sqlgen.Query` parameters are ordinary parameters and work in both styles. Choose `struct` explicitly for a statement with many parameters of the same type, where named fields read better than a long positional list. The argument styles are an extension point: a future style is a new value of this key, not a new key.
 
 ---
 
@@ -235,7 +241,7 @@ VALUES :items:[]AccountPatch(ID:int64::bigint ASC, Delta:int64::bigint)
 
 ### 2.5. Conditional Blocks (`{?FlagName: ...}`) & `SelectCols` Bitmask Projection
 
-Wrap optional SQL clauses in `{?FlagName: ...}`. `sqlgen` adds a `FlagName bool` field to `<Name>Params`:
+Wrap optional SQL clauses in `{?FlagName: ...}`. `sqlgen` adds a `FlagName bool` field to `<Name>Params`, so a statement with flag blocks always takes the params struct (`args: auto` picks it; `args: positional` is an error, section 2.2):
 
 ```yaml
 statements:
@@ -265,22 +271,29 @@ statements:
 
 #### Runtime Column Projection (`SelectCols`)
 
-Every multi-column `kind: one` or `kind: many` statement with a `<Name>Params` struct (`params_struct: true` or at least one `{?Flag: ...}`) exposes a `SelectCols uint64` bitmask field on `<Name>Params`:
+Every `kind: one` or `kind: many` statement with at least two unconditional output columns can return a subset of them, in either argument style. The column constants are generated per row type:
 
 ```go
 // Generated bitmask constants for MemberRow (and SearchMembers):
 // MemberRowColID, MemberRowColOrgID, MemberRowColEmail, MemberRowColRole,
 // MemberRowColStatus, MemberRowColScore, MemberRowColsAll
 
+// Struct style (SearchMembers has {?Flag: ...} blocks): the SelectCols field of <Name>Params.
 // Compact list view: only fetch ID, Email, and Role over the wire!
 rows, err := q.SearchMembers(ctx, SearchMembersParams{
     OrgID:      orgID,
     SelectCols: MemberRowColID | MemberRowColEmail | MemberRowColRole,
 })
+
+// Positional style (a kind: one statement GetMember returning MemberRow): a trailing variadic argument, selectCols ...uint64. Several constants are
+// combined (an already OR-ed mask works too); no argument returns every column.
+m, err := q.GetMember(ctx, memberID, MemberRowColID, MemberRowColEmail)
 ```
 
-- Setting `SelectCols: 0` (the default) or `MemberRowColsAll` selects all unconditional columns.
-- Setting specific bits omits unselected unconditional columns from the rendered `SELECT` list and skips scanning them, saving network bandwidth and allocation for wide rows.
+- Selecting nothing (`SelectCols: 0`, or no variadic argument) or `MemberRowColsAll` selects all unconditional columns.
+- Setting specific bits omits unselected unconditional columns from the rendered `SELECT` list and skips scanning them, saving network bandwidth and allocation for wide rows; unselected fields keep their zero values.
+- The projection exists whenever the statement has two or more unconditional output columns whose list is a plain span of the `SELECT` / `RETURNING` clause; it does not depend on the argument style. The variadic is the same final parameter of `<Name>`, `<Name>Query`, the `Pipeline` method, `<Name>Seq` and `<Name>Stream`, costs no allocation (the arguments live on the caller's stack), and never changes the default path: the call without it uses the same cached statement and fast slot as before. A positional parameter that maps to the Go field `SelectCols` (`:select_cols:...`) is rejected, as in the struct style.
+- Why a trailing variadic: it keeps every existing positional call valid, keeps the parameters in the order of the SQL, and needs no second method per statement; the alternative (a leading mask argument) would make the common call carry a meaningless `0`.
 
 ---
 
@@ -295,7 +308,7 @@ statements:
   - name: ListMembersPaginated
     kind: many
     result_type: MemberItem
-    params_struct: true
+    args: struct
     sql: |
       SELECT
         id:int64,
@@ -385,7 +398,7 @@ statements:
   - name: AggregateCohortInvoices
     kind: many
     result_type: CohortSummary
-    params_struct: true
+    args: struct
     sql: |
       WITH target_members AS (:member_query:sqlgen.Query)
       SELECT

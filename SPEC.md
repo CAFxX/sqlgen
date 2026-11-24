@@ -116,11 +116,11 @@ const (
 )
 
 type StatementSpec struct {
-	Name         string    `yaml:"name"`
-	Kind         QueryKind `yaml:"kind"`
-	ResultType   string    `yaml:"result_type"`
-	ParamsStruct bool      `yaml:"params_struct"`
-	SQL          string    `yaml:"sql"`
+	Name       string    `yaml:"name"`
+	Kind       QueryKind `yaml:"kind"`
+	ResultType string    `yaml:"result_type"`
+	Args       string    `yaml:"args"` // "" or "auto" | "positional" | "struct"
+	SQL        string    `yaml:"sql"`
 }
 
 type Config struct {
@@ -235,11 +235,11 @@ scalar_go_type     = [ "[]" | "*" ] , [ identifier , "." ] , identifier ;
    - The retired spellings are errors too: `name...` / `Type...` slices (declare `:name:[]Type`), the `runtime.` and bare `Query` / `Seek` / `Order` directive prefixes (only `sqlgen.Order`, `sqlgen.Seek`, `sqlgen.Query` exist), and YAML `params:` / `columns:`.
 
 ### 4.4. Unconditional `SlotSelectCols` Splicing (Single-Pass Safe)
-Whenever a statement has `len(UncondCols) > 1` (inline output columns in `SELECT` or `RETURNING`), **regardless of whether `UseParamsStruct` is already true during `SELECT` scanning**:
+Whenever a statement has `len(UncondCols) > 1` (inline output columns in `SELECT` or `RETURNING`), **regardless of the argument style (`StructArgs`), which is decided after `SELECT` scanning**:
 1. Each unconditional output column records its full trimmed SQL projection expression in `QueryDescriptor.SelectColExprs` (e.g., `"u.id"`, `"COALESCE(o.display_name, o.slug) AS org_name"`).
 2. In the top-level `QueryDescriptor`, the entire span of unconditional column expressions (from after the `SELECT ` / `RETURNING ` whitespace to the end of the last unconditional column) is replaced by a single `SlotSelectCols` slot in `QueryDescriptor.Slots`.
 3. Any conditional output columns (`{?WithOrg: , o.name AS org_name:string}`) remain as `SlotOptBlock` occurrences immediately following `SlotSelectCols`.
-4. When `UseParamsStruct == false` (or `p.SelectCols == 0`), `in.ColMask` is `0`, which `SlotSelectCols` renders as all unconditional columns (`effectiveMask = validMask`). When `DynamicSlots == 0`, `StaticSQL` also expands `SlotSelectCols` with `ColMask == 0`. This guarantees that discovering a `{?Flag: ...}` block later in `WHERE` never invalidates the already-scanned `SELECT` clause.
+4. When no columns are selected (`p.SelectCols & ColsAll` is `0` or every column; the canonical value is `0`, in both argument styles), `in.ColMask` is `0`, which `SlotSelectCols` renders as all unconditional columns (`effectiveMask = validMask`). When `DynamicSlots == 0`, `StaticSQL` also expands `SlotSelectCols` with `ColMask == 0`. This guarantees that discovering a `{?Flag: ...}` block later in `WHERE` never invalidates the already-scanned `SELECT` clause.
 
 ### 4.5. Inline Branch-Guard Slots (`SlotBranchGuard*` & `SlotInsertValues*`)
 To allow any statement inside a pipelined `p.If(...)` branch to be gated on the server in a **single streaming pass** with **one `strings.Builder`** across both PostgreSQL and SQLite:
@@ -858,7 +858,7 @@ For each statement `<Name>` in `sqlgen.yaml`, `Generate` emits into a single `by
 1. Tuple structs (`<TupleStruct>`), `<tupleStruct>ChunkPool`, `compare<TupleStruct>`, and `is<TupleStruct>Sorted` (when `HasSort == true`).
 2. 1D slice presort helpers `is<Type>AscSorted` / `is<Type>DescSorted` (when `HasSort == true`).
 3. Output row struct (`<RowType>`), `<RowType>Col` bitmask constants (`1 << iota`), and `<RowType>Order` / `<RowType>SortCol` / `<RowType>SortTerm` / `Order<RowType>(...)` helpers (`Order<RowType>` takes `<RowType>SortTerm`, so the sort tokens of another statement do not compile; a repeated or out-of-range term yields `runtime.ErrInvalidOrder`).
-4. `<Name>Params` struct (when `UseParamsStruct == true`).
+4. `<Name>Params` struct (when `StructArgs == true`, i.e. `args: struct`, or `args: auto` with `{?Flag: ...}` blocks).
 5. Static `QueryDescriptor` (`<name>Desc`) and non-capturing `expand<Name>Args` function.
 6. Currying constructors: `func <Name>Query(...) Query` and `func (q *Queries) <Name>Query(...) Query`.
 7. Direct execution methods on `*Queries`:

@@ -29,7 +29,6 @@ statements:
   - name: SearchItems
     kind: many
     result_type: Item
-    params_struct: true
     sql: |
       SELECT id:int64, org_id:int64, name:string, score:int64, status:string
       FROM sg_items
@@ -42,7 +41,7 @@ statements:
   - name: PageItems
     kind: many
     result_type: PagedItem
-    params_struct: true
+    args: struct
     sql: |
       SELECT id:int64, org_id:int64, name:string, score:int64, status:string
       FROM sg_items
@@ -55,7 +54,7 @@ statements:
   - name: WideRows
     kind: many
     result_type: Wide
-    params_struct: true
+    args: struct
     sql: |
       SELECT c1:int64, c2:int64, c3:int64, c4:int64, c5:int64, c6:int64, c7:int64, c8:int64, c9:int64, c10:int64, c11:int64, id:int64
       FROM sg_wide

@@ -692,6 +692,15 @@ func (c *StmtCache) MaxRowsPerBatch(dialect Dialect, scalarCount, tupleFields in
 	return maxRows
 }
 
+// FastSlot returns slot for a call that renders the statement's default SQL (colMask 0, every column) and
+// nil for a projected call, whose SQL differs from the one the slot caches.
+func FastSlot(colMask uint64, slot *atomic.Pointer[ManagedStmt]) *atomic.Pointer[ManagedStmt] {
+	if colMask != 0 {
+		return nil
+	}
+	return slot
+}
+
 // ComputeBatchShapeTag computes a compact shape tag for batch size tracking.
 func ComputeBatchShapeTag(colMask, flagMask uint64) uint64 {
 	return (colMask << 32) ^ flagMask

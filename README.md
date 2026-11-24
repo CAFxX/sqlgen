@@ -19,7 +19,6 @@ statements:
   - name: SearchItems
     kind: many
     result_type: Item
-    params_struct: true
     sql: |
       SELECT id:int64, name:string, score:int64 FROM items
       WHERE score >= :min_score:int64

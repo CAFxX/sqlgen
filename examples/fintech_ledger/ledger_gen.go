@@ -206,8 +206,9 @@ const (
 )
 
 type paramsGetAccount struct {
-	OrgID     int64
-	AccountID int64
+	OrgID      int64
+	AccountID  int64
+	SelectCols uint64
 }
 
 var descGetAccount = &runtime.QueryDescriptor{
@@ -239,6 +240,10 @@ func expandGetAccountArgs(dst *[]any, dialect runtime.Dialect, q *runtime.Query)
 func computeGetAccountKey(p paramsGetAccount) (runtime.VariantKey, uint64, uint64, int) {
 	_ = p
 	var colMask uint64
+	colMask = p.SelectCols & GetAccountColsAll
+	if colMask == GetAccountColsAll {
+		colMask = 0
+	}
 	var flagMask uint64
 	var orderSpec runtime.Order
 	var hasSeek bool
@@ -249,10 +254,11 @@ func computeGetAccountKey(p paramsGetAccount) (runtime.VariantKey, uint64, uint6
 }
 
 // GetAccountQuery constructs a composable runtime.Query without executing it.
-func GetAccountQuery(orgID int64, accountID int64) runtime.Query {
+func GetAccountQuery(orgID int64, accountID int64, selectCols ...uint64) runtime.Query {
 	p := paramsGetAccount{
-		OrgID:     orgID,
-		AccountID: accountID,
+		OrgID:      orgID,
+		AccountID:  accountID,
+		SelectCols: runtime.OrCols(selectCols),
 	}
 	_, colMask, flagMask, _ := computeGetAccountKey(p)
 	in := runtime.RenderInput{
@@ -272,8 +278,8 @@ func GetAccountQuery(orgID int64, accountID int64) runtime.Query {
 }
 
 // GetAccountQuery constructs a composable runtime.Query without executing it.
-func (q *Queries) GetAccountQuery(orgID int64, accountID int64) runtime.Query {
-	return GetAccountQuery(orgID, accountID)
+func (q *Queries) GetAccountQuery(orgID int64, accountID int64, selectCols ...uint64) runtime.Query {
+	return GetAccountQuery(orgID, accountID, selectCols...)
 }
 
 func scanGetAccountRow(scanner interface{ Scan(...any) error }, dst *Account, colMask uint64, p paramsGetAccount) error {
@@ -281,12 +287,32 @@ func scanGetAccountRow(scanner interface{ Scan(...any) error }, dst *Account, co
 	_ = p
 	var item Account
 	var scanBuf [5]any
-	scanBuf[0] = &item.OrgID
-	scanBuf[1] = &item.ID
-	scanBuf[2] = &item.Currency
-	scanBuf[3] = &item.BalanceCents
-	scanBuf[4] = &item.Status
-	scanSlice := scanBuf[:5]
+	scanCount := 0
+	effMask := colMask
+	if effMask == 0 {
+		effMask = GetAccountColsAll
+	}
+	if (effMask & (1 << 0)) != 0 {
+		scanBuf[scanCount] = &item.OrgID
+		scanCount++
+	}
+	if (effMask & (1 << 1)) != 0 {
+		scanBuf[scanCount] = &item.ID
+		scanCount++
+	}
+	if (effMask & (1 << 2)) != 0 {
+		scanBuf[scanCount] = &item.Currency
+		scanCount++
+	}
+	if (effMask & (1 << 3)) != 0 {
+		scanBuf[scanCount] = &item.BalanceCents
+		scanCount++
+	}
+	if (effMask & (1 << 4)) != 0 {
+		scanBuf[scanCount] = &item.Status
+		scanCount++
+	}
+	scanSlice := scanBuf[:scanCount]
 	if err := scanner.Scan(scanSlice...); err != nil {
 		return err
 	}
@@ -294,11 +320,12 @@ func scanGetAccountRow(scanner interface{ Scan(...any) error }, dst *Account, co
 	return nil
 }
 
-func (q *Queries) GetAccount(ctx context.Context, orgID int64, accountID int64) (Account, error) {
+func (q *Queries) GetAccount(ctx context.Context, orgID int64, accountID int64, selectCols ...uint64) (Account, error) {
 	var zero Account
 	p := paramsGetAccount{
-		OrgID:     orgID,
-		AccountID: accountID,
+		OrgID:      orgID,
+		AccountID:  accountID,
+		SelectCols: runtime.OrCols(selectCols),
 	}
 	vk, colMask, flagMask, approxArgs := computeGetAccountKey(p)
 	_ = colMask
@@ -309,7 +336,7 @@ func (q *Queries) GetAccount(ctx context.Context, orgID int64, accountID int64) 
 		ColMask:  colMask,
 		FlagMask: flagMask,
 	}
-	sqlRow, ms, err := q.cache.QueryRow(ctx, q.db, q.txCache, q.usePrepared, vk, stmtIDGetAccount, runtime.ComputeBatchShapeTag(colMask, flagMask), 0, &q.fastSlots[0], sqlDialect, descGetAccount, &in, (*argBuf)...)
+	sqlRow, ms, err := q.cache.QueryRow(ctx, q.db, q.txCache, q.usePrepared, vk, stmtIDGetAccount, runtime.ComputeBatchShapeTag(colMask, flagMask), 0, runtime.FastSlot(colMask, &q.fastSlots[0]), sqlDialect, descGetAccount, &in, (*argBuf)...)
 	if err != nil {
 		return zero, err
 	}
@@ -322,10 +349,11 @@ func (q *Queries) GetAccount(ctx context.Context, orgID int64, accountID int64) 
 	return item, nil
 }
 
-func (pl *Pipeline) GetAccount(orgID int64, accountID int64) *runtime.RowFuture[Account] {
+func (pl *Pipeline) GetAccount(orgID int64, accountID int64, selectCols ...uint64) *runtime.RowFuture[Account] {
 	p := paramsGetAccount{
-		OrgID:     orgID,
-		AccountID: accountID,
+		OrgID:      orgID,
+		AccountID:  accountID,
+		SelectCols: runtime.OrCols(selectCols),
 	}
 	vk, colMask, flagMask, approxArgs := computeGetAccountKey(p)
 	argBuf := runtime.AcquireArgsCap(approxArgs)
@@ -334,7 +362,7 @@ func (pl *Pipeline) GetAccount(orgID int64, accountID int64) *runtime.RowFuture[
 		ColMask:  colMask,
 		FlagMask: flagMask,
 	}
-	return runtime.QueueRow(pl.Pipeline, stmtIDGetAccount, descGetAccount, in, vk, &pl.q.fastSlots[0], argBuf, expandErr,
+	return runtime.QueueRow(pl.Pipeline, stmtIDGetAccount, descGetAccount, in, vk, runtime.FastSlot(colMask, &pl.q.fastSlots[0]), argBuf, expandErr,
 		func(r *sql.Row, dst *Account) error { return scanGetAccountRow(r, dst, colMask, p) },
 		func(rs *sql.Rows, dst *Account) error { return scanGetAccountRow(rs, dst, colMask, p) },
 	)

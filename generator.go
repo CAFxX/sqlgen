@@ -113,11 +113,49 @@ const dialectList = "postgres, cockroachdb, mysql, mariadb, sqlite"
 
 // StatementSpec defines a single SQL statement in the YAML configuration.
 type StatementSpec struct {
-	Name         string    `yaml:"name"`
-	Kind         QueryKind `yaml:"kind"`
-	ResultType   string    `yaml:"result_type"`
-	ParamsStruct bool      `yaml:"params_struct"`
-	SQL          string    `yaml:"sql"`
+	Name       string    `yaml:"name"`
+	Kind       QueryKind `yaml:"kind"`
+	ResultType string    `yaml:"result_type"`
+	// Args selects the argument style of the generated methods of this statement, see ArgsStyle. Empty is auto.
+	Args string `yaml:"args"`
+	SQL  string `yaml:"sql"`
+}
+
+// Argument styles of the args: key of a statement. The style is a presentation choice: every statement is
+// compiled and emitted the same way, only the signature of its generated methods differs. A new style is a
+// new constant here plus its case in resolveArgsStyle, and its branch where the method signature and the
+// local params value are built (emitStatementCode, buildStreamSignatures, emitArgsInit).
+const (
+	// ArgsAuto (the default) picks ArgsStruct when the statement has optional {?Flag: ...} blocks and
+	// ArgsPositional otherwise.
+	ArgsAuto = "auto"
+	// ArgsPositional passes each parameter as a Go argument: q.Name(ctx, a, b).
+	ArgsPositional = "positional"
+	// ArgsStruct passes one generated <Name>Params struct: q.Name(ctx, NameParams{A: a, B: b}).
+	ArgsStruct = "struct"
+)
+
+// argsStyleList names the accepted values of the args: key, for error messages.
+const argsStyleList = ArgsAuto + ", " + ArgsPositional + ", " + ArgsStruct
+
+// resolveArgsStyle turns the args: value of a statement into the concrete style (ArgsPositional or
+// ArgsStruct) and rejects unknown values and styles the statement cannot use.
+func resolveArgsStyle(name, args string, hasFlags bool) (string, error) {
+	switch args {
+	case "", ArgsAuto:
+		if hasFlags {
+			return ArgsStruct, nil
+		}
+		return ArgsPositional, nil
+	case ArgsPositional:
+		if hasFlags {
+			return "", fmt.Errorf("statement %s: args: positional is not possible: the optional {?Flag: ...} blocks are switched by boolean fields, which only the params struct carries; use args: struct (or auto)", name)
+		}
+		return ArgsPositional, nil
+	case ArgsStruct:
+		return ArgsStruct, nil
+	}
+	return "", fmt.Errorf("statement %s: unknown args value %q; valid values: %s", name, args, argsStyleList)
 }
 
 // Config represents the top-level YAML configuration schema (sqlgen.yaml).
@@ -579,7 +617,7 @@ func toGoParamName(s string) string {
 var reservedParamNames = func() map[string]bool {
 	m := map[string]bool{}
 	for _, n := range strings.Fields(`
-		_ sqlDialect approxArgs argBuf autoTx batchRes bufPtr chunk chunkCap chunkP chunkRows chunkSize colMask cp d0 d1
+		_ selectCols sqlDialect approxArgs argBuf autoTx batchRes bufPtr chunk chunkCap chunkP chunkRows chunkSize colMask cp d0 d1
 		dst eFn effMask err expandErr firstChunk flagMask flushChunk hasSeek i idx idxBuf in item j k maxRows ms
 		offset orderKey orderSpec out p r res row rs scanBuf scanCount scanDest scanSlice shapeLens shapeTag
 		sliceLensBuf sortedIdx sqlRow sqlRows sub subsBuf tFn targetQ tc totalRows tupleLensBuf txCache txQ v vk
@@ -706,17 +744,19 @@ type rowOrder struct {
 }
 
 type compiledStmt struct {
-	ID              uint32
-	Name            string
-	Kind            QueryKind
-	StmtVerb        runtime.StmtVerb
-	HasReturning    bool
-	RowTypeName     string
-	ScalarResult    bool
-	UseParamsStruct bool
-	CanBatch        bool
-	CanStream       bool
-	BatchParamIdx   int
+	ID           uint32
+	Name         string
+	Kind         QueryKind
+	StmtVerb     runtime.StmtVerb
+	HasReturning bool
+	RowTypeName  string
+	ScalarResult bool
+	StructArgs   bool // args style is ArgsStruct; false is ArgsPositional
+	// SelectCols reports whether the statement has the row projection (SelectCols mask / variadic selectCols).
+	SelectCols    bool
+	CanBatch      bool
+	CanStream     bool
+	BatchParamIdx int
 	// ValuesParamIdx is the parameter index of the multi-row VALUES tuple slice of an INSERT
 	// (INSERT ... VALUES :rows:[]T(...)), or -1. An empty collection there is a no-op, see the X5 rule in
 	// DOCS: it is the only place where emptiness means "nothing to do" instead of an invalid statement.
@@ -2293,27 +2333,6 @@ func compileStatement(id uint32, spec StatementSpec, sd stmtDialect) (*compiledS
 		}
 	}
 
-	cs.UseParamsStruct = spec.ParamsStruct || len(cs.Flags) > 0
-
-	// Fields of the generated <Name>Params struct share one namespace: parameters, optional-block flags
-	// and the synthetic SelectCols mask. A collision would otherwise surface as a Go compile error in
-	// the generated file.
-	if cs.UseParamsStruct {
-		owners := map[string]string{"SelectCols": "the generated SelectCols projection mask"}
-		for _, prm := range cs.Params {
-			if prev, dup := owners[prm.FieldName]; dup {
-				return nil, fmt.Errorf("statement %s: parameter %q maps to Go field %q, which collides with %s; rename it", spec.Name, prm.RawName, prm.FieldName, prev)
-			}
-			owners[prm.FieldName] = fmt.Sprintf("parameter %q", prm.RawName)
-		}
-		for _, fl := range cs.Flags {
-			if prev, dup := owners[fl.FieldName]; dup {
-				return nil, fmt.Errorf("statement %s: conditional flag {?%s: ...} maps to Go field %q, which collides with %s; rename the flag or the parameter", spec.Name, fl.RawName, fl.FieldName, prev)
-			}
-			owners[fl.FieldName] = fmt.Sprintf("flag %q", fl.RawName)
-		}
-	}
-
 	// Section 4.4: Unconditional SlotSelectCols splicing whenever len(UncondCols) > 1
 	if len(cs.UncondCols) > 1 && parser.projActive && !parser.projHasParamSlot &&
 		parser.projStartSegIdx == parser.projEndSegIdx {
@@ -2337,6 +2356,35 @@ func compileStatement(id uint32, spec StatementSpec, sd stmtDialect) (*compiledS
 		for _, uc := range cs.UncondCols {
 			cs.SelectColExprs = append(cs.SelectColExprs, uc.SQLExpr)
 		}
+	}
+
+	cs.SelectCols = len(cs.SelectColExprs) > 0
+
+	style, err := resolveArgsStyle(spec.Name, spec.Args, len(cs.Flags) > 0)
+	if err != nil {
+		return nil, err
+	}
+	cs.StructArgs = style == ArgsStruct
+
+	// Fields of the generated params struct (the argument of the struct style, the internal value of the
+	// positional one) share one namespace: parameters, optional-block flags and the SelectCols projection
+	// mask. A collision would otherwise surface as a Go compile error in the generated file. The struct
+	// style reserves SelectCols for every statement, a positional one only when it has the projection.
+	owners := map[string]string{}
+	if cs.StructArgs || cs.SelectCols {
+		owners["SelectCols"] = "the generated SelectCols projection mask"
+	}
+	for _, prm := range cs.Params {
+		if prev, dup := owners[prm.FieldName]; dup {
+			return nil, fmt.Errorf("statement %s: parameter %q maps to Go field %q, which collides with %s; rename it", spec.Name, prm.RawName, prm.FieldName, prev)
+		}
+		owners[prm.FieldName] = fmt.Sprintf("parameter %q", prm.RawName)
+	}
+	for _, fl := range cs.Flags {
+		if prev, dup := owners[fl.FieldName]; dup {
+			return nil, fmt.Errorf("statement %s: conditional flag {?%s: ...} maps to Go field %q, which collides with %s; rename the flag or the parameter", spec.Name, fl.RawName, fl.FieldName, prev)
+		}
+		owners[fl.FieldName] = fmt.Sprintf("flag %q", fl.RawName)
 	}
 
 	if kind == KindOne || kind == KindMany {
@@ -2388,7 +2436,7 @@ func compileStatement(id uint32, spec StatementSpec, sd stmtDialect) (*compiledS
 		cs.TotalTuples == 0 &&
 		cs.TotalSubs == 0 &&
 		len(cs.Flags) == 0 &&
-		!cs.UseParamsStruct &&
+		!cs.StructArgs &&
 		!cs.HasOrder &&
 		!cs.HasSeek
 
@@ -3277,7 +3325,7 @@ func emitStatementCode(
 	}
 
 	paramsStructName := cs.Name + "Params"
-	if !cs.UseParamsStruct {
+	if !cs.StructArgs {
 		paramsStructName = "params" + cs.Name
 	}
 	fmt.Fprintf(b, "type %s struct {\n", paramsStructName)
@@ -3287,7 +3335,7 @@ func emitStatementCode(
 	for _, f := range cs.Flags {
 		fmt.Fprintf(b, "\t%s bool\n", f.FieldName)
 	}
-	if cs.UseParamsStruct && len(cs.UncondCols) > 0 {
+	if cs.SelectCols {
 		b.WriteString("\tSelectCols uint64\n")
 	}
 	b.WriteString("}\n\n")
@@ -3316,7 +3364,7 @@ func emitStatementCode(
 
 	var sigParams []byte
 	var callArgs []byte
-	if cs.UseParamsStruct {
+	if cs.StructArgs {
 		sigParams = append(sigParams, ("p " + paramsStructName)...)
 		callArgs = append(callArgs, 'p')
 	} else {
@@ -3327,6 +3375,14 @@ func emitStatementCode(
 			}
 			sigParams = append(sigParams, (p.ParamName + " " + p.GoType)...)
 			callArgs = append(callArgs, p.ParamName...)
+		}
+		if cs.SelectCols {
+			if len(cs.Params) > 0 {
+				sigParams = append(sigParams, ", "...)
+				callArgs = append(callArgs, ", "...)
+			}
+			sigParams = append(sigParams, selectColsSig...)
+			callArgs = append(callArgs, selectColsCall...)
 		}
 	}
 	sigStr := string(sigParams)
@@ -3342,9 +3398,10 @@ func emitStatementCode(
 	fmt.Fprintf(b, "func compute%sKey(p %s) (runtime.VariantKey, uint64, uint64, int) {\n", cs.Name, paramsStructName)
 	b.WriteString("\t_ = p\n")
 	b.WriteString("\tvar colMask uint64\n")
-	if cs.UseParamsStruct && len(cs.SelectColExprs) > 0 {
+	if cs.SelectCols {
+		// 0 is the canonical "every column": the static SQL, fast slot and one variant cover it.
 		fmt.Fprintf(b, "\tcolMask = p.SelectCols & %sColsAll\n", cs.Name)
-		fmt.Fprintf(b, "\tif colMask == 0 {\n\t\tcolMask = %sColsAll\n\t}\n", cs.Name)
+		fmt.Fprintf(b, "\tif colMask == %sColsAll {\n\t\tcolMask = 0\n\t}\n", cs.Name)
 	}
 	b.WriteString("\tvar flagMask uint64\n")
 	for _, f := range cs.Flags {
@@ -3506,13 +3563,7 @@ func emitStatementCode(
 	if cs.Kind != KindExec {
 		fmt.Fprintf(b, "// %sQuery constructs a composable runtime.Query without executing it.\n", cs.Name)
 		fmt.Fprintf(b, "func %sQuery(%s) runtime.Query {\n", cs.Name, sigStr)
-		if !cs.UseParamsStruct {
-			fmt.Fprintf(b, "\tp := %s{\n", paramsStructName)
-			for _, p := range cs.Params {
-				fmt.Fprintf(b, "\t\t%s: %s,\n", p.FieldName, p.ParamName)
-			}
-			b.WriteString("\t}\n")
-		}
+		emitArgsInit(b, cs, "\t", paramsStructName)
 		fmt.Fprintf(b, "\t_, colMask, flagMask, _ := compute%sKey(p)\n", cs.Name)
 		emitStackRenderInput("\t", "p")
 		b.WriteString("\torderKey := runtime.EncodeOrderKey(in.OrderSpec, in.HasSeek)\n")
@@ -3562,17 +3613,14 @@ func emitStatementCode(
 	if slotIdx, ok := staticIdxByStmt[cs.ID]; ok {
 		fastSlotExpr = fmt.Sprintf("&q.fastSlots[%d]", slotIdx)
 		pipelineFastSlotExpr = fmt.Sprintf("&pl.q.fastSlots[%d]", slotIdx)
-	}
-
-	emitLocalParamsInit := func(indent string) {
-		if !cs.UseParamsStruct {
-			fmt.Fprintf(b, "%sp := %s{\n", indent, paramsStructName)
-			for _, p := range cs.Params {
-				fmt.Fprintf(b, "%s\t%s: %s,\n", indent, p.FieldName, p.ParamName)
-			}
-			fmt.Fprintf(b, "%s}\n", indent)
+		if cs.SelectCols {
+			// The slot caches one statement; a projected call renders other SQL and must not use it.
+			fastSlotExpr = fmt.Sprintf("runtime.FastSlot(colMask, %s)", fastSlotExpr)
+			pipelineFastSlotExpr = fmt.Sprintf("runtime.FastSlot(colMask, %s)", pipelineFastSlotExpr)
 		}
 	}
+
+	emitLocalParamsInit := func(indent string) { emitArgsInit(b, cs, indent, paramsStructName) }
 
 	// 2. KindExec methods
 	if cs.Kind == KindExec {
@@ -3627,9 +3675,10 @@ func emitStatementCode(
 			return
 		}
 		fmt.Fprintf(b, "%svar scanBuf [%d]any\n", indent, len(cs.Cols))
-		if cs.UseParamsStruct && len(cs.SelectColExprs) > 0 {
+		if cs.SelectCols {
 			fmt.Fprintf(b, "%sscanCount := 0\n", indent)
 			fmt.Fprintf(b, "%seffMask := colMask\n", indent)
+			fmt.Fprintf(b, "%sif effMask == 0 {\n%s\teffMask = %sColsAll\n%s}\n", indent, indent, cs.Name, indent)
 			for i, uc := range cs.UncondCols {
 				fmt.Fprintf(b, "%sif (effMask & (1 << %d)) != 0 {\n", indent, i)
 				fmt.Fprintf(b, "%s\tscanBuf[scanCount] = &item.%s\n", indent, uc.FieldName)
@@ -3870,7 +3919,7 @@ func emitBatchChunkExpansion(b *bytes.Buffer, cs *compiledStmt, indent, collAcce
 func buildStreamSignatures(cs *compiledStmt, paramsStructName string) (sigStream, callBatchArgs string) {
 	batchParam := cs.Params[cs.BatchParamIdx]
 	seqType := "iter.Seq2[" + batchParam.ElemGoType + ", error]"
-	if cs.UseParamsStruct {
+	if cs.StructArgs {
 		return ", p " + paramsStructName + ", seq " + seqType, ", chunkP"
 	}
 	var sig []byte
@@ -3886,8 +3935,20 @@ func buildStreamSignatures(cs *compiledStmt, paramsStructName string) (sigStream
 			call = append(call, p.ParamName...)
 		}
 	}
+	if cs.SelectCols {
+		sig = append(append(sig, ", "...), selectColsSig...)
+		call = append(append(call, ", "...), selectColsCall...)
+	}
 	return string(sig), string(call)
 }
+
+// The row projection of a positional statement is a trailing variadic argument: the column constants to
+// return, combined (OR-ed) into the mask that struct-style statements carry in the SelectCols field. No
+// argument returns every column.
+const (
+	selectColsSig  = "selectCols ...uint64"
+	selectColsCall = "selectCols..."
+)
 
 // valuesAccess returns the Go expression of the multi-row VALUES collection of an INSERT statement
 // (see compiledStmt.ValuesParamIdx), or "" when the statement has none.
@@ -3896,7 +3957,7 @@ func (cs *compiledStmt) valuesAccess() string {
 		return ""
 	}
 	p := cs.Params[cs.ValuesParamIdx]
-	if cs.UseParamsStruct {
+	if cs.StructArgs {
 		return "p." + p.FieldName
 	}
 	return p.ParamName
@@ -3905,7 +3966,7 @@ func (cs *compiledStmt) valuesAccess() string {
 // batchAccess returns the Go expression of the collection a CanBatch statement chunks.
 func (cs *compiledStmt) batchAccess() string {
 	p := cs.Params[cs.BatchParamIdx]
-	if cs.UseParamsStruct {
+	if cs.StructArgs {
 		return "p." + p.FieldName
 	}
 	return p.ParamName
@@ -3917,14 +3978,17 @@ func (cs *compiledStmt) batchIsValues() bool {
 	return cs.BatchParamIdx >= 0 && cs.BatchParamIdx == cs.ValuesParamIdx
 }
 
-// emitBatchParamsInit declares p from the positional parameters when the statement has no params struct.
-func emitBatchParamsInit(b *bytes.Buffer, cs *compiledStmt, indent, paramsStructName string) {
-	if cs.UseParamsStruct {
+// emitArgsInit declares p from the positional arguments; with the struct style p already is the argument.
+func emitArgsInit(b *bytes.Buffer, cs *compiledStmt, indent, paramsStructName string) {
+	if cs.StructArgs {
 		return
 	}
 	fmt.Fprintf(b, "%sp := %s{\n", indent, paramsStructName)
 	for _, p := range cs.Params {
 		fmt.Fprintf(b, "%s\t%s: %s,\n", indent, p.FieldName, p.ParamName)
+	}
+	if cs.SelectCols {
+		fmt.Fprintf(b, "%s\tSelectCols: runtime.OrCols(selectCols),\n", indent)
 	}
 	fmt.Fprintf(b, "%s}\n", indent)
 }
@@ -3945,7 +4009,7 @@ func emitExecChunkedBody(
 	if !cs.batchIsValues() {
 		b.WriteString("\tif totalRows == 0 {\n\t\treturn nil, runtime.ErrEmptySliceParam\n\t}\n")
 	}
-	emitBatchParamsInit(b, cs, "\t", paramsStructName)
+	emitArgsInit(b, cs, "\t", paramsStructName)
 	emitBatchGlobalPresortSetup(b, cs, "\t", collAccess)
 	fmt.Fprintf(b, "\t_, colMask, flagMask, _ := compute%sKey(p)\n", cs.Name)
 	b.WriteString("\tshapeTag := runtime.ComputeBatchShapeTag(colMask, flagMask)\n")
@@ -4005,7 +4069,7 @@ func emitExecStream(b *bytes.Buffer, cs *compiledStmt, paramsStructName string) 
 	b.WriteString("\tvar batchRes runtime.BatchExecResult\n")
 	b.WriteString("\tflushChunk := func() error {\n")
 	b.WriteString("\t\tif len(chunk) == 0 {\n\t\t\treturn nil\n\t\t}\n")
-	if cs.UseParamsStruct {
+	if cs.StructArgs {
 		b.WriteString("\t\tchunkP := p\n")
 		fmt.Fprintf(b, "\t\tchunkP.%s = chunk\n", batchParam.FieldName)
 	}
@@ -4033,7 +4097,7 @@ func emitManyChunkedCollect(b *bytes.Buffer, cs *compiledStmt, paramsStructName,
 		fmt.Fprintf(b, "\tif len(%s) == 0 {\n\t\treturn nil, nil\n\t}\n", collAccess)
 	}
 	fmt.Fprintf(b, "\ttotalRows := len(%s)\n", collAccess)
-	emitBatchParamsInit(b, cs, "\t", paramsStructName)
+	emitArgsInit(b, cs, "\t", paramsStructName)
 	fmt.Fprintf(b, "\t_, colMask, flagMask, _ := compute%sKey(p)\n", cs.Name)
 	fmt.Fprintf(b, "\tmaxRows := q.cache.MaxRowsPerBatch(sqlDialect, %d, %d)\n", cs.ScalarParamCnt, cs.BatchArity)
 	fmt.Fprintf(b, "\tfirstChunk := q.cache.PlanBatchChunk(stmtID%s, colMask, flagMask, totalRows, maxRows, true)\n", cs.Name)
@@ -4074,7 +4138,7 @@ func emitManyChunkedSeq(
 	} else {
 		b.WriteString("\t\tif totalRows == 0 {\n\t\t\tyield(zero, runtime.ErrEmptySliceParam)\n\t\t\treturn\n\t\t}\n")
 	}
-	emitBatchParamsInit(b, cs, "\t\t", paramsStructName)
+	emitArgsInit(b, cs, "\t\t", paramsStructName)
 	emitBatchGlobalPresortSetup(b, cs, "\t\t", collAccess)
 	fmt.Fprintf(b, "\t\t_, colMask, flagMask, _ := compute%sKey(p)\n", cs.Name)
 	b.WriteString("\t\tshapeTag := runtime.ComputeBatchShapeTag(colMask, flagMask)\n")
@@ -4143,7 +4207,7 @@ func emitManyStream(b *bytes.Buffer, cs *compiledStmt, paramsStructName string) 
 	fmt.Fprintf(b, "\t\t\t%s.Put(bufPtr)\n\t\t}()\n", poolName)
 	b.WriteString("\t\tflushChunk := func() bool {\n")
 	b.WriteString("\t\t\tif len(chunk) == 0 {\n\t\t\t\treturn true\n\t\t\t}\n")
-	if cs.UseParamsStruct {
+	if cs.StructArgs {
 		b.WriteString("\t\t\tchunkP := p\n")
 		fmt.Fprintf(b, "\t\t\tchunkP.%s = chunk\n", batchParam.FieldName)
 	}
@@ -4164,7 +4228,7 @@ func emitManyStream(b *bytes.Buffer, cs *compiledStmt, paramsStructName string) 
 
 	fmt.Fprintf(b, "func (q *Queries) %sStream(ctx context.Context%s) ([]%s, error) {\n", cs.Name, sigStream, cs.RowTypeName)
 	var forwardArgs []byte
-	if cs.UseParamsStruct {
+	if cs.StructArgs {
 		forwardArgs = append(forwardArgs, ", p, seq"...)
 	} else {
 		for i, p := range cs.Params {
@@ -4174,6 +4238,9 @@ func emitManyStream(b *bytes.Buffer, cs *compiledStmt, paramsStructName string) 
 			} else {
 				forwardArgs = append(forwardArgs, p.ParamName...)
 			}
+		}
+		if cs.SelectCols {
+			forwardArgs = append(append(forwardArgs, ", "...), selectColsCall...)
 		}
 	}
 	fmt.Fprintf(b, "\treturn runtime.Collect(q.%sStreamSeq(ctx%s))\n", cs.Name, string(forwardArgs))

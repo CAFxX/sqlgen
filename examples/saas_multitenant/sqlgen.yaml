@@ -6,7 +6,6 @@ statements:
   - name: SearchMembers
     kind: many
     result_type: MemberRow
-    params_struct: true
     sql: |
       SELECT
         m.id:int64,
@@ -28,7 +27,7 @@ statements:
   - name: ListMembersPaginated
     kind: many
     result_type: MemberItem
-    params_struct: true
+    args: struct
     sql: |
       SELECT
         m.id:int64,

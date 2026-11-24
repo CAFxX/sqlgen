@@ -406,6 +406,16 @@ type Seek struct {
 	Values []any
 }
 
+// OrCols combines the column constants a positional statement receives in its variadic selectCols argument
+// into the projection mask (no argument: 0, which renders every column).
+func OrCols(cols []uint64) uint64 {
+	var m uint64
+	for _, c := range cols {
+		m |= c
+	}
+	return m
+}
+
 // NewSeek constructs an active Seek cursor with the given column values.
 func NewSeek(vals ...any) Seek {
 	if len(vals) == 0 {
