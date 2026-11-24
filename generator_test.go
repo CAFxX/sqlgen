@@ -640,7 +640,7 @@ func TestE2ESelectColsBitmaskSubsetting(t *testing.T) {
 		SelectCols: SelectUserProfileSubsetColID | SelectUserProfileSubsetColScore,
 	}
 
-	qBuilt := q.SelectUserProfileSubsetQuery(params).BuildSQL(runtime.DialectQuestion)
+	qBuilt := SelectUserProfileSubsetQuery(params).BuildSQL(runtime.DialectQuestion)
 	if !strings.HasPrefix(qBuilt, "SELECT u.id, u.score\n , u.bio \nFROM users u") {
 		t.Fatalf("expected exact 3-column SELECT list, got:\n%s", qBuilt)
 	}
@@ -682,7 +682,7 @@ func TestE2ECoupledConditionalBlocks(t *testing.T) {
 		t.Fatalf("unexpected rows with WithOrg=false: %+v", rowsNoOrg)
 	}
 
-	orgSub := q.SubOrgsByMinIDQuery(SubOrgsByMinIDParams{
+	orgSub := SubOrgsByMinIDQuery(SubOrgsByMinIDParams{
 		MinID:      1,
 		OnlyActive: true,
 		ActiveVal:  1,
@@ -794,14 +794,14 @@ func TestE2ECurriedQueryComposition(t *testing.T) {
 		}
 	}
 
-	cteSub := q.PageUsersQuery(PageUsersParams{
+	cteSub := PageUsersQuery(PageUsersParams{
 		RoleFilter: true,
 		FilterRole: "admin",
 		Order:      OrderPageUsersRow(OrderPageUsersRowScoreAsc, OrderPageUsersRowIDAsc),
 		Seek:       runtime.NewSeek("admin", int64(20), int64(2)),
 		Limit:      3,
 	})
-	idSub := q.SubUserIDsByScoreQuery(40)
+	idSub := SubUserIDsByScoreQuery(40)
 
 	res, err := q.UsersFromCTEAndInSubquery(ctx, cteSub, idSub)
 	if err != nil {
@@ -1217,7 +1217,7 @@ func TestPropertyKeysetPaginationEquivalence(t *testing.T) {
 
 		// Verify Postgres ($1) vs SQLite (?) SQL & parameter count consistency on active Seek
 		sampleSeek := SeekQuadItem(expected[0])
-		qCurried := q.PageQuadQuery(PageQuadParams{
+		qCurried := PageQuadQuery(PageQuadParams{
 			Seek:  sampleSeek,
 			Order: orderSpec,
 			Limit: 10,
@@ -1671,7 +1671,7 @@ func TestGeneratorAndE2EAdditionalCoverage(t *testing.T) {
 		}
 	}
 	_ = runtime.Each(q.SearchUsersCoupledSeq(ctx, SearchUsersCoupledParams{}), func(SearchUsersCoupledRow) error { return nil })
-	_ = q.SearchUsersCoupledQuery(SearchUsersCoupledParams{})
+	_ = SearchUsersCoupledQuery(SearchUsersCoupledParams{})
 
 	for _, err := range q.PageUsersSeq(ctx, PageUsersParams{Limit: 5}) {
 		if err != nil {
@@ -1681,14 +1681,14 @@ func TestGeneratorAndE2EAdditionalCoverage(t *testing.T) {
 	_ = runtime.Each(q.PageUsersSeq(ctx, PageUsersParams{Limit: 5}), func(PageUsersRow) error { return nil })
 	_, _ = runtime.AppendTo(nil, q.PageUsersSeq(ctx, PageUsersParams{Limit: 5}))
 
-	for _, err := range q.UsersFromCTEAndInSubquerySeq(ctx, q.PageUsersQuery(PageUsersParams{Limit: 5}), q.SubUserIDsByScoreQuery(0)) {
+	for _, err := range q.UsersFromCTEAndInSubquerySeq(ctx, PageUsersQuery(PageUsersParams{Limit: 5}), SubUserIDsByScoreQuery(0)) {
 		if err != nil {
 			t.Fatal(err)
 		}
 	}
-	_ = runtime.Each(q.UsersFromCTEAndInSubquerySeq(ctx, q.PageUsersQuery(PageUsersParams{Limit: 5}), q.SubUserIDsByScoreQuery(0)), func(UsersFromCTEAndInSubqueryRow) error { return nil })
-	_, _ = runtime.AppendTo(nil, q.UsersFromCTEAndInSubquerySeq(ctx, q.PageUsersQuery(PageUsersParams{Limit: 5}), q.SubUserIDsByScoreQuery(0)))
-	_ = q.UsersFromCTEAndInSubqueryQuery(q.PageUsersQuery(PageUsersParams{Limit: 5}), q.SubUserIDsByScoreQuery(0))
+	_ = runtime.Each(q.UsersFromCTEAndInSubquerySeq(ctx, PageUsersQuery(PageUsersParams{Limit: 5}), SubUserIDsByScoreQuery(0)), func(UsersFromCTEAndInSubqueryRow) error { return nil })
+	_, _ = runtime.AppendTo(nil, q.UsersFromCTEAndInSubquerySeq(ctx, PageUsersQuery(PageUsersParams{Limit: 5}), SubUserIDsByScoreQuery(0)))
+	_ = UsersFromCTEAndInSubqueryQuery(PageUsersQuery(PageUsersParams{Limit: 5}), SubUserIDsByScoreQuery(0))
 
 	for _, err := range q.PageQuadSeq(ctx, PageQuadParams{Limit: 5}) {
 		if err != nil {
@@ -1704,7 +1704,7 @@ func TestGeneratorAndE2EAdditionalCoverage(t *testing.T) {
 	_ = pl.SelectUserProfileSubset(SelectUserProfileSubsetParams{OrgID: 1})
 	_ = pl.SearchUsersCoupled(SearchUsersCoupledParams{})
 	_ = pl.PageUsers(PageUsersParams{Limit: 5})
-	_ = pl.UsersFromCTEAndInSubquery(q.PageUsersQuery(PageUsersParams{Limit: 5}), q.SubUserIDsByScoreQuery(0))
+	_ = pl.UsersFromCTEAndInSubquery(PageUsersQuery(PageUsersParams{Limit: 5}), SubUserIDsByScoreQuery(0))
 	_ = pl.InsertUsersBatchReturning([]BatchUserInput{{ID: 20, Name: "p", Points: 1}})
 	_ = pl.UpdateUsersBatchFromValues([]BatchBonusInput{{ID: 20, Bonus: 1}})
 	_ = pl.InsertQuadBatch([]QuadInput{{ID: 200, GroupKey: "g", Priority: 1, CreatedTs: 1}})

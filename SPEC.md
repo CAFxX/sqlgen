@@ -861,7 +861,7 @@ For each statement `<Name>` in `sqlgen.yaml`, `Generate` emits into a single `by
 3. Output row struct (`<RowType>`), `<RowType>Col` bitmask constants (`1 << iota`), and `<RowType>Order` / `<RowType>SortCol` / `<RowType>SortTerm` / `Order<RowType>(...)` helpers (`Order<RowType>` takes `<RowType>SortTerm`, so the sort tokens of another statement do not compile; a repeated or out-of-range term yields `runtime.ErrInvalidOrder`).
 4. `<Name>Params` struct (when `StructArgs == true`, i.e. `args: struct`, or `args: auto` with `{?Flag: ...}` blocks).
 5. Static `QueryDescriptor` (`<name>Desc`) and non-capturing `expand<Name>Args` function.
-6. Currying constructors: `func <Name>Query(...) runtime.Query` and `func (q *Queries) <Name>Query(...) runtime.Query`. The generated file never declares aliases or wrappers of runtime symbols (no `type Query = runtime.Query`, no `WhereCol` helper): signatures spell `runtime.X`, and applications import `runtime` for the user-facing API. The only package-level names it declares are `Queries`, `Pipeline`, `New` and the per-statement names (`reservedTypeNames`).
+6. Currying constructors: `func <Name>Query(...) runtime.Query` (package-level only; stateless, so no `*Queries` method form). The generated file never declares aliases or wrappers of runtime symbols (no `type Query = runtime.Query`, no `WhereCol` helper): signatures spell `runtime.X`, and applications import `runtime` for the user-facing API. The only package-level names it declares are `Queries`, `Pipeline`, `New` and the per-statement names (`reservedTypeNames`).
 7. Direct execution methods on `*Queries`:
    - `kind: exec`: `<Name>` (chunked when `CanBatch`), `<Name>Stream` (if `CanStream`).
    - `kind: one`: `<Name>`.

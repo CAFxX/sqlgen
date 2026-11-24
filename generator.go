@@ -3465,7 +3465,7 @@ func emitStatementCode(
 
 	// 1. Currying Constructor (<Name>Query) for all kinds except exec
 	if cs.Kind != KindExec {
-		fmt.Fprintf(b, "// %sQuery constructs a composable runtime.Query without executing it.\n", cs.Name)
+		fmt.Fprintf(b, "// %sQuery constructs a composable runtime.Query without executing it (stateless: no Queries or DB needed).\n", cs.Name)
 		fmt.Fprintf(b, "func %sQuery(%s) runtime.Query {\n", cs.Name, sigStr)
 		emitArgsInit(b, cs, "\t", paramsStructName)
 		fmt.Fprintf(b, "\t_, colMask, flagMask, _ := compute%sKey(p)\n", cs.Name)
@@ -3502,10 +3502,6 @@ func emitStatementCode(
 		b.WriteString("\t}\n")
 		b.WriteString("}\n\n")
 
-		fmt.Fprintf(b, "// %sQuery constructs a composable runtime.Query without executing it.\n", cs.Name)
-		fmt.Fprintf(b, "func (q *Queries) %sQuery(%s) runtime.Query {\n", cs.Name, sigStr)
-		fmt.Fprintf(b, "\treturn %sQuery(%s)\n", cs.Name, callStr)
-		b.WriteString("}\n\n")
 	}
 
 	if cs.Kind == KindSubquery {

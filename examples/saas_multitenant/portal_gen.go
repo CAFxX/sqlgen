@@ -269,7 +269,7 @@ func computeSearchMembersKey(p SearchMembersParams) (runtime.VariantKey, uint64,
 	return vk, colMask, flagMask, approxArgs
 }
 
-// SearchMembersQuery constructs a composable runtime.Query without executing it.
+// SearchMembersQuery constructs a composable runtime.Query without executing it (stateless: no Queries or DB needed).
 func SearchMembersQuery(p SearchMembersParams) runtime.Query {
 	_, colMask, flagMask, _ := computeSearchMembersKey(p)
 	var sliceLensBuf [1]int
@@ -293,11 +293,6 @@ func SearchMembersQuery(p SearchMembersParams) runtime.Query {
 		Expand:   expandSearchMembersArgs,
 		ShapeTag: shapeTag,
 	}
-}
-
-// SearchMembersQuery constructs a composable runtime.Query without executing it.
-func (q *Queries) SearchMembersQuery(p SearchMembersParams) runtime.Query {
-	return SearchMembersQuery(p)
 }
 
 func scanSearchMembersRow(scanner interface{ Scan(...any) error }, dst *MemberRow, colMask uint64, p SearchMembersParams) error {
@@ -594,7 +589,7 @@ func computeListMembersPaginatedKey(p ListMembersPaginatedParams) (runtime.Varia
 	return vk, colMask, flagMask, approxArgs
 }
 
-// ListMembersPaginatedQuery constructs a composable runtime.Query without executing it.
+// ListMembersPaginatedQuery constructs a composable runtime.Query without executing it (stateless: no Queries or DB needed).
 func ListMembersPaginatedQuery(p ListMembersPaginatedParams) runtime.Query {
 	_, colMask, flagMask, _ := computeListMembersPaginatedKey(p)
 	in := runtime.RenderInput{
@@ -613,11 +608,6 @@ func ListMembersPaginatedQuery(p ListMembersPaginatedParams) runtime.Query {
 		Expand:   expandListMembersPaginatedArgs,
 		ShapeTag: shapeTag,
 	}
-}
-
-// ListMembersPaginatedQuery constructs a composable runtime.Query without executing it.
-func (q *Queries) ListMembersPaginatedQuery(p ListMembersPaginatedParams) runtime.Query {
-	return ListMembersPaginatedQuery(p)
 }
 
 func scanListMembersPaginatedRow(scanner interface{ Scan(...any) error }, dst *MemberItem, colMask uint64, p ListMembersPaginatedParams) error {
@@ -771,7 +761,7 @@ func computeActiveOrgsKey(p paramsActiveOrgs) (runtime.VariantKey, uint64, uint6
 	return vk, colMask, flagMask, approxArgs
 }
 
-// ActiveOrgsQuery constructs a composable runtime.Query without executing it.
+// ActiveOrgsQuery constructs a composable runtime.Query without executing it (stateless: no Queries or DB needed).
 func ActiveOrgsQuery(plans []string) runtime.Query {
 	p := paramsActiveOrgs{
 		Plans: plans,
@@ -796,11 +786,6 @@ func ActiveOrgsQuery(plans []string) runtime.Query {
 		Expand:   expandActiveOrgsArgs,
 		ShapeTag: shapeTag,
 	}
-}
-
-// ActiveOrgsQuery constructs a composable runtime.Query without executing it.
-func (q *Queries) ActiveOrgsQuery(plans []string) runtime.Query {
-	return ActiveOrgsQuery(plans)
 }
 
 const stmtIDCohortMemberIDs uint32 = 4
@@ -850,7 +835,7 @@ func computeCohortMemberIDsKey(p paramsCohortMemberIDs) (runtime.VariantKey, uin
 	return vk, colMask, flagMask, approxArgs
 }
 
-// CohortMemberIDsQuery constructs a composable runtime.Query without executing it.
+// CohortMemberIDsQuery constructs a composable runtime.Query without executing it (stateless: no Queries or DB needed).
 func CohortMemberIDsQuery(activeOrgs runtime.Query, minScore int64) runtime.Query {
 	p := paramsCohortMemberIDs{
 		ActiveOrgs: activeOrgs,
@@ -878,11 +863,6 @@ func CohortMemberIDsQuery(activeOrgs runtime.Query, minScore int64) runtime.Quer
 		Expand:   expandCohortMemberIDsArgs,
 		ShapeTag: shapeTag,
 	}
-}
-
-// CohortMemberIDsQuery constructs a composable runtime.Query without executing it.
-func (q *Queries) CohortMemberIDsQuery(activeOrgs runtime.Query, minScore int64) runtime.Query {
-	return CohortMemberIDsQuery(activeOrgs, minScore)
 }
 
 const stmtIDAggregateCohortInvoices uint32 = 5
@@ -955,7 +935,7 @@ func computeAggregateCohortInvoicesKey(p paramsAggregateCohortInvoices) (runtime
 	return vk, colMask, flagMask, approxArgs
 }
 
-// AggregateCohortInvoicesQuery constructs a composable runtime.Query without executing it.
+// AggregateCohortInvoicesQuery constructs a composable runtime.Query without executing it (stateless: no Queries or DB needed).
 func AggregateCohortInvoicesQuery(memberQuery runtime.Query, invoiceStatus string, selectCols ...uint64) runtime.Query {
 	p := paramsAggregateCohortInvoices{
 		MemberQuery:   memberQuery,
@@ -984,11 +964,6 @@ func AggregateCohortInvoicesQuery(memberQuery runtime.Query, invoiceStatus strin
 		Expand:   expandAggregateCohortInvoicesArgs,
 		ShapeTag: shapeTag,
 	}
-}
-
-// AggregateCohortInvoicesQuery constructs a composable runtime.Query without executing it.
-func (q *Queries) AggregateCohortInvoicesQuery(memberQuery runtime.Query, invoiceStatus string, selectCols ...uint64) runtime.Query {
-	return AggregateCohortInvoicesQuery(memberQuery, invoiceStatus, selectCols...)
 }
 
 func scanAggregateCohortInvoicesRow(scanner interface{ Scan(...any) error }, dst *CohortInvoiceSummary, colMask uint64, p paramsAggregateCohortInvoices) error {

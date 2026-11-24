@@ -375,7 +375,7 @@ if len(page1) > 0 {
 
 ### 2.7. Runtime Query Composition (`sqlgen.Query` Currying)
 
-Every `one`, `many`, or `subquery` statement `<Name>` generates a zero-DB currying constructor `<Name>Query(...) runtime.Query` (both as a package-level function and as a method on `*Queries`). You can compose curried queries into parent queries using `:sub:sqlgen.Query` slots inside `WITH` CTEs, `FROM (...)`, or `WHERE col IN (:sub:sqlgen.Query)`:
+Every `one`, `many`, or `subquery` statement `<Name>` generates a currying constructor `<Name>Query(...) runtime.Query`, a package-level function (there is no `*Queries` method form: it is stateless, composition happens before any DB handle exists, and a method would only ignore its receiver). You can compose curried queries into parent queries using `:sub:sqlgen.Query` slots inside `WITH` CTEs, `FROM (...)`, or `WHERE col IN (:sub:sqlgen.Query)`:
 
 ```yaml
 statements:
@@ -415,8 +415,8 @@ statements:
 Usage in Go:
 
 ```go
-orgsQ := q.ActiveOrgsQuery([]string{"enterprise", "pro"})
-membersQ := q.CohortMemberIDsQuery(CohortMemberIDsParams{
+orgsQ := ActiveOrgsQuery([]string{"enterprise", "pro"})
+membersQ := CohortMemberIDsQuery(CohortMemberIDsParams{
     ActiveOrgs: orgsQ,
     FilterRole: true,
     Role:       "admin",

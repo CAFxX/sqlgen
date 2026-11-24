@@ -595,14 +595,14 @@ func runClearingExchangeStressSuite(t *testing.T, mode string, db *sql.DB) {
 
 	// Test SelectCols bitmask subsetting + FilterAccounts + QueryRiskPositionsPageSeq iterator
 	subsetMask := QueryRiskPositionsPageColPositionID | QueryRiskPositionsPageColSymbol | QueryRiskPositionsPageColNotionalCents
-	acctSub := q.EligibleAccountsSubqueryQuery(EligibleAccountsSubqueryParams{
+	acctSub := EligibleAccountsSubqueryQuery(EligibleAccountsSubqueryParams{
 		FirmIDs:        []int64{1, 2, 3, 4},
 		RequiredStatus: "active",
 	})
-	instSub := q.ActiveInstrumentsSubqueryQuery(ActiveInstrumentsSubqueryParams{
+	instSub := ActiveInstrumentsSubqueryQuery(ActiveInstrumentsSubqueryParams{
 		AssetClasses: []string{"crypto", "equity"},
 	})
-	posSub := q.FilteredPositionsSubqueryQuery(FilteredPositionsSubqueryParams{
+	posSub := FilteredPositionsSubqueryQuery(FilteredPositionsSubqueryParams{
 		EligibleAccounts:  acctSub,
 		ActiveInstruments: instSub,
 	})
@@ -889,9 +889,9 @@ func exerciseRemainingExchangeVariants(t *testing.T, ctx context.Context, mode s
 	}
 
 	// Curried Query constructors & Pipeline methods
-	acctSub := q.EligibleAccountsSubqueryQuery(EligibleAccountsSubqueryParams{FirmIDs: []int64{1}, RequiredStatus: "active"})
-	instSub := q.ActiveInstrumentsSubqueryQuery(ActiveInstrumentsSubqueryParams{AssetClasses: []string{"crypto"}})
-	posSub := q.FilteredPositionsSubqueryQuery(FilteredPositionsSubqueryParams{EligibleAccounts: acctSub, ActiveInstruments: instSub})
+	acctSub := EligibleAccountsSubqueryQuery(EligibleAccountsSubqueryParams{FirmIDs: []int64{1}, RequiredStatus: "active"})
+	instSub := ActiveInstrumentsSubqueryQuery(ActiveInstrumentsSubqueryParams{AssetClasses: []string{"crypto"}})
+	posSub := FilteredPositionsSubqueryQuery(FilteredPositionsSubqueryParams{EligibleAccounts: acctSub, ActiveInstruments: instSub})
 	riskParams := QueryRiskPositionsPageParams{
 		MatchingPositions: posSub,
 		Order:             OrderQueryRiskPositionsPage(QueryRiskPositionsPageOrderByNotionalCents.Asc(), QueryRiskPositionsPageOrderByPositionID.Desc()),
@@ -903,16 +903,16 @@ func exerciseRemainingExchangeVariants(t *testing.T, ctx context.Context, mode s
 	}
 	var dummyArgs []any
 	for _, cq := range []runtime.Query{
-		q.GetMarginAccountQuery(1, 1),
-		q.GetAccountCollateralCentsQuery(1, 1),
-		q.IngestOrdersQuery(smallOrders[:1], 920),
-		q.CancelOrdersByIDsQuery(920, 1, []int64{1}),
-		q.ListOpenOrdersForSymbolQuery("SOL-PERP", "buy", 5),
-		q.QueryRiskPositionsPageQuery(riskParams),
-		q.TotalExchangeEquityCentsQuery(),
-		q.TotalNetPositionBySymbolQuery("BTC-PERP"),
-		q.CountClearingFillsQuery(),
-		q.CountComplianceNoticesQuery("audit_ping"),
+		GetMarginAccountQuery(1, 1),
+		GetAccountCollateralCentsQuery(1, 1),
+		IngestOrdersQuery(smallOrders[:1], 920),
+		CancelOrdersByIDsQuery(920, 1, []int64{1}),
+		ListOpenOrdersForSymbolQuery("SOL-PERP", "buy", 5),
+		QueryRiskPositionsPageQuery(riskParams),
+		TotalExchangeEquityCentsQuery(),
+		TotalNetPositionBySymbolQuery("BTC-PERP"),
+		CountClearingFillsQuery(),
+		CountComplianceNoticesQuery("audit_ping"),
 	} {
 		_ = cq.Expand(&dummyArgs, runtime.DialectQuestion, &cq)
 	}
@@ -948,7 +948,7 @@ func exerciseRemainingExchangeVariants(t *testing.T, ctx context.Context, mode s
 	_ = runtime.Each(q.ListOpenOrdersForSymbolSeq(ctx, "SOL-PERP", "buy", 2), func(_ OpenOrderRow) error { return errStop })
 	_ = runtime.Each(q.QueryRiskPositionsPageSeq(ctx, riskParams), func(_ RiskPositionView) error { return errStop })
 	_, _ = q.CancelOrdersByIDs(ctx, 941, 1, []int64{cancelIDs[1], cancelIDs[0], cancelIDs[0]})
-	instDup := q.ActiveInstrumentsSubqueryQuery(ActiveInstrumentsSubqueryParams{AssetClasses: []string{"equity", "crypto", "crypto"}})
+	instDup := ActiveInstrumentsSubqueryQuery(ActiveInstrumentsSubqueryParams{AssetClasses: []string{"equity", "crypto", "crypto"}})
 	_ = instDup.Expand(&dummyArgs, runtime.DialectQuestion, &instDup)
 	_, _ = q.IngestOrders(ctx, []OrderSubmission{
 		{FirmID: 1, AccountID: 1, Symbol: "SOL-PERP", Side: "buy", LimitPriceCents: 140_00, Quantity: 1, Status: "open", ClientOrderID: "dup-1-" + mode, UpdatedSeq: 942},

@@ -1406,7 +1406,7 @@ func computeFzSearchKey(p FzSearchParams) (runtime.VariantKey, uint64, uint64, i
 	return vk, colMask, flagMask, approxArgs
 }
 
-// FzSearchQuery constructs a composable runtime.Query without executing it.
+// FzSearchQuery constructs a composable runtime.Query without executing it (stateless: no Queries or DB needed).
 func FzSearchQuery(p FzSearchParams) runtime.Query {
 	_, colMask, flagMask, _ := computeFzSearchKey(p)
 	var sliceLensBuf [2]int
@@ -1439,11 +1439,6 @@ func FzSearchQuery(p FzSearchParams) runtime.Query {
 		Expand:   expandFzSearchArgs,
 		ShapeTag: shapeTag,
 	}
-}
-
-// FzSearchQuery constructs a composable runtime.Query without executing it.
-func (q *Queries) FzSearchQuery(p FzSearchParams) runtime.Query {
-	return FzSearchQuery(p)
 }
 
 func scanFzSearchRow(scanner interface{ Scan(...any) error }, dst *FzRow, colMask uint64, p FzSearchParams) error {
@@ -1679,7 +1674,7 @@ func computeFzNarrowKey(p FzNarrowParams) (runtime.VariantKey, uint64, uint64, i
 	return vk, colMask, flagMask, approxArgs
 }
 
-// FzNarrowQuery constructs a composable runtime.Query without executing it.
+// FzNarrowQuery constructs a composable runtime.Query without executing it (stateless: no Queries or DB needed).
 func FzNarrowQuery(p FzNarrowParams) runtime.Query {
 	_, colMask, flagMask, _ := computeFzNarrowKey(p)
 	in := runtime.RenderInput{
@@ -1696,11 +1691,6 @@ func FzNarrowQuery(p FzNarrowParams) runtime.Query {
 		Expand:   expandFzNarrowArgs,
 		ShapeTag: shapeTag,
 	}
-}
-
-// FzNarrowQuery constructs a composable runtime.Query without executing it.
-func (q *Queries) FzNarrowQuery(p FzNarrowParams) runtime.Query {
-	return FzNarrowQuery(p)
 }
 
 func scanFzNarrowRow(scanner interface{ Scan(...any) error }, dst *FzNarrowRow, colMask uint64, p FzNarrowParams) error {
@@ -2105,7 +2095,7 @@ func computeFzPageKey(p FzPageParams) (runtime.VariantKey, uint64, uint64, int) 
 	return vk, colMask, flagMask, approxArgs
 }
 
-// FzPageQuery constructs a composable runtime.Query without executing it.
+// FzPageQuery constructs a composable runtime.Query without executing it (stateless: no Queries or DB needed).
 func FzPageQuery(p FzPageParams) runtime.Query {
 	_, colMask, flagMask, _ := computeFzPageKey(p)
 	var sliceLensBuf [1]int
@@ -2139,11 +2129,6 @@ func FzPageQuery(p FzPageParams) runtime.Query {
 		Expand:   expandFzPageArgs,
 		ShapeTag: shapeTag,
 	}
-}
-
-// FzPageQuery constructs a composable runtime.Query without executing it.
-func (q *Queries) FzPageQuery(p FzPageParams) runtime.Query {
-	return FzPageQuery(p)
 }
 
 func scanFzPageRow(scanner interface{ Scan(...any) error }, dst *FzRow, colMask uint64, p FzPageParams) error {
@@ -2359,7 +2344,7 @@ func computeFzSubGrpsKey(p FzSubGrpsParams) (runtime.VariantKey, uint64, uint64,
 	return vk, colMask, flagMask, approxArgs
 }
 
-// FzSubGrpsQuery constructs a composable runtime.Query without executing it.
+// FzSubGrpsQuery constructs a composable runtime.Query without executing it (stateless: no Queries or DB needed).
 func FzSubGrpsQuery(p FzSubGrpsParams) runtime.Query {
 	_, colMask, flagMask, _ := computeFzSubGrpsKey(p)
 	var sliceLensBuf [1]int
@@ -2381,11 +2366,6 @@ func FzSubGrpsQuery(p FzSubGrpsParams) runtime.Query {
 		Expand:   expandFzSubGrpsArgs,
 		ShapeTag: shapeTag,
 	}
-}
-
-// FzSubGrpsQuery constructs a composable runtime.Query without executing it.
-func (q *Queries) FzSubGrpsQuery(p FzSubGrpsParams) runtime.Query {
-	return FzSubGrpsQuery(p)
 }
 
 const stmtIDFzSubNote uint32 = 9
@@ -2446,7 +2426,7 @@ func computeFzSubNoteKey(p FzSubNoteParams) (runtime.VariantKey, uint64, uint64,
 	return vk, colMask, flagMask, approxArgs
 }
 
-// FzSubNoteQuery constructs a composable runtime.Query without executing it.
+// FzSubNoteQuery constructs a composable runtime.Query without executing it (stateless: no Queries or DB needed).
 func FzSubNoteQuery(p FzSubNoteParams) runtime.Query {
 	_, colMask, flagMask, _ := computeFzSubNoteKey(p)
 	var subsBuf [1]runtime.Query
@@ -2470,11 +2450,6 @@ func FzSubNoteQuery(p FzSubNoteParams) runtime.Query {
 		Expand:   expandFzSubNoteArgs,
 		ShapeTag: shapeTag,
 	}
-}
-
-// FzSubNoteQuery constructs a composable runtime.Query without executing it.
-func (q *Queries) FzSubNoteQuery(p FzSubNoteParams) runtime.Query {
-	return FzSubNoteQuery(p)
 }
 
 const stmtIDFzAgg uint32 = 10
@@ -2556,7 +2531,7 @@ func computeFzAggKey(p FzAggParams) (runtime.VariantKey, uint64, uint64, int) {
 	return vk, colMask, flagMask, approxArgs
 }
 
-// FzAggQuery constructs a composable runtime.Query without executing it.
+// FzAggQuery constructs a composable runtime.Query without executing it (stateless: no Queries or DB needed).
 func FzAggQuery(p FzAggParams) runtime.Query {
 	_, colMask, flagMask, _ := computeFzAggKey(p)
 	var subsBuf [1]runtime.Query
@@ -2580,11 +2555,6 @@ func FzAggQuery(p FzAggParams) runtime.Query {
 		Expand:   expandFzAggArgs,
 		ShapeTag: shapeTag,
 	}
-}
-
-// FzAggQuery constructs a composable runtime.Query without executing it.
-func (q *Queries) FzAggQuery(p FzAggParams) runtime.Query {
-	return FzAggQuery(p)
 }
 
 func scanFzAggRow(scanner interface{ Scan(...any) error }, dst *FzAggRow, colMask uint64, p FzAggParams) error {
@@ -2764,7 +2734,7 @@ func computeFzByKeysKey(p paramsFzByKeys) (runtime.VariantKey, uint64, uint64, i
 	return vk, colMask, flagMask, approxArgs
 }
 
-// FzByKeysQuery constructs a composable runtime.Query without executing it.
+// FzByKeysQuery constructs a composable runtime.Query without executing it (stateless: no Queries or DB needed).
 func FzByKeysQuery(keys []FzKey, selectCols ...uint64) runtime.Query {
 	p := paramsFzByKeys{
 		Keys:       keys,
@@ -2790,11 +2760,6 @@ func FzByKeysQuery(keys []FzKey, selectCols ...uint64) runtime.Query {
 		Expand:   expandFzByKeysArgs,
 		ShapeTag: shapeTag,
 	}
-}
-
-// FzByKeysQuery constructs a composable runtime.Query without executing it.
-func (q *Queries) FzByKeysQuery(keys []FzKey, selectCols ...uint64) runtime.Query {
-	return FzByKeysQuery(keys, selectCols...)
 }
 
 func scanFzByKeysRow(scanner interface{ Scan(...any) error }, dst *FzRow, colMask uint64, p paramsFzByKeys) error {
@@ -3123,7 +3088,7 @@ func computeFzByIDsKey(p paramsFzByIDs) (runtime.VariantKey, uint64, uint64, int
 	return vk, colMask, flagMask, approxArgs
 }
 
-// FzByIDsQuery constructs a composable runtime.Query without executing it.
+// FzByIDsQuery constructs a composable runtime.Query without executing it (stateless: no Queries or DB needed).
 func FzByIDsQuery(ids []int64, selectCols ...uint64) runtime.Query {
 	p := paramsFzByIDs{
 		IDs:        ids,
@@ -3149,11 +3114,6 @@ func FzByIDsQuery(ids []int64, selectCols ...uint64) runtime.Query {
 		Expand:   expandFzByIDsArgs,
 		ShapeTag: shapeTag,
 	}
-}
-
-// FzByIDsQuery constructs a composable runtime.Query without executing it.
-func (q *Queries) FzByIDsQuery(ids []int64, selectCols ...uint64) runtime.Query {
-	return FzByIDsQuery(ids, selectCols...)
 }
 
 func scanFzByIDsRow(scanner interface{ Scan(...any) error }, dst *FzRow, colMask uint64, p paramsFzByIDs) error {
@@ -3780,7 +3740,7 @@ func computeFzSubsKey(p FzSubsParams) (runtime.VariantKey, uint64, uint64, int) 
 	return vk, colMask, flagMask, approxArgs
 }
 
-// FzSubsQuery constructs a composable runtime.Query without executing it.
+// FzSubsQuery constructs a composable runtime.Query without executing it (stateless: no Queries or DB needed).
 func FzSubsQuery(p FzSubsParams) runtime.Query {
 	_, colMask, flagMask, _ := computeFzSubsKey(p)
 	var subsBuf [3]runtime.Query
@@ -3810,11 +3770,6 @@ func FzSubsQuery(p FzSubsParams) runtime.Query {
 		Expand:   expandFzSubsArgs,
 		ShapeTag: shapeTag,
 	}
-}
-
-// FzSubsQuery constructs a composable runtime.Query without executing it.
-func (q *Queries) FzSubsQuery(p FzSubsParams) runtime.Query {
-	return FzSubsQuery(p)
 }
 
 func scanFzSubsRow(scanner interface{ Scan(...any) error }, dst *FzRow, colMask uint64, p FzSubsParams) error {
@@ -4055,7 +4010,7 @@ func computeFzJoinKey(p FzJoinParams) (runtime.VariantKey, uint64, uint64, int) 
 	return vk, colMask, flagMask, approxArgs
 }
 
-// FzJoinQuery constructs a composable runtime.Query without executing it.
+// FzJoinQuery constructs a composable runtime.Query without executing it (stateless: no Queries or DB needed).
 func FzJoinQuery(p FzJoinParams) runtime.Query {
 	_, colMask, flagMask, _ := computeFzJoinKey(p)
 	in := runtime.RenderInput{
@@ -4072,11 +4027,6 @@ func FzJoinQuery(p FzJoinParams) runtime.Query {
 		Expand:   expandFzJoinArgs,
 		ShapeTag: shapeTag,
 	}
-}
-
-// FzJoinQuery constructs a composable runtime.Query without executing it.
-func (q *Queries) FzJoinQuery(p FzJoinParams) runtime.Query {
-	return FzJoinQuery(p)
 }
 
 func scanFzJoinRow(scanner interface{ Scan(...any) error }, dst *FzJoinRow, colMask uint64, p FzJoinParams) error {
@@ -4537,7 +4487,7 @@ func computeFzTypedSearchKey(p FzTypedSearchParams) (runtime.VariantKey, uint64,
 	return vk, colMask, flagMask, approxArgs
 }
 
-// FzTypedSearchQuery constructs a composable runtime.Query without executing it.
+// FzTypedSearchQuery constructs a composable runtime.Query without executing it (stateless: no Queries or DB needed).
 func FzTypedSearchQuery(p FzTypedSearchParams) runtime.Query {
 	_, colMask, flagMask, _ := computeFzTypedSearchKey(p)
 	var sliceLensBuf [2]int
@@ -4564,11 +4514,6 @@ func FzTypedSearchQuery(p FzTypedSearchParams) runtime.Query {
 		Expand:   expandFzTypedSearchArgs,
 		ShapeTag: shapeTag,
 	}
-}
-
-// FzTypedSearchQuery constructs a composable runtime.Query without executing it.
-func (q *Queries) FzTypedSearchQuery(p FzTypedSearchParams) runtime.Query {
-	return FzTypedSearchQuery(p)
 }
 
 func scanFzTypedSearchRow(scanner interface{ Scan(...any) error }, dst *FzTypedRow, colMask uint64, p FzTypedSearchParams) error {
@@ -4846,7 +4791,7 @@ func computeFzTypedPageKey(p paramsFzTypedPage) (runtime.VariantKey, uint64, uin
 	return vk, colMask, flagMask, approxArgs
 }
 
-// FzTypedPageQuery constructs a composable runtime.Query without executing it.
+// FzTypedPageQuery constructs a composable runtime.Query without executing it (stateless: no Queries or DB needed).
 func FzTypedPageQuery(after runtime.Seek, sort runtime.Order, limit int64, selectCols ...uint64) runtime.Query {
 	p := paramsFzTypedPage{
 		After:      after,
@@ -4871,11 +4816,6 @@ func FzTypedPageQuery(after runtime.Seek, sort runtime.Order, limit int64, selec
 		Expand:   expandFzTypedPageArgs,
 		ShapeTag: shapeTag,
 	}
-}
-
-// FzTypedPageQuery constructs a composable runtime.Query without executing it.
-func (q *Queries) FzTypedPageQuery(after runtime.Seek, sort runtime.Order, limit int64, selectCols ...uint64) runtime.Query {
-	return FzTypedPageQuery(after, sort, limit, selectCols...)
 }
 
 func scanFzTypedPageRow(scanner interface{ Scan(...any) error }, dst *FzTypedRow, colMask uint64, p paramsFzTypedPage) error {
@@ -5097,7 +5037,7 @@ func computeFzInsertRetKey(p paramsFzInsertRet) (runtime.VariantKey, uint64, uin
 	return vk, colMask, flagMask, approxArgs
 }
 
-// FzInsertRetQuery constructs a composable runtime.Query without executing it.
+// FzInsertRetQuery constructs a composable runtime.Query without executing it (stateless: no Queries or DB needed).
 func FzInsertRetQuery(rows []FzNew, selectCols ...uint64) runtime.Query {
 	p := paramsFzInsertRet{
 		Rows:       rows,
@@ -5123,11 +5063,6 @@ func FzInsertRetQuery(rows []FzNew, selectCols ...uint64) runtime.Query {
 		Expand:   expandFzInsertRetArgs,
 		ShapeTag: shapeTag,
 	}
-}
-
-// FzInsertRetQuery constructs a composable runtime.Query without executing it.
-func (q *Queries) FzInsertRetQuery(rows []FzNew, selectCols ...uint64) runtime.Query {
-	return FzInsertRetQuery(rows, selectCols...)
 }
 
 func scanFzInsertRetRow(scanner interface{ Scan(...any) error }, dst *FzOut, colMask uint64, p paramsFzInsertRet) error {
@@ -5444,7 +5379,7 @@ func computeFzDeleteRetKey(p FzDeleteRetParams) (runtime.VariantKey, uint64, uin
 	return vk, colMask, flagMask, approxArgs
 }
 
-// FzDeleteRetQuery constructs a composable runtime.Query without executing it.
+// FzDeleteRetQuery constructs a composable runtime.Query without executing it (stateless: no Queries or DB needed).
 func FzDeleteRetQuery(p FzDeleteRetParams) runtime.Query {
 	_, colMask, flagMask, _ := computeFzDeleteRetKey(p)
 	var sliceLensBuf [1]int
@@ -5466,11 +5401,6 @@ func FzDeleteRetQuery(p FzDeleteRetParams) runtime.Query {
 		Expand:   expandFzDeleteRetArgs,
 		ShapeTag: shapeTag,
 	}
-}
-
-// FzDeleteRetQuery constructs a composable runtime.Query without executing it.
-func (q *Queries) FzDeleteRetQuery(p FzDeleteRetParams) runtime.Query {
-	return FzDeleteRetQuery(p)
 }
 
 func scanFzDeleteRetRow(scanner interface{ Scan(...any) error }, dst *FzOut, colMask uint64, p FzDeleteRetParams) error {

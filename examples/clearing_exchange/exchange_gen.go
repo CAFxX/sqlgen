@@ -749,7 +749,7 @@ func computeGetMarginAccountKey(p paramsGetMarginAccount) (runtime.VariantKey, u
 	return vk, colMask, flagMask, approxArgs
 }
 
-// GetMarginAccountQuery constructs a composable runtime.Query without executing it.
+// GetMarginAccountQuery constructs a composable runtime.Query without executing it (stateless: no Queries or DB needed).
 func GetMarginAccountQuery(firmID int64, accountID int64, selectCols ...uint64) runtime.Query {
 	p := paramsGetMarginAccount{
 		FirmID:     firmID,
@@ -771,11 +771,6 @@ func GetMarginAccountQuery(firmID int64, accountID int64, selectCols ...uint64) 
 		Expand:   expandGetMarginAccountArgs,
 		ShapeTag: shapeTag,
 	}
-}
-
-// GetMarginAccountQuery constructs a composable runtime.Query without executing it.
-func (q *Queries) GetMarginAccountQuery(firmID int64, accountID int64, selectCols ...uint64) runtime.Query {
-	return GetMarginAccountQuery(firmID, accountID, selectCols...)
 }
 
 func scanGetMarginAccountRow(scanner interface{ Scan(...any) error }, dst *MarginAccount, colMask uint64, p paramsGetMarginAccount) error {
@@ -924,7 +919,7 @@ func computeGetAccountCollateralCentsKey(p paramsGetAccountCollateralCents) (run
 	return vk, colMask, flagMask, approxArgs
 }
 
-// GetAccountCollateralCentsQuery constructs a composable runtime.Query without executing it.
+// GetAccountCollateralCentsQuery constructs a composable runtime.Query without executing it (stateless: no Queries or DB needed).
 func GetAccountCollateralCentsQuery(firmID int64, accountID int64) runtime.Query {
 	p := paramsGetAccountCollateralCents{
 		FirmID:    firmID,
@@ -945,11 +940,6 @@ func GetAccountCollateralCentsQuery(firmID int64, accountID int64) runtime.Query
 		Expand:   expandGetAccountCollateralCentsArgs,
 		ShapeTag: shapeTag,
 	}
-}
-
-// GetAccountCollateralCentsQuery constructs a composable runtime.Query without executing it.
-func (q *Queries) GetAccountCollateralCentsQuery(firmID int64, accountID int64) runtime.Query {
-	return GetAccountCollateralCentsQuery(firmID, accountID)
 }
 
 func scanGetAccountCollateralCentsRow(scanner interface{ Scan(...any) error }, dst *int64, colMask uint64, p paramsGetAccountCollateralCents) error {
@@ -1200,7 +1190,7 @@ func computeIngestOrdersKey(p paramsIngestOrders) (runtime.VariantKey, uint64, u
 	return vk, colMask, flagMask, approxArgs
 }
 
-// IngestOrdersQuery constructs a composable runtime.Query without executing it.
+// IngestOrdersQuery constructs a composable runtime.Query without executing it (stateless: no Queries or DB needed).
 func IngestOrdersQuery(rows []OrderSubmission, epochSeq int64, selectCols ...uint64) runtime.Query {
 	p := paramsIngestOrders{
 		Rows:       rows,
@@ -1227,11 +1217,6 @@ func IngestOrdersQuery(rows []OrderSubmission, epochSeq int64, selectCols ...uin
 		Expand:   expandIngestOrdersArgs,
 		ShapeTag: shapeTag,
 	}
-}
-
-// IngestOrdersQuery constructs a composable runtime.Query without executing it.
-func (q *Queries) IngestOrdersQuery(rows []OrderSubmission, epochSeq int64, selectCols ...uint64) runtime.Query {
-	return IngestOrdersQuery(rows, epochSeq, selectCols...)
 }
 
 func scanIngestOrdersRow(scanner interface{ Scan(...any) error }, dst *OrderAck, colMask uint64, p paramsIngestOrders) error {
@@ -1560,7 +1545,7 @@ func computeCancelOrdersByIDsKey(p paramsCancelOrdersByIDs) (runtime.VariantKey,
 	return vk, colMask, flagMask, approxArgs
 }
 
-// CancelOrdersByIDsQuery constructs a composable runtime.Query without executing it.
+// CancelOrdersByIDsQuery constructs a composable runtime.Query without executing it (stateless: no Queries or DB needed).
 func CancelOrdersByIDsQuery(cancelSeq int64, firmID int64, orderIDs []int64, selectCols ...uint64) runtime.Query {
 	p := paramsCancelOrdersByIDs{
 		CancelSeq:  cancelSeq,
@@ -1588,11 +1573,6 @@ func CancelOrdersByIDsQuery(cancelSeq int64, firmID int64, orderIDs []int64, sel
 		Expand:   expandCancelOrdersByIDsArgs,
 		ShapeTag: shapeTag,
 	}
-}
-
-// CancelOrdersByIDsQuery constructs a composable runtime.Query without executing it.
-func (q *Queries) CancelOrdersByIDsQuery(cancelSeq int64, firmID int64, orderIDs []int64, selectCols ...uint64) runtime.Query {
-	return CancelOrdersByIDsQuery(cancelSeq, firmID, orderIDs, selectCols...)
 }
 
 func scanCancelOrdersByIDsRow(scanner interface{ Scan(...any) error }, dst *OrderAck, colMask uint64, p paramsCancelOrdersByIDs) error {
@@ -1854,7 +1834,7 @@ func computeListOpenOrdersForSymbolKey(p paramsListOpenOrdersForSymbol) (runtime
 	return vk, colMask, flagMask, approxArgs
 }
 
-// ListOpenOrdersForSymbolQuery constructs a composable runtime.Query without executing it.
+// ListOpenOrdersForSymbolQuery constructs a composable runtime.Query without executing it (stateless: no Queries or DB needed).
 func ListOpenOrdersForSymbolQuery(symbol string, side string, limit int64, selectCols ...uint64) runtime.Query {
 	p := paramsListOpenOrdersForSymbol{
 		Symbol:     symbol,
@@ -1877,11 +1857,6 @@ func ListOpenOrdersForSymbolQuery(symbol string, side string, limit int64, selec
 		Expand:   expandListOpenOrdersForSymbolArgs,
 		ShapeTag: shapeTag,
 	}
-}
-
-// ListOpenOrdersForSymbolQuery constructs a composable runtime.Query without executing it.
-func (q *Queries) ListOpenOrdersForSymbolQuery(symbol string, side string, limit int64, selectCols ...uint64) runtime.Query {
-	return ListOpenOrdersForSymbolQuery(symbol, side, limit, selectCols...)
 }
 
 func scanListOpenOrdersForSymbolRow(scanner interface{ Scan(...any) error }, dst *OpenOrderRow, colMask uint64, p paramsListOpenOrdersForSymbol) error {
@@ -2701,7 +2676,7 @@ func computeEligibleAccountsSubqueryKey(p EligibleAccountsSubqueryParams) (runti
 	return vk, colMask, flagMask, approxArgs
 }
 
-// EligibleAccountsSubqueryQuery constructs a composable runtime.Query without executing it.
+// EligibleAccountsSubqueryQuery constructs a composable runtime.Query without executing it (stateless: no Queries or DB needed).
 func EligibleAccountsSubqueryQuery(p EligibleAccountsSubqueryParams) runtime.Query {
 	_, colMask, flagMask, _ := computeEligibleAccountsSubqueryKey(p)
 	var sliceLensBuf [1]int
@@ -2723,11 +2698,6 @@ func EligibleAccountsSubqueryQuery(p EligibleAccountsSubqueryParams) runtime.Que
 		Expand:   expandEligibleAccountsSubqueryArgs,
 		ShapeTag: shapeTag,
 	}
-}
-
-// EligibleAccountsSubqueryQuery constructs a composable runtime.Query without executing it.
-func (q *Queries) EligibleAccountsSubqueryQuery(p EligibleAccountsSubqueryParams) runtime.Query {
-	return EligibleAccountsSubqueryQuery(p)
 }
 
 const stmtIDActiveInstrumentsSubquery uint32 = 18
@@ -2811,7 +2781,7 @@ func computeActiveInstrumentsSubqueryKey(p ActiveInstrumentsSubqueryParams) (run
 	return vk, colMask, flagMask, approxArgs
 }
 
-// ActiveInstrumentsSubqueryQuery constructs a composable runtime.Query without executing it.
+// ActiveInstrumentsSubqueryQuery constructs a composable runtime.Query without executing it (stateless: no Queries or DB needed).
 func ActiveInstrumentsSubqueryQuery(p ActiveInstrumentsSubqueryParams) runtime.Query {
 	_, colMask, flagMask, _ := computeActiveInstrumentsSubqueryKey(p)
 	var sliceLensBuf [1]int
@@ -2833,11 +2803,6 @@ func ActiveInstrumentsSubqueryQuery(p ActiveInstrumentsSubqueryParams) runtime.Q
 		Expand:   expandActiveInstrumentsSubqueryArgs,
 		ShapeTag: shapeTag,
 	}
-}
-
-// ActiveInstrumentsSubqueryQuery constructs a composable runtime.Query without executing it.
-func (q *Queries) ActiveInstrumentsSubqueryQuery(p ActiveInstrumentsSubqueryParams) runtime.Query {
-	return ActiveInstrumentsSubqueryQuery(p)
 }
 
 const stmtIDFilteredPositionsSubquery uint32 = 19
@@ -2905,7 +2870,7 @@ func computeFilteredPositionsSubqueryKey(p FilteredPositionsSubqueryParams) (run
 	return vk, colMask, flagMask, approxArgs
 }
 
-// FilteredPositionsSubqueryQuery constructs a composable runtime.Query without executing it.
+// FilteredPositionsSubqueryQuery constructs a composable runtime.Query without executing it (stateless: no Queries or DB needed).
 func FilteredPositionsSubqueryQuery(p FilteredPositionsSubqueryParams) runtime.Query {
 	_, colMask, flagMask, _ := computeFilteredPositionsSubqueryKey(p)
 	var subsBuf [2]runtime.Query
@@ -2930,11 +2895,6 @@ func FilteredPositionsSubqueryQuery(p FilteredPositionsSubqueryParams) runtime.Q
 		Expand:   expandFilteredPositionsSubqueryArgs,
 		ShapeTag: shapeTag,
 	}
-}
-
-// FilteredPositionsSubqueryQuery constructs a composable runtime.Query without executing it.
-func (q *Queries) FilteredPositionsSubqueryQuery(p FilteredPositionsSubqueryParams) runtime.Query {
-	return FilteredPositionsSubqueryQuery(p)
 }
 
 const stmtIDQueryRiskPositionsPage uint32 = 20
@@ -3194,7 +3154,7 @@ func computeQueryRiskPositionsPageKey(p QueryRiskPositionsPageParams) (runtime.V
 	return vk, colMask, flagMask, approxArgs
 }
 
-// QueryRiskPositionsPageQuery constructs a composable runtime.Query without executing it.
+// QueryRiskPositionsPageQuery constructs a composable runtime.Query without executing it (stateless: no Queries or DB needed).
 func QueryRiskPositionsPageQuery(p QueryRiskPositionsPageParams) runtime.Query {
 	_, colMask, flagMask, _ := computeQueryRiskPositionsPageKey(p)
 	var sliceLensBuf [1]int
@@ -3226,11 +3186,6 @@ func QueryRiskPositionsPageQuery(p QueryRiskPositionsPageParams) runtime.Query {
 		Expand:   expandQueryRiskPositionsPageArgs,
 		ShapeTag: shapeTag,
 	}
-}
-
-// QueryRiskPositionsPageQuery constructs a composable runtime.Query without executing it.
-func (q *Queries) QueryRiskPositionsPageQuery(p QueryRiskPositionsPageParams) runtime.Query {
-	return QueryRiskPositionsPageQuery(p)
 }
 
 func scanQueryRiskPositionsPageRow(scanner interface{ Scan(...any) error }, dst *RiskPositionView, colMask uint64, p QueryRiskPositionsPageParams) error {
@@ -3418,7 +3373,7 @@ func computeTotalExchangeEquityCentsKey(p paramsTotalExchangeEquityCents) (runti
 	return vk, colMask, flagMask, approxArgs
 }
 
-// TotalExchangeEquityCentsQuery constructs a composable runtime.Query without executing it.
+// TotalExchangeEquityCentsQuery constructs a composable runtime.Query without executing it (stateless: no Queries or DB needed).
 func TotalExchangeEquityCentsQuery() runtime.Query {
 	p := paramsTotalExchangeEquityCents{}
 	_, colMask, flagMask, _ := computeTotalExchangeEquityCentsKey(p)
@@ -3436,11 +3391,6 @@ func TotalExchangeEquityCentsQuery() runtime.Query {
 		Expand:   expandTotalExchangeEquityCentsArgs,
 		ShapeTag: shapeTag,
 	}
-}
-
-// TotalExchangeEquityCentsQuery constructs a composable runtime.Query without executing it.
-func (q *Queries) TotalExchangeEquityCentsQuery() runtime.Query {
-	return TotalExchangeEquityCentsQuery()
 }
 
 func scanTotalExchangeEquityCentsRow(scanner interface{ Scan(...any) error }, dst *int64, colMask uint64, p paramsTotalExchangeEquityCents) error {
@@ -3541,7 +3491,7 @@ func computeTotalNetPositionBySymbolKey(p paramsTotalNetPositionBySymbol) (runti
 	return vk, colMask, flagMask, approxArgs
 }
 
-// TotalNetPositionBySymbolQuery constructs a composable runtime.Query without executing it.
+// TotalNetPositionBySymbolQuery constructs a composable runtime.Query without executing it (stateless: no Queries or DB needed).
 func TotalNetPositionBySymbolQuery(symbol string) runtime.Query {
 	p := paramsTotalNetPositionBySymbol{
 		Symbol: symbol,
@@ -3561,11 +3511,6 @@ func TotalNetPositionBySymbolQuery(symbol string) runtime.Query {
 		Expand:   expandTotalNetPositionBySymbolArgs,
 		ShapeTag: shapeTag,
 	}
-}
-
-// TotalNetPositionBySymbolQuery constructs a composable runtime.Query without executing it.
-func (q *Queries) TotalNetPositionBySymbolQuery(symbol string) runtime.Query {
-	return TotalNetPositionBySymbolQuery(symbol)
 }
 
 func scanTotalNetPositionBySymbolRow(scanner interface{ Scan(...any) error }, dst *int64, colMask uint64, p paramsTotalNetPositionBySymbol) error {
@@ -3665,7 +3610,7 @@ func computeCountClearingFillsKey(p paramsCountClearingFills) (runtime.VariantKe
 	return vk, colMask, flagMask, approxArgs
 }
 
-// CountClearingFillsQuery constructs a composable runtime.Query without executing it.
+// CountClearingFillsQuery constructs a composable runtime.Query without executing it (stateless: no Queries or DB needed).
 func CountClearingFillsQuery() runtime.Query {
 	p := paramsCountClearingFills{}
 	_, colMask, flagMask, _ := computeCountClearingFillsKey(p)
@@ -3683,11 +3628,6 @@ func CountClearingFillsQuery() runtime.Query {
 		Expand:   expandCountClearingFillsArgs,
 		ShapeTag: shapeTag,
 	}
-}
-
-// CountClearingFillsQuery constructs a composable runtime.Query without executing it.
-func (q *Queries) CountClearingFillsQuery() runtime.Query {
-	return CountClearingFillsQuery()
 }
 
 func scanCountClearingFillsRow(scanner interface{ Scan(...any) error }, dst *int64, colMask uint64, p paramsCountClearingFills) error {
@@ -3788,7 +3728,7 @@ func computeCountComplianceNoticesKey(p paramsCountComplianceNotices) (runtime.V
 	return vk, colMask, flagMask, approxArgs
 }
 
-// CountComplianceNoticesQuery constructs a composable runtime.Query without executing it.
+// CountComplianceNoticesQuery constructs a composable runtime.Query without executing it (stateless: no Queries or DB needed).
 func CountComplianceNoticesQuery(noticeKind string) runtime.Query {
 	p := paramsCountComplianceNotices{
 		NoticeKind: noticeKind,
@@ -3808,11 +3748,6 @@ func CountComplianceNoticesQuery(noticeKind string) runtime.Query {
 		Expand:   expandCountComplianceNoticesArgs,
 		ShapeTag: shapeTag,
 	}
-}
-
-// CountComplianceNoticesQuery constructs a composable runtime.Query without executing it.
-func (q *Queries) CountComplianceNoticesQuery(noticeKind string) runtime.Query {
-	return CountComplianceNoticesQuery(noticeKind)
 }
 
 func scanCountComplianceNoticesRow(scanner interface{ Scan(...any) error }, dst *int64, colMask uint64, p paramsCountComplianceNotices) error {

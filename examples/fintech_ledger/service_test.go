@@ -473,9 +473,9 @@ func runFintechLedgerSuite(t *testing.T, mode string, db *sql.DB) {
 		t.Fatalf("[%s] InsertAuditEvent: %v", mode, err)
 	}
 	var dummyArgs []any
-	q1 := q.GetAccountQuery(orgID, 1)
+	q1 := GetAccountQuery(orgID, 1)
 	_ = q1.Expand(&dummyArgs, runtime.DialectQuestion, &q1)
-	q2 := q.TotalSupplyByOrgQuery(orgID)
+	q2 := TotalSupplyByOrgQuery(orgID)
 	_ = q2.Expand(&dummyArgs, runtime.DialectQuestion, &q2)
 	_ = New(db, runtime.WithCache(nil))
 	_ = q.Cache()

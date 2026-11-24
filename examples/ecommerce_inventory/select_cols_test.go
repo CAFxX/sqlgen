@@ -134,7 +134,7 @@ func TestEmptyAndNilCollections(t *testing.T) {
 	// Unsorted tuple and plain slices are sorted on expansion (the composable query, the queued exec); an
 	// empty one fails the expansion.
 	unsorted := []SKUKey{{WarehouseID: 2, SKU: "Z"}, {WarehouseID: 1, SKU: "B"}, {WarehouseID: 1, SKU: "A"}}
-	qq := q.GetInventoryBySKUsQuery(unsorted)
+	qq := GetInventoryBySKUsQuery(unsorted)
 	var args []any
 	if err := qq.Expand(&args, runtime.DialectQuestion, &qq); err != nil {
 		t.Fatal(err)
@@ -142,7 +142,7 @@ func TestEmptyAndNilCollections(t *testing.T) {
 	if want := []any{int64(1), "A", int64(1), "B", int64(2), "Z"}; !slices.Equal(args, want) {
 		t.Fatalf("expanded args = %v, want %v", args, want)
 	}
-	empty := q.GetInventoryBySKUsQuery(nil)
+	empty := GetInventoryBySKUsQuery(nil)
 	if err := empty.Expand(&args, runtime.DialectQuestion, &empty); !errors.Is(err, runtime.ErrEmptySliceParam) {
 		t.Fatalf("expanding an empty tuple slice = %v", err)
 	}

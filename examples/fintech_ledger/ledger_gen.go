@@ -225,7 +225,7 @@ func computeGetAccountKey(p paramsGetAccount) (runtime.VariantKey, uint64, uint6
 	return vk, colMask, flagMask, approxArgs
 }
 
-// GetAccountQuery constructs a composable runtime.Query without executing it.
+// GetAccountQuery constructs a composable runtime.Query without executing it (stateless: no Queries or DB needed).
 func GetAccountQuery(orgID int64, accountID int64, selectCols ...uint64) runtime.Query {
 	p := paramsGetAccount{
 		OrgID:      orgID,
@@ -247,11 +247,6 @@ func GetAccountQuery(orgID int64, accountID int64, selectCols ...uint64) runtime
 		Expand:   expandGetAccountArgs,
 		ShapeTag: shapeTag,
 	}
-}
-
-// GetAccountQuery constructs a composable runtime.Query without executing it.
-func (q *Queries) GetAccountQuery(orgID int64, accountID int64, selectCols ...uint64) runtime.Query {
-	return GetAccountQuery(orgID, accountID, selectCols...)
 }
 
 func scanGetAccountRow(scanner interface{ Scan(...any) error }, dst *Account, colMask uint64, p paramsGetAccount) error {
@@ -385,7 +380,7 @@ func computeTotalSupplyByOrgKey(p paramsTotalSupplyByOrg) (runtime.VariantKey, u
 	return vk, colMask, flagMask, approxArgs
 }
 
-// TotalSupplyByOrgQuery constructs a composable runtime.Query without executing it.
+// TotalSupplyByOrgQuery constructs a composable runtime.Query without executing it (stateless: no Queries or DB needed).
 func TotalSupplyByOrgQuery(orgID int64) runtime.Query {
 	p := paramsTotalSupplyByOrg{
 		OrgID: orgID,
@@ -405,11 +400,6 @@ func TotalSupplyByOrgQuery(orgID int64) runtime.Query {
 		Expand:   expandTotalSupplyByOrgArgs,
 		ShapeTag: shapeTag,
 	}
-}
-
-// TotalSupplyByOrgQuery constructs a composable runtime.Query without executing it.
-func (q *Queries) TotalSupplyByOrgQuery(orgID int64) runtime.Query {
-	return TotalSupplyByOrgQuery(orgID)
 }
 
 func scanTotalSupplyByOrgRow(scanner interface{ Scan(...any) error }, dst *int64, colMask uint64, p paramsTotalSupplyByOrg) error {

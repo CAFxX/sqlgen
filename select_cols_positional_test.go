@@ -76,7 +76,7 @@ func TestPositionalSelectColsProjectsColumns(t *testing.T) {
 	if got, err := futMany.Get(); err != nil || len(got) != 2 || got[0] != (User{Bio: "bio"}) {
 		t.Fatalf("pipeline many projected = %+v, %v", got, err)
 	}
-	if qa, qb := q.GetUserByIDQuery(1), q.GetUserByIDQuery(1, GetUserByIDColID); qa.ShapeTag == qb.ShapeTag {
+	if qa, qb := GetUserByIDQuery(1), GetUserByIDQuery(1, GetUserByIDColID); qa.ShapeTag == qb.ShapeTag {
 		t.Fatal("projected and default queries share a shape tag")
 	}
 }

@@ -469,7 +469,7 @@ func computeGetItemKey(p paramsGetItem) (runtime.VariantKey, uint64, uint64, int
 	return vk, colMask, flagMask, approxArgs
 }
 
-// GetItemQuery constructs a composable runtime.Query without executing it.
+// GetItemQuery constructs a composable runtime.Query without executing it (stateless: no Queries or DB needed).
 func GetItemQuery(id int64, selectCols ...uint64) runtime.Query {
 	p := paramsGetItem{
 		ID:         id,
@@ -490,11 +490,6 @@ func GetItemQuery(id int64, selectCols ...uint64) runtime.Query {
 		Expand:   expandGetItemArgs,
 		ShapeTag: shapeTag,
 	}
-}
-
-// GetItemQuery constructs a composable runtime.Query without executing it.
-func (q *Queries) GetItemQuery(id int64, selectCols ...uint64) runtime.Query {
-	return GetItemQuery(id, selectCols...)
 }
 
 func scanGetItemRow(scanner interface{ Scan(...any) error }, dst *Item, colMask uint64, p paramsGetItem) error {
@@ -655,7 +650,7 @@ func computeItemsByIDsKey(p paramsItemsByIDs) (runtime.VariantKey, uint64, uint6
 	return vk, colMask, flagMask, approxArgs
 }
 
-// ItemsByIDsQuery constructs a composable runtime.Query without executing it.
+// ItemsByIDsQuery constructs a composable runtime.Query without executing it (stateless: no Queries or DB needed).
 func ItemsByIDsQuery(ids []int64, selectCols ...uint64) runtime.Query {
 	p := paramsItemsByIDs{
 		IDs:        ids,
@@ -681,11 +676,6 @@ func ItemsByIDsQuery(ids []int64, selectCols ...uint64) runtime.Query {
 		Expand:   expandItemsByIDsArgs,
 		ShapeTag: shapeTag,
 	}
-}
-
-// ItemsByIDsQuery constructs a composable runtime.Query without executing it.
-func (q *Queries) ItemsByIDsQuery(ids []int64, selectCols ...uint64) runtime.Query {
-	return ItemsByIDsQuery(ids, selectCols...)
 }
 
 func scanItemsByIDsRow(scanner interface{ Scan(...any) error }, dst *Item, colMask uint64, p paramsItemsByIDs) error {
@@ -967,7 +957,7 @@ func computeSearchItemsKey(p SearchItemsParams) (runtime.VariantKey, uint64, uin
 	return vk, colMask, flagMask, approxArgs
 }
 
-// SearchItemsQuery constructs a composable runtime.Query without executing it.
+// SearchItemsQuery constructs a composable runtime.Query without executing it (stateless: no Queries or DB needed).
 func SearchItemsQuery(p SearchItemsParams) runtime.Query {
 	_, colMask, flagMask, _ := computeSearchItemsKey(p)
 	var sliceLensBuf [1]int
@@ -991,11 +981,6 @@ func SearchItemsQuery(p SearchItemsParams) runtime.Query {
 		Expand:   expandSearchItemsArgs,
 		ShapeTag: shapeTag,
 	}
-}
-
-// SearchItemsQuery constructs a composable runtime.Query without executing it.
-func (q *Queries) SearchItemsQuery(p SearchItemsParams) runtime.Query {
-	return SearchItemsQuery(p)
 }
 
 func scanSearchItemsRow(scanner interface{ Scan(...any) error }, dst *Item, colMask uint64, p SearchItemsParams) error {
@@ -1248,7 +1233,7 @@ func computePageItemsKey(p PageItemsParams) (runtime.VariantKey, uint64, uint64,
 	return vk, colMask, flagMask, approxArgs
 }
 
-// PageItemsQuery constructs a composable runtime.Query without executing it.
+// PageItemsQuery constructs a composable runtime.Query without executing it (stateless: no Queries or DB needed).
 func PageItemsQuery(p PageItemsParams) runtime.Query {
 	_, colMask, flagMask, _ := computePageItemsKey(p)
 	in := runtime.RenderInput{
@@ -1267,11 +1252,6 @@ func PageItemsQuery(p PageItemsParams) runtime.Query {
 		Expand:   expandPageItemsArgs,
 		ShapeTag: shapeTag,
 	}
-}
-
-// PageItemsQuery constructs a composable runtime.Query without executing it.
-func (q *Queries) PageItemsQuery(p PageItemsParams) runtime.Query {
-	return PageItemsQuery(p)
 }
 
 func scanPageItemsRow(scanner interface{ Scan(...any) error }, dst *PagedItem, colMask uint64, p PageItemsParams) error {
@@ -1629,7 +1609,7 @@ func computeWideRowsKey(p WideRowsParams) (runtime.VariantKey, uint64, uint64, i
 	return vk, colMask, flagMask, approxArgs
 }
 
-// WideRowsQuery constructs a composable runtime.Query without executing it.
+// WideRowsQuery constructs a composable runtime.Query without executing it (stateless: no Queries or DB needed).
 func WideRowsQuery(p WideRowsParams) runtime.Query {
 	_, colMask, flagMask, _ := computeWideRowsKey(p)
 	in := runtime.RenderInput{
@@ -1648,11 +1628,6 @@ func WideRowsQuery(p WideRowsParams) runtime.Query {
 		Expand:   expandWideRowsArgs,
 		ShapeTag: shapeTag,
 	}
-}
-
-// WideRowsQuery constructs a composable runtime.Query without executing it.
-func (q *Queries) WideRowsQuery(p WideRowsParams) runtime.Query {
-	return WideRowsQuery(p)
 }
 
 func scanWideRowsRow(scanner interface{ Scan(...any) error }, dst *Wide, colMask uint64, p WideRowsParams) error {
@@ -2200,7 +2175,7 @@ func computeTopOrgsKey(p paramsTopOrgs) (runtime.VariantKey, uint64, uint64, int
 	return vk, colMask, flagMask, approxArgs
 }
 
-// TopOrgsQuery constructs a composable runtime.Query without executing it.
+// TopOrgsQuery constructs a composable runtime.Query without executing it (stateless: no Queries or DB needed).
 func TopOrgsQuery(minItems int64) runtime.Query {
 	p := paramsTopOrgs{
 		MinItems: minItems,
@@ -2220,11 +2195,6 @@ func TopOrgsQuery(minItems int64) runtime.Query {
 		Expand:   expandTopOrgsArgs,
 		ShapeTag: shapeTag,
 	}
-}
-
-// TopOrgsQuery constructs a composable runtime.Query without executing it.
-func (q *Queries) TopOrgsQuery(minItems int64) runtime.Query {
-	return TopOrgsQuery(minItems)
 }
 
 const stmtIDOrgStats uint32 = 11
@@ -2295,7 +2265,7 @@ func computeOrgStatsKey(p paramsOrgStats) (runtime.VariantKey, uint64, uint64, i
 	return vk, colMask, flagMask, approxArgs
 }
 
-// OrgStatsQuery constructs a composable runtime.Query without executing it.
+// OrgStatsQuery constructs a composable runtime.Query without executing it (stateless: no Queries or DB needed).
 func OrgStatsQuery(orgs runtime.Query, status string, selectCols ...uint64) runtime.Query {
 	p := paramsOrgStats{
 		Orgs:       orgs,
@@ -2324,11 +2294,6 @@ func OrgStatsQuery(orgs runtime.Query, status string, selectCols ...uint64) runt
 		Expand:   expandOrgStatsArgs,
 		ShapeTag: shapeTag,
 	}
-}
-
-// OrgStatsQuery constructs a composable runtime.Query without executing it.
-func (q *Queries) OrgStatsQuery(orgs runtime.Query, status string, selectCols ...uint64) runtime.Query {
-	return OrgStatsQuery(orgs, status, selectCols...)
 }
 
 func scanOrgStatsRow(scanner interface{ Scan(...any) error }, dst *OrgStat, colMask uint64, p paramsOrgStats) error {
@@ -2632,7 +2597,7 @@ func computeCountOrgItemsKey(p paramsCountOrgItems) (runtime.VariantKey, uint64,
 	return vk, colMask, flagMask, approxArgs
 }
 
-// CountOrgItemsQuery constructs a composable runtime.Query without executing it.
+// CountOrgItemsQuery constructs a composable runtime.Query without executing it (stateless: no Queries or DB needed).
 func CountOrgItemsQuery(orgID int64) runtime.Query {
 	p := paramsCountOrgItems{
 		OrgID: orgID,
@@ -2652,11 +2617,6 @@ func CountOrgItemsQuery(orgID int64) runtime.Query {
 		Expand:   expandCountOrgItemsArgs,
 		ShapeTag: shapeTag,
 	}
-}
-
-// CountOrgItemsQuery constructs a composable runtime.Query without executing it.
-func (q *Queries) CountOrgItemsQuery(orgID int64) runtime.Query {
-	return CountOrgItemsQuery(orgID)
 }
 
 func scanCountOrgItemsRow(scanner interface{ Scan(...any) error }, dst *int64, colMask uint64, p paramsCountOrgItems) error {
@@ -2779,7 +2739,7 @@ func computeNamesByIDsKey(p paramsNamesByIDs) (runtime.VariantKey, uint64, uint6
 	return vk, colMask, flagMask, approxArgs
 }
 
-// NamesByIDsQuery constructs a composable runtime.Query without executing it.
+// NamesByIDsQuery constructs a composable runtime.Query without executing it (stateless: no Queries or DB needed).
 func NamesByIDsQuery(ids []int64) runtime.Query {
 	p := paramsNamesByIDs{
 		IDs: ids,
@@ -2804,11 +2764,6 @@ func NamesByIDsQuery(ids []int64) runtime.Query {
 		Expand:   expandNamesByIDsArgs,
 		ShapeTag: shapeTag,
 	}
-}
-
-// NamesByIDsQuery constructs a composable runtime.Query without executing it.
-func (q *Queries) NamesByIDsQuery(ids []int64) runtime.Query {
-	return NamesByIDsQuery(ids)
 }
 
 func scanNamesByIDsRow(scanner interface{ Scan(...any) error }, dst *string, colMask uint64, p paramsNamesByIDs) error {

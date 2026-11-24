@@ -403,11 +403,11 @@ func TestSaaSMultitenantPortalEndToEnd(t *testing.T) {
 
 	// Curried Query constructors & Expand helpers
 	var dummyArgs []any
-	smQ := q.SearchMembersQuery(SearchMembersParams{OrgID: 1, FilterStatuses: true, Statuses: []string{"active"}})
+	smQ := SearchMembersQuery(SearchMembersParams{OrgID: 1, FilterStatuses: true, Statuses: []string{"active"}})
 	_ = smQ.Expand(&dummyArgs, runtime.DialectQuestion, &smQ)
-	lmpQ := q.ListMembersPaginatedQuery(ListMembersPaginatedParams{OrgID: 1, Sort: sortConfigs[0].order, Limit: 5})
+	lmpQ := ListMembersPaginatedQuery(ListMembersPaginatedParams{OrgID: 1, Sort: sortConfigs[0].order, Limit: 5})
 	_ = lmpQ.Expand(&dummyArgs, runtime.DialectQuestion, &lmpQ)
-	aciQ := q.AggregateCohortInvoicesQuery(cohortQ, invStatus)
+	aciQ := AggregateCohortInvoicesQuery(cohortQ, invStatus)
 	_ = aciQ.Expand(&dummyArgs, runtime.DialectQuestion, &aciQ)
 
 	// Error paths: empty slice & invalid seek arity

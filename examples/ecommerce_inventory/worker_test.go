@@ -335,9 +335,9 @@ func TestEcommerceInventoryWorkerEndToEnd(t *testing.T) {
 
 	// Curried Query constructors & Pipeline methods
 	var dummyArgs []any
-	invQ := q.GetInventoryBySKUsQuery(sortedKeys[:2])
+	invQ := GetInventoryBySKUsQuery(sortedKeys[:2])
 	_ = invQ.Expand(&dummyArgs, runtime.DialectQuestion, &invQ)
-	sfoQ := q.StreamFulfilledOrdersQuery(cutoffTS)
+	sfoQ := StreamFulfilledOrdersQuery(cutoffTS)
 	_ = sfoQ.Expand(&dummyArgs, runtime.DialectQuestion, &sfoQ)
 	_ = (&runtime.RowFuture[int]{}).WhereCol("1=1", nil)
 	_ = New(db, runtime.WithCache(nil))

@@ -340,20 +340,20 @@ type RiskQueryFilter struct {
 // ActiveInstrumentsSubquery -> FilteredPositionsSubquery -> QueryRiskPositionsPage) and
 // walks all pages using composite keyset pagination.
 func (e *ClearingEngine) CollectAllRiskPositions(ctx context.Context, cfg RiskQueryFilter) ([]RiskPositionView, error) {
-	acctSub := e.q.EligibleAccountsSubqueryQuery(EligibleAccountsSubqueryParams{
+	acctSub := EligibleAccountsSubqueryQuery(EligibleAccountsSubqueryParams{
 		FirmIDs:           cfg.FirmIDs,
 		RequiredStatus:    "active",
 		RequireKyc:        cfg.RequireKYC,
 		MinMarginRatio:    cfg.MinMarginRatio,
 		MinMarginRatioBps: cfg.MinMarginBps,
 	})
-	instSub := e.q.ActiveInstrumentsSubqueryQuery(ActiveInstrumentsSubqueryParams{
+	instSub := ActiveInstrumentsSubqueryQuery(ActiveInstrumentsSubqueryParams{
 		AssetClasses:   cfg.AssetClasses,
 		OnlyMarginable: cfg.OnlyMarginable,
 		MaxHaircut:     cfg.MaxHaircut,
 		MaxHaircutBps:  cfg.MaxHaircutBps,
 	})
-	posSub := e.q.FilteredPositionsSubqueryQuery(FilteredPositionsSubqueryParams{
+	posSub := FilteredPositionsSubqueryQuery(FilteredPositionsSubqueryParams{
 		EligibleAccounts:  acctSub,
 		ActiveInstruments: instSub,
 		MinAbsQuantity:    cfg.MinAbsQuantity,

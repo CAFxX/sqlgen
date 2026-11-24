@@ -436,7 +436,7 @@ func computeGetUserByIDKey(p paramsGetUserByID) (runtime.VariantKey, uint64, uin
 	return vk, colMask, flagMask, approxArgs
 }
 
-// GetUserByIDQuery constructs a composable runtime.Query without executing it.
+// GetUserByIDQuery constructs a composable runtime.Query without executing it (stateless: no Queries or DB needed).
 func GetUserByIDQuery(id int64, selectCols ...uint64) runtime.Query {
 	p := paramsGetUserByID{
 		ID:         id,
@@ -457,11 +457,6 @@ func GetUserByIDQuery(id int64, selectCols ...uint64) runtime.Query {
 		Expand:   expandGetUserByIDArgs,
 		ShapeTag: shapeTag,
 	}
-}
-
-// GetUserByIDQuery constructs a composable runtime.Query without executing it.
-func (q *Queries) GetUserByIDQuery(id int64, selectCols ...uint64) runtime.Query {
-	return GetUserByIDQuery(id, selectCols...)
 }
 
 func scanGetUserByIDRow(scanner interface{ Scan(...any) error }, dst *User, colMask uint64, p paramsGetUserByID) error {
@@ -627,7 +622,7 @@ func computeListUsersByIDsKey(p paramsListUsersByIDs) (runtime.VariantKey, uint6
 	return vk, colMask, flagMask, approxArgs
 }
 
-// ListUsersByIDsQuery constructs a composable runtime.Query without executing it.
+// ListUsersByIDsQuery constructs a composable runtime.Query without executing it (stateless: no Queries or DB needed).
 func ListUsersByIDsQuery(ids []int64, selectCols ...uint64) runtime.Query {
 	p := paramsListUsersByIDs{
 		IDs:        ids,
@@ -653,11 +648,6 @@ func ListUsersByIDsQuery(ids []int64, selectCols ...uint64) runtime.Query {
 		Expand:   expandListUsersByIDsArgs,
 		ShapeTag: shapeTag,
 	}
-}
-
-// ListUsersByIDsQuery constructs a composable runtime.Query without executing it.
-func (q *Queries) ListUsersByIDsQuery(ids []int64, selectCols ...uint64) runtime.Query {
-	return ListUsersByIDsQuery(ids, selectCols...)
 }
 
 func scanListUsersByIDsRow(scanner interface{ Scan(...any) error }, dst *User, colMask uint64, p paramsListUsersByIDs) error {
@@ -905,7 +895,7 @@ func computeSelectUserProfileSubsetKey(p SelectUserProfileSubsetParams) (runtime
 	return vk, colMask, flagMask, approxArgs
 }
 
-// SelectUserProfileSubsetQuery constructs a composable runtime.Query without executing it.
+// SelectUserProfileSubsetQuery constructs a composable runtime.Query without executing it (stateless: no Queries or DB needed).
 func SelectUserProfileSubsetQuery(p SelectUserProfileSubsetParams) runtime.Query {
 	_, colMask, flagMask, _ := computeSelectUserProfileSubsetKey(p)
 	in := runtime.RenderInput{
@@ -922,11 +912,6 @@ func SelectUserProfileSubsetQuery(p SelectUserProfileSubsetParams) runtime.Query
 		Expand:   expandSelectUserProfileSubsetArgs,
 		ShapeTag: shapeTag,
 	}
-}
-
-// SelectUserProfileSubsetQuery constructs a composable runtime.Query without executing it.
-func (q *Queries) SelectUserProfileSubsetQuery(p SelectUserProfileSubsetParams) runtime.Query {
-	return SelectUserProfileSubsetQuery(p)
 }
 
 func scanSelectUserProfileSubsetRow(scanner interface{ Scan(...any) error }, dst *SelectUserProfileSubsetRow, colMask uint64, p SelectUserProfileSubsetParams) error {
@@ -1150,7 +1135,7 @@ func computeSearchUsersCoupledKey(p SearchUsersCoupledParams) (runtime.VariantKe
 	return vk, colMask, flagMask, approxArgs
 }
 
-// SearchUsersCoupledQuery constructs a composable runtime.Query without executing it.
+// SearchUsersCoupledQuery constructs a composable runtime.Query without executing it (stateless: no Queries or DB needed).
 func SearchUsersCoupledQuery(p SearchUsersCoupledParams) runtime.Query {
 	_, colMask, flagMask, _ := computeSearchUsersCoupledKey(p)
 	var sliceLensBuf [2]int
@@ -1185,11 +1170,6 @@ func SearchUsersCoupledQuery(p SearchUsersCoupledParams) runtime.Query {
 		Expand:   expandSearchUsersCoupledArgs,
 		ShapeTag: shapeTag,
 	}
-}
-
-// SearchUsersCoupledQuery constructs a composable runtime.Query without executing it.
-func (q *Queries) SearchUsersCoupledQuery(p SearchUsersCoupledParams) runtime.Query {
-	return SearchUsersCoupledQuery(p)
 }
 
 func scanSearchUsersCoupledRow(scanner interface{ Scan(...any) error }, dst *SearchUsersCoupledRow, colMask uint64, p SearchUsersCoupledParams) error {
@@ -1360,7 +1340,7 @@ func computeSubOrgsByMinIDKey(p SubOrgsByMinIDParams) (runtime.VariantKey, uint6
 	return vk, colMask, flagMask, approxArgs
 }
 
-// SubOrgsByMinIDQuery constructs a composable runtime.Query without executing it.
+// SubOrgsByMinIDQuery constructs a composable runtime.Query without executing it (stateless: no Queries or DB needed).
 func SubOrgsByMinIDQuery(p SubOrgsByMinIDParams) runtime.Query {
 	_, colMask, flagMask, _ := computeSubOrgsByMinIDKey(p)
 	in := runtime.RenderInput{
@@ -1377,11 +1357,6 @@ func SubOrgsByMinIDQuery(p SubOrgsByMinIDParams) runtime.Query {
 		Expand:   expandSubOrgsByMinIDArgs,
 		ShapeTag: shapeTag,
 	}
-}
-
-// SubOrgsByMinIDQuery constructs a composable runtime.Query without executing it.
-func (q *Queries) SubOrgsByMinIDQuery(p SubOrgsByMinIDParams) runtime.Query {
-	return SubOrgsByMinIDQuery(p)
 }
 
 const stmtIDPageUsers uint32 = 7
@@ -1552,7 +1527,7 @@ func computePageUsersKey(p PageUsersParams) (runtime.VariantKey, uint64, uint64,
 	return vk, colMask, flagMask, approxArgs
 }
 
-// PageUsersQuery constructs a composable runtime.Query without executing it.
+// PageUsersQuery constructs a composable runtime.Query without executing it (stateless: no Queries or DB needed).
 func PageUsersQuery(p PageUsersParams) runtime.Query {
 	_, colMask, flagMask, _ := computePageUsersKey(p)
 	in := runtime.RenderInput{
@@ -1571,11 +1546,6 @@ func PageUsersQuery(p PageUsersParams) runtime.Query {
 		Expand:   expandPageUsersArgs,
 		ShapeTag: shapeTag,
 	}
-}
-
-// PageUsersQuery constructs a composable runtime.Query without executing it.
-func (q *Queries) PageUsersQuery(p PageUsersParams) runtime.Query {
-	return PageUsersQuery(p)
 }
 
 func scanPageUsersRow(scanner interface{ Scan(...any) error }, dst *PageUsersRow, colMask uint64, p PageUsersParams) error {
@@ -1743,7 +1713,7 @@ func computeUsersFromCTEAndInSubqueryKey(p paramsUsersFromCTEAndInSubquery) (run
 	return vk, colMask, flagMask, approxArgs
 }
 
-// UsersFromCTEAndInSubqueryQuery constructs a composable runtime.Query without executing it.
+// UsersFromCTEAndInSubqueryQuery constructs a composable runtime.Query without executing it (stateless: no Queries or DB needed).
 func UsersFromCTEAndInSubqueryQuery(ctesub runtime.Query, idsub runtime.Query, selectCols ...uint64) runtime.Query {
 	p := paramsUsersFromCTEAndInSubquery{
 		Ctesub:     ctesub,
@@ -1773,11 +1743,6 @@ func UsersFromCTEAndInSubqueryQuery(ctesub runtime.Query, idsub runtime.Query, s
 		Expand:   expandUsersFromCTEAndInSubqueryArgs,
 		ShapeTag: shapeTag,
 	}
-}
-
-// UsersFromCTEAndInSubqueryQuery constructs a composable runtime.Query without executing it.
-func (q *Queries) UsersFromCTEAndInSubqueryQuery(ctesub runtime.Query, idsub runtime.Query, selectCols ...uint64) runtime.Query {
-	return UsersFromCTEAndInSubqueryQuery(ctesub, idsub, selectCols...)
 }
 
 func scanUsersFromCTEAndInSubqueryRow(scanner interface{ Scan(...any) error }, dst *UsersFromCTEAndInSubqueryRow, colMask uint64, p paramsUsersFromCTEAndInSubquery) error {
@@ -1923,7 +1888,7 @@ func computeSubUserIDsByScoreKey(p paramsSubUserIDsByScore) (runtime.VariantKey,
 	return vk, colMask, flagMask, approxArgs
 }
 
-// SubUserIDsByScoreQuery constructs a composable runtime.Query without executing it.
+// SubUserIDsByScoreQuery constructs a composable runtime.Query without executing it (stateless: no Queries or DB needed).
 func SubUserIDsByScoreQuery(minScore int64) runtime.Query {
 	p := paramsSubUserIDsByScore{
 		MinScore: minScore,
@@ -1943,11 +1908,6 @@ func SubUserIDsByScoreQuery(minScore int64) runtime.Query {
 		Expand:   expandSubUserIDsByScoreArgs,
 		ShapeTag: shapeTag,
 	}
-}
-
-// SubUserIDsByScoreQuery constructs a composable runtime.Query without executing it.
-func (q *Queries) SubUserIDsByScoreQuery(minScore int64) runtime.Query {
-	return SubUserIDsByScoreQuery(minScore)
 }
 
 const stmtIDInsertUsersBatchReturning uint32 = 10
@@ -2036,7 +1996,7 @@ func computeInsertUsersBatchReturningKey(p paramsInsertUsersBatchReturning) (run
 	return vk, colMask, flagMask, approxArgs
 }
 
-// InsertUsersBatchReturningQuery constructs a composable runtime.Query without executing it.
+// InsertUsersBatchReturningQuery constructs a composable runtime.Query without executing it (stateless: no Queries or DB needed).
 func InsertUsersBatchReturningQuery(rows []BatchUserInput, selectCols ...uint64) runtime.Query {
 	p := paramsInsertUsersBatchReturning{
 		Rows:       rows,
@@ -2062,11 +2022,6 @@ func InsertUsersBatchReturningQuery(rows []BatchUserInput, selectCols ...uint64)
 		Expand:   expandInsertUsersBatchReturningArgs,
 		ShapeTag: shapeTag,
 	}
-}
-
-// InsertUsersBatchReturningQuery constructs a composable runtime.Query without executing it.
-func (q *Queries) InsertUsersBatchReturningQuery(rows []BatchUserInput, selectCols ...uint64) runtime.Query {
-	return InsertUsersBatchReturningQuery(rows, selectCols...)
 }
 
 func scanInsertUsersBatchReturningRow(scanner interface{ Scan(...any) error }, dst *InsertUsersBatchReturningRow, colMask uint64, p paramsInsertUsersBatchReturning) error {
@@ -2744,7 +2699,7 @@ func computeUserIDsNearScoreKey(p paramsUserIDsNearScore) (runtime.VariantKey, u
 	return vk, colMask, flagMask, approxArgs
 }
 
-// UserIDsNearScoreQuery constructs a composable runtime.Query without executing it.
+// UserIDsNearScoreQuery constructs a composable runtime.Query without executing it (stateless: no Queries or DB needed).
 func UserIDsNearScoreQuery(score int64, ids []int64) runtime.Query {
 	p := paramsUserIDsNearScore{
 		Score: score,
@@ -2770,11 +2725,6 @@ func UserIDsNearScoreQuery(score int64, ids []int64) runtime.Query {
 		Expand:   expandUserIDsNearScoreArgs,
 		ShapeTag: shapeTag,
 	}
-}
-
-// UserIDsNearScoreQuery constructs a composable runtime.Query without executing it.
-func (q *Queries) UserIDsNearScoreQuery(score int64, ids []int64) runtime.Query {
-	return UserIDsNearScoreQuery(score, ids)
 }
 
 func scanUserIDsNearScoreRow(scanner interface{ Scan(...any) error }, dst *int64, colMask uint64, p paramsUserIDsNearScore) error {
@@ -2954,7 +2904,7 @@ func computeUserEmailBytesKey(p paramsUserEmailBytes) (runtime.VariantKey, uint6
 	return vk, colMask, flagMask, approxArgs
 }
 
-// UserEmailBytesQuery constructs a composable runtime.Query without executing it.
+// UserEmailBytesQuery constructs a composable runtime.Query without executing it (stateless: no Queries or DB needed).
 func UserEmailBytesQuery(id int64) runtime.Query {
 	p := paramsUserEmailBytes{
 		ID: id,
@@ -2974,11 +2924,6 @@ func UserEmailBytesQuery(id int64) runtime.Query {
 		Expand:   expandUserEmailBytesArgs,
 		ShapeTag: shapeTag,
 	}
-}
-
-// UserEmailBytesQuery constructs a composable runtime.Query without executing it.
-func (q *Queries) UserEmailBytesQuery(id int64) runtime.Query {
-	return UserEmailBytesQuery(id)
 }
 
 func scanUserEmailBytesRow(scanner interface{ Scan(...any) error }, dst *[]byte, colMask uint64, p paramsUserEmailBytes) error {
@@ -3078,7 +3023,7 @@ func computeUserBioIfSetKey(p paramsUserBioIfSet) (runtime.VariantKey, uint64, u
 	return vk, colMask, flagMask, approxArgs
 }
 
-// UserBioIfSetQuery constructs a composable runtime.Query without executing it.
+// UserBioIfSetQuery constructs a composable runtime.Query without executing it (stateless: no Queries or DB needed).
 func UserBioIfSetQuery() runtime.Query {
 	p := paramsUserBioIfSet{}
 	_, colMask, flagMask, _ := computeUserBioIfSetKey(p)
@@ -3096,11 +3041,6 @@ func UserBioIfSetQuery() runtime.Query {
 		Expand:   expandUserBioIfSetArgs,
 		ShapeTag: shapeTag,
 	}
-}
-
-// UserBioIfSetQuery constructs a composable runtime.Query without executing it.
-func (q *Queries) UserBioIfSetQuery() runtime.Query {
-	return UserBioIfSetQuery()
 }
 
 func scanUserBioIfSetRow(scanner interface{ Scan(...any) error }, dst **string, colMask uint64, p paramsUserBioIfSet) error {
@@ -3222,7 +3162,7 @@ func computeUserEmailOnlyKey(p paramsUserEmailOnly) (runtime.VariantKey, uint64,
 	return vk, colMask, flagMask, approxArgs
 }
 
-// UserEmailOnlyQuery constructs a composable runtime.Query without executing it.
+// UserEmailOnlyQuery constructs a composable runtime.Query without executing it (stateless: no Queries or DB needed).
 func UserEmailOnlyQuery(id int64) runtime.Query {
 	p := paramsUserEmailOnly{
 		ID: id,
@@ -3242,11 +3182,6 @@ func UserEmailOnlyQuery(id int64) runtime.Query {
 		Expand:   expandUserEmailOnlyArgs,
 		ShapeTag: shapeTag,
 	}
-}
-
-// UserEmailOnlyQuery constructs a composable runtime.Query without executing it.
-func (q *Queries) UserEmailOnlyQuery(id int64) runtime.Query {
-	return UserEmailOnlyQuery(id)
 }
 
 func scanUserEmailOnlyRow(scanner interface{ Scan(...any) error }, dst *EmailOnly, colMask uint64, p paramsUserEmailOnly) error {
@@ -3467,7 +3402,7 @@ func computePageQuadKey(p PageQuadParams) (runtime.VariantKey, uint64, uint64, i
 	return vk, colMask, flagMask, approxArgs
 }
 
-// PageQuadQuery constructs a composable runtime.Query without executing it.
+// PageQuadQuery constructs a composable runtime.Query without executing it (stateless: no Queries or DB needed).
 func PageQuadQuery(p PageQuadParams) runtime.Query {
 	_, colMask, flagMask, _ := computePageQuadKey(p)
 	in := runtime.RenderInput{
@@ -3486,11 +3421,6 @@ func PageQuadQuery(p PageQuadParams) runtime.Query {
 		Expand:   expandPageQuadArgs,
 		ShapeTag: shapeTag,
 	}
-}
-
-// PageQuadQuery constructs a composable runtime.Query without executing it.
-func (q *Queries) PageQuadQuery(p PageQuadParams) runtime.Query {
-	return PageQuadQuery(p)
 }
 
 func scanPageQuadRow(scanner interface{ Scan(...any) error }, dst *QuadItem, colMask uint64, p PageQuadParams) error {

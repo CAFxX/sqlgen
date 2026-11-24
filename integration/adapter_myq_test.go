@@ -146,7 +146,7 @@ func (a *myqAPI) PipelineTransfer(ctx context.Context, from, to, amount int64, p
 	}, runtime.WithTxRetry(pol))
 }
 func (a *myqAPI) OrgStats(ctx context.Context, minItems int64, status string) ([]orgStat, error) {
-	rows, err := a.q.OrgStats(ctx, a.q.TopOrgsQuery(minItems), status)
+	rows, err := a.q.OrgStats(ctx, myq.TopOrgsQuery(minItems), status)
 	out := make([]orgStat, len(rows))
 	for i, r := range rows {
 		out[i] = orgStat{r.OrgID, r.N, r.Total}

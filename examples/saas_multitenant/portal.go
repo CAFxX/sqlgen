@@ -105,7 +105,7 @@ func (s *PortalService) CohortBillingReport(
 	minScore int64,
 	invoiceStatus string,
 ) ([]CohortInvoiceSummary, error) {
-	activeOrgs := s.q.ActiveOrgsQuery(plans)
-	cohortMembers := s.q.CohortMemberIDsQuery(activeOrgs, minScore)
+	activeOrgs := ActiveOrgsQuery(plans)
+	cohortMembers := CohortMemberIDsQuery(activeOrgs, minScore)
 	return s.q.AggregateCohortInvoices(ctx, cohortMembers, invoiceStatus)
 }

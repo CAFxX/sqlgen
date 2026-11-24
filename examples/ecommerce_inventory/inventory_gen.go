@@ -292,7 +292,7 @@ func computeGetInventoryBySKUsKey(p paramsGetInventoryBySKUs) (runtime.VariantKe
 	return vk, colMask, flagMask, approxArgs
 }
 
-// GetInventoryBySKUsQuery constructs a composable runtime.Query without executing it.
+// GetInventoryBySKUsQuery constructs a composable runtime.Query without executing it (stateless: no Queries or DB needed).
 func GetInventoryBySKUsQuery(keys []SKUKey, selectCols ...uint64) runtime.Query {
 	p := paramsGetInventoryBySKUs{
 		Keys:       keys,
@@ -318,11 +318,6 @@ func GetInventoryBySKUsQuery(keys []SKUKey, selectCols ...uint64) runtime.Query 
 		Expand:   expandGetInventoryBySKUsArgs,
 		ShapeTag: shapeTag,
 	}
-}
-
-// GetInventoryBySKUsQuery constructs a composable runtime.Query without executing it.
-func (q *Queries) GetInventoryBySKUsQuery(keys []SKUKey, selectCols ...uint64) runtime.Query {
-	return GetInventoryBySKUsQuery(keys, selectCols...)
 }
 
 func scanGetInventoryBySKUsRow(scanner interface{ Scan(...any) error }, dst *InventoryItem, colMask uint64, p paramsGetInventoryBySKUs) error {
@@ -778,7 +773,7 @@ func computeStreamFulfilledOrdersKey(p paramsStreamFulfilledOrders) (runtime.Var
 	return vk, colMask, flagMask, approxArgs
 }
 
-// StreamFulfilledOrdersQuery constructs a composable runtime.Query without executing it.
+// StreamFulfilledOrdersQuery constructs a composable runtime.Query without executing it (stateless: no Queries or DB needed).
 func StreamFulfilledOrdersQuery(cutoffTs int64, selectCols ...uint64) runtime.Query {
 	p := paramsStreamFulfilledOrders{
 		CutoffTs:   cutoffTs,
@@ -799,11 +794,6 @@ func StreamFulfilledOrdersQuery(cutoffTs int64, selectCols ...uint64) runtime.Qu
 		Expand:   expandStreamFulfilledOrdersArgs,
 		ShapeTag: shapeTag,
 	}
-}
-
-// StreamFulfilledOrdersQuery constructs a composable runtime.Query without executing it.
-func (q *Queries) StreamFulfilledOrdersQuery(cutoffTs int64, selectCols ...uint64) runtime.Query {
-	return StreamFulfilledOrdersQuery(cutoffTs, selectCols...)
 }
 
 func scanStreamFulfilledOrdersRow(scanner interface{ Scan(...any) error }, dst *FulfilledOrder, colMask uint64, p paramsStreamFulfilledOrders) error {
