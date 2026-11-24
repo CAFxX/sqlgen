@@ -987,8 +987,6 @@ func exerciseRemainingExchangeVariants(t *testing.T, ctx context.Context, mode s
 		t.Fatalf("[%s] pipelined CancelOrdersByIDs: %v", mode, err)
 	}
 
-	_ = New(db, runtime.WithCache(nil))
-	_ = q.Cache()
 	_ = q.CacheStats()
 	unprepQ := q.WithPrepared(false)
 	if _, err := unprepQ.TotalExchangeEquityCents(ctx); err != nil {

@@ -25,7 +25,7 @@ Everything below is the whole surface; each item has one spelling and the sectio
   - values: `Query`, `Order`, `Seek`, `NewSeek`, `OrCols`.
   - transactions: `WithTxRetry`, `DefaultRetryPolicy`, `TxRetryPolicy`.
   - pipelines: futures (`ExecFuture`, `RowFuture`, `SliceFuture`: `Rows{Eq,Gt,Ge,Lt,Le}`, `Found`, `NotFound`, `AssertRows`, `AssertFound`, `WhereCol`, `Result`, `Get`), `PipelineCond` (`And`, `Or`, `Not`), `p.If`, `p.Abort`, `p.Flush`, `AssertionError`.
-  - cache: `WithMaxPreparedStmts`, `WithMaxSQLVariants`, `WithMaxBatchParams`, `WithCache`, `StmtCache`, `CacheStats`; drivers: `WrapConnector` and the `pgxwire` / `mysqlwire` modules.
+  - cache: `WithMaxPreparedStmts`, `WithMaxSQLVariants`, `WithMaxBatchParams`, `CacheStats`; drivers: `WrapConnector` and the `pgxwire` / `mysqlwire` modules.
 
 ---
 
@@ -869,10 +869,11 @@ err := q.PipelineTx(ctx, nil, func(p *Pipeline) error {
 | :--- | :--- | :--- |
 | `runtime.WithMaxPreparedStmts(n)` | `256` (`16`/shard) | Maximum Tier-2 `*sql.Stmt` handles across all 16 shards (`n <= 0` is ignored; to switch prepared statements off use `q.WithPrepared(false)`, the one way to do so). |
 | `runtime.WithMaxSQLVariants(n)` | `4096` (`256`/shard) | Maximum Tier-1 rendered SQL strings cached across all 16 shards (`0` disables Tier 1+2). |
-| `runtime.WithCache(c)` | a new cache | Use the existing `*runtime.StmtCache` `c` (`other.Cache()`) instead of creating one, so several `*Queries` share their statement tiers; every other option is then ignored. `other` must be a `*Queries` of the same generated package on the same `*sql.DB`: the cache keys statements by package-local ids and its prepared statements belong to one database, so `New` panics on a cache of another package or database. `Close` on any of them closes the shared cache. |
 | `runtime.WithMaxBatchParams(params)` | `16384` | Maximum parameters per batch chunk. It is always clamped to the wire limit of the placeholder style: `65535` for `$N` (PostgreSQL, CockroachDB) and `32766` for `?` (SQLite, MySQL, MariaDB: the SQLite-safe value, below MySQL's own 65535, because the runtime only knows the placeholder style). With the default the limit never binds. |
 
 The Tier-1 byte budget (16 MiB, 1 MiB per shard) and the promotion threshold (a Tier-1 variant, or a recurring batch size, is promoted to a Tier-2 `*sql.Stmt` once its frequency sketch reaches `2`) are fixed. `q.WithPrepared(false)` returns a view of `q` that never prepares (statements always go through `db.QueryContext` / `ExecContext`); `WithPrepared(true)` turns it back on.
+
+Every `New` creates its own cache. The views of a `*Queries` (`q.WithTx(tx)`, `q.WithPrepared(...)`, the `*Queries` an `InTx` callback receives) share the cache of `q`, so make one `*Queries` per `*sql.DB` and derive the views from it.
 
 Inspect live cache telemetry at any time via `stats := q.CacheStats()`:
 - `stats.PreparedHits`: Tier-2 `*sql.Stmt` cache hits.

@@ -571,7 +571,7 @@ var reservedParamNames = func() map[string]bool {
 // TestReservedNamesCoverGeneratedDeclarations checks both against real generated output.
 var (
 	reservedTypeNames      = setOf("New", "Pipeline", "Queries")
-	reservedStatementNames = setOf("Cache", "CacheStats", "Close", "If", "InTx", "Pipeline", "PipelineTx",
+	reservedStatementNames = setOf("CacheStats", "Close", "If", "InTx", "Pipeline", "PipelineTx",
 		"WithPrepared", "WithTx", "SetBuildError", "QueueExec", "QueueExecNoop", "Abort", "Flush")
 )
 
@@ -2728,24 +2728,18 @@ func Generate(cfg Config) ([]byte, error) {
 	}
 	b.WriteString("}\n\n")
 
-	b.WriteString("// sqlgenCacheOwner identifies this package to the statement cache (runtime.NewQueriesCache).\n")
-	b.WriteString("var sqlgenCacheOwner byte\n\n")
-	b.WriteString("// New creates a new Queries instance with a dedicated StmtCache (configured by opts), or the shared one\n")
-	b.WriteString("// given by runtime.WithCache, which must be the cache of Queries of this package on the same db (New\n")
-	b.WriteString("// panics otherwise).\n")
+	b.WriteString("// New creates a new Queries instance with a dedicated StmtCache configured by opts. The views made by\n")
+	b.WriteString("// WithTx and WithPrepared share it.\n")
 	b.WriteString("func New(db *sql.DB, opts ...runtime.CacheOption) *Queries {\n")
 	b.WriteString("\treturn &Queries{\n")
 	b.WriteString("\t\tdb:          db,\n")
-	b.WriteString("\t\tcache:       runtime.NewQueriesCache(db, &sqlgenCacheOwner, opts...),\n")
+	b.WriteString("\t\tcache:       runtime.NewStmtCache(opts...),\n")
 	b.WriteString("\t\tusePrepared: true,\n")
 	if numStatic > 0 {
 		fmt.Fprintf(&b, "\t\tfastSlots:   new([%d]atomic.Pointer[runtime.ManagedStmt]),\n", numStatic)
 	}
 	b.WriteString("\t}\n")
 	b.WriteString("}\n\n")
-
-	b.WriteString("// Cache returns the underlying StmtCache.\n")
-	b.WriteString("func (q *Queries) Cache() *runtime.StmtCache { return q.cache }\n\n")
 
 	b.WriteString("// CacheStats returns aggregated telemetry across all 16 statement cache shards.\n")
 	b.WriteString("func (q *Queries) CacheStats() runtime.CacheStats { return q.cache.Stats() }\n\n")

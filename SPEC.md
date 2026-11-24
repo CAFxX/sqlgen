@@ -886,7 +886,7 @@ Because the Clean-Room Dogfooding Protocol (Section 11) requires users/sub-agent
    - Chunking & Streaming: automatic chunking of the plain `<Name>`, `<Name>Stream`, `<Name>StreamSeq`, and `runtime.FromSeq` / `runtime.MapSeq2`; empty-collection rules (2.3).
    - Transactions & Retries: `q.WithTx(tx)`, `q.InTx(ctx, txOpts, fn, runtime.WithTxRetry(runtime.DefaultRetryPolicy()))`.
    - Pipelining & Conditional Control Flow: `q.Pipeline(ctx)`, `q.PipelineTx(...)`, futures (`ExecFuture`, `RowFuture[T]`, `SliceFuture[T]`), `.AssertRows(n)`, `.AssertFound()`, `p.If(cond, thenFn, elseFn)`, `WhereCol`, `p.Abort(err)`, and `IfResult.Taken()`.
-   - Cache Tuning & Observability: `WithMaxPreparedStmts`, `WithMaxSQLVariants`, `WithMaxBatchParams`, `WithCache` (share a `StmtCache` between `Queries`), `q.WithPrepared(false)` (the one way to disable Tier-2 prepared statements; a non-positive `WithMaxPreparedStmts` is ignored), and `q.CacheStats()`. The Tier-1 byte budget (`defaultMaxPartialBytes`, 16 MiB) and the promotion threshold (`defaultPromoteThreshold`, 2) are fixed constants; the runtime tests reach them through test-only options (`runtime/options_test.go`).
+   - Cache Tuning & Observability: `WithMaxPreparedStmts`, `WithMaxSQLVariants`, `WithMaxBatchParams`, `q.WithPrepared(false)` (the one way to disable Tier-2 prepared statements; a non-positive `WithMaxPreparedStmts` is ignored), and `q.CacheStats()`. The Tier-1 byte budget (`defaultMaxPartialBytes`, 16 MiB) and the promotion threshold (`defaultPromoteThreshold`, 2) are fixed constants; the runtime tests reach them through test-only options (`runtime/options_test.go`).
 
 ---
 

@@ -494,7 +494,6 @@ type cacheConfig struct {
 	MaxPreparedStmts int
 	PromoteThreshold uint8
 	MaxBatchParams   int
-	shared           *StmtCache
 }
 
 // CacheOption configures a StmtCache (and, through the generated New, a Queries).
@@ -524,16 +523,6 @@ func WithMaxBatchParams(n int) CacheOption {
 		if n > 0 {
 			cfg.MaxBatchParams = n
 		}
-	}
-}
-
-// WithCache makes NewStmtCache (and so the generated New) use the given, already configured cache
-// instead of creating one, so several Queries share their statement tiers; the other options are then
-// ignored. A nil c is ignored. The generated New panics when c belongs to the Queries of another generated
-// package or another *sql.DB (see NewQueriesCache).
-func WithCache(c *StmtCache) CacheOption {
-	return func(cfg *cacheConfig) {
-		cfg.shared = c
 	}
 }
 
@@ -583,16 +572,9 @@ type StmtCache struct {
 
 	batchMu       sync.RWMutex
 	batchTrackers map[batchShapeKey]*batchShapeTracker
-
-	// The generated package and *sql.DB the cache belongs to (see NewQueriesCache); unset until the first
-	// generated New uses the cache.
-	ownerMu  sync.Mutex
-	ownerPkg *byte
-	ownerDB  *sql.DB
 }
 
-// NewStmtCache creates a new 16-shard two-tier adaptive statement cache, or returns the cache given by
-// WithCache.
+// NewStmtCache creates a new 16-shard two-tier adaptive statement cache.
 func NewStmtCache(opts ...CacheOption) *StmtCache {
 	cfg := cacheConfig{
 		MaxSQLVariants:   defaultMaxSQLVariants,
@@ -606,10 +588,6 @@ func NewStmtCache(opts ...CacheOption) *StmtCache {
 			opt(&cfg)
 		}
 	}
-	if cfg.shared != nil {
-		return cfg.shared
-	}
-
 	c := &StmtCache{
 		globalMaxPrep:  cfg.MaxPreparedStmts,
 		promoteThresh:  cfg.PromoteThreshold,
@@ -785,27 +763,6 @@ func (c *StmtCache) PlanBatchChunk(stmtID uint32, colMask, flagMask uint64, rema
 		}
 	}
 	return capRows
-}
-
-// NewQueriesCache is NewStmtCache for the generated New: it binds the cache to db and to the generated
-// package identified by pkg (the address of a package-level variable of that package). A cache given by
-// WithCache must already belong to the same package and *sql.DB, or not be bound yet (a cache made by
-// NewStmtCache): statements are cached under package-local ids and Tier-2 statements are prepared on one
-// *sql.DB, so a cache shared with another package would run that package's SQL, and one shared with another
-// database would run statements prepared on that database. NewQueriesCache panics in those cases.
-func NewQueriesCache(db *sql.DB, pkg *byte, opts ...CacheOption) *StmtCache {
-	c := NewStmtCache(opts...)
-	c.ownerMu.Lock()
-	defer c.ownerMu.Unlock()
-	switch {
-	case c.ownerPkg == nil:
-		c.ownerPkg, c.ownerDB = pkg, db
-	case c.ownerPkg != pkg:
-		panic("sqlgen: runtime.WithCache: the cache belongs to the Queries of another generated package; a cache can only be shared by Queries of the same package and *sql.DB")
-	case c.ownerDB != db:
-		panic("sqlgen: runtime.WithCache: the cache belongs to Queries on another *sql.DB; a cache can only be shared by Queries of the same package and *sql.DB")
-	}
-	return c
 }
 
 // evictGlobalPreparedVictim demotes one prepared statement from another shard when globalMaxPrep < numCacheShards.

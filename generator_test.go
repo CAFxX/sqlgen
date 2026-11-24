@@ -846,12 +846,12 @@ func TestE2EAdaptiveMultiRowBatchExecution(t *testing.T) {
 
 	// 2900 rows fit one statement under the limit: one chunk of exactly 2900, never a decomposition into the
 	// recurring 1000/900 sizes. Above the limit: full-limit chunks, the remainder last.
-	if c := q.Cache().PlanBatchChunk(stmtIDInsertUsersBatchReturning, 0, 0, 2900, 10000, false); c != 2900 {
+	if c := q.cache.PlanBatchChunk(stmtIDInsertUsersBatchReturning, 0, 0, 2900, 10000, false); c != 2900 {
 		t.Fatalf("expected a single 2900-row chunk, got %d", c)
 	}
-	c1 := q.Cache().PlanBatchChunk(stmtIDInsertUsersBatchReturning, 0, 0, 2900, 1000, false)
-	c2 := q.Cache().PlanBatchChunk(stmtIDInsertUsersBatchReturning, 0, 0, 2900-c1, 1000, false)
-	c3 := q.Cache().PlanBatchChunk(stmtIDInsertUsersBatchReturning, 0, 0, 2900-c1-c2, 1000, false)
+	c1 := q.cache.PlanBatchChunk(stmtIDInsertUsersBatchReturning, 0, 0, 2900, 1000, false)
+	c2 := q.cache.PlanBatchChunk(stmtIDInsertUsersBatchReturning, 0, 0, 2900-c1, 1000, false)
+	c3 := q.cache.PlanBatchChunk(stmtIDInsertUsersBatchReturning, 0, 0, 2900-c1-c2, 1000, false)
 	if c1 != 1000 || c2 != 1000 || c3 != 900 {
 		t.Fatalf("expected chunking 1000 + 1000 + 900 for 2900 rows above a 1000-row limit, got %d + %d + %d", c1, c2, c3)
 	}
@@ -1612,7 +1612,7 @@ func TestGeneratorAndE2EAdditionalCoverage(t *testing.T) {
 	ctx := context.Background()
 
 	// Exercise Stream methods, Pipeline methods, and helper methods on e2e_gen_test.go
-	_ = New(nil, runtime.WithCache(nil))
+	_ = New(nil)
 	_ = q.CacheStats()
 	_ = q.WithPrepared(false)
 

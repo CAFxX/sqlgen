@@ -129,10 +129,10 @@ func TestEcommerceInventoryWorkerEndToEnd(t *testing.T) {
 	// Verify 500-row and 400-row variants are promoted to StatePrepared in the cache
 	vk500, _, _, _ := computeInsertOrderItemsKey(paramsInsertOrderItems{Items: make([]NewOrderItem, 500)})
 	vk400, _, _, _ := computeInsertOrderItemsKey(paramsInsertOrderItems{Items: make([]NewOrderItem, 400)})
-	if st := q.Cache().LookupState(vk500, ""); st != runtime.StatePrepared {
+	if st := q.cache.LookupState(vk500, ""); st != runtime.StatePrepared {
 		t.Fatalf("expected 500-row batch shape to be StatePrepared, got %v", st)
 	}
-	if st := q.Cache().LookupState(vk400, ""); st != runtime.StatePrepared {
+	if st := q.cache.LookupState(vk400, ""); st != runtime.StatePrepared {
 		t.Fatalf("expected 400-row batch shape to be StatePrepared, got %v", st)
 	}
 
@@ -143,10 +143,10 @@ func TestEcommerceInventoryWorkerEndToEnd(t *testing.T) {
 		t.Fatalf("IngestOrderItemsBatch(1400): n=%d, err=%v", n1400, err)
 	}
 	vk1400, _, _, _ := computeInsertOrderItemsKey(paramsInsertOrderItems{Items: make([]NewOrderItem, 1400)})
-	if st := q.Cache().LookupState(vk1400, ""); st == runtime.StatePrepared {
+	if st := q.cache.LookupState(vk1400, ""); st == runtime.StatePrepared {
 		t.Fatalf("a one-off 1400-row shape must not be promoted to a prepared statement, got %v", st)
 	}
-	if st := q.Cache().LookupState(vk500, ""); st != runtime.StatePrepared {
+	if st := q.cache.LookupState(vk500, ""); st != runtime.StatePrepared {
 		t.Fatalf("the recurring 500-row shape must stay prepared, got %v", st)
 	}
 
@@ -340,7 +340,6 @@ func TestEcommerceInventoryWorkerEndToEnd(t *testing.T) {
 	sfoQ := StreamFulfilledOrdersQuery(cutoffTS)
 	_ = sfoQ.Expand(&dummyArgs, runtime.DialectQuestion, &sfoQ)
 	_ = (&runtime.RowFuture[int]{}).WhereCol("1=1", nil)
-	_ = New(db, runtime.WithCache(nil))
 	_ = q.CacheStats()
 	_ = q.WithPrepared(false)
 

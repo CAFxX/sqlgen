@@ -21,22 +21,15 @@ type Queries struct {
 	usePrepared bool
 }
 
-// sqlgenCacheOwner identifies this package to the statement cache (runtime.NewQueriesCache).
-var sqlgenCacheOwner byte
-
-// New creates a new Queries instance with a dedicated StmtCache (configured by opts), or the shared one
-// given by runtime.WithCache, which must be the cache of Queries of this package on the same db (New
-// panics otherwise).
+// New creates a new Queries instance with a dedicated StmtCache configured by opts. The views made by
+// WithTx and WithPrepared share it.
 func New(db *sql.DB, opts ...runtime.CacheOption) *Queries {
 	return &Queries{
 		db:          db,
-		cache:       runtime.NewQueriesCache(db, &sqlgenCacheOwner, opts...),
+		cache:       runtime.NewStmtCache(opts...),
 		usePrepared: true,
 	}
 }
-
-// Cache returns the underlying StmtCache.
-func (q *Queries) Cache() *runtime.StmtCache { return q.cache }
 
 // CacheStats returns aggregated telemetry across all 16 statement cache shards.
 func (q *Queries) CacheStats() runtime.CacheStats { return q.cache.Stats() }

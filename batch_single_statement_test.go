@@ -190,7 +190,7 @@ func TestBatchOverTheLimitChunksInOneTransaction(t *testing.T) {
 	ctx := context.Background()
 	// 40 parameters / 4 columns = 10 rows per statement for InsertQuadBatch.
 	q, tr := setupTraceDB(t, runtime.WithMaxBatchParams(40))
-	maxRows := q.Cache().MaxRowsPerBatch(runtime.DialectQuestion, 0, 4)
+	maxRows := q.cache.MaxRowsPerBatch(runtime.DialectQuestion, 0, 4)
 	if maxRows != 10 {
 		t.Fatalf("test setup: max rows per statement = %d, want 10", maxRows)
 	}

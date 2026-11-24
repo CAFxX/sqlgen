@@ -477,8 +477,6 @@ func runFintechLedgerSuite(t *testing.T, mode string, db *sql.DB) {
 	_ = q1.Expand(&dummyArgs, runtime.DialectQuestion, &q1)
 	q2 := TotalSupplyByOrgQuery(orgID)
 	_ = q2.Expand(&dummyArgs, runtime.DialectQuestion, &q2)
-	_ = New(db, runtime.WithCache(nil))
-	_ = q.Cache()
 	_ = q.CacheStats()
 	unprepQ := q.WithPrepared(false)
 	if _, err := unprepQ.TotalSupplyByOrg(ctx, orgID); err != nil {
