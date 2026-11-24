@@ -60,13 +60,13 @@ func myWaitRunning(t testing.TB, admin *sql.DB, id int64, needle string) {
 }
 
 // myNoPrepared asserts that the connection db (a pool with exactly one connection) has no server-side
-// prepared statement named sqlgen_s: DEALLOCATE of an absent statement is error 1243.
+// prepared statement named sqlgen_s: DEALLOCATE of an absent statement is error 1243 (TiDB: 8111 "Prepared statement not found").
 func myNoPrepared(t testing.TB, db *sql.DB, what string) {
 	t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
 	_, err := db.ExecContext(ctx, "DEALLOCATE PREPARE sqlgen_s")
-	if myErrNum(err) != 1243 {
+	if n := myErrNum(err); n != 1243 && n != 8111 {
 		t.Fatalf("%s: a server-side prepared statement was left behind on the connection (DEALLOCATE PREPARE: %v)", what, err)
 	}
 }
@@ -76,6 +76,9 @@ func myPreparedCount(t testing.TB, db *sql.DB) int64 {
 	var name string
 	var n int64
 	if err := db.QueryRow("SHOW GLOBAL STATUS LIKE 'Prepared_stmt_count'").Scan(&name, &n); err != nil {
+		if errors.Is(err, sql.ErrNoRows) { // TiDB has no such status variable
+			return -1
+		}
 		t.Fatal(err)
 	}
 	return n
@@ -207,7 +210,11 @@ func TestRealEngineMySQLWireFailurePathsLeaveTheConnectionClean(t *testing.T) {
 				t.Fatalf("%s: ping: %v", f.name, err)
 			}
 			var inTx int64
-			if err := wdb.QueryRowContext(ctx, "SELECT COUNT(*) FROM information_schema.innodb_trx WHERE trx_mysql_thread_id = ?", id).Scan(&inTx); err != nil || inTx != 0 {
+			trxQuery := "SELECT COUNT(*) FROM information_schema.innodb_trx WHERE trx_mysql_thread_id = ?"
+			if e.family == famTiDB { // no InnoDB: TiDB lists open transactions in its own table
+				trxQuery = "SELECT COUNT(*) FROM information_schema.tidb_trx WHERE session_id = ?"
+			}
+			if err := wdb.QueryRowContext(ctx, trxQuery, id).Scan(&inTx); err != nil || inTx != 0 {
 				t.Fatalf("%s: the connection still has an open transaction (%d, %v)", f.name, inTx, err)
 			}
 			// ... and the next pipeline is a normal one-turn transaction again
@@ -882,7 +889,14 @@ func TestRealEngineMySQLWireRandomShapesMatchSequential(t *testing.T) {
 		if got := myConnID(t, wire); got != id {
 			t.Logf("%s: the long-lived connection was replaced (%d -> %d)", e.name, id, got)
 		}
-		if st := wq.CacheStats(); st.SequentialPipelines != 0 || st.WirePipelines != uint64(iterations) {
+		st := wq.CacheStats()
+		if e.family == famTiDB {
+			// scenarios with a backslash in a string argument run sequentially on TiDB
+			// (runtime.MySQLFlavor.HexLiteralIsNumber); every other one still takes the wire path
+			if st.SequentialPipelines+st.WirePipelines != uint64(iterations) || st.WirePipelines < uint64(iterations)/2 {
+				t.Fatalf("wire stats = %+v", st)
+			}
+		} else if st.SequentialPipelines != 0 || st.WirePipelines != uint64(iterations) {
 			t.Fatalf("wire stats = %+v", st)
 		}
 		myNoPrepared(t, wire, "after the random run")

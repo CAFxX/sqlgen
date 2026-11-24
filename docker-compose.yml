@@ -67,3 +67,22 @@ services:
     command: *mysql-opts
     ports: ["${SQLGEN_MARIADB123_PORT:-33123}:3306"]
     healthcheck: { test: ["CMD-SHELL", "healthcheck.sh --connect --innodb_initialized"], interval: 3s, timeout: 5s, retries: 60 }
+
+  # TiDB (MySQL protocol, MySQL family): the all-in-one in-memory unistore, no PD/TiKV. The image has no database
+  # creation env: the suite uses the pre-created `test` database with unique table names.
+  tidb:
+    image: pingcap/tidb:v8.5.8@sha256:df168c764bf2dfdb166dc37a5c3b0e210d29d5f3ab2d33317fd0fdf7b32037f5
+    command: ["tidb-server", "--store=unistore", "--path=", "--host=0.0.0.0"]
+    mem_limit: 2g
+    ports: ["${SQLGEN_TIDB_PORT:-34000}:4000"]
+    healthcheck: { test: ["CMD-SHELL", "curl -sf http://127.0.0.1:10080/status"], interval: 3s, timeout: 5s, retries: 60 }
+
+  # YugabyteDB (PostgreSQL protocol, PostgreSQL family; not the CockroachDB family). The memory limit is required:
+  # without it the tserver sizes itself from the host RAM. It answers pg_isready only on the container hostname,
+  # not on 127.0.0.1. Its data lives in an anonymous volume that `make engines-down` removes.
+  yugabyte:
+    image: yugabytedb/yugabyte:2025.2.9.0-b87@sha256:b62a0ed0d5b065c4f0b8764b1f3c3b496980d98aac46940e559ae9d5ddcb0243
+    command: ["bin/yugabyted", "start", "--background=false"]
+    mem_limit: 4g
+    ports: ["${SQLGEN_YUGABYTE_PORT:-54335}:5433"]
+    healthcheck: { test: ["CMD-SHELL", "postgres/bin/pg_isready -h $$(hostname) -p 5433"], interval: 5s, timeout: 5s, retries: 80 }

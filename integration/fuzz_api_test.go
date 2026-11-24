@@ -187,10 +187,10 @@ func newFzAPI(e engine, db *sql.DB, opts ...runtime.CacheOption) (fzAPI, fzRetAP
 }
 
 // fzRetSupport reports which RETURNING forms an engine supports (DOCS "Engine support"): MySQL none,
-// MariaDB INSERT and DELETE, PostgreSQL/CockroachDB/SQLite all three.
+// TiDB none, MariaDB INSERT and DELETE, PostgreSQL/CockroachDB/YugabyteDB/SQLite all three.
 func fzRetSupport(e engine) (insertDelete, update bool) {
 	switch e.family {
-	case famMySQL:
+	case famMySQL, famTiDB:
 		return false, false
 	case famMariaDB:
 		return true, false

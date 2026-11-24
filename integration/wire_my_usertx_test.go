@@ -144,6 +144,12 @@ func TestRealEngineMySQLWireUserTransactionAfterFailure(t *testing.T) {
 					if !wire && fl.seqState != "" {
 						want = fl.seqState
 					}
+					if wire && fl.name == "syntax error" && e.family == famTiDB {
+						// TiDB parses a whole multi-statement batch before executing any of it: a syntax
+						// error anywhere means none of the pipeline ran (the sequential path ran the operations
+						// before the bad one). The caller's own statements are kept either way.
+						want = myUserTxState(10, 20, 30, 40)
+					}
 					if got := mySnap(t, db); got != want {
 						t.Fatalf("wire=%v: final state\n got  %s\n want %s", wire, got, want)
 					}
@@ -227,6 +233,45 @@ func TestRealEngineMySQLWireTwoPipelinesInOneUserTransaction(t *testing.T) {
 }
 
 // --- TxOptions --------------------------------------------------------------------------------------
+
+// myTiDBUnsupportedTxOptions: TiDB rejects SERIALIZABLE and READ UNCOMMITTED (8048, unless
+// tidb_skip_isolation_level_check=1) and READ ONLY transactions (1235, a no-op function unless
+// tidb_enable_noop_functions=1). A PipelineTx with those options fails with the same error on the wire and
+// the sequential path, runs nothing, and leaves the connection usable for the next transaction.
+func myTiDBUnsupportedTxOptions(t *testing.T, db *sql.DB, dsn string) {
+	t.Helper()
+	ctx := ctxT(t)
+	for _, c := range []struct {
+		name string
+		opts *sql.TxOptions
+		num  uint16
+	}{
+		{"serializable", &sql.TxOptions{Isolation: sql.LevelSerializable}, 8048},
+		{"read uncommitted", &sql.TxOptions{Isolation: sql.LevelReadUncommitted}, 8048},
+		{"read only", &sql.TxOptions{ReadOnly: true}, 1235},
+	} {
+		for _, wire := range []bool{false, true} {
+			myReseed(t, db)
+			wdb, _ := myOpenCounted(t, dsn, wire, nil)
+			wdb.SetMaxOpenConns(1)
+			q := myq.New(wdb)
+			err := q.PipelineTx(ctx, c.opts, func(p *myq.Pipeline) error {
+				p.AddScoreOne(1, 1).AssertRows(1)
+				return nil
+			})
+			if myErrNum(err) != c.num {
+				t.Fatalf("%s wire=%v: err = %v, want error %d", c.name, wire, err, c.num)
+			}
+			if err := q.PipelineTx(ctx, nil, func(p *myq.Pipeline) error { p.AddScoreOne(2, 2).AssertRows(1); return nil }); err != nil {
+				t.Fatalf("%s wire=%v: the next transaction: %v", c.name, wire, err)
+			}
+			if got := mySnap(t, db); got != "1/1/n1/10/new;2/1/n2/22/new;3/1/n3/30/new;4/1/n4/40/new;" {
+				t.Fatalf("%s wire=%v: state %s", c.name, wire, got)
+			}
+			q.Close()
+		}
+	}
+}
 
 // myObserveIsolation runs a PipelineTx with opts that reads rows 1 and 2, sleeps, and reads them again, and
 // from the outside tries to change row 1 (committed) and row 2 (left uncommitted) while it sleeps. What
@@ -334,6 +379,11 @@ func TestRealEngineMySQLWireTxOptions(t *testing.T) {
 			{"repeatable read", &sql.TxOptions{Isolation: sql.LevelRepeatableRead}, "committed change seen=false, uncommitted change seen=false"},
 			{"default after the others (nothing leaked)", nil, "committed change seen=false, uncommitted change seen=false"},
 		}
+		if e.family == famTiDB {
+			myTiDBUnsupportedTxOptions(t, db, dsn)
+			// TiDB has only READ COMMITTED and REPEATABLE READ (snapshot isolation): the observable cases
+			cases = cases[2:]
+		}
 		for _, c := range cases {
 			got := myObserveIsolation(t, db, q, c.opts)
 			t.Logf("%s: %-42s -> %s", e.name, c.name, got)
@@ -343,6 +393,9 @@ func TestRealEngineMySQLWireTxOptions(t *testing.T) {
 		}
 		if st := q.CacheStats(); st.SequentialPipelines != 0 {
 			t.Fatalf("stats %+v", st)
+		}
+		if e.family == famTiDB {
+			return // read-only transactions are rejected by TiDB (myTiDBUnsupportedTxOptions)
 		}
 		myReseed(t, db)
 

@@ -35,6 +35,7 @@ import (
 type testEngine struct {
 	name, env string
 	maria     bool
+	tidb      bool
 	dsn       string
 }
 
@@ -43,6 +44,7 @@ var testEngines = []testEngine{
 	{name: "mysql97", env: "SQLGEN_MYSQL97_DSN"},
 	{name: "mariadb1011", env: "SQLGEN_MARIADB1011_DSN", maria: true},
 	{name: "mariadb123", env: "SQLGEN_MARIADB123_DSN", maria: true},
+	{name: "tidb", env: "SQLGEN_TIDB_DSN", tidb: true},
 }
 
 // dsnFor returns the DSN of e unless SQLGEN_ENGINES (comma separated, like the integration module) excludes it.
@@ -82,7 +84,7 @@ func forEachEngine(t *testing.T, fn func(t *testing.T, e testEngine, db *sql.DB,
 		})
 	}
 	if !ran {
-		t.Skip("no SQLGEN_MYSQL84_DSN / SQLGEN_MYSQL97_DSN / SQLGEN_MARIADB1011_DSN / SQLGEN_MARIADB123_DSN configured")
+		t.Skip("no SQLGEN_MYSQL84_DSN / SQLGEN_MYSQL97_DSN / SQLGEN_MARIADB1011_DSN / SQLGEN_MARIADB123_DSN / SQLGEN_TIDB_DSN configured")
 	}
 }
 
@@ -264,7 +266,7 @@ func poolIdle(t *testing.T, db *sql.DB) {
 }
 
 // noPreparedLeft checks, on the single connection of db (SetMaxOpenConns(1)), that no sqlgen_s prepared
-// statement is left on the server session (a DEALLOCATE of an unknown statement is error 1243).
+// statement is left on the server session (a DEALLOCATE of an unknown statement is error 1243; TiDB: 8111).
 func noPreparedLeft(t *testing.T, db *sql.DB) {
 	t.Helper()
 	ctx := ctxT(t)
@@ -275,7 +277,7 @@ func noPreparedLeft(t *testing.T, db *sql.DB) {
 	defer conn.Close()
 	_, err = conn.ExecContext(ctx, "DEALLOCATE PREPARE sqlgen_s")
 	var me *mysql.MySQLError
-	if !errors.As(err, &me) || me.Number != 1243 {
+	if !errors.As(err, &me) || (me.Number != 1243 && me.Number != 8111) {
 		t.Fatalf("a prepared statement leaked on the session (DEALLOCATE: %v)", err)
 	}
 }
@@ -376,7 +378,11 @@ func TestAssertionFailureRollsBackAndKeepsTheConnectionClean(t *testing.T) {
 		// the same connection is clean: no open transaction, no prepared statement, usable
 		noPreparedLeft(t, db)
 		var inTx int
-		if err := db.QueryRow("SELECT COUNT(*) FROM information_schema.innodb_trx WHERE trx_mysql_thread_id = CONNECTION_ID()").Scan(&inTx); err != nil || inTx != 0 {
+		trxQuery := "SELECT COUNT(*) FROM information_schema.innodb_trx WHERE trx_mysql_thread_id = CONNECTION_ID()"
+		if e.tidb { // no InnoDB: TiDB lists open transactions in its own table
+			trxQuery = "SELECT COUNT(*) FROM information_schema.tidb_trx WHERE session_id = CONNECTION_ID()"
+		}
+		if err := db.QueryRow(trxQuery).Scan(&inTx); err != nil || inTx != 0 {
 			t.Fatalf("open InnoDB transactions of the session = %d, %v", inTx, err)
 		}
 		if err := db.Ping(); err != nil {
@@ -725,10 +731,46 @@ func TestUnsupportedBatchesFallBackToTheSequentialPath(t *testing.T) {
 	})
 }
 
+// tidbTransactionOptions: TiDB refuses READ ONLY transactions (1235, a no-op function unless
+// tidb_enable_noop_functions=1) and the READ UNCOMMITTED / SERIALIZABLE levels (8048, unless
+// tidb_skip_isolation_level_check=1); the batch fails with that error and the session stays usable. It has no
+// innodb_trx to read the level back from: the integration module observes READ COMMITTED vs REPEATABLE READ
+// by behaviour (TestRealEngineMySQLWireTxOptions).
+func tidbTransactionOptions(t *testing.T, k *kv, db *sql.DB) {
+	t.Helper()
+	ctx := ctxT(t)
+	for _, c := range []struct {
+		opts *sql.TxOptions
+		num  uint16
+	}{
+		{&sql.TxOptions{ReadOnly: true}, 1235},
+		{&sql.TxOptions{Isolation: sql.LevelReadUncommitted}, 8048},
+		{&sql.TxOptions{Isolation: sql.LevelSerializable}, 8048},
+		{&sql.TxOptions{Isolation: sql.LevelReadCommitted}, 0},
+		{&sql.TxOptions{Isolation: sql.LevelRepeatableRead}, 0},
+	} {
+		err := k.tx(ctx, db, c.opts, nil, func(p *runtime.Pipeline) error { k.Upd(p, 1, 1); return nil })
+		if mysqlNumber(err) != c.num || (c.num == 0 && err != nil) {
+			t.Fatalf("%+v: err = %v, want error %d", c.opts, err, c.num)
+		}
+	}
+	db.SetMaxOpenConns(1)
+	var level string
+	if err := db.QueryRow("SELECT @@transaction_isolation").Scan(&level); err != nil || level != "REPEATABLE-READ" {
+		t.Fatalf("session isolation after the batches = %q, %v", level, err)
+	}
+	stats(t, k, 5, 0)
+	poolIdle(t, db)
+}
+
 func TestTransactionOptionsOverTheWire(t *testing.T) {
 	forEachEngine(t, func(t *testing.T, e testEngine, db, plain *sql.DB) {
 		k := newKVTable(t, db)
 		ctx := ctxT(t)
+		if e.tidb {
+			tidbTransactionOptions(t, k, db)
+			return
+		}
 
 		err := k.tx(ctx, db, &sql.TxOptions{ReadOnly: true}, nil, func(p *runtime.Pipeline) error { k.Upd(p, 1, 1); return nil })
 		if mysqlNumber(err) != 1792 {
@@ -1025,7 +1067,8 @@ func TestConnectorAndPlainBehaviour(t *testing.T) {
 		if _, err := db.ExecContext(ctx, "DO 0; DO 0"); err != nil {
 			t.Fatalf("multi-statement exec on the mysqlwire pool: %v", err)
 		}
-		if _, err := plain.ExecContext(ctx, "DO 0; DO 0"); mysqlNumber(err) != 1064 {
+		// (TiDB refuses it with its own error 8130 rather than a syntax error)
+		if _, err := plain.ExecContext(ctx, "DO 0; DO 0"); mysqlNumber(err) != 1064 && (!e.tidb || mysqlNumber(err) != 8130) {
 			t.Fatalf("multi-statement exec on the plain pool: %v", err)
 		}
 

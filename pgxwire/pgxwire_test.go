@@ -33,12 +33,14 @@ import (
 type testEngine struct {
 	name, env string
 	crdb      bool
+	yb        bool // YugabyteDB: PostgreSQL protocol, a few features missing (see the tests that check it)
 }
 
 var testEngines = []testEngine{
-	{"postgres15", "SQLGEN_POSTGRES15_DSN", false},
-	{"postgres18", "SQLGEN_POSTGRES18_DSN", false},
-	{"cockroach", "SQLGEN_COCKROACH_DSN", true},
+	{"postgres15", "SQLGEN_POSTGRES15_DSN", false, false},
+	{"postgres18", "SQLGEN_POSTGRES18_DSN", false, false},
+	{"cockroach", "SQLGEN_COCKROACH_DSN", true, false},
+	{"yugabyte", "SQLGEN_YUGABYTE_DSN", false, true},
 }
 
 // dsnFor returns the DSN of e unless SQLGEN_ENGINES (comma separated, like the integration module) excludes it.
@@ -78,7 +80,7 @@ func forEachEngine(t *testing.T, fn func(t *testing.T, e testEngine, db *sql.DB,
 		})
 	}
 	if !ran {
-		t.Skip("no SQLGEN_POSTGRES15_DSN / SQLGEN_POSTGRES18_DSN / SQLGEN_COCKROACH_DSN configured")
+		t.Skip("no SQLGEN_POSTGRES15_DSN / SQLGEN_POSTGRES18_DSN / SQLGEN_COCKROACH_DSN / SQLGEN_YUGABYTE_DSN configured")
 	}
 }
 
@@ -519,9 +521,19 @@ func TestCommitTimeErrorsAreMarkedAndReusable(t *testing.T) {
 		if e.crdb {
 			t.Skip("CockroachDB has no deferred constraints; commit-time restarts are covered by the contention test")
 		}
-		table := newTable(t, db, "CREATE TABLE %s (id BIGINT, CONSTRAINT %[1]s_u UNIQUE (id) DEFERRABLE INITIALLY DEFERRED)")
-		if _, err := db.Exec("INSERT INTO " + table + " VALUES (1)"); err != nil {
-			t.Fatal(err)
+		// a deferred unique constraint fails at COMMIT; YugabyteDB has no deferrable unique constraints, but
+		// deferred foreign keys (a missing parent row fails at COMMIT too)
+		var table string
+		wantCode, wantRows := "23505", 1
+		if e.yb {
+			parent := newTable(t, db, "CREATE TABLE %s (id BIGINT PRIMARY KEY)")
+			table = newTable(t, db, "CREATE TABLE %s (id BIGINT, CONSTRAINT %[1]s_fk FOREIGN KEY (id) REFERENCES "+parent+" (id) DEFERRABLE INITIALLY DEFERRED)")
+			wantCode, wantRows = "23503", 0
+		} else {
+			table = newTable(t, db, "CREATE TABLE %s (id BIGINT, CONSTRAINT %[1]s_u UNIQUE (id) DEFERRABLE INITIALLY DEFERRED)")
+			if _, err := db.Exec("INSERT INTO " + table + " VALUES (1)"); err != nil {
+				t.Fatal(err)
+			}
 		}
 		desc := &runtime.QueryDescriptor{
 			Name: "DupInsert", StmtID: 9, StmtVerb: runtime.VerbInsert,
@@ -541,8 +553,8 @@ func TestCommitTimeErrorsAreMarkedAndReusable(t *testing.T) {
 			})
 		var pgErr *pgconn.PgError
 		var ce *runtime.CommitError
-		if !errors.As(err, &pgErr) || pgErr.Code != "23505" {
-			t.Fatalf("err = %v, want the deferred unique violation", err)
+		if !errors.As(err, &pgErr) || pgErr.Code != wantCode {
+			t.Fatalf("err = %v, want the deferred constraint violation (%s)", err, wantCode)
 		}
 		if errors.As(err, &ce) {
 			t.Fatalf("the CommitError marker leaked to the caller")
@@ -551,7 +563,7 @@ func TestCommitTimeErrorsAreMarkedAndReusable(t *testing.T) {
 			t.Fatalf("a permanent commit error was retried %d times", attempts)
 		}
 		var n int
-		if err := plain.QueryRow("SELECT COUNT(*) FROM " + table).Scan(&n); err != nil || n != 1 {
+		if err := plain.QueryRow("SELECT COUNT(*) FROM " + table).Scan(&n); err != nil || n != wantRows {
 			t.Fatalf("count = %d, %v", n, err)
 		}
 		poolIdle(t, db)

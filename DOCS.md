@@ -98,20 +98,22 @@ Write parameters as `:name:type` and let `sqlgen` emit the engine's placeholders
 
 ### Engine support
 
-| Feature | PostgreSQL | CockroachDB | SQLite | MySQL | MariaDB |
-| :--- | :--- | :--- | :--- | :--- | :--- |
-| `dialect:` | `postgres` | `cockroachdb` | `sqlite` | `mysql` | `mariadb` |
-| Placeholders | `$N` | `$N` | `?` | `?` | `?` |
-| `RETURNING` (`kind: many` on `INSERT` / `UPDATE` / `DELETE`) | yes | yes | yes | **no** (generate-time error) | `INSERT` and `DELETE` only (no `UPDATE ... RETURNING`) |
-| Tested versions | 15, 18 | v25.2 | `modernc.org/sqlite` | 8.4, 9.7 | 10.11, 12.3 |
-| Keyset `Seek` / `Order`, `SelectCols`, `{?Flag:}` blocks, automatic chunking / `Stream`, `InTx` | yes | yes | yes | yes | yes |
-| Single-round-trip pipelines | yes (`pgxwire`) | yes (`pgxwire`) | no (sequential) | yes (`mysqlwire`) | yes (`mysqlwire`) |
-| Typed `::type` placeholder casts in gated inserts | yes | yes | n/a | n/a | n/a |
-| Batch chunk limit (parameters per statement, see `WithMaxBatchParams`) | 16384 default, at most 65535 | same | 16384 default, at most 32766 | same as SQLite | same as SQLite |
+| Feature | PostgreSQL | CockroachDB | YugabyteDB | SQLite | MySQL | MariaDB | TiDB |
+| :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- |
+| `dialect:` | `postgres` | `cockroachdb` | `postgres` | `sqlite` | `mysql` | `mariadb` | `mysql` |
+| Placeholders | `$N` | `$N` | `$N` | `?` | `?` | `?` | `?` |
+| `RETURNING` (`kind: many` on `INSERT` / `UPDATE` / `DELETE`) | yes | yes | yes | yes | **no** (generate-time error) | `INSERT` and `DELETE` only (no `UPDATE ... RETURNING`) | **no** (as MySQL) |
+| Tested versions | 15, 18 | v25.2 | 2025.2 (YSQL) | `modernc.org/sqlite` | 8.4, 9.7 | 10.11, 12.3 | v8.5 |
+| Keyset `Seek` / `Order`, `SelectCols`, `{?Flag:}` blocks, automatic chunking / `Stream`, `InTx` | yes | yes | yes | yes | yes | yes | yes |
+| Single-round-trip pipelines | yes (`pgxwire`) | yes (`pgxwire`) | yes (`pgxwire`) | no (sequential) | yes (`mysqlwire`) | yes (`mysqlwire`) | yes (`mysqlwire`) |
+| Typed `::type` placeholder casts in gated inserts | yes | yes | yes | n/a | n/a | n/a | n/a |
+| Batch chunk limit (parameters per statement, see `WithMaxBatchParams`) | 16384 default, at most 65535 | same | same | 16384 default, at most 32766 | same as SQLite | same as SQLite | same as SQLite |
 
 Notes:
 - **`RETURNING`.** MySQL has no `RETURNING` clause; a statement containing one under `dialect: mysql` fails at generate time with a hint. MariaDB 10.5+ supports it for `INSERT` and `DELETE` (not `UPDATE`): pick `dialect: mariadb` for it (the two dialects generate the same `?` placeholders, so `mariadb` merely allows `RETURNING`). On MySQL read the rows back with a `SELECT`.
 - **`time.Time` on MySQL and MariaDB.** `go-sql-driver/mysql` returns `DATE` / `DATETIME` / `TIMESTAMP` columns as `[]byte` unless the DSN has `parseTime=true`; scanning them into a `time.Time` result field fails without it (`user:pass@tcp(host)/db?parseTime=true`).
+- **YugabyteDB** speaks the PostgreSQL protocol and dialect (`dialect: postgres`, `pgx`, `pgxwire`); it is not CockroachDB. Things that differ from PostgreSQL: its `SERIALIZABLE` takes read locks (two serializable transactions that read a row and then both write it wait on each other: use `REPEATABLE READ`, which is snapshot isolation and fails the second writer with SQLSTATE 40001); most write conflicts are resolved inside the server by waiting or by a transparent statement retry, so fewer of them reach `WithTxRetry` than on PostgreSQL; `CREATE CONSTRAINT TRIGGER` does not exist; and the server wants about 4 GB of memory.
+- **TiDB** speaks the MySQL protocol and dialect (`dialect: mysql`, `go-sql-driver/mysql`, `mysqlwire`; no `RETURNING`). Things that differ from MySQL: the default collation is `utf8mb4_bin` (binary comparison and ordering of text); transactions are pessimistic by default, and in optimistic mode (`tidb_txn_mode = 'optimistic'`) a write conflict surfaces at `COMMIT` as error 9007 (`Write conflict ... [try again later]`) or 8022, which `IsRetryableTxError` classifies as retryable (`WithTxRetry` re-runs the transaction); `SERIALIZABLE` and `READ UNCOMMITTED` are refused (error 8048) and so are read-only transactions (`sql.TxOptions{ReadOnly: true}`, error 1235), unless the corresponding `tidb_skip_isolation_level_check` / `tidb_enable_noop_functions` variables are set; `AUTO_INCREMENT` values are unique but not consecutive. On the `mysqlwire` path TiDB parses the whole multi-statement batch before it runs any of it, so a syntax error in a hand-written statement means no operation of that pipeline ran (on MySQL the operations before it did, and are kept or rolled back as described below), and a string argument that would need the `_<charset> 0x...` literal form is not inlined (see "Argument literals").
 - **First page of a keyset query.** The `Seek` slot renders the literal `TRUE` (a valid boolean expression on every engine above) when no cursor is given.
 
 ---
@@ -583,7 +585,7 @@ err := q.InTx(ctx, nil, func(txQ *Queries) error {
 }, runtime.WithTxRetry(runtime.DefaultRetryPolicy()))
 ```
 
-- `runtime.WithTxRetry(policy runtime.TxRetryPolicy)` automatically retries the entire transaction closure with exponential backoff + full jitter when the database returns a transient serialization failure (`SQLSTATE 40001`), deadlock (`SQLSTATE 40P01`, MySQL `1213`), or lock timeout (`SQLSTATE 55P03`, MySQL `1205`, SQLite `SQLITE_BUSY` / `SQLITE_LOCKED`).
+- `runtime.WithTxRetry(policy runtime.TxRetryPolicy)` automatically retries the entire transaction closure with exponential backoff + full jitter when the database returns a transient serialization failure (`SQLSTATE 40001`), deadlock (`SQLSTATE 40P01`, MySQL `1213`), a TiDB optimistic write conflict (`9007`, `8022`), or lock timeout (`SQLSTATE 55P03`, MySQL `1205`, SQLite `SQLITE_BUSY` / `SQLITE_LOCKED`).
 - **Ambiguous Commit Protection**: If a network drop (`driver.ErrBadConn`, `io.EOF`, `net.Error`) occurs *during* `tx.Commit()`, `InTx` **never** retries automatically because the transaction may have already committed on the server.
 
 ---
@@ -591,10 +593,10 @@ err := q.InTx(ctx, nil, func(txQ *Queries) error {
 ### 3.4. Single-Roundtrip Speculative Pipelining (`Pipeline` & `PipelineTx`)
 
 `Pipeline` and `PipelineTx` allow you to queue multiple reads, writes, row-count assertions, and data-dependent `If/Then/Else` branches and flush them together.
-- With the `pgxwire` driver (below) on PostgreSQL or CockroachDB, or the `mysqlwire` driver (below) on MySQL or MariaDB, the entire conditional workflow, `BEGIN` and `COMMIT` included, is sent to the server in **one network round-trip** (PostgreSQL protocol: one write, one `Sync`; MySQL protocol: one multi-statement text).
+- With the `pgxwire` driver (below) on PostgreSQL, CockroachDB or YugabyteDB, or the `mysqlwire` driver (below) on MySQL, MariaDB or TiDB, the entire conditional workflow, `BEGIN` and `COMMIT` included, is sent to the server in **one network round-trip** (PostgreSQL protocol: one write, one `Sync`; MySQL protocol: one multi-statement text).
 - On every other driver and engine (plain `*sql.DB`, SQLite, ...), and for any batch a wire driver declines (see "Falling back" below), `Pipeline` seamlessly falls back to sequential execution while preserving identical branching, assertion, and rollback semantics. Nothing to configure, and nothing silently pretends to be faster than it is: see "Verifying which path ran" below.
 
-**Engine support.** The CI matrix runs the full suite against PostgreSQL 15 and 18, CockroachDB, MySQL 8.4 and 9.7, MariaDB 10.11 and 12.3 and SQLite, with real drivers (`pgx`, `go-sql-driver/mysql`). The two single-roundtrip batch renderings are different programs for the same contract: on PostgreSQL and CockroachDB (`$N` dialect) one statement per operation built on `set_config` / `current_setting` and data-modifying CTEs (`pgxwire`); on MySQL and MariaDB (`?` dialect) a short statement sequence per operation over session user variables, `ROW_COUNT()` and a conditional `COMMIT` / `ROLLBACK`, with the arguments inlined as literals (`mysqlwire`, see "The MySQL and MariaDB path" below). SQLite has neither and always runs through the sequential fallback (same semantics, one round trip per statement).
+**Engine support.** The CI matrix runs the full suite against PostgreSQL 15 and 18, CockroachDB, MySQL 8.4 and 9.7, MariaDB 10.11 and 12.3, TiDB 8.5 and SQLite per push, and against YugabyteDB 2025.2 nightly (a smoke subset per push), with real drivers (`pgx`, `go-sql-driver/mysql`). The two single-roundtrip batch renderings are different programs for the same contract: on PostgreSQL, CockroachDB and YugabyteDB (`$N` dialect) one statement per operation built on `set_config` / `current_setting` and data-modifying CTEs (`pgxwire`); on MySQL, MariaDB and TiDB (`?` dialect) a short statement sequence per operation over session user variables, `ROW_COUNT()` and a conditional `COMMIT` / `ROLLBACK`, with the arguments inlined as literals (`mysqlwire`, see "The MySQL and MariaDB path" below). SQLite has neither and always runs through the sequential fallback (same semantics, one round trip per statement).
 
 #### Wiring the single-round-trip path (`pgxwire`)
 
@@ -692,7 +694,7 @@ The sequential figures include the extra `Prepare` round-trips of statement-cach
 
 #### The MySQL and MariaDB path (`mysqlwire`)
 
-`mysqlwire` (`github.com/CAFxX/sqlgen/mysqlwire`, a nested module that depends on `go-sql-driver/mysql`) gives MySQL 8.4 / 9.7 and MariaDB 10.11 / 12.3 the same single-round-trip `Pipeline` / `PipelineTx`: `START TRANSACTION`, every operation and `COMMIT` go out as ONE multi-statement text. Wiring and call sites are identical to `pgxwire`:
+`mysqlwire` (`github.com/CAFxX/sqlgen/mysqlwire`, a nested module that depends on `go-sql-driver/mysql`) gives MySQL 8.4 / 9.7, MariaDB 10.11 / 12.3 and TiDB 8.5 the same single-round-trip `Pipeline` / `PipelineTx`: `START TRANSACTION`, every operation and `COMMIT` go out as ONE multi-statement text. Wiring and call sites are identical to `pgxwire`:
 
 ```go
 db, err := mysqlwire.OpenDB("user:pass@tcp(host:3306)/app?parseTime=true")   // or sql.OpenDB(mysqlwire.Connector(cfg))
@@ -740,7 +742,7 @@ The sequential figures are lower bounds that include statement-cache promotion t
 
 Count turns the same way as above, with a custom dialer registered through `mysql.RegisterDialContext` (`integration/wire_my_roundtrip_test.go`).
 
-**Falling back.** The connection answers `runtime.ErrWireNotApplicable` before sending anything, and the pipeline runs sequentially (same results; `SequentialPipelines` counts it), when: the rendered batch is larger than the connection's `max_allowed_packet` (the server would drop the connection if it were sent; the statements individually still fit, so each statement is sent on its own); the capability probe failed; an argument cannot be inlined (a Go type with no literal form, a `NaN` / `Inf` float, a year outside 0..9999); the `sql.TxOptions` isolation level has no MySQL equivalent (`LevelSnapshot`, `LevelLinearizable`; the four standard levels and `ReadOnly` map to `SET TRANSACTION ISOLATION LEVEL ...` and `START TRANSACTION READ ONLY` inside the batch); a statement has `RETURNING` on a server that has none (MySQL; MariaDB has it for `INSERT` and `DELETE`); or a `WhereCol` condition is evaluated over a `RETURNING` statement (it would have to run the write twice).
+**Falling back.** The connection answers `runtime.ErrWireNotApplicable` before sending anything, and the pipeline runs sequentially (same results; `SequentialPipelines` counts it), when: the rendered batch is larger than the connection's `max_allowed_packet` (the server would drop the connection if it were sent; the statements individually still fit, so each statement is sent on its own); the capability probe failed; an argument cannot be inlined (a Go type with no literal form, a `NaN` / `Inf` float, a year outside 0..9999, on TiDB a string that would need the `_<charset> 0x...` form); the `sql.TxOptions` isolation level has no MySQL equivalent (`LevelSnapshot`, `LevelLinearizable`; the four standard levels and `ReadOnly` map to `SET TRANSACTION ISOLATION LEVEL ...` and `START TRANSACTION READ ONLY` inside the batch); a statement has `RETURNING` on a server that has none (MySQL; MariaDB has it for `INSERT` and `DELETE`); or a `WhereCol` condition is evaluated over a `RETURNING` statement (it would have to run the write twice).
 
 **Differences from the PostgreSQL path** (each is asserted by a test, not hidden):
 - **`RETURNING`:** none on MySQL (no statement can have it); on MariaDB `INSERT ... RETURNING` and `DELETE ... RETURNING` work, including assertions and row-count conditions over them (an extra counter column is added and hidden); `WhereCol` over them falls back as above.
@@ -758,7 +760,7 @@ Count turns the same way as above, with a custom dialer registered through `mysq
 |---|---|
 | integers | decimal; `bool` as `1` / `0`; `uint64` full range |
 | `float32` / `float64` | shortest round-tripping exponent form (`float32` widened first, like the driver); `NaN` / `Inf` fall back |
-| `string` | `'...'` with each `'` doubled; **as `_<charset> 0x<hex>` instead when it contains a backslash or the connection character set is `big5`, `cp932`, `gb2312`, `gbk`, `sjis` or `gb18030`** (escape rules there depend on `sql_mode` or on multi-byte characters), the empty string as `''` |
+| `string` | `'...'` with each `'` doubled; **as `_<charset> 0x<hex>` instead when it contains a backslash or the connection character set is `big5`, `cp932`, `gb2312`, `gbk`, `sjis` or `gb18030`** (escape rules there depend on `sql_mode` or on multi-byte characters), the empty string as `''`. On TiDB, which reads `_<charset> 0x<hex>` as a number in a numeric, temporal or JSON context, such a string is not inlined: the pipeline runs sequentially |
 | `[]byte` | in a UTF-8 connection, valid UTF-8 bytes like a `string` (the prepared path sends them as text, so `[]byte("12")` stores 12 in a `BIGINT` and JSON text is accepted by a `JSON` column; a bare `0x3132` would be the number 12594); any other bytes `_binary 0x<hex>`; empty `''`, nil `NULL` |
 | `time.Time` | `'YYYY-MM-DD HH:MM:SS[.fffffffff]'` in the connection's `loc` with every fractional digit (the server rounds or truncates to the column precision exactly as for a prepared statement); a time at exactly midnight as the bare date `'YYYY-MM-DD'` and the zero time as `'0000-00-00'` (what go-sql-driver sends, which matters for text and blob columns) |
 | `nil`, nil pointers, `sql.Null*` | `NULL` or the value; `driver.Valuer` is resolved first, pointers are followed, named types follow their kind |

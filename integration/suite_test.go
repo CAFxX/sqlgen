@@ -599,7 +599,8 @@ func TestRealEnginePreparedStatementChurnUnderConcurrency(t *testing.T) {
 }
 
 // serverPreparedStmts returns the server-wide count of open prepared statements where the engine
-// exposes one (MySQL/MariaDB); -1 elsewhere (PostgreSQL/CockroachDB prepared statements are per session).
+// exposes one (MySQL/MariaDB: the Prepared_stmt_count status variable); -1 elsewhere (PostgreSQL-protocol
+// prepared statements are per session, and TiDB has no such status variable).
 func serverPreparedStmts(t *testing.T, e engine, db *sql.DB) int64 {
 	t.Helper()
 	if !e.isMySQL() {
@@ -608,6 +609,9 @@ func serverPreparedStmts(t *testing.T, e engine, db *sql.DB) int64 {
 	var name string
 	var n int64
 	if err := db.QueryRow("SHOW GLOBAL STATUS LIKE 'Prepared_stmt_count'").Scan(&name, &n); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return -1
+		}
 		t.Fatal(err)
 	}
 	return n

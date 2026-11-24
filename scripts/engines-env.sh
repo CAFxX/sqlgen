@@ -7,3 +7,5 @@ export SQLGEN_MYSQL84_DSN="root:password@tcp(127.0.0.1:${SQLGEN_MYSQL84_PORT:-33
 export SQLGEN_MYSQL97_DSN="root:password@tcp(127.0.0.1:${SQLGEN_MYSQL97_PORT:-33197})/sqlgen_test"
 export SQLGEN_MARIADB1011_DSN="root:password@tcp(127.0.0.1:${SQLGEN_MARIADB1011_PORT:-33111})/sqlgen_test"
 export SQLGEN_MARIADB123_DSN="root:password@tcp(127.0.0.1:${SQLGEN_MARIADB123_PORT:-33123})/sqlgen_test"
+export SQLGEN_TIDB_DSN="root@tcp(127.0.0.1:${SQLGEN_TIDB_PORT:-34000})/test"
+export SQLGEN_YUGABYTE_DSN="postgres://yugabyte:yugabyte@127.0.0.1:${SQLGEN_YUGABYTE_PORT:-54335}/yugabyte?sslmode=disable"

@@ -19,7 +19,7 @@ Note: the spec comes from the spec workshop on https://share.gemini.google/Nm8OX
    - Flattened `[]any` query arguments MUST use pooled `*[]any` slice pointers (`acquireArgs`, `AcquireArgsCap`, `ReleaseArgs`) cleared via `clear(s)` before returning to `sync.Pool`.
    - Dynamic column scanning MUST bind field pointers into a stack-allocated `[NumCols]any` buffer once *before* `for rows.Next()`, zeroing the target struct in-place (`item = RowType{}`) on each iteration.
 3. **100% `database/sql` Compatibility**:
-   - Works seamlessly with `*sql.DB` (implicit transactions) and `*sql.Tx` (explicit transactions via `q.WithTx(tx)` and `q.InTx(...)`) across PostgreSQL, CockroachDB, SQLite, MySQL, and MariaDB, including when `db.SetMaxOpenConns(1)`.
+   - Works seamlessly with `*sql.DB` (implicit transactions) and `*sql.Tx` (explicit transactions via `q.WithTx(tx)` and `q.InTx(...)`) across PostgreSQL, CockroachDB, YugabyteDB, SQLite, MySQL, MariaDB and TiDB, including when `db.SetMaxOpenConns(1)`.
 4. **Everything-in-SQL Typed DSL**:
    - Output columns (`col:GoType`), input parameters (`:Param:GoType`), 1D slices (`:IDs:[]int64`), multi-row tuple slices (`:Rows:[]Patch(ID:int64, ...)`), deadlock-prevention sort modifiers (`ASC`/`DESC`), conditional blocks (`{?Flag: ...}`), keyset pagination (`:Seek:sqlgen.Seek` and `:Order:sqlgen.Order(...)`), and composable subqueries (`:Sub:sqlgen.Query`) are expressed inline in the SQL string. Every parameter starts with a colon; there is no other spelling, and no out-of-line `params:` / `columns:` lists.
 5. **16-Shard Two-Tier Adaptive Statement Cache (W-TinyLFU + SLRU)**:
@@ -38,7 +38,7 @@ Note: the spec comes from the spec workshop on https://share.gemini.google/Nm8OX
    - Flushes `[BEGIN + Q1..Qn + COMMIT + Sync]` in **1 network round-trip** on connections implementing `wire.TxPipeliner` (`PipelineTx` and a standalone `Pipeline.Flush`), and `[Q1..Qn + Sync]` in 1 round-trip inside a caller-owned `*sql.Tx` on connections implementing `wire.Pipeliner` (via `WrapConnector`). The shipped driver is the nested module `pgxwire` (pgx `ExecBatch` with `QueryExecModeExec` semantics, so even first-seen statements need no describe round-trip); it is verified on PostgreSQL 15/18 and CockroachDB by counting real network turns (`integration/wire_roundtrip_test.go`). The second shipped driver is the nested module `mysqlwire` (go-sql-driver/mysql, `multiStatements`): the same contract on MySQL 8.4/9.7 and MariaDB 10.11/12.3, where one operation renders as a statement SEQUENCE over session user variables instead of one CTE statement (the "wire flavor", see §6.1 and "Wire flavors" below), verified by counting real network turns (`integration/wire_my_roundtrip_test.go`). A wire pipeliner may refuse a batch BEFORE sending anything by returning `runtime.ErrWireNotApplicable` (packet limit, argument it cannot inline, failed capability probe); the runtime then runs that pipeline sequentially and counts it in `SequentialPipelines`. Everything else falls back automatically to sequential Tier-2 prepared statements, and `CacheStats.WirePipelines` / `SequentialPipelines` report which path ran.
    - Supports `.AssertRows(n)`, `.AssertFound()`, and `p.If(cond, thenFn, elseFn)` with `p.Abort(err)`.
 10. **Automatic Transaction Retries (`TxRetryPolicy`)**:
-    - `InTx` and `PipelineTx` retry with exponential backoff and full jitter (`math/rand/v2`) on deterministic transient deadlocks and serialization failures (`40P01`, `40001`, `55P03`, MySQL `1213`/`1205`, SQLite `SQLITE_BUSY`/`SQLITE_LOCKED`), while never retrying ambiguous network disconnects (`driver.ErrBadConn`, `io.EOF`, `net.Error`) during `Commit`.
+    - `InTx` and `PipelineTx` retry with exponential backoff and full jitter (`math/rand/v2`) on deterministic transient deadlocks and serialization failures (`40P01`, `40001`, `55P03`, MySQL `1213`/`1205`, TiDB `9007`/`8022`, SQLite `SQLITE_BUSY`/`SQLITE_LOCKED`), while never retrying ambiguous network disconnects (`driver.ErrBadConn`, `io.EOF`, `net.Error`) during `Commit`.
 
 ---
 
@@ -63,12 +63,12 @@ Target Go version: **Go 1.27+** (matches `go.mod`)
 │   └── sqlgen/
 │       ├── main.go                     # CLI binary (-config, -out, -stdout, -check, -version)
 │       └── main_test.go                # CLI exit-code, drift-check, and stderr diagnostic tests
-├── pgxwire/                            # NESTED MODULE (pgx/v5): single-round-trip wire.Pipeliner / wire.TxPipeliner for PostgreSQL & CockroachDB
+├── pgxwire/                            # NESTED MODULE (pgx/v5): single-round-trip wire.Pipeliner / wire.TxPipeliner for PostgreSQL, CockroachDB & YugabyteDB
 │   ├── pgxwire.go                      # OpenDB / Connector, ExecPipeline / ExecTxPipeline (pgconn ExecBatch, QueryExecModeExec semantics)
 │   ├── args.go                         # argument resolution for typeless placeholders: time.Time keeps its offset, []byte -> raw binary, [16]byte -> uuid text, map/struct -> JSON, Valuers resolved (DOCS.md 3.4)
 │   ├── rows.go                         # text-format results -> database/sql driver values
 │   └── *_test.go                       # engine tests (skipped without SQLGEN_*_DSN)
-├── mysqlwire/                          # NESTED MODULE (go-sql-driver/mysql): single-round-trip wire.Pipeliner / wire.TxPipeliner for MySQL & MariaDB (WireFlavorMySQL)
+├── mysqlwire/                          # NESTED MODULE (go-sql-driver/mysql): single-round-trip wire.Pipeliner / wire.TxPipeliner for MySQL, MariaDB & TiDB (WireFlavorMySQL)
 │   ├── mysqlwire.go                    # OpenDB / Connector (forces multiStatements), conn.ExecPipeline / ExecTxPipeline (one QueryContext of the multi-statement text), capability probe, max_allowed_packet check, failure recovery turn
 │   └── *_test.go                       # engine tests (skipped without SQLGEN_*_DSN) and hermetic fake-connection tests
 ├── integration/                        # NESTED MODULE: real-engine suite incl. wire-vs-sequential differential, network-turn counts, failure/concurrency tests
@@ -849,7 +849,7 @@ func (s *tinyLFUSketch) estimate(h uint64) uint8 {
 3. **`IsRetryableTxError(err error, duringCommit bool) bool`**:
    - Returns `false` if `err == nil`, `errors.Is(err, context.Canceled)`, `errors.Is(err, context.DeadlineExceeded)`, or `errors.Is(err, ErrAssertionFailed)`.
    - If `duringCommit == true` and `err` is a transport/connection drop (`errors.Is(err, driver.ErrBadConn)`, `errors.Is(err, io.EOF)`, `errors.Is(err, io.ErrUnexpectedEOF)`, or `net.Error`), returns `false`.
-   - Returns `true` for SQLSTATE `"40001"`, `"40P01"`, `"55P03"`, MySQL codes `1213` / `1205`, SQLite codes `(code & 0xFF) == 5` or `6`, and matching error substrings.
+   - Returns `true` for SQLSTATE `"40001"`, `"40P01"`, `"55P03"`, MySQL codes `1213` / `1205`, TiDB codes `9007` (write conflict) / `8022` (KV error safe to retry, at commit), SQLite codes `(code & 0xFF) == 5` or `6`, and matching error substrings.
 
 ---
 
@@ -1017,7 +1017,11 @@ go test -fuzz=FuzzStmtCacheAdversarialStateTransitions -fuzztime=5s ./runtime
 go test -bench=. -benchmem ./runtime
 
 # 6. Nested modules (real engines; `. scripts/engines-env.sh` exports the DSNs of `make engines-up`)
-(cd pgxwire && go vet ./... && go test -race -count=1 -cover ./...)        # >= 90% with the PG/CRDB engines up
-(cd mysqlwire && go vet ./... && go test -race -count=1 -cover ./...)      # >= 90% with the MySQL/MariaDB engines up
+(cd pgxwire && go vet ./... && go test -race -count=1 -cover ./...)        # >= 90% with the PG/CRDB/YugabyteDB engines up
+(cd mysqlwire && go vet ./... && go test -race -count=1 -cover ./...)      # >= 90% with the MySQL/MariaDB/TiDB engines up
 (cd integration && SQLGEN_REQUIRE_ENGINES=1 go test -race -count=1 -timeout 15m ./...)
+# Real engines (docker-compose.yml, scripts/engines-env.sh, CI matrix): postgres15 postgres18 cockroach yugabyte
+# mysql84 mysql97 mariadb1011 mariadb123 tidb. YugabyteDB (PostgreSQL family, dialect postgres) runs the SMOKE_RUN
+# subset per push (make test-integration SMOKE=1) and the full suite nightly (.github/workflows/nightly.yml);
+# TiDB (MySQL family, dialect mysql, no RETURNING) runs the full suite per push.
 ```

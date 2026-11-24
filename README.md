@@ -53,8 +53,8 @@ and `runtime.Each` consume any iterator as a new slice, appended to yours, or th
 Typed output columns and parameters, slices (`IN (:ids:[]int64)`), multi-row tuple inserts with automatic
 wire-limit-aware batching and streaming, optional `{?Flag: ...}` blocks, keyset pagination (`Seek`/`Order`),
 composable sub-queries, deadlock-avoiding presorting, automatic transaction retries, and single-roundtrip
-`Pipeline`/`PipelineTx` with server-side assertions and `If/Then/Else`: with the `pgxwire` driver on PostgreSQL
-or CockroachDB, or the `mysqlwire` driver on MySQL or MariaDB, a whole transaction (`BEGIN`, every statement,
+`Pipeline`/`PipelineTx` with server-side assertions and `If/Then/Else`: with the `pgxwire` driver on PostgreSQL,
+CockroachDB or YugabyteDB, or the `mysqlwire` driver on MySQL, MariaDB or TiDB, a whole transaction (`BEGIN`, every statement,
 `COMMIT`) is one network round-trip, measured, with `CacheStats` counters to verify it. A two-tier adaptive statement cache
 (rendered SQL, then prepared statements) keeps hot statements prepared without any caller bookkeeping.
 
@@ -68,11 +68,12 @@ Unreleased (pre-1.0). The generated API and the YAML format may still change.
 ## Verified engines
 
 The CI matrix runs the whole suite against real servers with real drivers (`pgx`, `go-sql-driver/mysql`):
-PostgreSQL 15 and 18, CockroachDB, MySQL 8.4 and 9.7, MariaDB 10.11 and 12.3, plus SQLite (`modernc.org/sqlite`).
-See "Engine support" in DOCS.md for what each engine supports. The single-roundtrip pipeline path has one
+PostgreSQL 15 and 18, CockroachDB, YugabyteDB 2025.2, MySQL 8.4 and 9.7, MariaDB 10.11 and 12.3, TiDB 8.5, plus SQLite
+(`modernc.org/sqlite`). YugabyteDB runs a smoke subset per push and the whole suite nightly; every other engine runs
+the whole suite per push. See "Engine support" in DOCS.md for what each engine supports. The single-roundtrip pipeline path has one
 driver per wire protocol, each a nested module so the main module keeps its two dependencies:
-`github.com/CAFxX/sqlgen/pgxwire` (PostgreSQL 15, 18 and CockroachDB) and `github.com/CAFxX/sqlgen/mysqlwire`
-(MySQL 8.4, 9.7 and MariaDB 10.11, 12.3; it needs `multiStatements`, see DOCS.md 3.4). Both are verified to take
+`github.com/CAFxX/sqlgen/pgxwire` (PostgreSQL 15, 18, CockroachDB and YugabyteDB) and `github.com/CAFxX/sqlgen/mysqlwire`
+(MySQL 8.4, 9.7, MariaDB 10.11, 12.3 and TiDB; it needs `multiStatements`, see DOCS.md 3.4). Both are verified to take
 exactly one network turn per `PipelineTx`, first-seen statements included; every other engine and driver (SQLite,
 a plain `*sql.DB`) runs the equivalent sequential path, as does any batch a wire driver declines (for example one
 larger than MySQL's `max_allowed_packet`).
@@ -86,14 +87,16 @@ make test             # hermetic tests (SQLite + mock driver), race detector
 make engines-up       # start every real engine in containers (docker compose); ENGINES=postgres18,mysql84 to select
 make test-engines     # integration suite + both wire drivers against all of them (same ENGINES selection)
 make test-integration ENGINES=postgres18   # only the integration module (also what each CI engine job runs)
-make test-pgxwire ENGINES=postgres18       # the pgxwire driver's own tests (PostgreSQL / CockroachDB)
-make test-mysqlwire ENGINES=mysql84        # the mysqlwire driver's own tests (MySQL / MariaDB)
+make test-integration ENGINES=yugabyte SMOKE=1   # the per-push smoke subset (SMOKE_RUN in the Makefile; RUN=<regex> for any other)
+make test-pgxwire ENGINES=postgres18       # the pgxwire driver's own tests (PostgreSQL / CockroachDB / YugabyteDB)
+make test-mysqlwire ENGINES=mysql84        # the mysqlwire driver's own tests (MySQL / MariaDB / TiDB)
 make bench-engines ENGINES=postgres18      # generated call vs hand-written database/sql, PipelineTx wire vs sequential
 make engines-down
 ```
 
 Engines are named once everywhere (compose service, `ENGINES`/`SQLGEN_ENGINES`, CI matrix, `SQLGEN_<NAME>_DSN` / `_PORT`
-variables): `postgres15 postgres18 cockroach mysql84 mysql97 mariadb1011 mariadb123`, plus the in-process `sqlite`.
+variables): `postgres15 postgres18 cockroach yugabyte mysql84 mysql97 mariadb1011 mariadb123 tidb`, plus the in-process
+`sqlite`. YugabyteDB needs about 4 GB of memory (the compose file caps it there).
 The per-engine fixtures (`integration/{pgq,myq,mdbq,fzpg,fzmy,fzsl}/sqlgen.yaml` and their Go adapters) are rendered from
 one template each by `make gen`; never edit them by hand. `SQLGEN_FUZZ_SCALE=<n>` grows every fuzz suite and
 `SQLGEN_FUZZ_SEED=<n>` replays one failing seed.

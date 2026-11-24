@@ -131,7 +131,7 @@ func TestRealEngineWireFailurePathsLeaveTheConnectionClean(t *testing.T) {
 				t.Fatalf("%s: the pipeline after a failure cost %d turns", f.name, cost)
 			}
 		}
-		if e.family == famPostgres {
+		if e.family == famPostgres || e.family == famYugabyte {
 			var n int
 			if err := db.QueryRow("SELECT COUNT(*) FROM pg_stat_activity WHERE datname = current_database() AND state LIKE 'idle in transaction%'").Scan(&n); err != nil || n != 0 {
 				t.Fatalf("%d sessions are stuck in a transaction (%v)", n, err)
@@ -233,7 +233,7 @@ func TestRealEngineWireRetriesAConflictDetectedMidBatch(t *testing.T) {
 func TestRealEngineWireRetriesAnErrorRaisedAtCommit(t *testing.T) {
 	forEachEngine(t, func(t *testing.T, e engine, db *sql.DB) {
 		if e.family != famPostgres {
-			t.Skip("needs deferred constraint triggers (PostgreSQL)")
+			t.Skip("needs deferred constraint triggers (PostgreSQL; CockroachDB and YugabyteDB have no CREATE CONSTRAINT TRIGGER)")
 		}
 		seedItems(t, db)
 		seq, fn := uniqueName("sg_commit_seq"), uniqueName("sg_commit_fn")

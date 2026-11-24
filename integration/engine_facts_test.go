@@ -46,6 +46,8 @@ func TestRealEngineReturningSupport(t *testing.T) {
 			famCockroach: {true, true, true},
 			famMySQL:     {false, false, false},
 			famMariaDB:   {true, false, true},
+			famTiDB:      {false, false, false},
+			famYugabyte:  {true, true, true},
 		}[e.family]
 		for i, c := range []struct {
 			verb string

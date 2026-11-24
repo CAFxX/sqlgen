@@ -31,7 +31,9 @@ const (
 	famCockroach
 	famMySQL
 	famMariaDB
-	famSQLite // only used by the fuzz tests (in-process, no DSN); not part of engines
+	famTiDB     // MySQL protocol and dialect, its own transaction/retry behaviour and no RETURNING
+	famYugabyte // PostgreSQL protocol and dialect (YSQL), distributed: conflicts are mostly resolved server-side
+	famSQLite   // only used by the fuzz tests (in-process, no DSN); not part of engines
 )
 
 type engine struct {
@@ -50,6 +52,8 @@ var engines = []engine{
 	newEngine("mysql97", "mysql", famMySQL, runtime.DialectQuestion),
 	newEngine("mariadb1011", "mysql", famMariaDB, runtime.DialectQuestion),
 	newEngine("mariadb123", "mysql", famMariaDB, runtime.DialectQuestion),
+	newEngine("tidb", "mysql", famTiDB, runtime.DialectQuestion),
+	newEngine("yugabyte", "pgx", famYugabyte, runtime.DialectDollar),
 }
 
 // dsnEnv is the DSN environment variable of an engine id: every engine is spelled the same way in the
@@ -60,8 +64,15 @@ func newEngine(name, driver string, f family, d runtime.Dialect) engine {
 	return engine{name: name, env: dsnEnv(name), driver: driver, family: f, dialect: d}
 }
 
-func (e engine) isPG() bool    { return e.family == famPostgres || e.family == famCockroach }
-func (e engine) isMySQL() bool { return e.family == famMySQL || e.family == famMariaDB }
+// isPG: the PostgreSQL wire protocol and dialect (PostgreSQL, CockroachDB, YugabyteDB: pgxwire applies).
+func (e engine) isPG() bool {
+	return e.family == famPostgres || e.family == famCockroach || e.family == famYugabyte
+}
+
+// isMySQL: the MySQL wire protocol and dialect (MySQL, MariaDB, TiDB: mysqlwire applies).
+func (e engine) isMySQL() bool {
+	return e.family == famMySQL || e.family == famMariaDB || e.family == famTiDB
+}
 
 // forEachEngine runs fn as a subtest against every configured engine.
 func forEachEngine(t *testing.T, fn func(t *testing.T, e engine, db *sql.DB)) {

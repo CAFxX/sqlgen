@@ -73,7 +73,10 @@ func TestResultValuesMatchThePlainDriver(t *testing.T) {
 			"NULL::text", "NULL::int8", "5::oid", "(-9223372036854775807 - 1)::int8", "'1 day 02:03:04'::interval",
 		}
 		if !e.crdb {
-			cols = append(cols, "'7'::xid", "'8'::cid", "'<a/>'::xml", "'{1,2}'::int4[]", "'(1,2)'::point")
+			cols = append(cols, "'7'::xid", "'8'::cid", "'{1,2}'::int4[]", "'(1,2)'::point")
+		}
+		if !e.crdb && !e.yb { // YugabyteDB is built without XML support
+			cols = append(cols, "'<a/>'::xml")
 		}
 		var want []any
 		q := "SELECT " + strings.Join(cols, ", ")

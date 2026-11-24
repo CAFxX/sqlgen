@@ -302,6 +302,11 @@ func myStored(t testing.TB, db *sql.DB, tbl string) map[int64]string {
 //     validates (error 1366), while the prepared path converts the text from latin1.
 //   - "-0.000001" as a string into BIGINT UNSIGNED: the literal is folded to a rounded DECIMAL constant
 //     (0), the parameter is converted at execution (error 1264).
+//   - TiDB in a non-strict session (an empty sql_mode), with values that are invalid for the column either way:
+//     bytes that are not valid text are cut at the first invalid byte by the literal and '?'-replaced by
+//     the parameter; bytes that are not a date are refused by the literal and stored as the zero date by
+//     the parameter; an unsigned integer into a TIMESTAMP is stored as the zero timestamp by the literal and
+//     refused by the parameter.
 func myArgDocumentedResidual(e engine, variant, column string, c myArgCase, pe, we string, ps, ws string) string {
 	bytesArg := strings.HasPrefix(c.name, "bytes ") || c.name == "Valuer returning bytes"
 	numeric := false
@@ -313,7 +318,7 @@ func myArgDocumentedResidual(e engine, variant, column string, c myArgCase, pe, 
 	switch {
 	case bytesArg && numeric:
 		return "bytes as a hex literal are a number in a numeric column"
-	case bytesArg && column == "JSON" && e.family == famMySQL && pe == "false" && we == "true":
+	case bytesArg && column == "JSON" && (e.family == famMySQL || e.family == famTiDB) && pe == "false" && we == "true":
 		return "MySQL refuses a binary string for a JSON column"
 	case strings.HasPrefix(c.name, "time ") && textual && pe == "false" && we == "false":
 		return "a time without a time of day is a bare date for the prepared path"
@@ -325,7 +330,42 @@ func myArgDocumentedResidual(e engine, variant, column string, c myArgCase, pe, 
 	case c.name == "decimal string negative" && column == "BIGINT_UNSIGNED" && pe == "true" && we == "false":
 		return "a string constant is rounded to 0, a parameter is refused"
 	}
+	if e.family == famTiDB && variant == "non_strict" {
+		temporal := column == "DATETIME6" || column == "TIMESTAMP6"
+		switch {
+		case bytesArg && (column == "VARCHAR200" || column == "MEDIUMTEXT") && pe == "false" && we == "false":
+			return "TiDB non-strict: invalid text bytes are cut by the literal, '?'-replaced by the parameter"
+		case bytesArg && temporal && pe == "false" && we == "true":
+			return "TiDB non-strict: non-date bytes are refused by the literal, the zero date for the parameter"
+		case strings.HasPrefix(c.name, "uint") && column == "TIMESTAMP6" && pe == "true" && we == "false":
+			return "TiDB non-strict: an unsigned integer literal is the zero timestamp, the parameter is refused"
+		}
+	}
 	return ""
+}
+
+// myTiDBFallsBack: on TiDB a string argument that would need a _charset 0x... literal (a backslash, or any
+// non-empty string in a gbk session) is not inlined (runtime.MySQLFlavor.HexLiteralIsNumber): TiDB reads
+// that literal as a number in a numeric, temporal or JSON context.
+func myTiDBFallsBack(e engine, variant string, arg any) bool {
+	if e.family != famTiDB {
+		return false
+	}
+	if v, ok := arg.(driver.Valuer); ok {
+		arg, _ = v.Value()
+	}
+	if p, ok := arg.(*string); ok && p != nil {
+		arg = *p
+	}
+	s, ok := arg.(string)
+	return ok && s != "" && (strings.Contains(s, `\`) || variant == "gbk")
+}
+
+// myTiDBSkipsVariant: session settings TiDB refuses on every path (so there is nothing to compare).
+func myTiDBSkipsVariant(t *testing.T, e engine, variant string) {
+	if e.family == famTiDB && variant == "latin1" {
+		t.Skip("TiDB's new collation framework refuses latin1_swedish_ci (error 1273) on every path")
+	}
 }
 
 func TestRealEngineMySQLPipelineArgumentLiterals(t *testing.T) {
@@ -338,6 +378,7 @@ func TestRealEngineMySQLPipelineArgumentLiterals(t *testing.T) {
 		for _, v := range myArgVariants {
 			t.Run(v.name, func(t *testing.T) {
 				t.Parallel() // each variant has its own pools and its own (unique) tables
+				myTiDBSkipsVariant(t, e, v.name)
 				mutate := func(cfg *mysql.Config) {
 					if v.mutate != nil {
 						v.mutate(t, cfg)
@@ -362,7 +403,7 @@ func TestRealEngineMySQLPipelineArgumentLiterals(t *testing.T) {
 							pid, wid := int64(2*i), int64(2*i+1)
 							_, perr := plain.Exec("INSERT INTO "+tbl+" (id, v) VALUES (?, ?)", pid, c.arg)
 							werr, viaWire := myWireInsert(t, q, desc, wid, c.arg)
-							reject := c.reject
+							reject := c.reject || myTiDBFallsBack(e, v.name, c.arg)
 							if tm, ok := c.arg.(time.Time); ok && !tm.IsZero() && tm.In(vcfg.Loc).Year() > 9999 {
 								reject = true // in the connection's time zone the year is past 9999: no literal for it
 							}
@@ -482,6 +523,7 @@ func TestRealEngineMySQLPipelineArgumentsNeverTravelUnescaped(t *testing.T) {
 		}
 		for _, v := range myArgVariants {
 			t.Run(v.name, func(t *testing.T) {
+				myTiDBSkipsVariant(t, e, v.name)
 				mutate := func(cfg *mysql.Config) {
 					if v.mutate != nil {
 						v.mutate(t, cfg)
@@ -502,8 +544,11 @@ func TestRealEngineMySQLPipelineArgumentsNeverTravelUnescaped(t *testing.T) {
 				all := append(append([]string(nil), myHostile...), myHostileBytes...)
 				// even ids: the prepared path (the reference), odd ids: the wire path. Every hostile string also
 				// travels in a second argument, so a break out of the first would swallow the second.
-				inserted := 0
+				inserted, viaWire := 0, 0
 				for i, s := range all {
+					if !myTiDBFallsBack(e, v.name, s) {
+						viaWire++
+					}
 					pid, wid := int64(2*i), int64(2*i+1)
 					_, perr := plain.Exec("INSERT INTO "+tbl+" (id, v, w) VALUES (?, ?, ?)", pid, s, "tail-"+s)
 					werr := q.PipelineTx(ctxT(t), nil, func(p *myq.Pipeline) error {
@@ -528,7 +573,7 @@ func TestRealEngineMySQLPipelineArgumentsNeverTravelUnescaped(t *testing.T) {
 					}
 					intact(fmt.Sprintf("after %q", s))
 				}
-				if st := q.CacheStats(); st.WirePipelines != uint64(len(all)) || st.SequentialPipelines != 0 {
+				if st := q.CacheStats(); st.WirePipelines != uint64(viaWire) || st.SequentialPipelines != uint64(len(all)-viaWire) {
 					t.Fatalf("every hostile pipeline must run on the wire path: %+v", st)
 				}
 				var n int
