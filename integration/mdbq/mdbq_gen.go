@@ -1132,31 +1132,6 @@ const (
 	PageItemsColsAll   uint64 = (1 << 5) - 1
 )
 
-type PagedItemSortCol uint8
-
-// PagedItemSortTerm is a sort column with a direction, accepted by OrderPagedItem.
-type PagedItemSortTerm uint8
-
-func (c PagedItemSortCol) Asc() PagedItemSortTerm  { return PagedItemSortTerm(runtime.Asc(uint8(c))) }
-func (c PagedItemSortCol) Desc() PagedItemSortTerm { return PagedItemSortTerm(runtime.Desc(uint8(c))) }
-
-const (
-	PagedItemOrderByScore   PagedItemSortCol  = 0
-	OrderPagedItemScoreAsc  PagedItemSortTerm = 2
-	OrderPagedItemScoreDesc PagedItemSortTerm = 3
-	PagedItemOrderScoreAsc  PagedItemSortTerm = 2
-	PagedItemOrderScoreDesc PagedItemSortTerm = 3
-	PagedItemOrderByID      PagedItemSortCol  = 1
-	OrderPagedItemIDAsc     PagedItemSortTerm = 4
-	OrderPagedItemIDDesc    PagedItemSortTerm = 5
-	PagedItemOrderIDAsc     PagedItemSortTerm = 4
-	PagedItemOrderIDDesc    PagedItemSortTerm = 5
-)
-
-func OrderPagedItem(terms ...PagedItemSortTerm) runtime.Order {
-	return runtime.PackOrder(terms...)
-}
-
 type PageItemsSortCol uint8
 
 // PageItemsSortTerm is a sort column with a direction, accepted by OrderPageItems.
@@ -1166,32 +1141,17 @@ func (c PageItemsSortCol) Asc() PageItemsSortTerm  { return PageItemsSortTerm(ru
 func (c PageItemsSortCol) Desc() PageItemsSortTerm { return PageItemsSortTerm(runtime.Desc(uint8(c))) }
 
 const (
-	PageItemsOrderByScore   PageItemsSortCol  = 0
-	OrderPageItemsScoreAsc  PageItemsSortTerm = 2
-	OrderPageItemsScoreDesc PageItemsSortTerm = 3
-	PageItemsOrderScoreAsc  PageItemsSortTerm = 2
-	PageItemsOrderScoreDesc PageItemsSortTerm = 3
-	PageItemsOrderByID      PageItemsSortCol  = 1
-	OrderPageItemsIDAsc     PageItemsSortTerm = 4
-	OrderPageItemsIDDesc    PageItemsSortTerm = 5
-	PageItemsOrderIDAsc     PageItemsSortTerm = 4
-	PageItemsOrderIDDesc    PageItemsSortTerm = 5
+	PageItemsOrderByScore PageItemsSortCol = 0
+	PageItemsOrderByID    PageItemsSortCol = 1
 )
 
 func OrderPageItems(terms ...PageItemsSortTerm) runtime.Order {
 	return runtime.PackOrder(terms...)
 }
 
-func (r PagedItem) Seek() runtime.Seek {
-	return runtime.NewSeek(r.Score, r.ID)
-}
-
-func SeekPagedItem(row PagedItem) runtime.Seek {
-	return row.Seek()
-}
-
+// SeekPageItems returns the keyset cursor positioned after row.
 func SeekPageItems(row PagedItem) runtime.Seek {
-	return row.Seek()
+	return runtime.NewSeek(row.Score, row.ID)
 }
 
 type PageItemsParams struct {
@@ -1411,81 +1371,6 @@ const (
 	WideRowsColsAll uint64 = (1 << 12) - 1
 )
 
-type WideSortCol uint8
-
-// WideSortTerm is a sort column with a direction, accepted by OrderWide.
-type WideSortTerm uint8
-
-func (c WideSortCol) Asc() WideSortTerm  { return WideSortTerm(runtime.Asc(uint8(c))) }
-func (c WideSortCol) Desc() WideSortTerm { return WideSortTerm(runtime.Desc(uint8(c))) }
-
-const (
-	WideOrderByC1    WideSortCol  = 0
-	OrderWideC1Asc   WideSortTerm = 2
-	OrderWideC1Desc  WideSortTerm = 3
-	WideOrderC1Asc   WideSortTerm = 2
-	WideOrderC1Desc  WideSortTerm = 3
-	WideOrderByC2    WideSortCol  = 1
-	OrderWideC2Asc   WideSortTerm = 4
-	OrderWideC2Desc  WideSortTerm = 5
-	WideOrderC2Asc   WideSortTerm = 4
-	WideOrderC2Desc  WideSortTerm = 5
-	WideOrderByC3    WideSortCol  = 2
-	OrderWideC3Asc   WideSortTerm = 6
-	OrderWideC3Desc  WideSortTerm = 7
-	WideOrderC3Asc   WideSortTerm = 6
-	WideOrderC3Desc  WideSortTerm = 7
-	WideOrderByC4    WideSortCol  = 3
-	OrderWideC4Asc   WideSortTerm = 8
-	OrderWideC4Desc  WideSortTerm = 9
-	WideOrderC4Asc   WideSortTerm = 8
-	WideOrderC4Desc  WideSortTerm = 9
-	WideOrderByC5    WideSortCol  = 4
-	OrderWideC5Asc   WideSortTerm = 10
-	OrderWideC5Desc  WideSortTerm = 11
-	WideOrderC5Asc   WideSortTerm = 10
-	WideOrderC5Desc  WideSortTerm = 11
-	WideOrderByC6    WideSortCol  = 5
-	OrderWideC6Asc   WideSortTerm = 12
-	OrderWideC6Desc  WideSortTerm = 13
-	WideOrderC6Asc   WideSortTerm = 12
-	WideOrderC6Desc  WideSortTerm = 13
-	WideOrderByC7    WideSortCol  = 6
-	OrderWideC7Asc   WideSortTerm = 14
-	OrderWideC7Desc  WideSortTerm = 15
-	WideOrderC7Asc   WideSortTerm = 14
-	WideOrderC7Desc  WideSortTerm = 15
-	WideOrderByC8    WideSortCol  = 7
-	OrderWideC8Asc   WideSortTerm = 16
-	OrderWideC8Desc  WideSortTerm = 17
-	WideOrderC8Asc   WideSortTerm = 16
-	WideOrderC8Desc  WideSortTerm = 17
-	WideOrderByC9    WideSortCol  = 8
-	OrderWideC9Asc   WideSortTerm = 18
-	OrderWideC9Desc  WideSortTerm = 19
-	WideOrderC9Asc   WideSortTerm = 18
-	WideOrderC9Desc  WideSortTerm = 19
-	WideOrderByC10   WideSortCol  = 9
-	OrderWideC10Asc  WideSortTerm = 20
-	OrderWideC10Desc WideSortTerm = 21
-	WideOrderC10Asc  WideSortTerm = 20
-	WideOrderC10Desc WideSortTerm = 21
-	WideOrderByC11   WideSortCol  = 10
-	OrderWideC11Asc  WideSortTerm = 22
-	OrderWideC11Desc WideSortTerm = 23
-	WideOrderC11Asc  WideSortTerm = 22
-	WideOrderC11Desc WideSortTerm = 23
-	WideOrderByID    WideSortCol  = 11
-	OrderWideIDAsc   WideSortTerm = 24
-	OrderWideIDDesc  WideSortTerm = 25
-	WideOrderIDAsc   WideSortTerm = 24
-	WideOrderIDDesc  WideSortTerm = 25
-)
-
-func OrderWide(terms ...WideSortTerm) runtime.Order {
-	return runtime.PackOrder(terms...)
-}
-
 type WideRowsSortCol uint8
 
 // WideRowsSortTerm is a sort column with a direction, accepted by OrderWideRows.
@@ -1495,82 +1380,27 @@ func (c WideRowsSortCol) Asc() WideRowsSortTerm  { return WideRowsSortTerm(runti
 func (c WideRowsSortCol) Desc() WideRowsSortTerm { return WideRowsSortTerm(runtime.Desc(uint8(c))) }
 
 const (
-	WideRowsOrderByC1    WideRowsSortCol  = 0
-	OrderWideRowsC1Asc   WideRowsSortTerm = 2
-	OrderWideRowsC1Desc  WideRowsSortTerm = 3
-	WideRowsOrderC1Asc   WideRowsSortTerm = 2
-	WideRowsOrderC1Desc  WideRowsSortTerm = 3
-	WideRowsOrderByC2    WideRowsSortCol  = 1
-	OrderWideRowsC2Asc   WideRowsSortTerm = 4
-	OrderWideRowsC2Desc  WideRowsSortTerm = 5
-	WideRowsOrderC2Asc   WideRowsSortTerm = 4
-	WideRowsOrderC2Desc  WideRowsSortTerm = 5
-	WideRowsOrderByC3    WideRowsSortCol  = 2
-	OrderWideRowsC3Asc   WideRowsSortTerm = 6
-	OrderWideRowsC3Desc  WideRowsSortTerm = 7
-	WideRowsOrderC3Asc   WideRowsSortTerm = 6
-	WideRowsOrderC3Desc  WideRowsSortTerm = 7
-	WideRowsOrderByC4    WideRowsSortCol  = 3
-	OrderWideRowsC4Asc   WideRowsSortTerm = 8
-	OrderWideRowsC4Desc  WideRowsSortTerm = 9
-	WideRowsOrderC4Asc   WideRowsSortTerm = 8
-	WideRowsOrderC4Desc  WideRowsSortTerm = 9
-	WideRowsOrderByC5    WideRowsSortCol  = 4
-	OrderWideRowsC5Asc   WideRowsSortTerm = 10
-	OrderWideRowsC5Desc  WideRowsSortTerm = 11
-	WideRowsOrderC5Asc   WideRowsSortTerm = 10
-	WideRowsOrderC5Desc  WideRowsSortTerm = 11
-	WideRowsOrderByC6    WideRowsSortCol  = 5
-	OrderWideRowsC6Asc   WideRowsSortTerm = 12
-	OrderWideRowsC6Desc  WideRowsSortTerm = 13
-	WideRowsOrderC6Asc   WideRowsSortTerm = 12
-	WideRowsOrderC6Desc  WideRowsSortTerm = 13
-	WideRowsOrderByC7    WideRowsSortCol  = 6
-	OrderWideRowsC7Asc   WideRowsSortTerm = 14
-	OrderWideRowsC7Desc  WideRowsSortTerm = 15
-	WideRowsOrderC7Asc   WideRowsSortTerm = 14
-	WideRowsOrderC7Desc  WideRowsSortTerm = 15
-	WideRowsOrderByC8    WideRowsSortCol  = 7
-	OrderWideRowsC8Asc   WideRowsSortTerm = 16
-	OrderWideRowsC8Desc  WideRowsSortTerm = 17
-	WideRowsOrderC8Asc   WideRowsSortTerm = 16
-	WideRowsOrderC8Desc  WideRowsSortTerm = 17
-	WideRowsOrderByC9    WideRowsSortCol  = 8
-	OrderWideRowsC9Asc   WideRowsSortTerm = 18
-	OrderWideRowsC9Desc  WideRowsSortTerm = 19
-	WideRowsOrderC9Asc   WideRowsSortTerm = 18
-	WideRowsOrderC9Desc  WideRowsSortTerm = 19
-	WideRowsOrderByC10   WideRowsSortCol  = 9
-	OrderWideRowsC10Asc  WideRowsSortTerm = 20
-	OrderWideRowsC10Desc WideRowsSortTerm = 21
-	WideRowsOrderC10Asc  WideRowsSortTerm = 20
-	WideRowsOrderC10Desc WideRowsSortTerm = 21
-	WideRowsOrderByC11   WideRowsSortCol  = 10
-	OrderWideRowsC11Asc  WideRowsSortTerm = 22
-	OrderWideRowsC11Desc WideRowsSortTerm = 23
-	WideRowsOrderC11Asc  WideRowsSortTerm = 22
-	WideRowsOrderC11Desc WideRowsSortTerm = 23
-	WideRowsOrderByID    WideRowsSortCol  = 11
-	OrderWideRowsIDAsc   WideRowsSortTerm = 24
-	OrderWideRowsIDDesc  WideRowsSortTerm = 25
-	WideRowsOrderIDAsc   WideRowsSortTerm = 24
-	WideRowsOrderIDDesc  WideRowsSortTerm = 25
+	WideRowsOrderByC1  WideRowsSortCol = 0
+	WideRowsOrderByC2  WideRowsSortCol = 1
+	WideRowsOrderByC3  WideRowsSortCol = 2
+	WideRowsOrderByC4  WideRowsSortCol = 3
+	WideRowsOrderByC5  WideRowsSortCol = 4
+	WideRowsOrderByC6  WideRowsSortCol = 5
+	WideRowsOrderByC7  WideRowsSortCol = 6
+	WideRowsOrderByC8  WideRowsSortCol = 7
+	WideRowsOrderByC9  WideRowsSortCol = 8
+	WideRowsOrderByC10 WideRowsSortCol = 9
+	WideRowsOrderByC11 WideRowsSortCol = 10
+	WideRowsOrderByID  WideRowsSortCol = 11
 )
 
 func OrderWideRows(terms ...WideRowsSortTerm) runtime.Order {
 	return runtime.PackOrder(terms...)
 }
 
-func (r Wide) Seek() runtime.Seek {
-	return runtime.NewSeek(r.C1, r.C2, r.C3, r.C4, r.C5, r.C6, r.C7, r.C8, r.C9, r.C10, r.C11, r.ID)
-}
-
-func SeekWide(row Wide) runtime.Seek {
-	return row.Seek()
-}
-
+// SeekWideRows returns the keyset cursor positioned after row.
 func SeekWideRows(row Wide) runtime.Seek {
-	return row.Seek()
+	return runtime.NewSeek(row.C1, row.C2, row.C3, row.C4, row.C5, row.C6, row.C7, row.C8, row.C9, row.C10, row.C11, row.ID)
 }
 
 type WideRowsParams struct {

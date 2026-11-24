@@ -325,30 +325,27 @@ statements:
 **Important Rules for `Seek` & `Order`**:
 1. Every column listed in `sqlgen.Order(col1, col2, ...)` must match an unconditional selected column name (or alias) in the `SELECT` list, and at most 12 columns may be listed (`runtime.MaxOrderCols`: the sort selection is packed into 5 bits per term, so every column of a valid directive can be named in one sort and none is silently dropped).
 2. `sqlgen` generates strongly-typed sort column tokens (`<Stmt>OrderBy<Field>.Asc()` and `.Desc()`), a type-safe constructor `Order<Stmt>(...)`, and cursor helpers:
-   - `row.Seek()` (a method on `<RowType>`), `Seek<Stmt>(row)` or `Seek<RowType>(row)` $\rightarrow$ returns a `runtime.Seek` cursor populated from `row` for the next page.
+   - `Seek<Stmt>(row)` $\rightarrow$ returns a `runtime.Seek` cursor populated from `row` (a `<RowType>`) for the next page.
    - `Order<Stmt>(ListMembersPaginatedOrderByScore.Desc(), ListMembersPaginatedOrderByID.Asc())` $\rightarrow$ builds the `runtime.Order` value.
 
-   **Which names to use.** Every statement gets its own set (`Order<Stmt>`, `<Stmt>OrderBy<Col>`, `Seek<Stmt>`) and, in addition, a set keyed by its row type (`Order<RowType>`, `<RowType>OrderBy<Col>`, `Seek<RowType>`). Prefer the per-statement names: they are always unambiguous. The row-type names exist for statements that share one `result_type` (they then share one set, which is why such statements must list identical `sqlgen.Order` columns). With the default `result_type` (`<Stmt>Row`) the row-type names carry an extra `Row` (`Order<Stmt>Row`, `<Stmt>RowOrderBy<Col>`). Besides the column tokens there are constants for each column and direction (`Order<Stmt><Col>Asc`, `Order<Stmt><Col>Desc`, and the equivalent `<Stmt>Order<Col>Asc` / `<Stmt>Order<Col>Desc`) of type `<Stmt>SortTerm`, the type `.Asc()` / `.Desc()` return and `Order<Stmt>(...)` accepts; the column tokens are the recommended spelling.
+   **One set per statement.** Every statement with a `sqlgen.Order` gets `Order<Stmt>`, `<Stmt>OrderBy<Col>`, `<Stmt>SortCol` / `<Stmt>SortTerm` and (with a `sqlgen.Seek`) `Seek<Stmt>`; nothing is keyed by the row type. Statements that share one `result_type` may therefore declare different `sqlgen.Order` lists, each with its own tokens and its own `Seek<Stmt>` (there is no `row.Seek()`: a row type shared by statements with different sort lists has no single cursor).
 
-   **Misuse is caught.** `Order<Stmt>` takes `<Stmt>SortTerm` values, a type of its own per statement (and per row type), so passing the tokens of another statement, or a plain `uint8`, does not compile. A term list that repeats a column, or contains a term for a column the statement does not have (only reachable by converting an arbitrary number, `<Stmt>SortCol(40).Asc()`), makes the statement method return `runtime.ErrInvalidOrder` instead of running a different sort. A cursor (`row.Seek()`) always carries every `sqlgen.Order` column of its statement, so it cannot disagree with the sort; a hand-built `runtime.NewSeek(...)` with the wrong number of values returns `runtime.ErrInvalidSeek`.
+   **Misuse is caught.** `Order<Stmt>` takes `<Stmt>SortTerm` values, a type of its own per statement, so passing the tokens of another statement, a column without a direction, or a plain `uint8`, does not compile. A term list that repeats a column, or contains a term for a column the statement does not have (only reachable by converting an arbitrary number, `<Stmt>SortCol(40).Asc()`), makes the statement method return `runtime.ErrInvalidOrder` instead of running a different sort. A cursor (`Seek<Stmt>(row)`) always carries every `sqlgen.Order` column of its statement, so it cannot disagree with the sort; a hand-built `runtime.NewSeek(...)` with the wrong number of values returns `runtime.ErrInvalidSeek`.
 3. **First Page vs. Subsequent Pages**:
    - On Page 1, pass a zero `runtime.Seek{}` (`After: runtime.Seek{}`). `sqlgen` renders `TRUE` and binds `0` cursor parameters.
-   - On Page 2+, pass `After: lastRow.Seek()`.
+   - On Page 2+, pass `After: Seek<Stmt>(lastRow)`.
    - If all sort columns share the same direction (all `ASC` or all `DESC`), `sqlgen` renders compact row-value comparison `(col1, col2) > (?, ?)` (or `<`).
    - If sort directions are **mixed** (e.g. `score DESC, id ASC`), `sqlgen` automatically renders a B-tree index-friendly bounding-box prefix (`col1 <= ?`) combined with exact lexicographical tie-breaking `OR` branches!
 
 4. **Defaults for a short or empty `Sort`.** The last column listed in `sqlgen.Order(...)` (the unique tie-breaker) is always part of the sort. A zero `runtime.Order` (an unset `Sort` field, or `Order<Stmt>()`) sorts by that column ascending only: `ORDER BY id ASC`. A partial `Order` keeps the terms you gave, in your order, and appends the tie-breaker if you did not name it, using the direction of the **last term you gave** (so `Desc(score)` gives `score DESC, id DESC`, and `Desc(score), Asc(role)` gives `score DESC, role ASC, id ASC`); name the tie-breaker yourself to choose its direction.
 
 ```go
-// Per-statement names (preferred): the statement is ListMembersPaginated.
 sortSpec := OrderListMembersPaginated(
     ListMembersPaginatedOrderByRole.Asc(),
     ListMembersPaginatedOrderByScore.Desc(),
     ListMembersPaginatedOrderByCreatedAt.Asc(),
     ListMembersPaginatedOrderByID.Asc(),
 )
-// The same value through the row-type names (result_type: MemberItem), useful when several
-// statements share MemberItem: OrderMemberItem(MemberItemOrderByRole.Asc(), ...).
 
 // Page 1:
 page1, err := q.ListMembersPaginated(ctx, ListMembersPaginatedParams{
@@ -363,7 +360,7 @@ if len(page1) > 0 {
     last := page1[len(page1)-1]
     page2, err := q.ListMembersPaginated(ctx, ListMembersPaginatedParams{
         OrgID: orgID,
-        After: last.Seek(),
+        After: SeekListMembersPaginated(last),
         Sort:  sortSpec,
         Limit: 25,
     })

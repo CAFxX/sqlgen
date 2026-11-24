@@ -669,12 +669,6 @@ type orderColRef struct {
 	GoType    string
 }
 
-// rowOrder records the sqlgen.Order column list first declared for a shared result type.
-type rowOrder struct {
-	stmt string
-	cols []string
-}
-
 type compiledStmt struct {
 	ID           uint32
 	Name         string
@@ -2615,7 +2609,6 @@ func Generate(cfg Config) ([]byte, error) {
 	compiled := make([]*compiledStmt, 0, len(cfg.Statements))
 
 	rowStructs := make(map[string][]colDef)
-	rowOrders := make(map[string]rowOrder)
 	var rowStructOrder []string
 	tupleStructs := make(map[string]*tupleStructDef)
 	var tupleStructOrder []string
@@ -2655,23 +2648,6 @@ func Generate(cfg Config) ([]byte, error) {
 			} else {
 				rowStructs[cs.RowTypeName] = cs.Cols
 				rowStructOrder = append(rowStructOrder, cs.RowTypeName)
-			}
-			// The <Row>OrderBy* constants, Order<Row>() and Row.Seek() are emitted once per result type
-			// and index into the sqlgen.Order(...) column list, so every statement sharing the type
-			// must declare the identical list or its sort/seek columns would silently be the wrong ones.
-			if cs.HasOrder {
-				cur := make([]string, len(cs.OrderCols))
-				for i, oc := range cs.OrderCols {
-					cur[i] = strings.ToLower(oc.RawRef)
-				}
-				if prev, seen := rowOrders[cs.RowTypeName]; seen {
-					if !slices.Equal(prev.cols, cur) {
-						return nil, fmt.Errorf("statements %s and %s share result_type %q but declare different sqlgen.Order column lists (%s vs %s); use a distinct result_type or the same list",
-							prev.stmt, cs.Name, cs.RowTypeName, strings.Join(prev.cols, ", "), strings.Join(cur, ", "))
-					}
-				} else {
-					rowOrders[cs.RowTypeName] = rowOrder{stmt: cs.Name, cols: cur}
-				}
 			}
 		}
 
@@ -2904,12 +2880,10 @@ func Generate(cfg Config) ([]byte, error) {
 		b.WriteString("}\n\n")
 	}
 
-	emittedRowOrder := make(map[string]bool)
 	emittedRowCols := make(map[string]bool)
-	emittedRowSeek := make(map[string]bool)
 
 	for _, cs := range compiled {
-		emitStatementCode(&b, cs, staticIdxByStmt, emittedRowOrder, emittedRowCols, emittedRowSeek)
+		emitStatementCode(&b, cs, staticIdxByStmt, emittedRowCols)
 	}
 
 	formatted, err := format.Source(b.Bytes())
@@ -3135,28 +3109,23 @@ func emitSlotArgExpansion(b *bytes.Buffer, cs *compiledStmt, blk *parsedBlock, p
 	}
 }
 
-func emitSortHelperGroup(b *bytes.Buffer, typeTag string, orderCols []orderColRef) {
-	// A sort column and an encoded sort term are distinct types per row type / statement, so the tokens of
-	// one statement cannot be passed to the Order constructor of another (a compile error).
-	fmt.Fprintf(b, "type %sSortCol uint8\n\n", typeTag)
-	fmt.Fprintf(b, "// %sSortTerm is a sort column with a direction, accepted by Order%s.\n", typeTag, typeTag)
-	fmt.Fprintf(b, "type %sSortTerm uint8\n\n", typeTag)
-	fmt.Fprintf(b, "func (c %sSortCol) Asc() %sSortTerm  { return %sSortTerm(runtime.Asc(uint8(c))) }\n", typeTag, typeTag, typeTag)
-	fmt.Fprintf(b, "func (c %sSortCol) Desc() %sSortTerm { return %sSortTerm(runtime.Desc(uint8(c))) }\n\n", typeTag, typeTag, typeTag)
+// emitSortHelpers emits the per-statement sort vocabulary: the <Stmt>SortCol / <Stmt>SortTerm types (distinct per
+// statement, so the tokens of one statement cannot be passed to the Order constructor of another: a compile error),
+// the <Stmt>OrderBy<Col> constants (each with .Asc() / .Desc()) and Order<Stmt>(terms...).
+func emitSortHelpers(b *bytes.Buffer, tag string, orderCols []orderColRef) {
+	fmt.Fprintf(b, "type %sSortCol uint8\n\n", tag)
+	fmt.Fprintf(b, "// %sSortTerm is a sort column with a direction, accepted by Order%s.\n", tag, tag)
+	fmt.Fprintf(b, "type %sSortTerm uint8\n\n", tag)
+	fmt.Fprintf(b, "func (c %sSortCol) Asc() %sSortTerm  { return %sSortTerm(runtime.Asc(uint8(c))) }\n", tag, tag, tag)
+	fmt.Fprintf(b, "func (c %sSortCol) Desc() %sSortTerm { return %sSortTerm(runtime.Desc(uint8(c))) }\n\n", tag, tag, tag)
 
 	b.WriteString("const (\n")
 	for idx, oc := range orderCols {
-		ascVal := runtime.Asc(uint8(idx))
-		descVal := runtime.Desc(uint8(idx))
-		fmt.Fprintf(b, "\t%sOrderBy%s %sSortCol = %d\n", typeTag, oc.FieldName, typeTag, idx)
-		fmt.Fprintf(b, "\tOrder%s%sAsc %sSortTerm = %d\n", typeTag, oc.FieldName, typeTag, ascVal)
-		fmt.Fprintf(b, "\tOrder%s%sDesc %sSortTerm = %d\n", typeTag, oc.FieldName, typeTag, descVal)
-		fmt.Fprintf(b, "\t%sOrder%sAsc %sSortTerm = %d\n", typeTag, oc.FieldName, typeTag, ascVal)
-		fmt.Fprintf(b, "\t%sOrder%sDesc %sSortTerm = %d\n", typeTag, oc.FieldName, typeTag, descVal)
+		fmt.Fprintf(b, "\t%sOrderBy%s %sSortCol = %d\n", tag, oc.FieldName, tag, idx)
 	}
 	b.WriteString(")\n\n")
 
-	fmt.Fprintf(b, "func Order%s(terms ...%sSortTerm) runtime.Order {\n", typeTag, typeTag)
+	fmt.Fprintf(b, "func Order%s(terms ...%sSortTerm) runtime.Order {\n", tag, tag)
 	b.WriteString("\treturn runtime.PackOrder(terms...)\n")
 	b.WriteString("}\n\n")
 }
@@ -3174,9 +3143,7 @@ func emitStatementCode(
 	b *bytes.Buffer,
 	cs *compiledStmt,
 	staticIdxByStmt map[uint32]int,
-	emittedRowOrder map[string]bool,
 	emittedRowCols map[string]bool,
-	emittedRowSeek map[string]bool,
 ) {
 	fmt.Fprintf(b, "const stmtID%s uint32 = %d\n\n", cs.Name, cs.ID)
 
@@ -3192,39 +3159,20 @@ func emitStatementCode(
 		}
 	}
 
-	// Emit Order and Seek helpers
+	// Order and Seek helpers: one set per statement (a result type shared by several statements does not
+	// share them: each statement declares its own sqlgen.Order list, so its own sort vocabulary).
 	if cs.HasOrder {
-		primaryTag := cs.RowTypeName
-		if primaryTag == "" || cs.ScalarResult {
-			primaryTag = cs.Name
-		}
-		if !emittedRowOrder[primaryTag] {
-			emittedRowOrder[primaryTag] = true
-			emitSortHelperGroup(b, primaryTag, cs.OrderCols)
-		}
-		if primaryTag != cs.Name && !emittedRowOrder[cs.Name] {
-			emittedRowOrder[cs.Name] = true
-			emitSortHelperGroup(b, cs.Name, cs.OrderCols)
-		}
-
+		emitSortHelpers(b, cs.Name, cs.OrderCols)
 		if cs.HasSeek && !cs.ScalarResult && cs.RowTypeName != "" {
-			if !emittedRowSeek[cs.RowTypeName] {
-				emittedRowSeek[cs.RowTypeName] = true
-				fmt.Fprintf(b, "func (r %s) Seek() runtime.Seek {\n\treturn runtime.NewSeek(", cs.RowTypeName)
-				for idx, oc := range cs.OrderCols {
-					if idx > 0 {
-						b.WriteString(", ")
-					}
-					fmt.Fprintf(b, "r.%s", oc.FieldName)
+			fmt.Fprintf(b, "// Seek%s returns the keyset cursor positioned after row.\n", cs.Name)
+			fmt.Fprintf(b, "func Seek%s(row %s) runtime.Seek {\n\treturn runtime.NewSeek(", cs.Name, cs.RowTypeName)
+			for idx, oc := range cs.OrderCols {
+				if idx > 0 {
+					b.WriteString(", ")
 				}
-				b.WriteString(")\n}\n\n")
-
-				fmt.Fprintf(b, "func Seek%s(row %s) runtime.Seek {\n\treturn row.Seek()\n}\n\n", cs.RowTypeName, cs.RowTypeName)
+				fmt.Fprintf(b, "row.%s", oc.FieldName)
 			}
-			if cs.RowTypeName != cs.Name && !emittedRowSeek[cs.Name] {
-				emittedRowSeek[cs.Name] = true
-				fmt.Fprintf(b, "func Seek%s(row %s) runtime.Seek {\n\treturn row.Seek()\n}\n\n", cs.Name, cs.RowTypeName)
-			}
+			b.WriteString(")\n}\n\n")
 		}
 	}
 

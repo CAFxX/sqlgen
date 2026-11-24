@@ -216,11 +216,11 @@ func TestSaaSMultitenantPortalEndToEnd(t *testing.T) {
 	}{
 		{
 			name: "RoleAsc_ScoreDesc_CreatedAtDesc_IDAsc",
-			order: OrderMemberItem(
-				MemberItemOrderByRole.Asc(),
-				MemberItemOrderByScore.Desc(),
-				MemberItemOrderByCreatedAt.Desc(),
-				MemberItemOrderByID.Asc(),
+			order: OrderListMembersPaginated(
+				ListMembersPaginatedOrderByRole.Asc(),
+				ListMembersPaginatedOrderByScore.Desc(),
+				ListMembersPaginatedOrderByCreatedAt.Desc(),
+				ListMembersPaginatedOrderByID.Asc(),
 			),
 			cmpFn: func(a, b MemberItem) int {
 				if c := cmp.Compare(a.Role, b.Role); c != 0 {
@@ -358,7 +358,7 @@ func TestSaaSMultitenantPortalEndToEnd(t *testing.T) {
 		SelectCols: MemberItemColID | MemberItemColEmail | MemberItemColRole,
 	}), func(r MemberItem) error {
 		eachPaged++
-		_ = SeekMemberItem(r)
+		_ = SeekListMembersPaginated(r)
 		_ = SeekListMembersPaginated(r)
 		return nil
 	}); err != nil || eachPaged != 10 {

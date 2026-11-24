@@ -474,7 +474,7 @@ func TestPostgresSQLGeneration(t *testing.T) {
 	cteSub := PageUsersQuery(PageUsersParams{
 		RoleFilter: true,
 		FilterRole: "admin",
-		Order:      OrderPageUsersRow(OrderPageUsersRowScoreDesc),
+		Order:      OrderPageUsers(PageUsersOrderByScore.Desc()),
 		Seek:       runtime.NewSeek("admin", int64(50), int64(5)),
 		Limit:      10,
 	})
@@ -727,15 +727,15 @@ func TestE2EKeysetPaginationUniformAndMixedOrders(t *testing.T) {
 	}{
 		{
 			name:  "Uniform ASC, ASC (score ASC, id ASC)",
-			order: OrderPageUsersRow(OrderPageUsersRowScoreAsc, OrderPageUsersRowIDAsc),
+			order: OrderPageUsers(PageUsersOrderByScore.Asc(), PageUsersOrderByID.Asc()),
 		},
 		{
 			name:  "Uniform DESC, DESC (score DESC, auto-tiebreaker id DESC)",
-			order: OrderPageUsersRow(OrderPageUsersRowScoreDesc),
+			order: OrderPageUsers(PageUsersOrderByScore.Desc()),
 		},
 		{
 			name:  "Mixed ASC, DESC, ASC (role ASC, score DESC, id ASC)",
-			order: OrderPageUsersRow(OrderPageUsersRowRoleAsc, OrderPageUsersRowScoreDesc, OrderPageUsersRowIDAsc),
+			order: OrderPageUsers(PageUsersOrderByRole.Asc(), PageUsersOrderByScore.Desc(), PageUsersOrderByID.Asc()),
 		},
 	}
 
@@ -765,7 +765,7 @@ func TestE2EKeysetPaginationUniformAndMixedOrders(t *testing.T) {
 				}
 				collected = append(collected, pageRows...)
 				lastRow := pageRows[len(pageRows)-1]
-				seek = SeekPageUsersRow(lastRow)
+				seek = SeekPageUsers(lastRow)
 			}
 
 			if len(collected) != len(expectedAll) {
@@ -797,7 +797,7 @@ func TestE2ECurriedQueryComposition(t *testing.T) {
 	cteSub := PageUsersQuery(PageUsersParams{
 		RoleFilter: true,
 		FilterRole: "admin",
-		Order:      OrderPageUsersRow(OrderPageUsersRowScoreAsc, OrderPageUsersRowIDAsc),
+		Order:      OrderPageUsers(PageUsersOrderByScore.Asc(), PageUsersOrderByID.Asc()),
 		Seek:       runtime.NewSeek("admin", int64(20), int64(2)),
 		Limit:      3,
 	})
@@ -1183,28 +1183,28 @@ func TestPropertyKeysetPaginationEquivalence(t *testing.T) {
 
 	// Test all 16 sort-direction masks over the 4 columns (group_key, priority, created_ts, id)
 	for mask := 0; mask < 16; mask++ {
-		var terms [4]QuadItemSortTerm
+		var terms [4]PageQuadSortTerm
 		if (mask & 1) == 0 {
-			terms[0] = QuadItemOrderByGroupKey.Asc()
+			terms[0] = PageQuadOrderByGroupKey.Asc()
 		} else {
-			terms[0] = QuadItemOrderByGroupKey.Desc()
+			terms[0] = PageQuadOrderByGroupKey.Desc()
 		}
 		if (mask & 2) == 0 {
-			terms[1] = QuadItemOrderByPriority.Asc()
+			terms[1] = PageQuadOrderByPriority.Asc()
 		} else {
-			terms[1] = QuadItemOrderByPriority.Desc()
+			terms[1] = PageQuadOrderByPriority.Desc()
 		}
 		if (mask & 4) == 0 {
-			terms[2] = QuadItemOrderByCreatedTs.Asc()
+			terms[2] = PageQuadOrderByCreatedTs.Asc()
 		} else {
-			terms[2] = QuadItemOrderByCreatedTs.Desc()
+			terms[2] = PageQuadOrderByCreatedTs.Desc()
 		}
 		if (mask & 8) == 0 {
-			terms[3] = QuadItemOrderByID.Asc()
+			terms[3] = PageQuadOrderByID.Asc()
 		} else {
-			terms[3] = QuadItemOrderByID.Desc()
+			terms[3] = PageQuadOrderByID.Desc()
 		}
-		orderSpec := OrderQuadItem(terms[0], terms[1], terms[2], terms[3])
+		orderSpec := OrderPageQuad(terms[0], terms[1], terms[2], terms[3])
 
 		// Ground truth: fetch all 250 rows in a single unpaginated query
 		expected, err := q.PageQuad(ctx, PageQuadParams{
@@ -1216,7 +1216,7 @@ func TestPropertyKeysetPaginationEquivalence(t *testing.T) {
 		}
 
 		// Verify Postgres ($1) vs SQLite (?) SQL & parameter count consistency on active Seek
-		sampleSeek := SeekQuadItem(expected[0])
+		sampleSeek := SeekPageQuad(expected[0])
 		qCurried := PageQuadQuery(PageQuadParams{
 			Seek:  sampleSeek,
 			Order: orderSpec,
@@ -1249,7 +1249,7 @@ func TestPropertyKeysetPaginationEquivalence(t *testing.T) {
 					break
 				}
 				collected = append(collected, rows...)
-				seek = SeekQuadItem(rows[len(rows)-1])
+				seek = SeekPageQuad(rows[len(rows)-1])
 			}
 			if !slices.Equal(collected, expected) {
 				t.Fatalf("mask=%04b pageSize=%d pagination mismatch (got %d rows, want %d)", mask, pageSize, len(collected), len(expected))
@@ -1983,7 +1983,6 @@ func TestGeneratorRejectsInputsThatCannotGenerateCorrectCode(t *testing.T) {
 		{"result_type collides with generated type", "  - name: Q\n    kind: many\n    result_type: Queries\n    sql: |\n      SELECT id:int64 FROM t\n", `result_type "Queries" collides`},
 		{"tuple struct collides with generated type", "  - name: Q\n    kind: exec\n    sql: |\n      INSERT INTO t(a) VALUES :rows:[]Pipeline(A:int64)\n", `tuple struct name "Pipeline" collides`},
 		{"statement named like a generated method", "  - name: Close\n    kind: exec\n    sql: DELETE FROM t\n", `statement name "Close" collides`},
-		{"shared result_type with different Order lists", "  - name: A\n    kind: many\n    result_type: M\n    sql: |\n      SELECT name:string, age:int64 FROM t ORDER BY :Sort:sqlgen.Order(name, age)\n  - name: B\n    kind: many\n    result_type: M\n    sql: |\n      SELECT name:string, age:int64 FROM u ORDER BY :Sort:sqlgen.Order(age, name)\n", "different sqlgen.Order column lists"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			if _, err := genYAML("postgres", tc.stmts); err == nil || !strings.Contains(err.Error(), tc.want) {
@@ -2003,6 +2002,20 @@ func TestGeneratorHandlesTrickyButValidInputs(t *testing.T) {
 				for _, want := range []string{"inParam string", "itemParam int64", "errParam int64", "lenParam int64", "zeroParam int64"} {
 					if !strings.Contains(src, want) {
 						t.Errorf("missing %q", want)
+					}
+				}
+			}},
+		{"shared result_type with different Order lists", "  - name: A\n    kind: many\n    result_type: M\n    sql: |\n      SELECT name:string, age:int64 FROM t WHERE :After:sqlgen.Seek ORDER BY :Sort:sqlgen.Order(name, age)\n  - name: B\n    kind: many\n    result_type: M\n    sql: |\n      SELECT name:string, age:int64 FROM u WHERE :After:sqlgen.Seek ORDER BY :Sort:sqlgen.Order(age, name)\n",
+			func(t *testing.T, src string) {
+				// One helper set per statement; no row-type-keyed duplicate and no ambiguous row.Seek().
+				for _, want := range []string{"func SeekA(row M) runtime.Seek", "runtime.NewSeek(row.Name, row.Age)", "func SeekB(row M) runtime.Seek", "runtime.NewSeek(row.Age, row.Name)", "AOrderByName", "BOrderByAge"} {
+					if !strings.Contains(src, want) {
+						t.Errorf("missing %q", want)
+					}
+				}
+				for _, bad := range []string{"SeekM(", ") Seek()", "OrderM(", "MOrderBy"} {
+					if strings.Contains(src, bad) {
+						t.Errorf("unexpected row-type-keyed helper %q", bad)
 					}
 				}
 			}},

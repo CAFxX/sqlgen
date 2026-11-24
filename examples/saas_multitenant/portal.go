@@ -92,7 +92,7 @@ func (s *PortalService) FetchAllMembersPaginated(
 		if int64(len(page)) < pageSize || len(page) == 0 {
 			break
 		}
-		cursor = page[len(page)-1].Seek()
+		cursor = SeekListMembersPaginated(page[len(page)-1])
 	}
 	return all, nil
 }

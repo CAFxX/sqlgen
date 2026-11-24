@@ -1377,40 +1377,6 @@ const (
 	PageUsersColsAll  uint64 = (1 << 4) - 1
 )
 
-type PageUsersRowSortCol uint8
-
-// PageUsersRowSortTerm is a sort column with a direction, accepted by OrderPageUsersRow.
-type PageUsersRowSortTerm uint8
-
-func (c PageUsersRowSortCol) Asc() PageUsersRowSortTerm {
-	return PageUsersRowSortTerm(runtime.Asc(uint8(c)))
-}
-func (c PageUsersRowSortCol) Desc() PageUsersRowSortTerm {
-	return PageUsersRowSortTerm(runtime.Desc(uint8(c)))
-}
-
-const (
-	PageUsersRowOrderByRole    PageUsersRowSortCol  = 0
-	OrderPageUsersRowRoleAsc   PageUsersRowSortTerm = 2
-	OrderPageUsersRowRoleDesc  PageUsersRowSortTerm = 3
-	PageUsersRowOrderRoleAsc   PageUsersRowSortTerm = 2
-	PageUsersRowOrderRoleDesc  PageUsersRowSortTerm = 3
-	PageUsersRowOrderByScore   PageUsersRowSortCol  = 1
-	OrderPageUsersRowScoreAsc  PageUsersRowSortTerm = 4
-	OrderPageUsersRowScoreDesc PageUsersRowSortTerm = 5
-	PageUsersRowOrderScoreAsc  PageUsersRowSortTerm = 4
-	PageUsersRowOrderScoreDesc PageUsersRowSortTerm = 5
-	PageUsersRowOrderByID      PageUsersRowSortCol  = 2
-	OrderPageUsersRowIDAsc     PageUsersRowSortTerm = 6
-	OrderPageUsersRowIDDesc    PageUsersRowSortTerm = 7
-	PageUsersRowOrderIDAsc     PageUsersRowSortTerm = 6
-	PageUsersRowOrderIDDesc    PageUsersRowSortTerm = 7
-)
-
-func OrderPageUsersRow(terms ...PageUsersRowSortTerm) runtime.Order {
-	return runtime.PackOrder(terms...)
-}
-
 type PageUsersSortCol uint8
 
 // PageUsersSortTerm is a sort column with a direction, accepted by OrderPageUsers.
@@ -1420,37 +1386,18 @@ func (c PageUsersSortCol) Asc() PageUsersSortTerm  { return PageUsersSortTerm(ru
 func (c PageUsersSortCol) Desc() PageUsersSortTerm { return PageUsersSortTerm(runtime.Desc(uint8(c))) }
 
 const (
-	PageUsersOrderByRole    PageUsersSortCol  = 0
-	OrderPageUsersRoleAsc   PageUsersSortTerm = 2
-	OrderPageUsersRoleDesc  PageUsersSortTerm = 3
-	PageUsersOrderRoleAsc   PageUsersSortTerm = 2
-	PageUsersOrderRoleDesc  PageUsersSortTerm = 3
-	PageUsersOrderByScore   PageUsersSortCol  = 1
-	OrderPageUsersScoreAsc  PageUsersSortTerm = 4
-	OrderPageUsersScoreDesc PageUsersSortTerm = 5
-	PageUsersOrderScoreAsc  PageUsersSortTerm = 4
-	PageUsersOrderScoreDesc PageUsersSortTerm = 5
-	PageUsersOrderByID      PageUsersSortCol  = 2
-	OrderPageUsersIDAsc     PageUsersSortTerm = 6
-	OrderPageUsersIDDesc    PageUsersSortTerm = 7
-	PageUsersOrderIDAsc     PageUsersSortTerm = 6
-	PageUsersOrderIDDesc    PageUsersSortTerm = 7
+	PageUsersOrderByRole  PageUsersSortCol = 0
+	PageUsersOrderByScore PageUsersSortCol = 1
+	PageUsersOrderByID    PageUsersSortCol = 2
 )
 
 func OrderPageUsers(terms ...PageUsersSortTerm) runtime.Order {
 	return runtime.PackOrder(terms...)
 }
 
-func (r PageUsersRow) Seek() runtime.Seek {
-	return runtime.NewSeek(r.Role, r.Score, r.ID)
-}
-
-func SeekPageUsersRow(row PageUsersRow) runtime.Seek {
-	return row.Seek()
-}
-
+// SeekPageUsers returns the keyset cursor positioned after row.
 func SeekPageUsers(row PageUsersRow) runtime.Seek {
-	return row.Seek()
+	return runtime.NewSeek(row.Role, row.Score, row.ID)
 }
 
 type PageUsersParams struct {
@@ -3260,41 +3207,6 @@ const (
 	PageQuadColsAll      uint64 = (1 << 4) - 1
 )
 
-type QuadItemSortCol uint8
-
-// QuadItemSortTerm is a sort column with a direction, accepted by OrderQuadItem.
-type QuadItemSortTerm uint8
-
-func (c QuadItemSortCol) Asc() QuadItemSortTerm  { return QuadItemSortTerm(runtime.Asc(uint8(c))) }
-func (c QuadItemSortCol) Desc() QuadItemSortTerm { return QuadItemSortTerm(runtime.Desc(uint8(c))) }
-
-const (
-	QuadItemOrderByGroupKey    QuadItemSortCol  = 0
-	OrderQuadItemGroupKeyAsc   QuadItemSortTerm = 2
-	OrderQuadItemGroupKeyDesc  QuadItemSortTerm = 3
-	QuadItemOrderGroupKeyAsc   QuadItemSortTerm = 2
-	QuadItemOrderGroupKeyDesc  QuadItemSortTerm = 3
-	QuadItemOrderByPriority    QuadItemSortCol  = 1
-	OrderQuadItemPriorityAsc   QuadItemSortTerm = 4
-	OrderQuadItemPriorityDesc  QuadItemSortTerm = 5
-	QuadItemOrderPriorityAsc   QuadItemSortTerm = 4
-	QuadItemOrderPriorityDesc  QuadItemSortTerm = 5
-	QuadItemOrderByCreatedTs   QuadItemSortCol  = 2
-	OrderQuadItemCreatedTsAsc  QuadItemSortTerm = 6
-	OrderQuadItemCreatedTsDesc QuadItemSortTerm = 7
-	QuadItemOrderCreatedTsAsc  QuadItemSortTerm = 6
-	QuadItemOrderCreatedTsDesc QuadItemSortTerm = 7
-	QuadItemOrderByID          QuadItemSortCol  = 3
-	OrderQuadItemIDAsc         QuadItemSortTerm = 8
-	OrderQuadItemIDDesc        QuadItemSortTerm = 9
-	QuadItemOrderIDAsc         QuadItemSortTerm = 8
-	QuadItemOrderIDDesc        QuadItemSortTerm = 9
-)
-
-func OrderQuadItem(terms ...QuadItemSortTerm) runtime.Order {
-	return runtime.PackOrder(terms...)
-}
-
 type PageQuadSortCol uint8
 
 // PageQuadSortTerm is a sort column with a direction, accepted by OrderPageQuad.
@@ -3304,42 +3216,19 @@ func (c PageQuadSortCol) Asc() PageQuadSortTerm  { return PageQuadSortTerm(runti
 func (c PageQuadSortCol) Desc() PageQuadSortTerm { return PageQuadSortTerm(runtime.Desc(uint8(c))) }
 
 const (
-	PageQuadOrderByGroupKey    PageQuadSortCol  = 0
-	OrderPageQuadGroupKeyAsc   PageQuadSortTerm = 2
-	OrderPageQuadGroupKeyDesc  PageQuadSortTerm = 3
-	PageQuadOrderGroupKeyAsc   PageQuadSortTerm = 2
-	PageQuadOrderGroupKeyDesc  PageQuadSortTerm = 3
-	PageQuadOrderByPriority    PageQuadSortCol  = 1
-	OrderPageQuadPriorityAsc   PageQuadSortTerm = 4
-	OrderPageQuadPriorityDesc  PageQuadSortTerm = 5
-	PageQuadOrderPriorityAsc   PageQuadSortTerm = 4
-	PageQuadOrderPriorityDesc  PageQuadSortTerm = 5
-	PageQuadOrderByCreatedTs   PageQuadSortCol  = 2
-	OrderPageQuadCreatedTsAsc  PageQuadSortTerm = 6
-	OrderPageQuadCreatedTsDesc PageQuadSortTerm = 7
-	PageQuadOrderCreatedTsAsc  PageQuadSortTerm = 6
-	PageQuadOrderCreatedTsDesc PageQuadSortTerm = 7
-	PageQuadOrderByID          PageQuadSortCol  = 3
-	OrderPageQuadIDAsc         PageQuadSortTerm = 8
-	OrderPageQuadIDDesc        PageQuadSortTerm = 9
-	PageQuadOrderIDAsc         PageQuadSortTerm = 8
-	PageQuadOrderIDDesc        PageQuadSortTerm = 9
+	PageQuadOrderByGroupKey  PageQuadSortCol = 0
+	PageQuadOrderByPriority  PageQuadSortCol = 1
+	PageQuadOrderByCreatedTs PageQuadSortCol = 2
+	PageQuadOrderByID        PageQuadSortCol = 3
 )
 
 func OrderPageQuad(terms ...PageQuadSortTerm) runtime.Order {
 	return runtime.PackOrder(terms...)
 }
 
-func (r QuadItem) Seek() runtime.Seek {
-	return runtime.NewSeek(r.GroupKey, r.Priority, r.CreatedTs, r.ID)
-}
-
-func SeekQuadItem(row QuadItem) runtime.Seek {
-	return row.Seek()
-}
-
+// SeekPageQuad returns the keyset cursor positioned after row.
 func SeekPageQuad(row QuadItem) runtime.Seek {
-	return row.Seek()
+	return runtime.NewSeek(row.GroupKey, row.Priority, row.CreatedTs, row.ID)
 }
 
 type PageQuadParams struct {

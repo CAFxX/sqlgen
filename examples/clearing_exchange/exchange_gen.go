@@ -2923,45 +2923,6 @@ const (
 	QueryRiskPositionsPageColsAll               uint64 = (1 << 8) - 1
 )
 
-type RiskPositionViewSortCol uint8
-
-// RiskPositionViewSortTerm is a sort column with a direction, accepted by OrderRiskPositionView.
-type RiskPositionViewSortTerm uint8
-
-func (c RiskPositionViewSortCol) Asc() RiskPositionViewSortTerm {
-	return RiskPositionViewSortTerm(runtime.Asc(uint8(c)))
-}
-func (c RiskPositionViewSortCol) Desc() RiskPositionViewSortTerm {
-	return RiskPositionViewSortTerm(runtime.Desc(uint8(c)))
-}
-
-const (
-	RiskPositionViewOrderByNotionalCents        RiskPositionViewSortCol  = 0
-	OrderRiskPositionViewNotionalCentsAsc       RiskPositionViewSortTerm = 2
-	OrderRiskPositionViewNotionalCentsDesc      RiskPositionViewSortTerm = 3
-	RiskPositionViewOrderNotionalCentsAsc       RiskPositionViewSortTerm = 2
-	RiskPositionViewOrderNotionalCentsDesc      RiskPositionViewSortTerm = 3
-	RiskPositionViewOrderByUnrealizedPnlCents   RiskPositionViewSortCol  = 1
-	OrderRiskPositionViewUnrealizedPnlCentsAsc  RiskPositionViewSortTerm = 4
-	OrderRiskPositionViewUnrealizedPnlCentsDesc RiskPositionViewSortTerm = 5
-	RiskPositionViewOrderUnrealizedPnlCentsAsc  RiskPositionViewSortTerm = 4
-	RiskPositionViewOrderUnrealizedPnlCentsDesc RiskPositionViewSortTerm = 5
-	RiskPositionViewOrderByUpdatedSeq           RiskPositionViewSortCol  = 2
-	OrderRiskPositionViewUpdatedSeqAsc          RiskPositionViewSortTerm = 6
-	OrderRiskPositionViewUpdatedSeqDesc         RiskPositionViewSortTerm = 7
-	RiskPositionViewOrderUpdatedSeqAsc          RiskPositionViewSortTerm = 6
-	RiskPositionViewOrderUpdatedSeqDesc         RiskPositionViewSortTerm = 7
-	RiskPositionViewOrderByPositionID           RiskPositionViewSortCol  = 3
-	OrderRiskPositionViewPositionIDAsc          RiskPositionViewSortTerm = 8
-	OrderRiskPositionViewPositionIDDesc         RiskPositionViewSortTerm = 9
-	RiskPositionViewOrderPositionIDAsc          RiskPositionViewSortTerm = 8
-	RiskPositionViewOrderPositionIDDesc         RiskPositionViewSortTerm = 9
-)
-
-func OrderRiskPositionView(terms ...RiskPositionViewSortTerm) runtime.Order {
-	return runtime.PackOrder(terms...)
-}
-
 type QueryRiskPositionsPageSortCol uint8
 
 // QueryRiskPositionsPageSortTerm is a sort column with a direction, accepted by OrderQueryRiskPositionsPage.
@@ -2975,42 +2936,19 @@ func (c QueryRiskPositionsPageSortCol) Desc() QueryRiskPositionsPageSortTerm {
 }
 
 const (
-	QueryRiskPositionsPageOrderByNotionalCents        QueryRiskPositionsPageSortCol  = 0
-	OrderQueryRiskPositionsPageNotionalCentsAsc       QueryRiskPositionsPageSortTerm = 2
-	OrderQueryRiskPositionsPageNotionalCentsDesc      QueryRiskPositionsPageSortTerm = 3
-	QueryRiskPositionsPageOrderNotionalCentsAsc       QueryRiskPositionsPageSortTerm = 2
-	QueryRiskPositionsPageOrderNotionalCentsDesc      QueryRiskPositionsPageSortTerm = 3
-	QueryRiskPositionsPageOrderByUnrealizedPnlCents   QueryRiskPositionsPageSortCol  = 1
-	OrderQueryRiskPositionsPageUnrealizedPnlCentsAsc  QueryRiskPositionsPageSortTerm = 4
-	OrderQueryRiskPositionsPageUnrealizedPnlCentsDesc QueryRiskPositionsPageSortTerm = 5
-	QueryRiskPositionsPageOrderUnrealizedPnlCentsAsc  QueryRiskPositionsPageSortTerm = 4
-	QueryRiskPositionsPageOrderUnrealizedPnlCentsDesc QueryRiskPositionsPageSortTerm = 5
-	QueryRiskPositionsPageOrderByUpdatedSeq           QueryRiskPositionsPageSortCol  = 2
-	OrderQueryRiskPositionsPageUpdatedSeqAsc          QueryRiskPositionsPageSortTerm = 6
-	OrderQueryRiskPositionsPageUpdatedSeqDesc         QueryRiskPositionsPageSortTerm = 7
-	QueryRiskPositionsPageOrderUpdatedSeqAsc          QueryRiskPositionsPageSortTerm = 6
-	QueryRiskPositionsPageOrderUpdatedSeqDesc         QueryRiskPositionsPageSortTerm = 7
-	QueryRiskPositionsPageOrderByPositionID           QueryRiskPositionsPageSortCol  = 3
-	OrderQueryRiskPositionsPagePositionIDAsc          QueryRiskPositionsPageSortTerm = 8
-	OrderQueryRiskPositionsPagePositionIDDesc         QueryRiskPositionsPageSortTerm = 9
-	QueryRiskPositionsPageOrderPositionIDAsc          QueryRiskPositionsPageSortTerm = 8
-	QueryRiskPositionsPageOrderPositionIDDesc         QueryRiskPositionsPageSortTerm = 9
+	QueryRiskPositionsPageOrderByNotionalCents      QueryRiskPositionsPageSortCol = 0
+	QueryRiskPositionsPageOrderByUnrealizedPnlCents QueryRiskPositionsPageSortCol = 1
+	QueryRiskPositionsPageOrderByUpdatedSeq         QueryRiskPositionsPageSortCol = 2
+	QueryRiskPositionsPageOrderByPositionID         QueryRiskPositionsPageSortCol = 3
 )
 
 func OrderQueryRiskPositionsPage(terms ...QueryRiskPositionsPageSortTerm) runtime.Order {
 	return runtime.PackOrder(terms...)
 }
 
-func (r RiskPositionView) Seek() runtime.Seek {
-	return runtime.NewSeek(r.NotionalCents, r.UnrealizedPnlCents, r.UpdatedSeq, r.PositionID)
-}
-
-func SeekRiskPositionView(row RiskPositionView) runtime.Seek {
-	return row.Seek()
-}
-
+// SeekQueryRiskPositionsPage returns the keyset cursor positioned after row.
 func SeekQueryRiskPositionsPage(row RiskPositionView) runtime.Seek {
-	return row.Seek()
+	return runtime.NewSeek(row.NotionalCents, row.UnrealizedPnlCents, row.UpdatedSeq, row.PositionID)
 }
 
 type QueryRiskPositionsPageParams struct {

@@ -547,11 +547,11 @@ func runClearingExchangeStressSuite(t *testing.T, mode string, db *sql.DB) {
 	}
 
 	// 7. Verify 3-level nested curried sqlgen.Query composition + coupled {?Flag} + SelectCols + 4-column Order/Seek pagination
-	mixedOrder := OrderRiskPositionView(
-		RiskPositionViewOrderByNotionalCents.Desc(),
-		RiskPositionViewOrderByUnrealizedPnlCents.Asc(),
-		RiskPositionViewOrderByUpdatedSeq.Desc(),
-		RiskPositionViewOrderByPositionID.Asc(),
+	mixedOrder := OrderQueryRiskPositionsPage(
+		QueryRiskPositionsPageOrderByNotionalCents.Desc(),
+		QueryRiskPositionsPageOrderByUnrealizedPnlCents.Asc(),
+		QueryRiskPositionsPageOrderByUpdatedSeq.Desc(),
+		QueryRiskPositionsPageOrderByPositionID.Asc(),
 	)
 	baseFilter := RiskQueryFilter{
 		FirmIDs:          []int64{4, 2, 1, 3}, // unsorted input slice to exercise presorting inside EligibleAccountsSubquery
@@ -612,7 +612,7 @@ func runClearingExchangeStressSuite(t *testing.T, mode string, db *sql.DB) {
 		FilterAccounts:    true,
 		AccountIDs:        []int64{3, 1, 2}, // unsorted to trigger ASC presort
 		SelectCols:        subsetMask,
-		Order:             OrderRiskPositionView(RiskPositionViewOrderByNotionalCents.Asc()),
+		Order:             OrderQueryRiskPositionsPage(QueryRiskPositionsPageOrderByNotionalCents.Asc()),
 		Limit:             10,
 	}
 	var seqCount int

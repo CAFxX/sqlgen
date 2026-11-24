@@ -391,7 +391,7 @@ func (e *ClearingEngine) CollectAllRiskPositions(ctx context.Context, cfg RiskQu
 		if int64(len(page)) < pageSize {
 			break
 		}
-		cursor = SeekRiskPositionView(page[len(page)-1])
+		cursor = SeekQueryRiskPositionsPage(page[len(page)-1])
 	}
 	return all, nil
 }

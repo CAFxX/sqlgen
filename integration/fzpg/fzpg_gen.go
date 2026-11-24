@@ -1808,81 +1808,6 @@ const (
 	FzPageColsAll uint64 = (1 << 13) - 1
 )
 
-type FzRowSortCol uint8
-
-// FzRowSortTerm is a sort column with a direction, accepted by OrderFzRow.
-type FzRowSortTerm uint8
-
-func (c FzRowSortCol) Asc() FzRowSortTerm  { return FzRowSortTerm(runtime.Asc(uint8(c))) }
-func (c FzRowSortCol) Desc() FzRowSortTerm { return FzRowSortTerm(runtime.Desc(uint8(c))) }
-
-const (
-	FzRowOrderByGrp    FzRowSortCol  = 0
-	OrderFzRowGrpAsc   FzRowSortTerm = 2
-	OrderFzRowGrpDesc  FzRowSortTerm = 3
-	FzRowOrderGrpAsc   FzRowSortTerm = 2
-	FzRowOrderGrpDesc  FzRowSortTerm = 3
-	FzRowOrderByK1     FzRowSortCol  = 1
-	OrderFzRowK1Asc    FzRowSortTerm = 4
-	OrderFzRowK1Desc   FzRowSortTerm = 5
-	FzRowOrderK1Asc    FzRowSortTerm = 4
-	FzRowOrderK1Desc   FzRowSortTerm = 5
-	FzRowOrderByK2     FzRowSortCol  = 2
-	OrderFzRowK2Asc    FzRowSortTerm = 6
-	OrderFzRowK2Desc   FzRowSortTerm = 7
-	FzRowOrderK2Asc    FzRowSortTerm = 6
-	FzRowOrderK2Desc   FzRowSortTerm = 7
-	FzRowOrderByK3     FzRowSortCol  = 3
-	OrderFzRowK3Asc    FzRowSortTerm = 8
-	OrderFzRowK3Desc   FzRowSortTerm = 9
-	FzRowOrderK3Asc    FzRowSortTerm = 8
-	FzRowOrderK3Desc   FzRowSortTerm = 9
-	FzRowOrderByK4     FzRowSortCol  = 4
-	OrderFzRowK4Asc    FzRowSortTerm = 10
-	OrderFzRowK4Desc   FzRowSortTerm = 11
-	FzRowOrderK4Asc    FzRowSortTerm = 10
-	FzRowOrderK4Desc   FzRowSortTerm = 11
-	FzRowOrderByK5     FzRowSortCol  = 5
-	OrderFzRowK5Asc    FzRowSortTerm = 12
-	OrderFzRowK5Desc   FzRowSortTerm = 13
-	FzRowOrderK5Asc    FzRowSortTerm = 12
-	FzRowOrderK5Desc   FzRowSortTerm = 13
-	FzRowOrderByK6     FzRowSortCol  = 6
-	OrderFzRowK6Asc    FzRowSortTerm = 14
-	OrderFzRowK6Desc   FzRowSortTerm = 15
-	FzRowOrderK6Asc    FzRowSortTerm = 14
-	FzRowOrderK6Desc   FzRowSortTerm = 15
-	FzRowOrderByK7     FzRowSortCol  = 7
-	OrderFzRowK7Asc    FzRowSortTerm = 16
-	OrderFzRowK7Desc   FzRowSortTerm = 17
-	FzRowOrderK7Asc    FzRowSortTerm = 16
-	FzRowOrderK7Desc   FzRowSortTerm = 17
-	FzRowOrderByK8     FzRowSortCol  = 8
-	OrderFzRowK8Asc    FzRowSortTerm = 18
-	OrderFzRowK8Desc   FzRowSortTerm = 19
-	FzRowOrderK8Asc    FzRowSortTerm = 18
-	FzRowOrderK8Desc   FzRowSortTerm = 19
-	FzRowOrderByTag    FzRowSortCol  = 9
-	OrderFzRowTagAsc   FzRowSortTerm = 20
-	OrderFzRowTagDesc  FzRowSortTerm = 21
-	FzRowOrderTagAsc   FzRowSortTerm = 20
-	FzRowOrderTagDesc  FzRowSortTerm = 21
-	FzRowOrderByTag2   FzRowSortCol  = 10
-	OrderFzRowTag2Asc  FzRowSortTerm = 22
-	OrderFzRowTag2Desc FzRowSortTerm = 23
-	FzRowOrderTag2Asc  FzRowSortTerm = 22
-	FzRowOrderTag2Desc FzRowSortTerm = 23
-	FzRowOrderByID     FzRowSortCol  = 11
-	OrderFzRowIDAsc    FzRowSortTerm = 24
-	OrderFzRowIDDesc   FzRowSortTerm = 25
-	FzRowOrderIDAsc    FzRowSortTerm = 24
-	FzRowOrderIDDesc   FzRowSortTerm = 25
-)
-
-func OrderFzRow(terms ...FzRowSortTerm) runtime.Order {
-	return runtime.PackOrder(terms...)
-}
-
 type FzPageSortCol uint8
 
 // FzPageSortTerm is a sort column with a direction, accepted by OrderFzPage.
@@ -1892,82 +1817,27 @@ func (c FzPageSortCol) Asc() FzPageSortTerm  { return FzPageSortTerm(runtime.Asc
 func (c FzPageSortCol) Desc() FzPageSortTerm { return FzPageSortTerm(runtime.Desc(uint8(c))) }
 
 const (
-	FzPageOrderByGrp    FzPageSortCol  = 0
-	OrderFzPageGrpAsc   FzPageSortTerm = 2
-	OrderFzPageGrpDesc  FzPageSortTerm = 3
-	FzPageOrderGrpAsc   FzPageSortTerm = 2
-	FzPageOrderGrpDesc  FzPageSortTerm = 3
-	FzPageOrderByK1     FzPageSortCol  = 1
-	OrderFzPageK1Asc    FzPageSortTerm = 4
-	OrderFzPageK1Desc   FzPageSortTerm = 5
-	FzPageOrderK1Asc    FzPageSortTerm = 4
-	FzPageOrderK1Desc   FzPageSortTerm = 5
-	FzPageOrderByK2     FzPageSortCol  = 2
-	OrderFzPageK2Asc    FzPageSortTerm = 6
-	OrderFzPageK2Desc   FzPageSortTerm = 7
-	FzPageOrderK2Asc    FzPageSortTerm = 6
-	FzPageOrderK2Desc   FzPageSortTerm = 7
-	FzPageOrderByK3     FzPageSortCol  = 3
-	OrderFzPageK3Asc    FzPageSortTerm = 8
-	OrderFzPageK3Desc   FzPageSortTerm = 9
-	FzPageOrderK3Asc    FzPageSortTerm = 8
-	FzPageOrderK3Desc   FzPageSortTerm = 9
-	FzPageOrderByK4     FzPageSortCol  = 4
-	OrderFzPageK4Asc    FzPageSortTerm = 10
-	OrderFzPageK4Desc   FzPageSortTerm = 11
-	FzPageOrderK4Asc    FzPageSortTerm = 10
-	FzPageOrderK4Desc   FzPageSortTerm = 11
-	FzPageOrderByK5     FzPageSortCol  = 5
-	OrderFzPageK5Asc    FzPageSortTerm = 12
-	OrderFzPageK5Desc   FzPageSortTerm = 13
-	FzPageOrderK5Asc    FzPageSortTerm = 12
-	FzPageOrderK5Desc   FzPageSortTerm = 13
-	FzPageOrderByK6     FzPageSortCol  = 6
-	OrderFzPageK6Asc    FzPageSortTerm = 14
-	OrderFzPageK6Desc   FzPageSortTerm = 15
-	FzPageOrderK6Asc    FzPageSortTerm = 14
-	FzPageOrderK6Desc   FzPageSortTerm = 15
-	FzPageOrderByK7     FzPageSortCol  = 7
-	OrderFzPageK7Asc    FzPageSortTerm = 16
-	OrderFzPageK7Desc   FzPageSortTerm = 17
-	FzPageOrderK7Asc    FzPageSortTerm = 16
-	FzPageOrderK7Desc   FzPageSortTerm = 17
-	FzPageOrderByK8     FzPageSortCol  = 8
-	OrderFzPageK8Asc    FzPageSortTerm = 18
-	OrderFzPageK8Desc   FzPageSortTerm = 19
-	FzPageOrderK8Asc    FzPageSortTerm = 18
-	FzPageOrderK8Desc   FzPageSortTerm = 19
-	FzPageOrderByTag    FzPageSortCol  = 9
-	OrderFzPageTagAsc   FzPageSortTerm = 20
-	OrderFzPageTagDesc  FzPageSortTerm = 21
-	FzPageOrderTagAsc   FzPageSortTerm = 20
-	FzPageOrderTagDesc  FzPageSortTerm = 21
-	FzPageOrderByTag2   FzPageSortCol  = 10
-	OrderFzPageTag2Asc  FzPageSortTerm = 22
-	OrderFzPageTag2Desc FzPageSortTerm = 23
-	FzPageOrderTag2Asc  FzPageSortTerm = 22
-	FzPageOrderTag2Desc FzPageSortTerm = 23
-	FzPageOrderByID     FzPageSortCol  = 11
-	OrderFzPageIDAsc    FzPageSortTerm = 24
-	OrderFzPageIDDesc   FzPageSortTerm = 25
-	FzPageOrderIDAsc    FzPageSortTerm = 24
-	FzPageOrderIDDesc   FzPageSortTerm = 25
+	FzPageOrderByGrp  FzPageSortCol = 0
+	FzPageOrderByK1   FzPageSortCol = 1
+	FzPageOrderByK2   FzPageSortCol = 2
+	FzPageOrderByK3   FzPageSortCol = 3
+	FzPageOrderByK4   FzPageSortCol = 4
+	FzPageOrderByK5   FzPageSortCol = 5
+	FzPageOrderByK6   FzPageSortCol = 6
+	FzPageOrderByK7   FzPageSortCol = 7
+	FzPageOrderByK8   FzPageSortCol = 8
+	FzPageOrderByTag  FzPageSortCol = 9
+	FzPageOrderByTag2 FzPageSortCol = 10
+	FzPageOrderByID   FzPageSortCol = 11
 )
 
 func OrderFzPage(terms ...FzPageSortTerm) runtime.Order {
 	return runtime.PackOrder(terms...)
 }
 
-func (r FzRow) Seek() runtime.Seek {
-	return runtime.NewSeek(r.Grp, r.K1, r.K2, r.K3, r.K4, r.K5, r.K6, r.K7, r.K8, r.Tag, r.Tag2, r.ID)
-}
-
-func SeekFzRow(row FzRow) runtime.Seek {
-	return row.Seek()
-}
-
+// SeekFzPage returns the keyset cursor positioned after row.
 func SeekFzPage(row FzRow) runtime.Seek {
-	return row.Seek()
+	return runtime.NewSeek(row.Grp, row.K1, row.K2, row.K3, row.K4, row.K5, row.K6, row.K7, row.K8, row.Tag, row.Tag2, row.ID)
 }
 
 type FzPageParams struct {
@@ -4643,43 +4513,6 @@ const (
 	FzTypedPageColsAll uint64 = (1 << 6) - 1
 )
 
-type FzTypedRowSortCol uint8
-
-// FzTypedRowSortTerm is a sort column with a direction, accepted by OrderFzTypedRow.
-type FzTypedRowSortTerm uint8
-
-func (c FzTypedRowSortCol) Asc() FzTypedRowSortTerm { return FzTypedRowSortTerm(runtime.Asc(uint8(c))) }
-func (c FzTypedRowSortCol) Desc() FzTypedRowSortTerm {
-	return FzTypedRowSortTerm(runtime.Desc(uint8(c)))
-}
-
-const (
-	FzTypedRowOrderByF64    FzTypedRowSortCol  = 0
-	OrderFzTypedRowF64Asc   FzTypedRowSortTerm = 2
-	OrderFzTypedRowF64Desc  FzTypedRowSortTerm = 3
-	FzTypedRowOrderF64Asc   FzTypedRowSortTerm = 2
-	FzTypedRowOrderF64Desc  FzTypedRowSortTerm = 3
-	FzTypedRowOrderByI32    FzTypedRowSortCol  = 1
-	OrderFzTypedRowI32Asc   FzTypedRowSortTerm = 4
-	OrderFzTypedRowI32Desc  FzTypedRowSortTerm = 5
-	FzTypedRowOrderI32Asc   FzTypedRowSortTerm = 4
-	FzTypedRowOrderI32Desc  FzTypedRowSortTerm = 5
-	FzTypedRowOrderByFlag   FzTypedRowSortCol  = 2
-	OrderFzTypedRowFlagAsc  FzTypedRowSortTerm = 6
-	OrderFzTypedRowFlagDesc FzTypedRowSortTerm = 7
-	FzTypedRowOrderFlagAsc  FzTypedRowSortTerm = 6
-	FzTypedRowOrderFlagDesc FzTypedRowSortTerm = 7
-	FzTypedRowOrderByID     FzTypedRowSortCol  = 3
-	OrderFzTypedRowIDAsc    FzTypedRowSortTerm = 8
-	OrderFzTypedRowIDDesc   FzTypedRowSortTerm = 9
-	FzTypedRowOrderIDAsc    FzTypedRowSortTerm = 8
-	FzTypedRowOrderIDDesc   FzTypedRowSortTerm = 9
-)
-
-func OrderFzTypedRow(terms ...FzTypedRowSortTerm) runtime.Order {
-	return runtime.PackOrder(terms...)
-}
-
 type FzTypedPageSortCol uint8
 
 // FzTypedPageSortTerm is a sort column with a direction, accepted by OrderFzTypedPage.
@@ -4693,42 +4526,19 @@ func (c FzTypedPageSortCol) Desc() FzTypedPageSortTerm {
 }
 
 const (
-	FzTypedPageOrderByF64    FzTypedPageSortCol  = 0
-	OrderFzTypedPageF64Asc   FzTypedPageSortTerm = 2
-	OrderFzTypedPageF64Desc  FzTypedPageSortTerm = 3
-	FzTypedPageOrderF64Asc   FzTypedPageSortTerm = 2
-	FzTypedPageOrderF64Desc  FzTypedPageSortTerm = 3
-	FzTypedPageOrderByI32    FzTypedPageSortCol  = 1
-	OrderFzTypedPageI32Asc   FzTypedPageSortTerm = 4
-	OrderFzTypedPageI32Desc  FzTypedPageSortTerm = 5
-	FzTypedPageOrderI32Asc   FzTypedPageSortTerm = 4
-	FzTypedPageOrderI32Desc  FzTypedPageSortTerm = 5
-	FzTypedPageOrderByFlag   FzTypedPageSortCol  = 2
-	OrderFzTypedPageFlagAsc  FzTypedPageSortTerm = 6
-	OrderFzTypedPageFlagDesc FzTypedPageSortTerm = 7
-	FzTypedPageOrderFlagAsc  FzTypedPageSortTerm = 6
-	FzTypedPageOrderFlagDesc FzTypedPageSortTerm = 7
-	FzTypedPageOrderByID     FzTypedPageSortCol  = 3
-	OrderFzTypedPageIDAsc    FzTypedPageSortTerm = 8
-	OrderFzTypedPageIDDesc   FzTypedPageSortTerm = 9
-	FzTypedPageOrderIDAsc    FzTypedPageSortTerm = 8
-	FzTypedPageOrderIDDesc   FzTypedPageSortTerm = 9
+	FzTypedPageOrderByF64  FzTypedPageSortCol = 0
+	FzTypedPageOrderByI32  FzTypedPageSortCol = 1
+	FzTypedPageOrderByFlag FzTypedPageSortCol = 2
+	FzTypedPageOrderByID   FzTypedPageSortCol = 3
 )
 
 func OrderFzTypedPage(terms ...FzTypedPageSortTerm) runtime.Order {
 	return runtime.PackOrder(terms...)
 }
 
-func (r FzTypedRow) Seek() runtime.Seek {
-	return runtime.NewSeek(r.F64, r.I32, r.Flag, r.ID)
-}
-
-func SeekFzTypedRow(row FzTypedRow) runtime.Seek {
-	return row.Seek()
-}
-
+// SeekFzTypedPage returns the keyset cursor positioned after row.
 func SeekFzTypedPage(row FzTypedRow) runtime.Seek {
-	return row.Seek()
+	return runtime.NewSeek(row.F64, row.I32, row.Flag, row.ID)
 }
 
 type paramsFzTypedPage struct {

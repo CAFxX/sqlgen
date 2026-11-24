@@ -438,43 +438,6 @@ const (
 	ListMembersPaginatedColsAll      uint64 = (1 << 6) - 1
 )
 
-type MemberItemSortCol uint8
-
-// MemberItemSortTerm is a sort column with a direction, accepted by OrderMemberItem.
-type MemberItemSortTerm uint8
-
-func (c MemberItemSortCol) Asc() MemberItemSortTerm { return MemberItemSortTerm(runtime.Asc(uint8(c))) }
-func (c MemberItemSortCol) Desc() MemberItemSortTerm {
-	return MemberItemSortTerm(runtime.Desc(uint8(c)))
-}
-
-const (
-	MemberItemOrderByRole        MemberItemSortCol  = 0
-	OrderMemberItemRoleAsc       MemberItemSortTerm = 2
-	OrderMemberItemRoleDesc      MemberItemSortTerm = 3
-	MemberItemOrderRoleAsc       MemberItemSortTerm = 2
-	MemberItemOrderRoleDesc      MemberItemSortTerm = 3
-	MemberItemOrderByScore       MemberItemSortCol  = 1
-	OrderMemberItemScoreAsc      MemberItemSortTerm = 4
-	OrderMemberItemScoreDesc     MemberItemSortTerm = 5
-	MemberItemOrderScoreAsc      MemberItemSortTerm = 4
-	MemberItemOrderScoreDesc     MemberItemSortTerm = 5
-	MemberItemOrderByCreatedAt   MemberItemSortCol  = 2
-	OrderMemberItemCreatedAtAsc  MemberItemSortTerm = 6
-	OrderMemberItemCreatedAtDesc MemberItemSortTerm = 7
-	MemberItemOrderCreatedAtAsc  MemberItemSortTerm = 6
-	MemberItemOrderCreatedAtDesc MemberItemSortTerm = 7
-	MemberItemOrderByID          MemberItemSortCol  = 3
-	OrderMemberItemIDAsc         MemberItemSortTerm = 8
-	OrderMemberItemIDDesc        MemberItemSortTerm = 9
-	MemberItemOrderIDAsc         MemberItemSortTerm = 8
-	MemberItemOrderIDDesc        MemberItemSortTerm = 9
-)
-
-func OrderMemberItem(terms ...MemberItemSortTerm) runtime.Order {
-	return runtime.PackOrder(terms...)
-}
-
 type ListMembersPaginatedSortCol uint8
 
 // ListMembersPaginatedSortTerm is a sort column with a direction, accepted by OrderListMembersPaginated.
@@ -488,42 +451,19 @@ func (c ListMembersPaginatedSortCol) Desc() ListMembersPaginatedSortTerm {
 }
 
 const (
-	ListMembersPaginatedOrderByRole        ListMembersPaginatedSortCol  = 0
-	OrderListMembersPaginatedRoleAsc       ListMembersPaginatedSortTerm = 2
-	OrderListMembersPaginatedRoleDesc      ListMembersPaginatedSortTerm = 3
-	ListMembersPaginatedOrderRoleAsc       ListMembersPaginatedSortTerm = 2
-	ListMembersPaginatedOrderRoleDesc      ListMembersPaginatedSortTerm = 3
-	ListMembersPaginatedOrderByScore       ListMembersPaginatedSortCol  = 1
-	OrderListMembersPaginatedScoreAsc      ListMembersPaginatedSortTerm = 4
-	OrderListMembersPaginatedScoreDesc     ListMembersPaginatedSortTerm = 5
-	ListMembersPaginatedOrderScoreAsc      ListMembersPaginatedSortTerm = 4
-	ListMembersPaginatedOrderScoreDesc     ListMembersPaginatedSortTerm = 5
-	ListMembersPaginatedOrderByCreatedAt   ListMembersPaginatedSortCol  = 2
-	OrderListMembersPaginatedCreatedAtAsc  ListMembersPaginatedSortTerm = 6
-	OrderListMembersPaginatedCreatedAtDesc ListMembersPaginatedSortTerm = 7
-	ListMembersPaginatedOrderCreatedAtAsc  ListMembersPaginatedSortTerm = 6
-	ListMembersPaginatedOrderCreatedAtDesc ListMembersPaginatedSortTerm = 7
-	ListMembersPaginatedOrderByID          ListMembersPaginatedSortCol  = 3
-	OrderListMembersPaginatedIDAsc         ListMembersPaginatedSortTerm = 8
-	OrderListMembersPaginatedIDDesc        ListMembersPaginatedSortTerm = 9
-	ListMembersPaginatedOrderIDAsc         ListMembersPaginatedSortTerm = 8
-	ListMembersPaginatedOrderIDDesc        ListMembersPaginatedSortTerm = 9
+	ListMembersPaginatedOrderByRole      ListMembersPaginatedSortCol = 0
+	ListMembersPaginatedOrderByScore     ListMembersPaginatedSortCol = 1
+	ListMembersPaginatedOrderByCreatedAt ListMembersPaginatedSortCol = 2
+	ListMembersPaginatedOrderByID        ListMembersPaginatedSortCol = 3
 )
 
 func OrderListMembersPaginated(terms ...ListMembersPaginatedSortTerm) runtime.Order {
 	return runtime.PackOrder(terms...)
 }
 
-func (r MemberItem) Seek() runtime.Seek {
-	return runtime.NewSeek(r.Role, r.Score, r.CreatedAt, r.ID)
-}
-
-func SeekMemberItem(row MemberItem) runtime.Seek {
-	return row.Seek()
-}
-
+// SeekListMembersPaginated returns the keyset cursor positioned after row.
 func SeekListMembersPaginated(row MemberItem) runtime.Seek {
-	return row.Seek()
+	return runtime.NewSeek(row.Role, row.Score, row.CreatedAt, row.ID)
 }
 
 type ListMembersPaginatedParams struct {

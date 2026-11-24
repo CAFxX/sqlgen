@@ -85,9 +85,10 @@ func TestOrderTokensOfOtherStatementsDoNotCompile(t *testing.T) {
 		t.Fatalf("matching tokens must type-check: %v", errs)
 	}
 	for name, extra := range map[string]string{
-		"other statement's token": "\nvar _ = OrderA(BOrderByY.Asc())\n",
-		"other statement's const": "\nvar _ = OrderB(OrderAXAsc)\n",
-		"plain uint8":             "\nvar _ = OrderA(uint8(2))\n",
+		"other statement's token":    "\nvar _ = OrderA(BOrderByY.Asc())\n",
+		"column without a direction": "\nvar _ = OrderA(AOrderByX)\n",
+		"other statement's column":   "\nvar _ = OrderB(AOrderByX)\n",
+		"plain uint8":                "\nvar _ = OrderA(uint8(2))\n",
 	} {
 		if errs := check(extra); len(errs) == 0 {
 			t.Errorf("%s: must not compile", name)
