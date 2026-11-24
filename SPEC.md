@@ -1021,7 +1021,7 @@ go test -bench=. -benchmem ./runtime
 (cd mysqlwire && go vet ./... && go test -race -count=1 -cover ./...)      # >= 90% with the MySQL/MariaDB/TiDB engines up
 (cd integration && SQLGEN_REQUIRE_ENGINES=1 go test -race -count=1 -timeout 15m ./...)
 # Real engines (docker-compose.yml, scripts/engines-env.sh, CI matrix): postgres15 postgres18 cockroach yugabyte
-# mysql84 mysql97 mariadb1011 mariadb123 tidb. YugabyteDB (PostgreSQL family, dialect postgres) runs the SMOKE_RUN
-# subset per push (make test-integration SMOKE=1) and the full suite nightly (.github/workflows/nightly.yml);
+# mysql84 mysql97 mariadb1011 mariadb123 tidb. YugabyteDB (PostgreSQL family, dialect postgres) runs the full suite
+# per push (SMOKE=1 is only a quick local subset); .github/workflows/nightly.yml adds a larger-scale fuzz soak;
 # TiDB (MySQL family, dialect mysql, no RETURNING) runs the full suite per push.
 ```

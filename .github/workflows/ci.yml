@@ -48,19 +48,16 @@ jobs:
 
   # Real engines: the same docker-compose.yml used locally (`make engines-up`), one engine per job so a
   # failure names the engine/version. SQLGEN_REQUIRE_ENGINES=1 turns a missing DSN into a failure,
-  # so this job can never go green by skipping. YugabyteDB is the light tier here (smoke=1: the SMOKE_RUN
-  # subset of the integration suite, see the Makefile); .github/workflows/nightly.yml runs its full suite.
+  # so this job can never go green by skipping. Every engine runs the full suite per push (YugabyteDB's ~5 min
+  # runs in parallel and is shorter than the cockroach and test jobs, so it does not lengthen the gate);
+  # .github/workflows/nightly.yml adds the larger-scale fuzz soak.
   engines:
     runs-on: ubuntu-latest
     timeout-minutes: 20
     strategy:
       fail-fast: false
       matrix:
-        engine: [postgres15, postgres18, cockroach, mysql84, mysql97, mariadb1011, mariadb123, tidb]
-        smoke: ['']
-        include:
-          - engine: yugabyte
-            smoke: '1'
+        engine: [postgres15, postgres18, cockroach, mysql84, mysql97, mariadb1011, mariadb123, tidb, yugabyte]
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
@@ -74,7 +71,7 @@ jobs:
       - name: start ${{ matrix.engine }}
         run: make engines-up ENGINES=${{ matrix.engine }}
       - name: integration tests against ${{ matrix.engine }}
-        run: make test-integration ENGINES=${{ matrix.engine }} SMOKE=${{ matrix.smoke }} INTEG_TIMEOUT=15m GOTESTFLAGS=-v
+        run: make test-integration ENGINES=${{ matrix.engine }} INTEG_TIMEOUT=15m GOTESTFLAGS=-v
       # The pgxwire driver (single-round-trip pipelines) has its own tests against the PostgreSQL-protocol
       # engines; the integration module above additionally runs the wire-vs-sequential differential,
       # the network round-trip counts and the failure/concurrency tests through it.

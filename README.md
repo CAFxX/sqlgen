@@ -69,8 +69,7 @@ Unreleased (pre-1.0). The generated API and the YAML format may still change.
 
 The CI matrix runs the whole suite against real servers with real drivers (`pgx`, `go-sql-driver/mysql`):
 PostgreSQL 15 and 18, CockroachDB, YugabyteDB 2025.2, MySQL 8.4 and 9.7, MariaDB 10.11 and 12.3, TiDB 8.5, plus SQLite
-(`modernc.org/sqlite`). YugabyteDB runs a smoke subset per push and the whole suite nightly; every other engine runs
-the whole suite per push. See "Engine support" in DOCS.md for what each engine supports. The single-roundtrip pipeline path has one
+(`modernc.org/sqlite`). Every engine runs the whole suite per push; a nightly workflow adds a larger-scale fuzz soak. See "Engine support" in DOCS.md for what each engine supports. The single-roundtrip pipeline path has one
 driver per wire protocol, each a nested module so the main module keeps its two dependencies:
 `github.com/CAFxX/sqlgen/pgxwire` (PostgreSQL 15, 18, CockroachDB and YugabyteDB) and `github.com/CAFxX/sqlgen/mysqlwire`
 (MySQL 8.4, 9.7, MariaDB 10.11, 12.3 and TiDB; it needs `multiStatements`, see DOCS.md 3.4). Both are verified to take
@@ -87,7 +86,7 @@ make test             # hermetic tests (SQLite + mock driver), race detector
 make engines-up       # start every real engine in containers (docker compose); ENGINES=postgres18,mysql84 to select
 make test-engines     # integration suite + both wire drivers against all of them (same ENGINES selection)
 make test-integration ENGINES=postgres18   # only the integration module (also what each CI engine job runs)
-make test-integration ENGINES=yugabyte SMOKE=1   # the per-push smoke subset (SMOKE_RUN in the Makefile; RUN=<regex> for any other)
+make test-integration ENGINES=yugabyte SMOKE=1   # a quick smoke subset (SMOKE_RUN in the Makefile; RUN=<regex> for any other)
 make test-pgxwire ENGINES=postgres18       # the pgxwire driver's own tests (PostgreSQL / CockroachDB / YugabyteDB)
 make test-mysqlwire ENGINES=mysql84        # the mysqlwire driver's own tests (MySQL / MariaDB / TiDB)
 make bench-engines ENGINES=postgres18      # generated call vs hand-written database/sql, PipelineTx wire vs sequential

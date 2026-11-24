@@ -12,8 +12,8 @@ ENGINES ?=
 GOTESTFLAGS ?=
 RUN ?=
 INTEG_TIMEOUT ?= 45m
-# SMOKE=1 runs only the smoke subset of the integration suite (SMOKE_RUN): the per-push tier of the slow engines
-# (YugabyteDB); the nightly workflow runs the full suite there. The subset covers the generated API (batch,
+# SMOKE=1 runs only the smoke subset of the integration suite (SMOKE_RUN): a quick local check on the slow engines
+# (YugabyteDB); CI runs the full suite on every engine. The subset covers the generated API (batch,
 # lookup, keyset, update/delete, retries), the single-round-trip pipelines (guard matrix, differential fuzz,
 # failure paths, round-trip counts) and the seeded differential fuzz.
 SMOKE ?=
