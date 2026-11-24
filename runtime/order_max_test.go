@@ -30,9 +30,9 @@ func TestOrderHonoursEveryTermUpToMaxOrderCols(t *testing.T) {
 		}
 		spec := PackOrder(terms...)
 
-		cols, desc, count, _ := ExpandOrder(spec, n)
+		cols, desc, count, _ := expandOrder(spec, n)
 		if count != n {
-			t.Fatalf("n=%d: ExpandOrder kept %d terms, want %d", n, count, n)
+			t.Fatalf("n=%d: expandOrder kept %d terms, want %d", n, count, n)
 		}
 		for i := 0; i < n; i++ {
 			if want := n - 1 - i; cols[i] != want || desc[i] != (want%2 == 1) {
@@ -58,8 +58,8 @@ func TestOrderHonoursEveryTermUpToMaxOrderCols(t *testing.T) {
 			}
 			var args []any
 			AppendSeekArgs(&args, dialect, spec, n, vals)
-			if want := SeekArgCount(dialect, spec, n, true); len(args) != want {
-				t.Fatalf("n=%d dialect=%v: %d seek args, SeekArgCount says %d", n, dialect, len(args), want)
+			if want := seekArgCount(dialect, spec, n, true); len(args) != want {
+				t.Fatalf("n=%d dialect=%v: %d seek args, seekArgCount says %d", n, dialect, len(args), want)
 			}
 			// The placeholders in the rendered predicate match the arguments appended.
 			var ph int
@@ -170,9 +170,9 @@ func TestPackOrderMarksInvalidTermLists(t *testing.T) {
 		t.Error("the zero Order must be valid")
 	}
 	// The invalid flag must not disturb the terms that were kept.
-	cols, _, count, _ := ExpandOrder(PackOrder(testTerm(Asc(1)), testTerm(Desc(1)), testTerm(Desc(0))), 3)
+	cols, _, count, _ := expandOrder(PackOrder(testTerm(Asc(1)), testTerm(Desc(1)), testTerm(Desc(0))), 3)
 	if count != 3 || cols[0] != 1 || cols[1] != 0 || cols[2] != 2 {
-		t.Errorf("ExpandOrder over an invalid spec: cols=%v count=%d", cols[:count], count)
+		t.Errorf("expandOrder over an invalid spec: cols=%v count=%d", cols[:count], count)
 	}
 }
 

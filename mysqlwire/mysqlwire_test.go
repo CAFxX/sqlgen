@@ -29,6 +29,7 @@ import (
 
 	"github.com/CAFxX/sqlgen/mysqlwire"
 	"github.com/CAFxX/sqlgen/runtime"
+	"github.com/CAFxX/sqlgen/runtime/wire"
 )
 
 type testEngine struct {
@@ -840,8 +841,8 @@ func TestRawConnectionContract(t *testing.T) {
 		}
 		defer conn.Close()
 		err = conn.Raw(func(dc any) error {
-			wp, ok := dc.(runtime.WirePipeliner)
-			wtp, ok2 := dc.(runtime.WireTxPipeliner)
+			wp, ok := dc.(wire.Pipeliner)
+			wtp, ok2 := dc.(wire.TxPipeliner)
 			if !ok || !ok2 {
 				return errors.New("mysqlwire connections must implement WirePipeliner and WireTxPipeliner")
 			}
@@ -874,7 +875,7 @@ func TestRawConnectionContract(t *testing.T) {
 		// a server error is attributed to the operation that raised it, the batch is rolled back
 		dup := []runtime.PipelineOp{upd(1, 1, -1), {Desc: k.ins, Args: []any{int64(1), int64(0)}, Decorators: runtime.OpDecorators{AssertRows: -1}}}
 		err = conn.Raw(func(dc any) error {
-			err := dc.(runtime.WireTxPipeliner).ExecTxPipeline(ctx, nil, dup)
+			err := dc.(wire.TxPipeliner).ExecTxPipeline(ctx, nil, dup)
 			if mysqlNumber(err) != 1062 || dup[0].Err != nil || mysqlNumber(dup[1].Err) != 1062 {
 				return fmt.Errorf("err = %v, op errors = %v / %v", err, dup[0].Err, dup[1].Err)
 			}
@@ -892,11 +893,11 @@ func TestRawConnectionContract(t *testing.T) {
 		}
 		_ = tx
 		err = conn.Raw(func(dc any) error {
-			if err := dc.(runtime.WireTxPipeliner).ExecTxPipeline(ctx, nil, []runtime.PipelineOp{upd(1, 1, -1)}); !errors.Is(err, runtime.ErrWireNotApplicable) {
+			if err := dc.(wire.TxPipeliner).ExecTxPipeline(ctx, nil, []runtime.PipelineOp{upd(1, 1, -1)}); !errors.Is(err, runtime.ErrWireNotApplicable) {
 				return fmt.Errorf("ExecTxPipeline in a user transaction: %v", err)
 			}
 			ops := []runtime.PipelineOp{upd(1, 3, 1)}
-			return dc.(runtime.WirePipeliner).ExecPipeline(ctx, ops)
+			return dc.(wire.Pipeliner).ExecPipeline(ctx, ops)
 		})
 		if err != nil {
 			t.Fatal(err)
@@ -976,7 +977,7 @@ func TestTransportErrorInOwnTransactionIsACommitError(t *testing.T) {
 		})
 		defer timer.Stop()
 		err = conn.Raw(func(dc any) error {
-			return dc.(runtime.WireTxPipeliner).ExecTxPipeline(ctx, nil, ops)
+			return dc.(wire.TxPipeliner).ExecTxPipeline(ctx, nil, ops)
 		})
 		var ce *runtime.CommitError
 		if !errors.As(err, &ce) {

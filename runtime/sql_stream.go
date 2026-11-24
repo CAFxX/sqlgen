@@ -31,7 +31,7 @@ func (cur *streamCursor) writePlaceholder(b *strings.Builder) {
 }
 
 func formatOrderSQL(b *strings.Builder, orderCols []string, orderSpec uint64) {
-	cols, desc, count, _ := ExpandOrder(orderSpec, len(orderCols))
+	cols, desc, count, _ := expandOrder(orderSpec, len(orderCols))
 	for i := 0; i < count; i++ {
 		if i > 0 {
 			b.WriteString(", ")
@@ -50,7 +50,7 @@ func (cur *streamCursor) formatSeekSQL(b *strings.Builder, orderCols []string, o
 		b.WriteString("TRUE")
 		return
 	}
-	cols, desc, count, allSameDir := ExpandOrder(orderSpec, len(orderCols))
+	cols, desc, count, allSameDir := expandOrder(orderSpec, len(orderCols))
 	writeParam := func(idx int) {
 		if cur.my != nil {
 			cur.my.writeArg(b, idx)
@@ -361,7 +361,7 @@ func estimateDescriptorBytes(rootDesc, desc *QueryDescriptor, in *RenderInput, c
 			}
 			cur.subIdx++
 			if sub.Desc != nil {
-				total += EstimateOpBytes(sub.Desc, &sub.Input, nil)
+				total += estimateOpBytes(sub.Desc, &sub.Input, nil)
 			}
 		case SlotSelectCols:
 			for _, expr := range rootDesc.SelectColExprs {
@@ -408,9 +408,9 @@ func estimateDescriptorBytes(rootDesc, desc *QueryDescriptor, in *RenderInput, c
 	return total
 }
 
-// EstimateOpBytes computes a provable mathematical upper bound on the byte length
+// estimateOpBytes computes a provable mathematical upper bound on the byte length
 // of the SQL string rendered for (desc, in, dec).
-func EstimateOpBytes(desc *QueryDescriptor, in *RenderInput, dec *OpDecorators) int {
+func estimateOpBytes(desc *QueryDescriptor, in *RenderInput, dec *OpDecorators) int {
 	var emptyIn RenderInput
 	if in == nil {
 		in = &emptyIn
@@ -788,15 +788,15 @@ func BuildComposedSQL(desc *QueryDescriptor, in *RenderInput, dialect Dialect) s
 			return desc.StaticSQL
 		}
 	}
-	est := EstimateOpBytes(desc, in, nil)
+	est := estimateOpBytes(desc, in, nil)
 	var b strings.Builder
 	b.Grow(est)
 	streamOpSQL(&b, dialect, desc, in, nil)
 	return b.String()
 }
 
-// RenderPipelineBatch renders all PipelineOp SQL strings for a batch using at most a single strings.Builder.
-func RenderPipelineBatch(dialect Dialect, cache *StmtCache, ops []PipelineOp) {
+// renderPipelineBatch renders all PipelineOp SQL strings for a batch using at most a single strings.Builder.
+func renderPipelineBatch(dialect Dialect, cache *StmtCache, ops []PipelineOp) {
 	if len(ops) == 0 {
 		return
 	}
@@ -830,7 +830,7 @@ func RenderPipelineBatch(dialect Dialect, cache *StmtCache, ops []PipelineOp) {
 			}
 		}
 		spans[i].render = true
-		totalEst += EstimateOpBytes(op.Desc, &op.Input, &op.Decorators)
+		totalEst += estimateOpBytes(op.Desc, &op.Input, &op.Decorators)
 	}
 
 	if totalEst == 0 {

@@ -75,8 +75,8 @@ func (m *ManagedStmt) Release() error {
 	return nil
 }
 
-// CloseRows closes rows (if non-nil) and releases ms (if non-nil).
-func CloseRows(rows *sql.Rows, ms *ManagedStmt) {
+// closeRows closes rows (if non-nil) and releases ms (if non-nil).
+func closeRows(rows *sql.Rows, ms *ManagedStmt) {
 	if rows != nil {
 		_ = rows.Close()
 	}
@@ -91,7 +91,7 @@ func CloseRows(rows *sql.Rows, ms *ManagedStmt) {
 func ReleaseRows(rows **sql.Rows, ms **ManagedStmt) {
 	r, m := *rows, *ms
 	*rows, *ms = nil, nil
-	CloseRows(r, m)
+	closeRows(r, m)
 }
 
 type txState struct {
@@ -556,7 +556,7 @@ type CacheStats struct {
 	PartialBytes   int
 
 	// WirePipelines counts pipeline flushes (one per Pipeline.Flush, and one per PipelineTx attempt) that
-	// ran through a WirePipeliner / WireTxPipeliner connection: every queued statement was sent to the
+	// ran through a wire.Pipeliner / wire.TxPipeliner connection: every queued statement was sent to the
 	// server in a single network round-trip. SequentialPipelines counts the flushes that executed their
 	// operations one statement at a time (the portable fallback). A flush that fails while being built
 	// or that queued no operations counts as neither. Compare the two to verify which path ran.
@@ -686,8 +686,8 @@ func (c *StmtCache) MaxRowsPerBatch(dialect Dialect, scalarCount, tupleFields in
 	if maxRows < 1 {
 		return 1
 	}
-	if maxRows > MaxPowerOfTwoChunk {
-		maxRows = MaxPowerOfTwoChunk
+	if maxRows > maxPowerOfTwoChunk {
+		maxRows = maxPowerOfTwoChunk
 	}
 	return maxRows
 }
@@ -736,7 +736,7 @@ func (c *StmtCache) recordPreparedBatchSize(stmtID uint32, shapeTag uint64, batc
 // PlanBatchChunk selects the next chunk size for a collection-slice statement.
 //
 // A collection that fits one statement under the wire limit (remainingRows <= maxRowsPerStmt, and at most
-// MaxPowerOfTwoChunk) is always planned as ONE chunk of exactly remainingRows rows, whether the size is new or
+// maxPowerOfTwoChunk) is always planned as ONE chunk of exactly remainingRows rows, whether the size is new or
 // recurring: one round trip, statement-level atomicity, no implicit transaction. A larger collection is planned
 // as full-limit chunks (a single, bounded statement shape) followed by the remainder as one exact chunk.
 //
@@ -753,8 +753,8 @@ func (c *StmtCache) PlanBatchChunk(stmtID uint32, colMask, flagMask uint64, rema
 	if maxRowsPerStmt > 0 && capRows > maxRowsPerStmt {
 		capRows = maxRowsPerStmt
 	}
-	if capRows > MaxPowerOfTwoChunk {
-		capRows = MaxPowerOfTwoChunk
+	if capRows > maxPowerOfTwoChunk {
+		capRows = maxPowerOfTwoChunk
 	}
 	if c == nil || !isFirstChunk {
 		return capRows
@@ -1002,7 +1002,7 @@ func (c *StmtCache) Resolve(
 		h = key.hash()
 	} else {
 		sqlStr = BuildComposedSQL(desc, in, dialect)
-		h = HashString(sqlStr)
+		h = hashString(sqlStr)
 	}
 
 	shardIdx := int(h & (numCacheShards - 1))
@@ -1222,7 +1222,7 @@ func (c *StmtCache) LookupState(key VariantKey, sqlStr string) EntryState {
 	if exact {
 		h = key.hash()
 	} else {
-		h = HashString(sqlStr)
+		h = hashString(sqlStr)
 	}
 	sh := &c.shards[h&(numCacheShards-1)]
 	sh.mu.Lock()

@@ -56,8 +56,8 @@ const (
 	DefaultMaxPartialBytes  = 16 << 20 // 16 MB
 	DefaultPromoteThreshold = 2
 	DefaultMaxBatchParams   = 16384
-	MaxPowerOfTwoChunk      = 32768
-	InexactKeyBit           = uint64(1) << 63
+	maxPowerOfTwoChunk      = 32768
+	inexactKeyBit           = uint64(1) << 63
 )
 
 var (
@@ -90,8 +90,8 @@ var argPool = sync.Pool{
 	},
 }
 
-// AcquireArgs obtains a pooled *[]any buffer reset to length 0.
-func AcquireArgs() *[]any {
+// acquireArgs obtains a pooled *[]any buffer reset to length 0.
+func acquireArgs() *[]any {
 	buf := argPool.Get().(*[]any)
 	*buf = (*buf)[:0]
 	return buf
@@ -174,7 +174,7 @@ type VariantKey [4]uint64
 func MakeVariantKey(stmtID uint32, colMask, flagMask, orderKey uint64, dims ...uint64) VariantKey {
 	inexact := stmtID == 0 || stmtID > 0x7FFF || colMask > 0xFFFFFF || flagMask > 0xFFFFFF || len(dims) > 4
 	for _, d := range dims {
-		if (d & InexactKeyBit) != 0 {
+		if (d & inexactKeyBit) != 0 {
 			inexact = true
 			break
 		}
@@ -213,11 +213,11 @@ func MakeVariantKey(stmtID uint32, colMask, flagMask, orderKey uint64, dims ...u
 			}
 		}
 	}
-	return VariantKey{InexactKeyBit | uint64(stmtID), colMask ^ flagMask, orderKey, uint64(len(dims))}
+	return VariantKey{inexactKeyBit | uint64(stmtID), colMask ^ flagMask, orderKey, uint64(len(dims))}
 }
 
 // IsExact reports whether k bijectively encodes the query shape without collisions.
-func (k VariantKey) IsExact() bool { return (k[0] & InexactKeyBit) == 0 }
+func (k VariantKey) IsExact() bool { return (k[0] & inexactKeyBit) == 0 }
 
 func (k VariantKey) hash() uint64 {
 	h := k[0]*0x9e3779b97f4a7c15 + k[1]*0xbf58476d1ce4e5b9 + k[2]*0x94d049bb133111eb + k[3]
@@ -239,8 +239,8 @@ func mix64(z uint64) uint64 {
 	return z ^ (z >> 31)
 }
 
-// HashString computes a fast, allocation-free 64-bit hash of s.
-func HashString(s string) uint64 {
+// hashString computes a fast, allocation-free 64-bit hash of s.
+func hashString(s string) uint64 {
 	h := uint64(0xcbf29ce484222325)
 	for i := 0; i < len(s); i++ {
 		h ^= uint64(s[i])
@@ -249,8 +249,8 @@ func HashString(s string) uint64 {
 	return mix64(h)
 }
 
-// ComputeSubqueryShape packs a subquery's coordinates bijectively into 63 bits (InexactKeyBit == 0)
-// when all fields fit, or sets InexactKeyBit so the outer query falls back to exact SQL string keying.
+// ComputeSubqueryShape packs a subquery's coordinates bijectively into 63 bits (inexactKeyBit == 0)
+// when all fields fit, or sets inexactKeyBit so the outer query falls back to exact SQL string keying.
 func ComputeSubqueryShape(stmtID uint32, colMask, flagMask, orderKey uint64, hasNestedSubs bool, sliceOrTupleLens ...int) uint64 {
 	if !hasNestedSubs && orderKey == 0 && stmtID > 0 && stmtID <= 0x3FFF &&
 		colMask <= 0x7F && flagMask <= 0xFF && len(sliceOrTupleLens) <= 2 {
@@ -274,7 +274,7 @@ func ComputeSubqueryShape(stmtID uint32, colMask, flagMask, orderKey uint64, has
 		}
 	}
 	vk := MakeVariantKey(stmtID, colMask, flagMask, orderKey)
-	return InexactKeyBit | (vk.hash() & ^InexactKeyBit)
+	return inexactKeyBit | (vk.hash() & ^inexactKeyBit)
 }
 
 // MaxOrderCols is the largest number of columns a sqlgen.Order(...) directive may list, and so the
@@ -302,7 +302,7 @@ func Desc(colIdx uint8) uint8 {
 }
 
 // orderInvalidBit marks a packed Order built from an invalid term list (see PackOrder). It sits above the
-// 60 term bits and below the Seek flag, and is ignored by ExpandOrder.
+// 60 term bits and below the Seek flag, and is ignored by expandOrder.
 const orderInvalidBit = uint64(1) << 62
 
 // PackOrder packs up to MaxOrderCols sort column terms (each encoded as ((colIdx1Based) << 1) | descBit)
@@ -349,12 +349,12 @@ func EncodeOrderKey(orderSpec Order, hasSeek bool) uint64 {
 	return orderSpec &^ (1 << 63)
 }
 
-// ExpandOrder unpacks a packed uint64 order specification into column indices (0..numCols-1)
+// expandOrder unpacks a packed uint64 order specification into column indices (0..numCols-1)
 // and direction flags (true == DESC), automatically appending the tie-breaker column (numCols-1)
 // if not already present (inheriting the preceding sort column's direction so single-direction
 // DESC sorts use uniform tuple comparison). numCols must not exceed MaxOrderCols (the generator
 // rejects larger Order directives); count is at most numCols.
-func ExpandOrder(orderSpec uint64, numCols int) (cols [MaxOrderCols]int, desc [MaxOrderCols]bool, count int, allSameDir bool) {
+func expandOrder(orderSpec uint64, numCols int) (cols [MaxOrderCols]int, desc [MaxOrderCols]bool, count int, allSameDir bool) {
 	if numCols <= 0 {
 		return cols, desc, 0, true
 	}
@@ -439,12 +439,12 @@ func (s Seek) Val(i int) any {
 	return s.Values[i]
 }
 
-// SeekArgCount returns the number of positional parameters consumed by SlotSeek.
-func SeekArgCount(dialect Dialect, orderSpec uint64, numCols int, hasSeek bool) int {
+// seekArgCount returns the number of positional parameters consumed by SlotSeek.
+func seekArgCount(dialect Dialect, orderSpec uint64, numCols int, hasSeek bool) int {
 	if !hasSeek || numCols <= 0 {
 		return 0
 	}
-	_, _, count, allSameDir := ExpandOrder(orderSpec, numCols)
+	_, _, count, allSameDir := expandOrder(orderSpec, numCols)
 	if dialect == DialectDollar || count == 1 || allSameDir {
 		return count
 	}
@@ -458,7 +458,7 @@ func AppendSeekArgs(dst *[]any, dialect Dialect, orderSpec uint64, numCols int, 
 	if len(colValues) == 0 || numCols <= 0 {
 		return
 	}
-	cols, _, count, allSameDir := ExpandOrder(orderSpec, numCols)
+	cols, _, count, allSameDir := expandOrder(orderSpec, numCols)
 	valAt := func(i int) any {
 		cIdx := cols[i]
 		if len(colValues) == numCols && cIdx >= 0 && cIdx < len(colValues) {
@@ -590,8 +590,8 @@ func (d *OpDecorators) guarded() bool {
 	return d.AssertRows >= 0 || d.ProduceCond != nil || len(d.LeafRecs) > 0
 }
 
-// ArgsExpander appends a Query's bound arguments into dst.
-type ArgsExpander func(dst *[]any, dialect Dialect, q *Query) error
+// argsExpander appends a Query's bound arguments into dst.
+type argsExpander func(dst *[]any, dialect Dialect, q *Query) error
 
 // Query represents a curried, composable SQL query value with bound typed parameters.
 type Query struct {
@@ -599,7 +599,7 @@ type Query struct {
 	Desc     *QueryDescriptor
 	Input    RenderInput
 	Params   any
-	Expand   ArgsExpander
+	Expand   argsExpander
 	ShapeTag uint64
 }
 
@@ -623,9 +623,6 @@ func (q Query) BuildSQL(dialect Dialect) string {
 	}
 	return BuildComposedSQL(q.Desc, &q.Input, dialect)
 }
-
-// Seq2 is a convenience alias for iter.Seq2[T, error].
-type Seq2[T any] = iter.Seq2[T, error]
 
 // FromSeq adapts an error-free iter.Seq[T] into an iter.Seq2[T, error].
 func FromSeq[T any](seq iter.Seq[T]) iter.Seq2[T, error] {

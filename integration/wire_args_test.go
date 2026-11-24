@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/CAFxX/sqlgen/runtime"
+	"github.com/CAFxX/sqlgen/runtime/wire"
 )
 
 // wireInsert runs one statement through the single-round-trip path of db (a pgxwire database).
@@ -31,7 +32,7 @@ func wireInsert(t *testing.T, db *sql.DB, q string, args ...any) error {
 	var out error
 	ops := []runtime.PipelineOp{{SQL: q, Args: args, Decorators: runtime.OpDecorators{AssertRows: -1}}}
 	if err := conn.Raw(func(dc any) error {
-		tp, ok := dc.(runtime.WireTxPipeliner)
+		tp, ok := dc.(wire.TxPipeliner)
 		if !ok {
 			t.Fatalf("%T is not a WireTxPipeliner", dc)
 		}

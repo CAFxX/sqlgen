@@ -178,7 +178,7 @@ func TestQuestionDialectGuardIsRecognisedAsOverflow(t *testing.T) {
 	overflow := errors.New("SQL logic error: integer overflow (1)")
 
 	q := mk()
-	RenderPipelineBatch(DialectQuestion, nil, q)
+	renderPipelineBatch(DialectQuestion, nil, q)
 	if got := TranslateWireError(&q[0], overflow); !errors.Is(got, ErrAssertionFailed) {
 		t.Errorf("assertion: %v", got)
 	}
@@ -193,7 +193,7 @@ func TestQuestionDialectGuardIsRecognisedAsOverflow(t *testing.T) {
 	}
 
 	d := mk()
-	RenderPipelineBatch(DialectDollar, nil, d)
+	renderPipelineBatch(DialectDollar, nil, d)
 	if got := TranslateWireError(&d[0], overflow); got != overflow {
 		t.Errorf("$N dialect: a genuine overflow was translated: %v", got)
 	}

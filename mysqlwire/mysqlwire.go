@@ -45,6 +45,7 @@ import (
 	"github.com/go-sql-driver/mysql"
 
 	"github.com/CAFxX/sqlgen/runtime"
+	"github.com/CAFxX/sqlgen/runtime/wire"
 )
 
 // OpenDB parses dsn (as accepted by go-sql-driver/mysql) and returns a *sql.DB whose connections run
@@ -68,7 +69,7 @@ func NewConnector(dsn string) (driver.Connector, error) {
 
 // Connector returns a driver.Connector for sql.OpenDB. cfg is copied, with MultiStatements forced on;
 // everything else (Loc, Collation, ClientFoundRows, ...) is kept. The connections implement
-// runtime.WirePipeliner and runtime.WireTxPipeliner and are already wrapped with runtime.WrapConnector
+// wire.Pipeliner and wire.TxPipeliner and are already wrapped with runtime.WrapConnector
 // so that user-managed transactions (q.WithTx(tx).Pipeline(ctx)) also flush in one round-trip.
 func Connector(cfg *mysql.Config) (driver.Connector, error) {
 	c := cfg.Clone()
@@ -209,9 +210,9 @@ type conn struct {
 }
 
 var (
-	_ runtime.WirePipeliner   = (*conn)(nil)
-	_ runtime.WireTxPipeliner = (*conn)(nil)
-	_ runtime.WireFlavored    = (*conn)(nil)
+	_ wire.Pipeliner   = (*conn)(nil)
+	_ wire.TxPipeliner = (*conn)(nil)
+	_ wire.Flavored    = (*conn)(nil)
 )
 
 // WireFlavor tells the runtime that this connection renders its own statement sequences.
@@ -462,7 +463,7 @@ func (c *conn) deliver(ctx context.Context, rows driver.Rows, b *runtime.MySQLBa
 		}
 		op := &ops[i]
 		view := &setRows{inner: rows, trim: b.TrimsLastColumn(i)}
-		sqlRows, err := runtime.RowsFromDriverRows(ctx, view)
+		sqlRows, err := wire.RowsFromDriverRows(ctx, view)
 		if err != nil {
 			firstErr = &scanError{err}
 			continue

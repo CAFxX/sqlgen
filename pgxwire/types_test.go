@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/CAFxX/sqlgen/runtime"
+	"github.com/CAFxX/sqlgen/runtime/wire"
 )
 
 // runOps sends ops through the connection's pipeline entry points exactly as the runtime does.
@@ -22,9 +23,9 @@ func runOps(t *testing.T, db *sql.DB, tx bool, ops []runtime.PipelineOp) error {
 	var out error
 	if err := conn.Raw(func(dc any) error {
 		if tx {
-			out = dc.(runtime.WireTxPipeliner).ExecTxPipeline(ctx, nil, ops)
+			out = dc.(wire.TxPipeliner).ExecTxPipeline(ctx, nil, ops)
 		} else {
-			out = dc.(runtime.WirePipeliner).ExecPipeline(ctx, ops)
+			out = dc.(wire.Pipeliner).ExecPipeline(ctx, ops)
 		}
 		return nil
 	}); err != nil {

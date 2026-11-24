@@ -255,7 +255,7 @@ func TestStandalonePipelineUsesWireTxPipeliner(t *testing.T) {
 	}
 }
 
-// A driver that only implements WirePipeliner cannot begin/commit by itself: PipelineTx falls back to
+// A driver that only implements wire.Pipeliner cannot begin/commit by itself: PipelineTx falls back to
 // BeginTx + one wire call for the operations + Commit.
 func TestRunPipelineTxWithPlainWirePipeliner(t *testing.T) {
 	cfg := &mockDriverConfig{enableWire: true}
@@ -393,7 +393,7 @@ func TestWireTxPipelinerNeedsAPooledConnection(t *testing.T) {
 	if err := pipelineTx(context.Background(), db, cache, nil, nil, func(p *Pipeline) error { queueTestExec(p); return nil }); err != nil {
 		t.Fatal(err)
 	}
-	// BeginTx + the ops through the transactional WirePipeliner sentinel + Commit.
+	// BeginTx + the ops through the transactional wire.Pipeliner sentinel + Commit.
 	if cfg.wireTxCalls.Load() != 0 || cfg.beginCalls.Load() != 1 || cfg.wireCalls.Load() != 1 {
 		t.Fatalf("wireTx=%d begin=%d wire=%d", cfg.wireTxCalls.Load(), cfg.beginCalls.Load(), cfg.wireCalls.Load())
 	}
@@ -410,11 +410,11 @@ func TestWireTxPipelinerNeedsAPooledConnection(t *testing.T) {
 
 func TestWireTxPipelinerHelpers(t *testing.T) {
 	if wireTxPipelinerOf(struct{}{}) != nil || wireTxPipelinerOf(&pipelineConnWrapper{Conn: &mockConn{}}) != nil {
-		t.Fatal("a connection without ExecTxPipeline must not be reported as WireTxPipeliner")
+		t.Fatal("a connection without ExecTxPipeline must not be reported as wireTxPipeliner")
 	}
 	raw := &mockWireTxConn{}
 	if wireTxPipelinerOf(raw) == nil || wireTxPipelinerOf(&pipelineConnWrapper{Conn: raw}) == nil {
-		t.Fatal("a WireTxPipeliner must be found directly and behind WrapConnector")
+		t.Fatal("a wireTxPipeliner must be found directly and behind WrapConnector")
 	}
 	w := &pipelineConnWrapper{Conn: &mockConn{}}
 	if err := w.ExecTxPipeline(context.Background(), nil, nil); !errors.Is(err, driver.ErrSkip) {
@@ -472,7 +472,7 @@ func TestExtraConditionsAreRecordedServerSide(t *testing.T) {
 	p.If(f.NotFound(), nil, func() { p.QueueExec(3, upd, RenderInput{}, MakeVariantKey(3, 0, 0, 0), nil, nil, nil) })
 	p.If(f.RowsAffectedGe(1), nil, nil)
 	p.syncOpsFromPtrs()
-	RenderPipelineBatch(DialectDollar, nil, p.ops)
+	renderPipelineBatch(DialectDollar, nil, p.ops)
 
 	op := p.ops[0]
 	if len(op.ExtraConds) != 2 || len(op.Decorators.ExtraConds) != 2 {
@@ -489,8 +489,8 @@ func TestExtraConditionsAreRecordedServerSide(t *testing.T) {
 			t.Fatalf("SQL lacks %q:\n%s", want, op.SQL)
 		}
 	}
-	if est := EstimateOpBytes(op.Desc, &op.Input, &op.Decorators); est < len(op.SQL) {
-		t.Fatalf("EstimateOpBytes = %d < rendered %d", est, len(op.SQL))
+	if est := estimateOpBytes(op.Desc, &op.Input, &op.Decorators); est < len(op.SQL) {
+		t.Fatalf("estimateOpBytes = %d < rendered %d", est, len(op.SQL))
 	}
 
 	// an exec producer reads every guard in the target list of its final SELECT, with and without an
@@ -500,14 +500,14 @@ func TestExtraConditionsAreRecordedServerSide(t *testing.T) {
 	for _, assert := range []int64{-1, 1} {
 		exec.Decorators.AssertRows = assert
 		ops := []PipelineOp{exec}
-		RenderPipelineBatch(DialectDollar, nil, ops)
+		renderPipelineBatch(DialectDollar, nil, ops)
 		if !strings.Contains(ops[0].SQL, "SELECT (SELECT COUNT(*) FROM _sqlgen_op) AS _cnt") ||
 			!strings.Contains(ops[0].SQL, "(SELECT _ok FROM _sqlgen_cond) AS _c, (SELECT _ok FROM _sqlgen_x2) AS _x2") ||
 			strings.Contains(ops[0].SQL, "(SELECT _ok FROM _sqlgen_chk) AS _a") != (assert >= 0) {
 			t.Fatalf("assert=%d: unexpected SQL:\n%s", assert, ops[0].SQL)
 		}
-		if est := EstimateOpBytes(upd, &RenderInput{}, &exec.Decorators); est < len(ops[0].SQL) {
-			t.Fatalf("EstimateOpBytes = %d < rendered %d", est, len(ops[0].SQL))
+		if est := estimateOpBytes(upd, &RenderInput{}, &exec.Decorators); est < len(ops[0].SQL) {
+			t.Fatalf("estimateOpBytes = %d < rendered %d", est, len(ops[0].SQL))
 		}
 	}
 

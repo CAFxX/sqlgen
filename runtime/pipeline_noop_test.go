@@ -21,8 +21,8 @@ func TestPipelineNoOpIsNotSentOnTheWire(t *testing.T) {
 		name string
 		cfg  *mockDriverConfig
 	}{
-		{"WireTxPipeliner", &mockDriverConfig{enableWireTx: true}},
-		{"WirePipeliner", &mockDriverConfig{enableWire: true}},
+		{"wireTxPipeliner", &mockDriverConfig{enableWireTx: true}},
+		{"wirePipeliner", &mockDriverConfig{enableWire: true}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			var seen []int

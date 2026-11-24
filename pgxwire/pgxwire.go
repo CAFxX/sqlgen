@@ -43,6 +43,7 @@ import (
 	"github.com/jackc/pgx/v5/stdlib"
 
 	"github.com/CAFxX/sqlgen/runtime"
+	"github.com/CAFxX/sqlgen/runtime/wire"
 )
 
 // OpenDB parses dsn (a URL or key/value connection string, as accepted by pgx.ParseConfig) and returns
@@ -57,7 +58,7 @@ func OpenDB(dsn string) (*sql.DB, error) {
 
 // Connector returns a driver.Connector for sql.OpenDB. cfg is copied. Options are those of
 // stdlib.GetConnector (for example stdlib.OptionAfterConnect). The connections implement
-// runtime.WirePipeliner and runtime.WireTxPipeliner and are already wrapped with runtime.WrapConnector
+// wire.Pipeliner and wire.TxPipeliner and are already wrapped with runtime.WrapConnector
 // so that user-managed transactions (q.WithTx(tx).Pipeline(ctx)) also flush in one round-trip.
 func Connector(cfg *pgx.ConnConfig, opts ...stdlib.OptionOpenDB) driver.Connector {
 	return runtime.WrapConnector(&connector{base: stdlib.GetConnector(*cfg, opts...)})
@@ -88,8 +89,8 @@ type conn struct {
 }
 
 var (
-	_ runtime.WirePipeliner   = (*conn)(nil)
-	_ runtime.WireTxPipeliner = (*conn)(nil)
+	_ wire.Pipeliner   = (*conn)(nil)
+	_ wire.TxPipeliner = (*conn)(nil)
 )
 
 // ExecPipeline sends ops in one round-trip. Inside a transaction the caller began (a user-managed
@@ -313,7 +314,7 @@ func (c *conn) deliverOp(ctx context.Context, op *runtime.PipelineOp, res *pgcon
 			op.RowCount = n
 		}
 	case runtime.WireResultRows:
-		sqlRows, err := runtime.RowsFromDriverRows(ctx, c.driverRows(res))
+		sqlRows, err := wire.RowsFromDriverRows(ctx, c.driverRows(res))
 		if err != nil {
 			return err
 		}

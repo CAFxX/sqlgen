@@ -77,7 +77,7 @@ func (c *flavoredWireConn) WireFlavor() WireFlavor { return c.flavor }
 // Only a pipeliner of the PostgreSQL flavor gets op.SQL pre-rendered by the runtime.
 func TestPrerendersFollowsFlavor(t *testing.T) {
 	if !prerenders(&mockWireTxConn{}) {
-		t.Fatal("a pipeliner without WireFlavored must be pre-rendered")
+		t.Fatal("a pipeliner without wireFlavored must be pre-rendered")
 	}
 	if !prerenders(&flavoredWireConn{flavor: WireFlavorPostgres}) {
 		t.Fatal("WireFlavorPostgres must be pre-rendered")

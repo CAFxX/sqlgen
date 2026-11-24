@@ -10,13 +10,13 @@ Note: the spec comes from the spec workshop on https://share.gemini.google/Nm8OX
 
 1. **The Single-`strings.Builder` Law & Provable Upper-Bound Pre-Sizing**:
    - **Standalone Statement Execution**: Rendering any SQL statement at runtime—regardless of how many nested `sqlgen.Query` CTEs, `{?Flag: ...}` conditional blocks, `SelectCols` bitmasks, `Seek`/`Order` clauses, or multi-row `VALUES` tuples it contains—MUST instantiate **at most one `strings.Builder`** (`0` on a Tier-1 or Tier-2 cache hit; `1` on a cache miss).
-   - **Provable Upper-Bound Pre-Sizing (`EstimateOpBytes`)**: Before streaming SQL into a `strings.Builder`, `b.Grow(EstimateOpBytes(...))` MUST be called where `EstimateOpBytes` is a guaranteed mathematical upper bound (`EstimateOpBytes >= len(renderedSQL)`). Reallocating a `strings.Builder`'s internal `[]byte` slice mid-render is a specification violation.
+   - **Provable Upper-Bound Pre-Sizing (`estimateOpBytes`)**: Before streaming SQL into a `strings.Builder`, `b.Grow(estimateOpBytes(...))` MUST be called where `estimateOpBytes` is a guaranteed mathematical upper bound (`estimateOpBytes >= len(renderedSQL)`). Reallocating a `strings.Builder`'s internal `[]byte` slice mid-render is a specification violation.
    - **Pipeline / `PipelineTx` Execution**: Rendering an entire $M$-statement `Pipeline` or `PipelineTx`—including all `AssertRowsAffected` CTE guards (`_sqlgen_chk`), `If/Then/Else` condition producers (`_sqlgen_cond`), and inline branch guards—MUST instantiate **at most one `strings.Builder` for the entire batch**. All uncached or decorated operations stream sequentially into that single builder, `master := b.String()` is called **once** after all operations are written, and each `ops[i].SQL` is assigned via zero-allocation string slicing `master[span.start:span.end]`.
    - **Zero String Formatting in Combinators or Helpers**: Constructing curried `sqlgen.Query` values, `Order` specifications, or `PipelineCond` boolean AST trees (`.RowsAffectedEq(1).And(...)`) MUST NEVER call `fmt.Sprintf`, `strings.Join`, `+` string concatenation, or instantiate `strings.Builder`. All integer formatting (`$1`, `COUNT(*) = N`, `'sqlgen.cN'`) MUST use stack-allocated `[20]byte` buffers with `strconv.AppendInt`.
 2. **Zero-Closure Cache Resolution & Zero-Reflection Execution**:
    - Zero `reflect` usage anywhere in `runtime` or generated code.
    - `StmtCache` methods (`Resolve`, `Exec`, `Query`, `QueryRow`) MUST accept `(dialect Dialect, desc *QueryDescriptor, in *RenderInput)` rather than a `func() string` closure so local variables never escape to the heap on cache hits.
-   - Flattened `[]any` query arguments MUST use pooled `*[]any` slice pointers (`AcquireArgs`, `AcquireArgsCap`, `ReleaseArgs`) cleared via `clear(s)` before returning to `sync.Pool`.
+   - Flattened `[]any` query arguments MUST use pooled `*[]any` slice pointers (`acquireArgs`, `AcquireArgsCap`, `ReleaseArgs`) cleared via `clear(s)` before returning to `sync.Pool`.
    - Dynamic column scanning MUST bind field pointers into a stack-allocated `[NumCols]any` buffer once *before* `for rows.Next()`, zeroing the target struct in-place (`item = RowType{}`) on each iteration.
 3. **100% `database/sql` Compatibility**:
    - Works seamlessly with `*sql.DB` (implicit transactions) and `*sql.Tx` (explicit transactions via `q.WithTx(tx)` and `q.InTx(...)`) across PostgreSQL, CockroachDB, SQLite, MySQL, and MariaDB, including when `db.SetMaxOpenConns(1)`.
@@ -35,7 +35,7 @@ Note: the spec comes from the spec workshop on https://share.gemini.google/Nm8OX
 8. **Deadlock-Prevention Global Presorting (`ASC` / `DESC`)**:
    - Slices and tuple-slices with `ASC`/`DESC` modifiers run an $O(N)$ `isSorted` check first (0 allocs). If unsorted, they sort a pooled `*[]int` index permutation (`AcquireIndices`) globally **before** chunk slicing—never mutating the caller's slice and guaranteeing that the *bound parameters* are globally monotonic across all chunks. Monotonic **lock acquisition** follows only where the engine processes keys in bound order (multi-row `INSERT`/upsert `VALUES`); for `UPDATE`/`DELETE ... WHERE col IN (...)` the engine's plan decides the order rows are visited, locked and returned (PostgreSQL scans an `IN` list in ascending index order, so `DESC` has no effect there).
 9. **Single-Roundtrip `Pipeline` & `PipelineTx` with Server-Side Bail-Out & `If/Then/Else`**:
-   - Flushes `[BEGIN + Q1..Qn + COMMIT + Sync]` in **1 network round-trip** on connections implementing `WireTxPipeliner` (`PipelineTx` and a standalone `Pipeline.Flush`), and `[Q1..Qn + Sync]` in 1 round-trip inside a caller-owned `*sql.Tx` on connections implementing `WirePipeliner` (via `WrapConnector`). The shipped driver is the nested module `pgxwire` (pgx `ExecBatch` with `QueryExecModeExec` semantics, so even first-seen statements need no describe round-trip); it is verified on PostgreSQL 15/18 and CockroachDB by counting real network turns (`integration/wire_roundtrip_test.go`). The second shipped driver is the nested module `mysqlwire` (go-sql-driver/mysql, `multiStatements`): the same contract on MySQL 8.4/9.7 and MariaDB 10.11/12.3, where one operation renders as a statement SEQUENCE over session user variables instead of one CTE statement (the "wire flavor", see §6.1 and "Wire flavors" below), verified by counting real network turns (`integration/wire_my_roundtrip_test.go`). A wire pipeliner may refuse a batch BEFORE sending anything by returning `runtime.ErrWireNotApplicable` (packet limit, argument it cannot inline, failed capability probe); the runtime then runs that pipeline sequentially and counts it in `SequentialPipelines`. Everything else falls back automatically to sequential Tier-2 prepared statements, and `CacheStats.WirePipelines` / `SequentialPipelines` report which path ran.
+   - Flushes `[BEGIN + Q1..Qn + COMMIT + Sync]` in **1 network round-trip** on connections implementing `wire.TxPipeliner` (`PipelineTx` and a standalone `Pipeline.Flush`), and `[Q1..Qn + Sync]` in 1 round-trip inside a caller-owned `*sql.Tx` on connections implementing `wire.Pipeliner` (via `WrapConnector`). The shipped driver is the nested module `pgxwire` (pgx `ExecBatch` with `QueryExecModeExec` semantics, so even first-seen statements need no describe round-trip); it is verified on PostgreSQL 15/18 and CockroachDB by counting real network turns (`integration/wire_roundtrip_test.go`). The second shipped driver is the nested module `mysqlwire` (go-sql-driver/mysql, `multiStatements`): the same contract on MySQL 8.4/9.7 and MariaDB 10.11/12.3, where one operation renders as a statement SEQUENCE over session user variables instead of one CTE statement (the "wire flavor", see §6.1 and "Wire flavors" below), verified by counting real network turns (`integration/wire_my_roundtrip_test.go`). A wire pipeliner may refuse a batch BEFORE sending anything by returning `runtime.ErrWireNotApplicable` (packet limit, argument it cannot inline, failed capability probe); the runtime then runs that pipeline sequentially and counts it in `SequentialPipelines`. Everything else falls back automatically to sequential Tier-2 prepared statements, and `CacheStats.WirePipelines` / `SequentialPipelines` report which path ran.
    - Supports `.AssertRowsAffected(n)`, `.AssertFound()`, and `p.If(cond, thenFn, elseFn)` with `p.Abort(err)`.
 10. **Automatic Transaction Retries (`TxRetryPolicy`)**:
     - `InTx` and `PipelineTx` retry with exponential backoff and full jitter (`math/rand/v2`) on deterministic transient deadlocks and serialization failures (`40P01`, `40001`, `55P03`, MySQL `1213`/`1205`, SQLite `SQLITE_BUSY`/`SQLITE_LOCKED`), while never retrying ambiguous network disconnects (`driver.ErrBadConn`, `io.EOF`, `net.Error`) during `Commit`.
@@ -52,9 +52,10 @@ Target Go version: **Go 1.27+** (matches `go.mod`)
 ├── DOCS.md                             # Complete, freestanding user documentation & cookbook
 ├── runtime/
 │   ├── runtime.go                      # Core types, pools, VariantKey, Order/Seek, iterator helpers
-│   ├── sql_stream.go                   # Single-strings.Builder SQL renderer (BuildComposedSQL, RenderPipelineBatch)
+│   ├── sql_stream.go                   # Single-strings.Builder SQL renderer (BuildComposedSQL, renderPipelineBatch)
 │   ├── cache.go                        # 16-shard Two-Tier W-TinyLFU + SLRU StmtCache, ManagedStmt, TxStmtCache
 │   ├── pipeline.go                     # Pipeline, PipelineTx, Futures, If/Then/Else, WrapConnector, TxRetryPolicy
+│   ├── wire/wire.go                    # Driver SPI interfaces (Pipeliner, TxPipeliner, Flavored) and RowsFromDriverRows; imported only by wire drivers
 │   └── runtime_test.go                 # AST audit, mockdriver faults, PBT, fuzzing, concurrency & benchmark tests
 ├── generator.go                        # YAML parser, lexical SQL scanner, validator, single-buffer Go emitter
 ├── generator_test.go                   # Compilation matrix, parser fuzzing, PBT pagination, and SQLite e2e tests
@@ -62,12 +63,12 @@ Target Go version: **Go 1.27+** (matches `go.mod`)
 │   └── sqlgen/
 │       ├── main.go                     # CLI binary (-config, -out, -stdout, -check, -version)
 │       └── main_test.go                # CLI exit-code, drift-check, and stderr diagnostic tests
-├── pgxwire/                            # NESTED MODULE (pgx/v5): single-round-trip WirePipeliner / WireTxPipeliner for PostgreSQL & CockroachDB
+├── pgxwire/                            # NESTED MODULE (pgx/v5): single-round-trip wire.Pipeliner / wire.TxPipeliner for PostgreSQL & CockroachDB
 │   ├── pgxwire.go                      # OpenDB / Connector, ExecPipeline / ExecTxPipeline (pgconn ExecBatch, QueryExecModeExec semantics)
 │   ├── args.go                         # argument resolution for typeless placeholders: time.Time keeps its offset, []byte -> raw binary, [16]byte -> uuid text, map/struct -> JSON, Valuers resolved (DOCS.md 3.4)
 │   ├── rows.go                         # text-format results -> database/sql driver values
 │   └── *_test.go                       # engine tests (skipped without SQLGEN_*_DSN)
-├── mysqlwire/                          # NESTED MODULE (go-sql-driver/mysql): single-round-trip WirePipeliner / WireTxPipeliner for MySQL & MariaDB (WireFlavorMySQL)
+├── mysqlwire/                          # NESTED MODULE (go-sql-driver/mysql): single-round-trip wire.Pipeliner / wire.TxPipeliner for MySQL & MariaDB (WireFlavorMySQL)
 │   ├── mysqlwire.go                    # OpenDB / Connector (forces multiStatements), conn.ExecPipeline / ExecTxPipeline (one QueryContext of the multi-statement text), capability probe, max_allowed_packet check, failure recovery turn
 │   └── *_test.go                       # engine tests (skipped without SQLGEN_*_DSN) and hermetic fake-connection tests
 ├── integration/                        # NESTED MODULE: real-engine suite incl. wire-vs-sequential differential, network-turn counts, failure/concurrency tests
@@ -352,8 +353,8 @@ const (
 	DefaultMaxPartialBytes  = 16 << 20 // 16 MB
 	DefaultPromoteThreshold = 2
 	DefaultMaxBatchParams   = 16384
-	MaxPowerOfTwoChunk      = 32768
-	InexactKeyBit           = uint64(1) << 63
+	maxPowerOfTwoChunk      = 32768
+	inexactKeyBit           = uint64(1) << 63
 )
 
 var (
@@ -389,7 +390,7 @@ type VariantKey [4]uint64
 func MakeVariantKey(stmtID uint32, colMask, flagMask, orderKey uint64, dims ...uint64) VariantKey {
 	inexact := stmtID == 0 || stmtID > 0x7FFF || colMask > 0xFFFFFF || flagMask > 0xFFFFFF || len(dims) > 4
 	for _, d := range dims {
-		if (d & InexactKeyBit) != 0 {
+		if (d & inexactKeyBit) != 0 {
 			inexact = true
 			break
 		}
@@ -428,10 +429,10 @@ func MakeVariantKey(stmtID uint32, colMask, flagMask, orderKey uint64, dims ...u
 			}
 		}
 	}
-	return VariantKey{InexactKeyBit | uint64(stmtID), colMask ^ flagMask, orderKey, uint64(len(dims))}
+	return VariantKey{inexactKeyBit | uint64(stmtID), colMask ^ flagMask, orderKey, uint64(len(dims))}
 }
 
-func (k VariantKey) IsExact() bool { return (k[0] & InexactKeyBit) == 0 }
+func (k VariantKey) IsExact() bool { return (k[0] & inexactKeyBit) == 0 }
 
 func (k VariantKey) hash() uint64 {
 	h := k[0]*0x9e3779b97f4a7c15 + k[1]*0xbf58476d1ce4e5b9 + k[2]*0x94d049bb133111eb + k[3]
@@ -442,8 +443,8 @@ func (k VariantKey) hash() uint64 {
 	return h ^ (h >> 31)
 }
 
-// ComputeSubqueryShape packs a subquery's coordinates bijectively into 63 bits (InexactKeyBit == 0)
-// when all fields fit, or sets InexactKeyBit so the outer query falls back to exact SQL string keying.
+// ComputeSubqueryShape packs a subquery's coordinates bijectively into 63 bits (inexactKeyBit == 0)
+// when all fields fit, or sets inexactKeyBit so the outer query falls back to exact SQL string keying.
 func ComputeSubqueryShape(stmtID uint32, colMask, flagMask, orderKey uint64, hasNestedSubs bool, sliceOrTupleLens ...int) uint64 {
 	if !hasNestedSubs && orderKey == 0 && stmtID > 0 && stmtID <= 0x3FFF &&
 		colMask <= 0xFF && flagMask <= 0xFF && len(sliceOrTupleLens) <= 2 {
@@ -467,7 +468,7 @@ func ComputeSubqueryShape(stmtID uint32, colMask, flagMask, orderKey uint64, has
 		}
 	}
 	vk := MakeVariantKey(stmtID, colMask, flagMask, orderKey)
-	return InexactKeyBit | (vk.hash() & ^InexactKeyBit)
+	return inexactKeyBit | (vk.hash() & ^inexactKeyBit)
 }
 ```
 
@@ -485,7 +486,7 @@ const (
 )
 
 // orderInvalidBit marks a packed Order built from an invalid term list (see PackOrder). It sits above the
-// 60 term bits and below the Seek flag, and is ignored by ExpandOrder.
+// 60 term bits and below the Seek flag, and is ignored by expandOrder.
 const orderInvalidBit = uint64(1) << 62
 
 // PackOrder packs up to MaxOrderCols sort column terms (each encoded as ((colIdx1Based) << 1) | descBit)
@@ -524,12 +525,12 @@ func PackOrder[T ~uint8](terms ...T) uint64 {
 // (no terms) is valid.
 func OrderValid(orderSpec Order) bool { return orderSpec&orderInvalidBit == 0 }
 
-// ExpandOrder unpacks a packed uint64 order specification into column indices (0..numCols-1)
+// expandOrder unpacks a packed uint64 order specification into column indices (0..numCols-1)
 // and direction flags (true == DESC), automatically appending the tie-breaker column (numCols-1)
 // if not already present (inheriting the preceding sort column's direction so single-direction
 // DESC sorts use uniform tuple comparison). numCols must not exceed MaxOrderCols (the generator
 // rejects larger Order directives); count is at most numCols.
-func ExpandOrder(orderSpec uint64, numCols int) (cols [MaxOrderCols]int, desc [MaxOrderCols]bool, count int, allSameDir bool) {
+func expandOrder(orderSpec uint64, numCols int) (cols [MaxOrderCols]int, desc [MaxOrderCols]bool, count int, allSameDir bool) {
 	if numCols <= 0 {
 		return cols, desc, 0, true
 	}
@@ -576,12 +577,12 @@ func ExpandOrder(orderSpec uint64, numCols int) (cols [MaxOrderCols]int, desc [M
 	return cols, desc, count, allSameDir
 }
 
-// SeekArgCount returns the number of positional parameters consumed by SlotSeek.
-func SeekArgCount(dialect Dialect, orderSpec uint64, numCols int, hasSeek bool) int {
+// seekArgCount returns the number of positional parameters consumed by SlotSeek.
+func seekArgCount(dialect Dialect, orderSpec uint64, numCols int, hasSeek bool) int {
 	if !hasSeek || numCols <= 0 {
 		return 0
 	}
-	_, _, count, allSameDir := ExpandOrder(orderSpec, numCols)
+	_, _, count, allSameDir := expandOrder(orderSpec, numCols)
 	if dialect == DialectDollar || count == 1 || allSameDir {
 		return count
 	}
@@ -592,7 +593,7 @@ func SeekArgCount(dialect Dialect, orderSpec uint64, numCols int, hasSeek bool) 
 
 // AppendSeekArgs appends cursor column values into dst in the exact order expected by formatSeekSQL.
 func AppendSeekArgs(dst *[]any, dialect Dialect, orderSpec uint64, numCols int, colValues []any) {
-	cols, _, count, allSameDir := ExpandOrder(orderSpec, numCols)
+	cols, _, count, allSameDir := expandOrder(orderSpec, numCols)
 	if dialect == DialectDollar || count == 1 || allSameDir {
 		for i := 0; i < count; i++ {
 			*dst = append(*dst, colValues[cols[i]])
@@ -608,7 +609,7 @@ func AppendSeekArgs(dst *[]any, dialect Dialect, orderSpec uint64, numCols int, 
 }
 
 func formatOrderSQL(b *strings.Builder, orderCols []string, orderSpec uint64) {
-	cols, desc, count, _ := ExpandOrder(orderSpec, len(orderCols))
+	cols, desc, count, _ := expandOrder(orderSpec, len(orderCols))
 	for i := 0; i < count; i++ {
 		if i > 0 {
 			b.WriteString(", ")
@@ -627,7 +628,7 @@ func formatSeekSQL(b *strings.Builder, dialect Dialect, paramIndex *int, numBuf 
 		b.WriteString("TRUE")
 		return
 	}
-	cols, desc, count, allSameDir := ExpandOrder(orderSpec, len(orderCols))
+	cols, desc, count, allSameDir := expandOrder(orderSpec, len(orderCols))
 	writeParam := func(idx int) {
 		if dialect == DialectQuestion {
 			b.WriteByte('?')
@@ -733,10 +734,10 @@ func formatSeekSQL(b *strings.Builder, dialect Dialect, paramIndex *int, numBuf 
    - A guard fails its statement with an error that can be told apart from every error the caller's own statement may raise (a genuine integer overflow, SQLSTATE 22003, must surface as the database error, exactly as on the sequential path). In `DialectDollar` the guard casts a text carrying a marker to an integer: assertion `('sqlgen:assert:' || COUNT(*)::text)::int` as the `ELSE` branch of the `_sqlgen_chk` CASE, abort `('sqlgen:abort:' || (SELECT COUNT(*))::text)::int` (constant `wireAssertMarker` / `wireAbortMarker`). PostgreSQL answers `invalid input syntax for type integer: "sqlgen:assert:3"` (22P02), CockroachDB `could not parse "sqlgen:assert:3" as type int ...` (22P02); the marker names the guard and an assertion's marker carries the actual row count.
    - This MUST NOT be a constant expression: PostgreSQL constant-folds constants at plan time even inside an unreached `CASE` branch, which would make every guarded statement fail unconditionally (an earlier constant overflow guard did, and `-9223372036854775808::bigint` parses as `-(9223372036854775808::bigint)`, whose cast already overflows). The aggregate (`COUNT(*)`, or the scalar subquery `(SELECT COUNT(*))` for an abort, which has no FROM) defers evaluation to the moment the branch is taken. Verified against real PostgreSQL 15/18 and CockroachDB (`integration/wire_guard_test.go`, `integration/wire_pg_test.go`).
    - `TranslateWireError(op, err)` translates ONLY errors whose SQLSTATE (when the driver exposes one) is 22P02 and whose message carries the operation's own marker: `sqlgen:abort:` on an `IsAbort` operation becomes `op.AbortErr`; `sqlgen:assert:<n>` on an operation with `AssertRows >= 0` becomes `*AssertionError{Want, Got: n, GotKnown: true}`. Every other error, a genuine overflow included, is returned unchanged.
-   - In `DialectQuestion`: `"ABS(-9223372036854775808)"`, a constant integer overflow (SQLite; MySQL/MariaDB have no wire path since the pipeline SQL also relies on PostgreSQL-only `set_config`/`current_setting`). Neither can carry a marker in an error message, so `RenderPipelineBatch` flags every guarded operation it rendered for a non-`$N` dialect (`PipelineOp.overflowGuard`) and `TranslateWireError` then recognises that overflow (`SQLSTATE 22003`, `integer overflow`, `bigint out of range`) on such an operation as the guard. This is what the example suites' SQLite-backed simulated wire driver relies on; operations rendered for `$N` never do.
+   - In `DialectQuestion`: `"ABS(-9223372036854775808)"`, a constant integer overflow (SQLite; MySQL/MariaDB have no wire path since the pipeline SQL also relies on PostgreSQL-only `set_config`/`current_setting`). Neither can carry a marker in an error message, so `renderPipelineBatch` flags every guarded operation it rendered for a non-`$N` dialect (`PipelineOp.overflowGuard`) and `TranslateWireError` then recognises that overflow (`SQLSTATE 22003`, `integer overflow`, `bigint out of range`) on such an operation as the guard. This is what the example suites' SQLite-backed simulated wire driver relies on; operations rendered for `$N` never do.
 
-### 6.2. Provable Upper-Bound Byte Estimator (`EstimateOpBytes`)
-`EstimateOpBytes(desc *QueryDescriptor, in *RenderInput, dec *OpDecorators) int` MUST compute a strict upper bound (`EstimateOpBytes >= len(renderedSQL)`):
+### 6.2. Provable Upper-Bound Byte Estimator (`estimateOpBytes`)
+`estimateOpBytes(desc *QueryDescriptor, in *RenderInput, dec *OpDecorators) int` MUST compute a strict upper bound (`estimateOpBytes >= len(renderedSQL)`):
 - Per `BranchGate`: `56` bytes.
 - Per `SlotScalar`: `12` bytes.
 - Per `SlotSlice` of length $L$: `12 * L` bytes.
@@ -751,7 +752,7 @@ func formatSeekSQL(b *strings.Builder, dialect Dialect, paramIndex *int, numBuf 
 - For `dec.AssertRows >= 0`: `400 + 56 * len(in.BranchGates)` bytes (the CTE, its guard error and the guard's column in the final SELECT).
 - For `dec.ProduceCond != nil`: `480 + dec.ProduceCond.estimateBytes(len(in.BranchGates))` bytes, and the same for every `dec.ExtraConds[i]` and `dec.LeafRecs[i]` (a leaf costs `80 + len(SQLPred)`, plus `48 + 56 * len(in.BranchGates)` when gated).
 - Per `SlotScalar` / tuple field when `len(in.BranchGates) > 0`: `len(Cast) + 2` extra bytes (see §4.5).
-- These constants are verified by `TestEstimateOpBytesCoversEveryPipelineOpShape`, which renders every verb × assertion × condition × gate-count × dialect shape and requires `EstimateOpBytes >= len(rendered)`.
+- These constants are verified by `TestEstimateOpBytesCoversEveryPipelineOpShape`, which renders every verb × assertion × condition × gate-count × dialect shape and requires `estimateOpBytes >= len(rendered)`.
 
 ---
 
@@ -832,19 +833,19 @@ func (s *tinyLFUSketch) estimate(h uint64) uint8 {
 
 ## 8. Single-Roundtrip `Pipeline`, `PipelineTx`, `If/Then/Else` & `TxRetryPolicy` (`runtime/pipeline.go`)
 
-1. **Wire-Pipelined Mode (`WireTxPipeliner` / `WirePipeliner`)**:
-   - `WireTxPipeliner.ExecTxPipeline(ctx, txOpts, ops)` runs `BEGIN [isolation / read-only from txOpts]`, every operation and `COMMIT` in one round-trip. It is detected via `db.Conn` + `conn.Raw` (unwrapping `WrapConnector`'s wrapper) when the runtime owns the transaction: `PipelineTx` (via `RunPipelineTx`, which only *queues* in the user callback and begins the transaction when it flushes, retrying the whole attempt under `WithTxRetry`) and a standalone `Pipeline.Flush`. It is skipped when `MaxOpenConnections == 1`. On any error the implementation leaves no transaction open on the connection (an extra `ROLLBACK` round-trip is allowed on the error path only) and reports a broken connection to the pool; an error raised by the `COMMIT` is wrapped in `*CommitError` so `IsRetryableTxError(err, duringCommit=true)` applies, and the wrapper is removed before the error reaches the caller. A transport error in the batch has an unknown outcome and is reported as a commit-time failure (never retried).
-   - `WirePipeliner.ExecPipeline(ctx, ops)` runs the operations only, inside the transaction the connection is in (a caller-owned `*sql.Tx`, reached via `WrapConnector` sentinel execution `tx.ExecContext(withPipelinePayload(ctx, payload), "--sqlgen:pipeline")` when `txCache != nil`; the caller commits or rolls back). On an idle connection the `pgxwire` implementation wraps the batch in `BEGIN ... COMMIT` itself, because the transaction-local `set_config` the condition recording relies on is rejected by CockroachDB outside an explicit transaction. A driver implementing only `WirePipeliner` gets `BeginTx` + one wire call + `Commit` for `PipelineTx`.
-   - **Wire flavors.** A pipeliner that implements `runtime.WireFlavored` (`WireFlavor() WireFlavor`) says how its batch must be rendered; one without it is `WireFlavorPostgres`. For `WireFlavorMySQL` the runtime does NOT pre-render `ops[i].SQL`: the connection calls `runtime.RenderMySQLBatch(ops, MySQLRenderOptions{Flavor, InTx, TxOpts})` (it knows the time zone and character set of the literals, whether the caller's transaction is open, and `max_allowed_packet`). That renders ONE multi-statement text per batch (`MySQLBatch.SQL`; `ops[i].SQL` is the part of it that belongs to operation i): `SET @sqlgen_p=-1;` then, per operation, `SET @sqlgen_p=<i>;`, the core statement with the arguments INLINED as literals by the renderer (`MySQLFlavor.WriteLiteral`; the placeholders are slots of the descriptor, so no text is ever searched for `?`) and every branch gate / failure gate rendered as `@sqlgen_c<ID>=1|0` / `@sqlgen_f<0`, `SET @sqlgen_n<i>=ROW_COUNT()` (or `FOUND_ROWS()` after a SELECT, or a `(@sqlgen_k:=@sqlgen_k+1)` counter column after a MariaDB `RETURNING`), an assertion as `SET @sqlgen_f=IF(@sqlgen_f<0 AND (gates) AND NOT (@sqlgen_n<i><=>want), i, @sqlgen_f)`, an Abort as the same without the count test, every condition as `SET @sqlgen_c<ID>=COALESCE(expr,0)` (leaves recorded for a compound condition as `@sqlgen_l<ID>`; a `WhereCol` leaf re-runs the SELECT inside an aggregate), one assignment per `SET`, and every `@sqlgen_` variable assigned earlier in the SAME batch (session variables outlive a batch on a pooled connection). The batch ends with `COMMIT` (own transaction, no guard in the batch) or `SET @sqlgen_q=IF(@sqlgen_f<0,'COMMIT','ROLLBACK'); PREPARE/EXECUTE/DEALLOCATE`, then the summary row `SELECT @sqlgen_f, @sqlgen_n.., @sqlgen_c..`. The k-th row-returning operation is the k-th result set of the answer (`MySQLBatch.ResultSetOps`), the summary row follows. A failed assertion or Abort is NOT a server error: later operations are gated off, the transaction rolls back and `MySQLBatch.Apply(ops, summaryRow)` builds the same `*AssertionError` (with Got) / `op.AbortErr` the sequential path returns and fills `op.RowCount` / `CondVal` / `ExtraConds[].Val`. A database error of a statement is a real error; the recovery turn is `ROLLBACK; SELECT @sqlgen_p` (own transaction) and tells which operation it was (`@sqlgen_p == len(ops)` is the COMMIT: `*CommitError`). Inside the caller's transaction an assertion operation runs after `SAVEPOINT sqlgen_sp<i>` and a failed assertion costs one more turn, `ROLLBACK TO SAVEPOINT` (MySQL cannot do that inside a prepared statement), which undoes the failing operation and leaves the transaction usable. `RenderMySQLBatch` returns an error wrapping `ErrWireNotApplicable` for what the flavor cannot express: an argument that cannot be inlined (unsupported Go type, NaN, Inf), `RETURNING` on a server without it (MySQL), a column condition over a RETURNING statement, an isolation level without MySQL equivalent. The renderer pre-sizes its single `strings.Builder` with an upper bound of what it writes (literal sizes included), pinned by `FuzzEstimateMySQLOpBytesUpperBound` and the shape matrix.
-   - For `WireFlavorPostgres`, calls `RenderPipelineBatch(dialect, cache, ops)` to populate `ops[i].SQL` using at most 1 `strings.Builder`. `PipelineOp.WireResult()` tells a driver how to read each answer (command tag, scanned rows, guarded `(affected, ok)` row, discarded abort row). Conditions recorded by `set_config('sqlgen.c<ID>', ..., true)` are read back inside the same batch with `current_setting('sqlgen.c<ID>', true)`; several `If`s over one future record one condition each (`OpDecorators.ExtraConds`, CTE `_sqlgen_x<ID>`), and the driver reads each back (`ProducedCond.Val/Set`).
+1. **Wire-Pipelined Mode (`wire.TxPipeliner` / `wire.Pipeliner`)**:
+   - `wire.TxPipeliner.ExecTxPipeline(ctx, txOpts, ops)` runs `BEGIN [isolation / read-only from txOpts]`, every operation and `COMMIT` in one round-trip. It is detected via `db.Conn` + `conn.Raw` (unwrapping `WrapConnector`'s wrapper) when the runtime owns the transaction: `PipelineTx` (via `RunPipelineTx`, which only *queues* in the user callback and begins the transaction when it flushes, retrying the whole attempt under `WithTxRetry`) and a standalone `Pipeline.Flush`. It is skipped when `MaxOpenConnections == 1`. On any error the implementation leaves no transaction open on the connection (an extra `ROLLBACK` round-trip is allowed on the error path only) and reports a broken connection to the pool; an error raised by the `COMMIT` is wrapped in `*CommitError` so `IsRetryableTxError(err, duringCommit=true)` applies, and the wrapper is removed before the error reaches the caller. A transport error in the batch has an unknown outcome and is reported as a commit-time failure (never retried).
+   - `wire.Pipeliner.ExecPipeline(ctx, ops)` runs the operations only, inside the transaction the connection is in (a caller-owned `*sql.Tx`, reached via `WrapConnector` sentinel execution `tx.ExecContext(withPipelinePayload(ctx, payload), "--sqlgen:pipeline")` when `txCache != nil`; the caller commits or rolls back). On an idle connection the `pgxwire` implementation wraps the batch in `BEGIN ... COMMIT` itself, because the transaction-local `set_config` the condition recording relies on is rejected by CockroachDB outside an explicit transaction. A driver implementing only `wire.Pipeliner` gets `BeginTx` + one wire call + `Commit` for `PipelineTx`.
+   - **Wire flavors.** A pipeliner that implements `wire.Flavored` (`WireFlavor() WireFlavor`) says how its batch must be rendered; one without it is `WireFlavorPostgres`. For `WireFlavorMySQL` the runtime does NOT pre-render `ops[i].SQL`: the connection calls `runtime.RenderMySQLBatch(ops, MySQLRenderOptions{Flavor, InTx, TxOpts})` (it knows the time zone and character set of the literals, whether the caller's transaction is open, and `max_allowed_packet`). That renders ONE multi-statement text per batch (`MySQLBatch.SQL`; `ops[i].SQL` is the part of it that belongs to operation i): `SET @sqlgen_p=-1;` then, per operation, `SET @sqlgen_p=<i>;`, the core statement with the arguments INLINED as literals by the renderer (`MySQLFlavor.WriteLiteral`; the placeholders are slots of the descriptor, so no text is ever searched for `?`) and every branch gate / failure gate rendered as `@sqlgen_c<ID>=1|0` / `@sqlgen_f<0`, `SET @sqlgen_n<i>=ROW_COUNT()` (or `FOUND_ROWS()` after a SELECT, or a `(@sqlgen_k:=@sqlgen_k+1)` counter column after a MariaDB `RETURNING`), an assertion as `SET @sqlgen_f=IF(@sqlgen_f<0 AND (gates) AND NOT (@sqlgen_n<i><=>want), i, @sqlgen_f)`, an Abort as the same without the count test, every condition as `SET @sqlgen_c<ID>=COALESCE(expr,0)` (leaves recorded for a compound condition as `@sqlgen_l<ID>`; a `WhereCol` leaf re-runs the SELECT inside an aggregate), one assignment per `SET`, and every `@sqlgen_` variable assigned earlier in the SAME batch (session variables outlive a batch on a pooled connection). The batch ends with `COMMIT` (own transaction, no guard in the batch) or `SET @sqlgen_q=IF(@sqlgen_f<0,'COMMIT','ROLLBACK'); PREPARE/EXECUTE/DEALLOCATE`, then the summary row `SELECT @sqlgen_f, @sqlgen_n.., @sqlgen_c..`. The k-th row-returning operation is the k-th result set of the answer (`MySQLBatch.ResultSetOps`), the summary row follows. A failed assertion or Abort is NOT a server error: later operations are gated off, the transaction rolls back and `MySQLBatch.Apply(ops, summaryRow)` builds the same `*AssertionError` (with Got) / `op.AbortErr` the sequential path returns and fills `op.RowCount` / `CondVal` / `ExtraConds[].Val`. A database error of a statement is a real error; the recovery turn is `ROLLBACK; SELECT @sqlgen_p` (own transaction) and tells which operation it was (`@sqlgen_p == len(ops)` is the COMMIT: `*CommitError`). Inside the caller's transaction an assertion operation runs after `SAVEPOINT sqlgen_sp<i>` and a failed assertion costs one more turn, `ROLLBACK TO SAVEPOINT` (MySQL cannot do that inside a prepared statement), which undoes the failing operation and leaves the transaction usable. `RenderMySQLBatch` returns an error wrapping `ErrWireNotApplicable` for what the flavor cannot express: an argument that cannot be inlined (unsupported Go type, NaN, Inf), `RETURNING` on a server without it (MySQL), a column condition over a RETURNING statement, an isolation level without MySQL equivalent. The renderer pre-sizes its single `strings.Builder` with an upper bound of what it writes (literal sizes included), pinned by `FuzzEstimateMySQLOpBytesUpperBound` and the shape matrix.
+   - For `WireFlavorPostgres`, calls `renderPipelineBatch(dialect, cache, ops)` to populate `ops[i].SQL` using at most 1 `strings.Builder`. `PipelineOp.WireResult()` tells a driver how to read each answer (command tag, scanned rows, guarded `(affected, ok)` row, discarded abort row). Conditions recorded by `set_config('sqlgen.c<ID>', ..., true)` are read back inside the same batch with `current_setting('sqlgen.c<ID>', true)`; several `If`s over one future record one condition each (`OpDecorators.ExtraConds`, CTE `_sqlgen_x<ID>`), and the driver reads each back (`ProducedCond.Val/Set`).
    - `Pipeline.Flush`/`Exec` called inside a `PipelineTx` callback returns `ErrFlushInPipelineTx`. A flush counts toward `CacheStats.WirePipelines` when a wire pipeliner ran it and `SequentialPipelines` when it ran statement by statement; an empty flush or one that fails while being built counts as neither.
    - `TranslateWireError` translates ONLY the guard's own marked error (see §6.1 item 3): `sqlgen:abort:` on an operation with `Decorators.IsAbort == true` into `op.AbortErr`, and `sqlgen:assert:<n>` on an operation with `Decorators.AssertRows >= 0` into a `*runtime.AssertionError` (matching `runtime.ErrAssertionFailed`) carrying the statement name (`op.Desc.Name`), the expected count and the actual count (`Got == n`, `GotKnown == true`). A genuine integer overflow (SQLSTATE 22003) or any other error of the caller's own statement passes through unchanged, identical to the sequential path.
 2. **Sequential Fallback Mode (`*sql.DB` / `*sql.Tx`)**:
    - Executes operations sequentially through `StmtCache` (using Tier-2 prepared statements).
    - Evaluates `BranchGates` in Go via `cond.EvalGoFn()`: if any gate is false, calls `op.OnSkipped()` (the future then reports `ErrBranchNotTaken`: that error is the only way a future says "my operation did not run", there is no `Skipped()` accessor) and skips database execution for that operation.
-   - **NoOp operations** (`PipelineOp.NoOp`, queued by `Pipeline.QueueExecNoop` / `QueueSliceNoop[T]`: an empty `INSERT ... VALUES` collection). They take part in branch gating and conditions like any operation (zero rows affected, `Skipped` when gated off) but have no statement. At flush: if every operation is a *plain* NoOp (no `AssertRows`, no `ProduceCond`/`ExtraConds`/`LeafRecs`) the pipeline resolves them without touching the database (no connection, no transaction, nothing counted in `CacheStats`); otherwise a NoOp that carries an assertion or condition forces the whole pipeline onto the sequential path (`noWire`), where it resolves with `RowCount == 0` in order; otherwise the NoOps are removed from the slice handed to `WirePipeliner` / `WireTxPipeliner` (`wireOps`) and the results the driver wrote are copied back. A wire driver therefore never sees a NoOp.
+   - **NoOp operations** (`PipelineOp.NoOp`, queued by `Pipeline.QueueExecNoop` / `QueueSliceNoop[T]`: an empty `INSERT ... VALUES` collection). They take part in branch gating and conditions like any operation (zero rows affected, `Skipped` when gated off) but have no statement. At flush: if every operation is a *plain* NoOp (no `AssertRows`, no `ProduceCond`/`ExtraConds`/`LeafRecs`) the pipeline resolves them without touching the database (no connection, no transaction, nothing counted in `CacheStats`); otherwise a NoOp that carries an assertion or condition forces the whole pipeline onto the sequential path (`noWire`), where it resolves with `RowCount == 0` in order; otherwise the NoOps are removed from the slice handed to `wire.Pipeliner` / `wire.TxPipeliner` (`wireOps`) and the results the driver wrote are copied back. A wire driver therefore never sees a NoOp.
    - If an active `IsAbort` operation is reached, returns `op.AbortErr` (triggering `tx.Rollback()`).
-   - If an operation has `Decorators.AssertRows >= 0` and the actual affected/returned row count does not equal `AssertRows`, sets `op.Err` to a `*runtime.AssertionError{Statement, Want: AssertRows, Got: RowCount, GotKnown: true}` (matching `runtime.ErrAssertionFailed`) and returns it. The implicit transaction of a standalone `Pipeline`, and `PipelineTx`, roll back; a pipeline bound to a user-managed `*sql.Tx` (`WithTx(tx).Pipeline(ctx)`) does not: the error is returned, the transaction stays usable, the writes of the operations before the failing one stay in it, and the caller owns the rollback. A `WirePipeliner` must provide the same for a failed assertion or `Abort` inside a transaction it did not begin: `pgxwire` takes a `SAVEPOINT` before each guarded operation in the same batch, releases the first one at the end, and on a guard failure (not on a database error of the caller's statement, which aborts a PostgreSQL-protocol transaction on every path) rolls back to the failing operation's savepoint (one extra round-trip, error path only). The failing operation's own effect is discarded there, whereas the sequential path has already run it.
+   - If an operation has `Decorators.AssertRows >= 0` and the actual affected/returned row count does not equal `AssertRows`, sets `op.Err` to a `*runtime.AssertionError{Statement, Want: AssertRows, Got: RowCount, GotKnown: true}` (matching `runtime.ErrAssertionFailed`) and returns it. The implicit transaction of a standalone `Pipeline`, and `PipelineTx`, roll back; a pipeline bound to a user-managed `*sql.Tx` (`WithTx(tx).Pipeline(ctx)`) does not: the error is returned, the transaction stays usable, the writes of the operations before the failing one stay in it, and the caller owns the rollback. A `wire.Pipeliner` must provide the same for a failed assertion or `Abort` inside a transaction it did not begin: `pgxwire` takes a `SAVEPOINT` before each guarded operation in the same batch, releases the first one at the end, and on a guard failure (not on a database error of the caller's statement, which aborts a PostgreSQL-protocol transaction on every path) rolls back to the failing operation's savepoint (one extra round-trip, error path only). The failing operation's own effect is discarded there, whereas the sequential path has already run it.
 3. **`IsRetryableTxError(err error, duringCommit bool) bool`**:
    - Returns `false` if `err == nil`, `errors.Is(err, context.Canceled)`, `errors.Is(err, context.DeadlineExceeded)`, or `errors.Is(err, ErrAssertionFailed)`.
    - If `duringCommit == true` and `err` is a transport/connection drop (`errors.Is(err, driver.ErrBadConn)`, `errors.Is(err, io.EOF)`, `errors.Is(err, io.ErrUnexpectedEOF)`, or `net.Error`), returns `false`.
@@ -882,7 +883,7 @@ Because the Clean-Room Dogfooding Protocol (Section 11) requires users/sub-agent
    - Runtime query composition (`<Name>Query(...)` passed into `Sub:sqlgen.Query` slots in `WITH` CTEs or `WHERE IN`).
 3. **Generated Go API & Execution Modes Reference**:
    - Reading: `<Name>`, `<Name>Seq`, and the `runtime.Collect` / `AppendTo` / `Each` helpers.
-   - Chunking & Streaming: automatic chunking of the plain `<Name>`, `<Name>Stream`, `<Name>StreamSeq`, and `runtime.Seq2` / `FromSeq` / `MapSeq2`; empty-collection rules (2.3).
+   - Chunking & Streaming: automatic chunking of the plain `<Name>`, `<Name>Stream`, `<Name>StreamSeq`, and `runtime.FromSeq` / `runtime.MapSeq2`; empty-collection rules (2.3).
    - Transactions & Retries: `q.WithTx(tx)`, `q.InTx(ctx, txOpts, fn, runtime.WithTxRetry(runtime.DefaultRetryPolicy()))`.
    - Pipelining & Conditional Control Flow: `q.Pipeline(ctx)`, `q.PipelineTx(...)`, futures (`ExecFuture`, `RowFuture[T]`, `SliceFuture[T]`), `.AssertRowsAffected(n)`, `.AssertFound()`, `p.If(cond, thenFn, elseFn)`, `WhereCol`, `p.Abort(err)`, and `IfResult.Taken()`.
    - Cache Tuning & Observability: `WithMaxPreparedStmts`, `WithMaxSQLVariants`, `WithMaxPartialBytes`, `WithPromoteThreshold`, `WithMaxBatchParams`, and `q.CacheStats()`.
@@ -909,7 +910,7 @@ To validate ergonomics, documentation completeness, and end-to-end reliability u
 - **Mandatory End-to-End Test (`examples/fintech_ledger/service_test.go`)**:
   - Initialize 20 accounts with `$200,000` total supply (`$10,000` each).
   - Spawn 16 goroutines concurrently executing random bidirectional transfers (`A -> B` and `B -> A`), bulk settlements, and frozen-account attempts.
-  - Assert **strict conservation of money** ($\sum \text{balances} == \$200,000$), zero unhandled deadlock errors, and identical state transitions on both `WirePipeliner` and sequential `*sql.Tx`.
+  - Assert **strict conservation of money** ($\sum \text{balances} == \$200,000$), zero unhandled deadlock errors, and identical state transitions on both `wire.Pipeliner` and sequential `*sql.Tx`.
 
 ### 11.3. Dogfooding Persona 2: Multi-Tenant B2B SaaS Analytics & Admin Portal (`examples/saas_multitenant`)
 - **Domain**: Multi-tenant user/organization management and invoice cohort reporting portal.
@@ -946,7 +947,7 @@ To validate ergonomics, documentation completeness, and end-to-end reliability u
     - `BulkCancelOrdersByIDs` (`:OrderIDs:[]int64 ASC` + scalar `:CancelReason:string` + `RETURNING`).
     - Streaming settlement archival (`StreamUnarchivedFills` / `Seq` / `Each` $\rightarrow$ `runtime.MapSeq2` $\rightarrow$ `ArchiveSettlementStream` $\rightarrow$ `MarkFillsArchivedByIDs`).
 - **Mandatory End-to-End Test (`examples/clearing_exchange/engine_test.go`)**:
-  - Runs identically against both `SequentialTx` and `WirePipeliner`, verifying 12goroutine concurrent bilateral clearing + mark-to-market shocks + collateral sweeps, strict **zero-sum net position conservation** ($\sum \text{net\_quantity} \equiv 0$ per symbol), **exact collateral & fee conservation** ($\sum \text{available\_collateral\_cents} == \text{Initial} + \sum \text{Adjustments} - \sum \text{NetFees}$), and 16-direction 4-column keyset pagination equivalence over the 3-level nested subquery hierarchy.
+  - Runs identically against both `SequentialTx` and `wire.Pipeliner`, verifying 12goroutine concurrent bilateral clearing + mark-to-market shocks + collateral sweeps, strict **zero-sum net position conservation** ($\sum \text{net\_quantity} \equiv 0$ per symbol), **exact collateral & fee conservation** ($\sum \text{available\_collateral\_cents} == \text{Initial} + \sum \text{Adjustments} - \sum \text{NetFees}$), and 16-direction 4-column keyset pagination equivalence over the 3-level nested subquery hierarchy.
 
 ---
 
@@ -956,24 +957,24 @@ To validate ergonomics, documentation completeness, and end-to-end reliability u
 1. **AST & Static Invariant Gate (`TestSingleStringsBuilderASTAudit`)**:
    - Parse `runtime/*.go`, `generator.go`, and all generated `*_gen.go` files using `go/parser` and `go/ast`.
    - Assert `reflect` is never imported.
-   - Assert `strings.Builder` is instantiated ONLY inside `BuildComposedSQL` (1) and `RenderPipelineBatch` (1).
+   - Assert `strings.Builder` is instantiated ONLY inside `BuildComposedSQL` (1) and `renderPipelineBatch` (1).
    - Assert `fmt.Sprintf`, `strings.Join`, and `bytes.Buffer` are never called in `runtime/sql_stream.go`.
 2. **12-Schema Compilation Isolation Gate (`TestCompilationIsolationMatrix`)**:
    - Generate and type-check (`go/types`) 12 minimal orthogonal schemas (1 statement each: static `exec` 0 params, static `exec` 2 params, static `one` 1 col, static `one` 3 cols, `many` with `SelectCols` only, `many` with `WHERE` flag only, `many` with `SELECT`+`WHERE` flags, `exec` with 1D `ASC` slice, `exec` with tuple `ASC` slice, `many` with `Order` only, `many` with `Seek`+`Order`, `subquery` only) to guarantee zero unused imports or variables in any feature subset.
 3. **Property-Based Testing (PBT) Suite (`runtime_test.go` & `generator_test.go`)**:
-   - **PBT 1 (`TestPropertyEstimateOpBytesStrictUpperBound`)**: Across 2,000 randomized descriptors, slice/tuple lengths, flags, sort specs, and pipeline decorators, assert `len(renderedSQL) <= EstimateOpBytes(...)` and `testing.AllocsPerRun == 1.0`.
+   - **PBT 1 (`TestPropertyEstimateOpBytesStrictUpperBound`)**: Across 2,000 randomized descriptors, slice/tuple lengths, flags, sort specs, and pipeline decorators, assert `len(renderedSQL) <= estimateOpBytes(...)` and `testing.AllocsPerRun == 1.0`.
    - **PBT 2 (`TestPropertyKeysetPaginationEquivalence`)**: Across 250 duplicate-heavy rows, all 16 sort-direction masks ($\{\text{ASC}, \text{DESC}\}^4$), and page sizes `1, 2, 7, 25, 250, 500`, assert keyset pagination returns the exact same row sequence as unpaginated SQL `ORDER BY`.
    - **PBT 3 (`TestPropertyPresortImmutabilityAndMonotonicity`)**: Across 500 randomized slice/tuple inputs, assert the caller's slice is never mutated and the emitted parameter sequence is strictly monotonic under the declared `ASC`/`DESC` comparator.
    - **PBT 4 (`TestPropertyBatchChunkDecompositionConservation`)**: Across batch sizes `1..25,000` and randomized promoted Tier-2 sizes (which must not influence the plan), assert $\sum \text{chunk}_i == N$, $\text{chunk}_0 == N$ when $N \le N_{\text{chunk\_max}}$, and every $\text{chunk}_i \times F + S \le \text{MaxWireParams}$.
    - **PBT 5 (`TestPropertyPipelineWireVsSequentialParity`)**:
      - Note on SQLite vs. PostgreSQL CTE Grammar: PostgreSQL/CockroachDB (`DialectDollar`) supports data-modifying CTEs (`WITH _sqlgen_op AS (UPDATE ...)`), whereas SQLite's grammar forbids `UPDATE`/`INSERT`/`DELETE` inside a `WITH` clause.
-     - Therefore: (a) Test the exact PostgreSQL `RenderPipelineBatch` CTE SQL generation (`WITH _sqlgen_op AS (...)`, `_sqlgen_chk`, `_sqlgen_cond`, `SlotBranchGuard`, `SlotInsertValuesOpen`) and wire-scanning state machine using the `DialectDollar` `mockdriver` `WirePipeliner`, and (b) For live SQLite differential parity between `WirePipeliner` and sequential `*sql.Tx`, implement a SQLite `WirePipeliner` test adapter that executes the queued `PipelineOp` batch over the SQLite connection (evaluating `SlotBranchGuard` / `SlotInsertValuesOpen` directly in SQLite SQL and recording `_sqlgen_cond` via connection-scoped SQLite custom functions `set_config` and `current_setting`), asserting identical database state and future outcomes between `WirePipeliner` and sequential `*sql.Tx`.
+     - Therefore: (a) Test the exact PostgreSQL `renderPipelineBatch` CTE SQL generation (`WITH _sqlgen_op AS (...)`, `_sqlgen_chk`, `_sqlgen_cond`, `SlotBranchGuard`, `SlotInsertValuesOpen`) and wire-scanning state machine using the `DialectDollar` `mockdriver` `wire.Pipeliner`, and (b) For live SQLite differential parity between `wire.Pipeliner` and sequential `*sql.Tx`, implement a SQLite `wire.Pipeliner` test adapter that executes the queued `PipelineOp` batch over the SQLite connection (evaluating `SlotBranchGuard` / `SlotInsertValuesOpen` directly in SQLite SQL and recording `_sqlgen_cond` via connection-scoped SQLite custom functions `set_config` and `current_setting`), asserting identical database state and future outcomes between `wire.Pipeliner` and sequential `*sql.Tx`.
    - **Real-engine differentials (`integration/`, PostgreSQL 15/18 + CockroachDB, pgxwire vs plain pgx, in `PipelineTx`, standalone `Flush` and a user-managed tx)**: `TestRealEnginePipelineWireMatchesSequential` (named scenarios), `TestRealEnginePipelineGuardMatrix` (statement kind x assertion x 0-3 conditions x row present/absent), `TestRealEnginePipelineCompoundConditions` (conditions over several operations), `TestRealEnginePipelineUserOverflowIsNotAnAssertion`, `TestRealEnginePipelineUserTransactionAfterFailure`, `TestRealEnginePipelineArgumentsMatchPreparedStatements` (Go type x column type), and the seeded, bounded `TestRealEnginePipelineDifferentialFuzz` (`SQLGEN_FUZZ_SEEDS`, default 100 fixed seeds per mode and engine, about 300 random pipelines per engine in well under a minute; a failure prints the seed and the generated pipeline). The oracle is always the sequential path. The MySQL-protocol counterparts (`integration/wire_my_*_test.go`, MySQL 8.4/9.7 and MariaDB 10.11/12.3, mysqlwire vs plain go-sql-driver) are `TestRealEngineMySQLPipelineWireMatchesSequential`, `TestRealEngineMySQLPipelineGuardMatrix`, `TestRealEngineMySQLPipelineCompoundConditions`, `TestRealEngineMySQLPipelineArgumentLiterals` (Go type x column type x 9 session variants incl. NO_BACKSLASH_ESCAPES, ANSI_QUOTES, latin1, gbk, binary, a non-UTC loc, utf8mb4_bin) and `TestRealEngineMySQLPipelineDifferentialFuzz` (statements limited to what the engine supports: no RETURNING on MySQL, INSERT/DELETE only on MariaDB).
    - **Seeded differential tests of the generated code against an in-memory oracle (`integration/fuzz_*_test.go`, all seven server engines, each also through `pgxwire` on the PostgreSQL protocol, plus in-process SQLite)**: three generated fixtures with the same statements (`fzpg`, `fzmy`, `fzsl`; `TestFuzzFixturesInSync` keeps them and their adapters identical) over one table, driven through the engine-agnostic `fzAPI`. The oracle is plain Go over rows the test wrote and reads back with hand-written SQL, never through the product. Every case derives from one seed (`SQLGEN_FUZZ_SEED=<n>` replays it; a failure prints it; `SQLGEN_FUZZ_SCALE=<n>` multiplies the case counts for soak runs). Covered: all 256 combinations of eight `{?Flag:}` blocks (shared scalars, 1D and tuple slices, NULL-able columns, enabled-but-empty lists -> `ErrEmptySliceParam`, disabled blocks ignoring their parameters) on the default, prepare-early and tiny evicting caches; every `SelectCols` subset; multi-row inserts (presorted ASC/DESC, unsorted, literal tuple templates; base method, `Stream`) and `IN` / tuple-`IN` lookups at sizes around the chunk boundary with small `WithMaxBatchParams` budgets; keyset pagination over random `Order` specs of 0..12 columns (mixed directions, tie-breaker named, implied or mid-list, int64 extremes, direction-flipped twin, random cursors) walked page by page against the oracle's total sort; composed sub-queries to depth 3 with flags, a slot referenced twice, conditional JOIN/columns; `UPDATE` / `DELETE` with `IN` lists (base method, chunked) and every supported `RETURNING` form; user transactions (`WithTx`) with commit and rollback; `Into` / `Seq` / `Each` flavours including early exit and cancelled contexts (no connection left checked out); concurrent readers sharing one `Queries`; SQL-looking and non-ASCII strings round-tripping. Text columns hold lowercase ASCII only because engines collate text differently; every other sort key is numeric.
 4. **Native Go Fuzzing Suite (`testing.F`)**:
    - `FuzzParseSQL` (`parse_internal_test.go`): seeded with valid and malformed annotated SQL, including every retired spelling; asserts zero panics and that whatever `Generate` accepts is syntactically valid Go.
    - `FuzzParseYAML`: Fuzzes `ParseYAML` across arbitrary byte inputs; asserts zero panics.
-   - `FuzzEstimateOpBytesUpperBound`: Fuzzes SQL rendering inputs; asserts `len(sql) <= EstimateOpBytes`.
+   - `FuzzEstimateOpBytesUpperBound`: Fuzzes SQL rendering inputs; asserts `len(sql) <= estimateOpBytes`.
    - `FuzzVariantKeyAndSubqueryShapeBijectivity`: Fuzzes `MakeVariantKey` and `ComputeSubqueryShape`; asserts zero collisions whenever `IsExact() == true`.
    - `FuzzStmtCacheAdversarialStateTransitions`: Fuzzes cache operations (hits, misses, promotions, demotions, byte-budget overflows); asserts internal doubly-linked list invariants (`partialProb.len + partialProt.len == count(partialItems)`, `preparedProb.len + preparedProt.len <= maxPrepared`, and `shard.partialBytes == sum(len(e.sqlStr))` for all Tier-1 entries).
 5. **Deterministic Fault-Injecting & Handle-Counting Driver Suite (`mockdriver` in `runtime_test.go`)**:
@@ -982,7 +983,7 @@ To validate ergonomics, documentation completeness, and end-to-end reliability u
    - Assert singleflight promotion under a 64-goroutine thundering herd calls `PrepareContext` **exactly once**.
 6. **Resource & Concurrency Gates**:
    - **`MaxOpenConns(1)` Deadlock Gate**: Run all read, batch, streaming (`Seq`/`StreamSeq` with early `break`), `InTx`, and `PipelineTx` operations on a live SQLite DB with `db.SetMaxOpenConns(1)`.
-   - **Zero-Allocation Hot-Path Gate**: Verify via `testing.AllocsPerRun` that `MakeVariantKey`, `PackOrder`/`ExpandOrder`, `AcquireArgs`/`ReleaseArgs`, `AcquireIndices`/`ReleaseIndices`, and Tier-1/Tier-2 cache hits allocate `0` heap objects on the cache/pool path.
+   - **Zero-Allocation Hot-Path Gate**: Verify via `testing.AllocsPerRun` that `MakeVariantKey`, `PackOrder`/`expandOrder`, `acquireArgs`/`ReleaseArgs`, `AcquireIndices`/`ReleaseIndices`, and Tier-1/Tier-2 cache hits allocate `0` heap objects on the cache/pool path.
 
 ---
 

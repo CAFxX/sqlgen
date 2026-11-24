@@ -24,6 +24,7 @@ import (
 
 	"github.com/CAFxX/sqlgen/integration/myq"
 	"github.com/CAFxX/sqlgen/runtime"
+	"github.com/CAFxX/sqlgen/runtime/wire"
 )
 
 // myKill kills (the statement of, with query) a connection this test created; an id that is already gone
@@ -461,7 +462,7 @@ func TestRealEngineMySQLWireKilledConnection(t *testing.T) {
 		}()
 		var rawErr error
 		if err := conn.Raw(func(dc any) error {
-			wtp, ok := dc.(runtime.WireTxPipeliner)
+			wtp, ok := dc.(wire.TxPipeliner)
 			if !ok {
 				return fmt.Errorf("%T is not a WireTxPipeliner", dc)
 			}

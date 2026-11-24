@@ -105,11 +105,11 @@ func TestSingleStringsBuilderASTAudit(t *testing.T) {
 	if builderCountByFunc["BuildComposedSQL"] != 1 {
 		t.Fatalf("expected exactly 1 strings.Builder in BuildComposedSQL, got %d", builderCountByFunc["BuildComposedSQL"])
 	}
-	if builderCountByFunc["RenderPipelineBatch"] != 1 {
-		t.Fatalf("expected exactly 1 strings.Builder in RenderPipelineBatch, got %d", builderCountByFunc["RenderPipelineBatch"])
+	if builderCountByFunc["renderPipelineBatch"] != 1 {
+		t.Fatalf("expected exactly 1 strings.Builder in renderPipelineBatch, got %d", builderCountByFunc["renderPipelineBatch"])
 	}
 	for fn, cnt := range builderCountByFunc {
-		if fn != "BuildComposedSQL" && fn != "RenderPipelineBatch" && cnt > 0 {
+		if fn != "BuildComposedSQL" && fn != "renderPipelineBatch" && cnt > 0 {
 			t.Fatalf("unexpected strings.Builder (%d) in function %s", cnt, fn)
 		}
 	}
@@ -165,7 +165,7 @@ type mockDriverConfig struct {
 	failCommitOnce bool
 	enableWire     bool
 	wireHandler    func(ctx context.Context, ops []PipelineOp) error
-	enableWireTx   bool // connections also implement WireTxPipeliner
+	enableWireTx   bool // connections also implement wire.TxPipeliner
 	wireTxCalls    atomic.Int64
 	wireTxHandler  func(ctx context.Context, txOpts *sql.TxOptions, ops []PipelineOp) error
 	rowsData       [][]driver.Value
@@ -435,7 +435,7 @@ func orphanTxStmtCache(t *testing.T, ctx context.Context, db *sql.DB, cache *Stm
 		_ = tx.Rollback()
 		t.Fatalf("orphanTxStmtCache Query: %v", err)
 	}
-	CloseRows(r, m)
+	closeRows(r, m)
 	_ = tx.Rollback()
 	tc = nil
 }
@@ -468,7 +468,7 @@ func TestMockDriverFaultInjectionAndHandleAccounting(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Query vk1: %v", err)
 	}
-	CloseRows(rows, ms1)
+	closeRows(rows, ms1)
 	if got := cfg.openStmts.Load(); got != 1 {
 		t.Fatalf("expected 1 open stmt, got %d", got)
 	}
@@ -494,7 +494,7 @@ func TestMockDriverFaultInjectionAndHandleAccounting(t *testing.T) {
 	if rows2.Err() == nil || !strings.Contains(rows2.Err().Error(), "disk read fault mid-stream") {
 		t.Fatalf("expected mid-stream error, got %v", rows2.Err())
 	}
-	CloseRows(rows2, ms2)
+	closeRows(rows2, ms2)
 
 	cfg.mu.Lock()
 	cfg.failRowsNextAt = 0
@@ -543,7 +543,7 @@ func TestMockDriverFaultInjectionAndHandleAccounting(t *testing.T) {
 				if err != nil {
 					t.Fatalf("Query vk2: %v", err)
 				}
-				CloseRows(r, m)
+				closeRows(r, m)
 			}
 			break
 		}
@@ -854,13 +854,13 @@ func TestPropertyEstimateOpBytesStrictUpperBound(t *testing.T) {
 			dec.CondID = rng.IntN(8)
 		}
 
-		estPlain := EstimateOpBytes(desc, &in, nil)
+		estPlain := estimateOpBytes(desc, &in, nil)
 		renderedPlain := BuildComposedSQL(desc, &in, dialect)
 		if len(renderedPlain) > estPlain {
-			t.Fatalf("iter %d: EstimateOpBytes (%d) < len(BuildComposedSQL) (%d) for dialect=%v", iter, estPlain, len(renderedPlain), dialect)
+			t.Fatalf("iter %d: estimateOpBytes (%d) < len(BuildComposedSQL) (%d) for dialect=%v", iter, estPlain, len(renderedPlain), dialect)
 		}
 
-		// Also verify pipeline decorated rendering via RenderPipelineBatch
+		// Also verify pipeline decorated rendering via renderPipelineBatch
 		ops := []PipelineOp{{
 			StmtID:        desc.StmtID,
 			Desc:          desc,
@@ -868,10 +868,10 @@ func TestPropertyEstimateOpBytesStrictUpperBound(t *testing.T) {
 			Decorators:    dec,
 			HasResultCols: true,
 		}}
-		estDec := EstimateOpBytes(desc, &in, &dec)
-		RenderPipelineBatch(dialect, nil, ops)
+		estDec := estimateOpBytes(desc, &in, &dec)
+		renderPipelineBatch(dialect, nil, ops)
 		if len(ops[0].SQL) > estDec {
-			t.Fatalf("iter %d: EstimateOpBytes (%d) < len(op.SQL) (%d) for decorated op: %s", iter, estDec, len(ops[0].SQL), ops[0].SQL)
+			t.Fatalf("iter %d: estimateOpBytes (%d) < len(op.SQL) (%d) for decorated op: %s", iter, estDec, len(ops[0].SQL), ops[0].SQL)
 		}
 	}
 
@@ -918,8 +918,8 @@ func TestPlanBatchChunkFitsOneStatement(t *testing.T) {
 		if got := c.PlanBatchChunk(9, 3, 1, 0, 10, true); got != 0 {
 			t.Fatalf("remaining=0: chunk = %d", got)
 		}
-		if got := c.PlanBatchChunk(9, 3, 1, MaxPowerOfTwoChunk+5, 0, true); got != MaxPowerOfTwoChunk {
-			t.Fatalf("no per-statement limit: chunk = %d, want %d", got, MaxPowerOfTwoChunk)
+		if got := c.PlanBatchChunk(9, 3, 1, maxPowerOfTwoChunk+5, 0, true); got != maxPowerOfTwoChunk {
+			t.Fatalf("no per-statement limit: chunk = %d, want %d", got, maxPowerOfTwoChunk)
 		}
 	}
 	// A recurring size is promoted exactly at the threshold; a one-off size is not.
@@ -971,7 +971,7 @@ func TestPropertyBatchChunkDecompositionConservation(t *testing.T) {
 			steps := 0
 			for offset := 0; offset < totalRows; {
 				chunk := cache.PlanBatchChunk(stmtID, colMask, flagMask, totalRows-offset, maxRows, offset == 0)
-				if want := min(totalRows-offset, maxRows, MaxPowerOfTwoChunk); chunk != want {
+				if want := min(totalRows-offset, maxRows, maxPowerOfTwoChunk); chunk != want {
 					t.Fatalf("trial %d totalRows=%d offset=%d: chunk=%d, want %d (one exact statement when it fits, else full-limit chunks)", trial, totalRows, offset, chunk, want)
 				}
 				if chunk <= 0 || chunk > totalRows-offset {
@@ -1047,16 +1047,16 @@ func FuzzEstimateOpBytesUpperBound(f *testing.F) {
 			IsAbort:    isAbort,
 		}
 
-		est := EstimateOpBytes(desc, &in, &dec)
+		est := estimateOpBytes(desc, &in, &dec)
 		ops := []PipelineOp{{
 			StmtID:     1,
 			Desc:       desc,
 			Input:      in,
 			Decorators: dec,
 		}}
-		RenderPipelineBatch(dialect, nil, ops)
+		renderPipelineBatch(dialect, nil, ops)
 		if len(ops[0].SQL) > est {
-			t.Fatalf("EstimateOpBytes (%d) < len(op.SQL) (%d): %q", est, len(ops[0].SQL), ops[0].SQL)
+			t.Fatalf("estimateOpBytes (%d) < len(op.SQL) (%d): %q", est, len(ops[0].SQL), ops[0].SQL)
 		}
 	})
 }
@@ -1082,7 +1082,7 @@ func FuzzVariantKeyAndSubqueryShapeBijectivity(f *testing.F) {
 		s1 := ComputeSubqueryShape(id1, col1, flag1, ord1, false, int(d1a&0xFFFF), int(d1b&0xFFFF))
 		s2 := ComputeSubqueryShape(id2, col2, flag2, ord2, false, int(d2a&0xFFFF), int(d2b&0xFFFF))
 		sameSubCoords := id1 == id2 && col1 == col2 && flag1 == flag2 && ord1 == ord2 && (d1a&0xFFFF) == (d2a&0xFFFF) && (d1b&0xFFFF) == (d2b&0xFFFF)
-		if (s1&InexactKeyBit) == 0 && (s2&InexactKeyBit) == 0 {
+		if (s1&inexactKeyBit) == 0 && (s2&inexactKeyBit) == 0 {
 			if (s1 == s2) != sameSubCoords {
 				t.Fatalf("ComputeSubqueryShape bijectivity violation: s1=%#x s2=%#x sameSubCoords=%v", s1, s2, sameSubCoords)
 			}
@@ -1226,7 +1226,7 @@ func FuzzStmtCacheAdversarialStateTransitions(f *testing.F) {
 			} else {
 				r, ms, err := cache.Query(ctx, db, nil, usePrep, vk, stmtID, 0, 0, nil, DialectQuestion, desc, &in, 1)
 				if err == nil {
-					CloseRows(r, ms)
+					closeRows(r, ms)
 				}
 			}
 		}
@@ -1290,7 +1290,7 @@ func TestVariantKeyAndSubqueryShape(t *testing.T) {
 		MakeVariantKey(1, 1, 1, 0, 1, 2, 3, 4, 5),
 		MakeVariantKey(1, 1, 1, 0, 1, 2, 1<<33),
 		MakeVariantKey(1, 1, 1, 0, 1, 2, 3, 1<<33),
-		MakeVariantKey(1, 1, 1, 0, InexactKeyBit|42),
+		MakeVariantKey(1, 1, 1, 0, inexactKeyBit|42),
 	}
 	for i, k := range inexactCases {
 		if k.IsExact() {
@@ -1299,7 +1299,7 @@ func TestVariantKeyAndSubqueryShape(t *testing.T) {
 	}
 
 	sExact := ComputeSubqueryShape(3, 0x07, 0x01, 0, false, 4, 8)
-	if sExact&InexactKeyBit != 0 {
+	if sExact&inexactKeyBit != 0 {
 		t.Fatalf("expected exact subquery shape tag, got %#x", sExact)
 	}
 	sInexactCases := []uint64{
@@ -1314,36 +1314,36 @@ func TestVariantKeyAndSubqueryShape(t *testing.T) {
 		ComputeSubqueryShape(3, 0x07, 0x01, 0, false, 1, 70000),
 	}
 	for i, s := range sInexactCases {
-		if s&InexactKeyBit == 0 {
-			t.Fatalf("inexact subquery case %d: expected InexactKeyBit set, got %#x", i, s)
+		if s&inexactKeyBit == 0 {
+			t.Fatalf("inexact subquery case %d: expected inexactKeyBit set, got %#x", i, s)
 		}
 	}
 }
 
 func TestExpandOrderAndSeekAndHelpers(t *testing.T) {
-	cols, desc, count, allSame := ExpandOrder(0, 3)
+	cols, desc, count, allSame := expandOrder(0, 3)
 	if count != 1 || cols[0] != 2 || desc[0] || !allSame {
-		t.Fatalf("unexpected default ExpandOrder: count=%d cols=%v desc=%v", count, cols[:count], desc[:count])
+		t.Fatalf("unexpected default expandOrder: count=%d cols=%v desc=%v", count, cols[:count], desc[:count])
 	}
 
 	spec := PackOrder(Desc(0))
-	cols, desc, count, allSame = ExpandOrder(spec, 3)
+	cols, desc, count, allSame = expandOrder(spec, 3)
 	if count != 2 || cols[0] != 0 || !desc[0] || cols[1] != 2 || !desc[1] || !allSame {
-		t.Fatalf("unexpected single-DESC ExpandOrder: count=%d cols=%v desc=%v", count, cols[:count], desc[:count])
+		t.Fatalf("unexpected single-DESC expandOrder: count=%d cols=%v desc=%v", count, cols[:count], desc[:count])
 	}
 
 	mixedSpec := PackOrder(Asc(0), Desc(1))
-	_, _, count, allSame = ExpandOrder(mixedSpec, 3)
+	_, _, count, allSame = expandOrder(mixedSpec, 3)
 	if count != 3 || allSame {
 		t.Fatalf("expected 3 mixed terms, got count=%d allSame=%v", count, allSame)
 	}
-	if n := SeekArgCount(DialectQuestion, mixedSpec, 3, true); n != 7 {
+	if n := seekArgCount(DialectQuestion, mixedSpec, 3, true); n != 7 {
 		t.Fatalf("expected 7 seek args for 3-col mixed Question, got %d", n)
 	}
-	if n := SeekArgCount(DialectDollar, mixedSpec, 3, true); n != 3 {
+	if n := seekArgCount(DialectDollar, mixedSpec, 3, true); n != 3 {
 		t.Fatalf("expected 3 seek args for Dollar, got %d", n)
 	}
-	if n := SeekArgCount(DialectQuestion, mixedSpec, 3, false); n != 0 {
+	if n := seekArgCount(DialectQuestion, mixedSpec, 3, false); n != 0 {
 		t.Fatalf("expected 0 seek args when hasSeek=false, got %d", n)
 	}
 
@@ -1437,7 +1437,7 @@ func TestExpandOrderAndSeekAndHelpers(t *testing.T) {
 }
 
 func TestArgAndIndexPoolsAndZeroAllocHotPaths(t *testing.T) {
-	buf := AcquireArgs()
+	buf := acquireArgs()
 	*buf = append(*buf, "secret_1", "secret_2")
 	underlying := (*buf)[:2]
 	ReleaseArgs(buf)
@@ -1468,9 +1468,9 @@ func TestArgAndIndexPoolsAndZeroAllocHotPaths(t *testing.T) {
 
 	if allocs := testing.AllocsPerRun(100, func() {
 		ord := PackOrder(Asc(0), Desc(1), Asc(2))
-		_, _, _, _ = ExpandOrder(ord, 4)
+		_, _, _, _ = expandOrder(ord, 4)
 	}); allocs != 0 {
-		t.Fatalf("PackOrder/ExpandOrder allocated %.1f objects", allocs)
+		t.Fatalf("PackOrder/expandOrder allocated %.1f objects", allocs)
 	}
 
 	if allocs := testing.AllocsPerRun(100, func() {
@@ -1583,7 +1583,7 @@ func TestWTinyLFUScanFloodResistance(t *testing.T) {
 func TestPipelineWirePipelinerAndSequentialCoverage(t *testing.T) {
 	ctx := context.Background()
 
-	// 1. Test PostgreSQL CTE WirePipeliner rendering and execution via mockdriver
+	// 1. Test PostgreSQL CTE wire.Pipeliner rendering and execution via mockdriver
 	cfg := &mockDriverConfig{
 		enableWire: true,
 	}
@@ -1596,7 +1596,7 @@ func TestPipelineWirePipelinerAndSequentialCoverage(t *testing.T) {
 					cols: []string{"id"},
 					data: [][]driver.Value{{int64(42)}},
 				}
-				sqlRows, err := RowsFromDriverRows(ctx, dRows)
+				sqlRows, err := rowsFromDriverRows(ctx, dRows)
 				if err != nil {
 					return err
 				}
@@ -1712,7 +1712,7 @@ func TestPipelineWirePipelinerAndSequentialCoverage(t *testing.T) {
 	})
 
 	if err := p.Flush(); err != nil {
-		t.Fatalf("WirePipeliner Flush: %v", err)
+		t.Fatalf("wirePipeliner Flush: %v", err)
 	}
 	if !ifRes.Taken() {
 		t.Fatalf("expected ifRes.Taken() == true")
@@ -1759,7 +1759,7 @@ func TestPipelineWirePipelinerAndSequentialCoverage(t *testing.T) {
 		t.Fatalf("expected generic wire error passthrough")
 	}
 
-	// 3. Test WirePipeliner inside an explicit transaction (*TxStmtCache) via WrapConnector
+	// 3. Test wire.Pipeliner inside an explicit transaction (*TxStmtCache) via WrapConnector
 	if err := RunTxWithRetry(ctx, db, nil, nil, []TxOption{WithTxRetry(DefaultRetryPolicy())}, func(tc *TxStmtCache) error {
 		_ = tc.Tx()
 		pTx := NewPipeline(ctx, db, cache, tc, true, DialectDollar)
@@ -1918,13 +1918,13 @@ func TestPipelineWirePipelinerAndSequentialCoverage(t *testing.T) {
 		t.Fatalf("expected ErrAssertionFailed from rfAssertFail.Get(), got %v", err)
 	}
 
-	// Test WithPipelineOps / PipelineOpsFromContext and LookupSQL
-	ctxWithOps := WithPipelineOps(ctx, []PipelineOp{{StmtID: 1}})
-	if opsOut, ok := PipelineOpsFromContext(ctxWithOps); !ok || len(opsOut) != 1 {
-		t.Fatalf("PipelineOpsFromContext failed")
+	// Test withPipelineOps / pipelineOpsFromContext and LookupSQL
+	ctxWithOps := withPipelineOps(ctx, []PipelineOp{{StmtID: 1}})
+	if opsOut, ok := pipelineOpsFromContext(ctxWithOps); !ok || len(opsOut) != 1 {
+		t.Fatalf("pipelineOpsFromContext failed")
 	}
-	if _, ok := PipelineOpsFromContext(ctx); ok {
-		t.Fatalf("expected false from PipelineOpsFromContext on plain context")
+	if _, ok := pipelineOpsFromContext(ctx); ok {
+		t.Fatalf("expected false from pipelineOpsFromContext on plain context")
 	}
 	if s, ok := sqliteCache.LookupSQL(MakeVariantKey(10, 0, 0, 0)); !ok || s == "" {
 		t.Fatalf("expected LookupSQL hit on warm key")
@@ -1945,10 +1945,10 @@ func TestPipelineWirePipelinerAndSequentialCoverage(t *testing.T) {
 		if err != nil {
 			t.Fatalf("smallGlobalCache.Query: %v", err)
 		}
-		CloseRows(r, ms)
+		closeRows(r, ms)
 	}
 
-	// 5. Test pipelineConnWrapper methods, isPromotedBatchSize, RenderPipelineBatch >32 ops & cache hit, and QueryRow/Exec in Tx
+	// 5. Test pipelineConnWrapper methods, isPromotedBatchSize, renderPipelineBatch >32 ops & cache hit, and QueryRow/Exec in Tx
 	wc := WrapConnector(&mockConnector{cfg: cfg})
 	if _, err := wc.Driver().Open("mock"); err != nil {
 		t.Fatalf("wrappedDriver.Open: %v", err)
@@ -2050,8 +2050,8 @@ func TestPipelineWirePipelinerAndSequentialCoverage(t *testing.T) {
 	}
 	_ = msB.Release()
 
-	// Test RenderPipelineBatch with >32 ops and cached SQL lookup
-	RenderPipelineBatch(DialectDollar, sqliteCache, nil)
+	// Test renderPipelineBatch with >32 ops and cached SQL lookup
+	renderPipelineBatch(DialectDollar, sqliteCache, nil)
 	manyOps := make([]PipelineOp, 36)
 	for i := range manyOps {
 		if i%2 == 0 {
@@ -2070,7 +2070,7 @@ func TestPipelineWirePipelinerAndSequentialCoverage(t *testing.T) {
 			}
 		}
 	}
-	RenderPipelineBatch(DialectDollar, sqliteCache, manyOps)
+	renderPipelineBatch(DialectDollar, sqliteCache, manyOps)
 	for i, op := range manyOps {
 		if op.SQL == "" {
 			t.Fatalf("op %d SQL empty", i)
@@ -2176,17 +2176,8 @@ func TestPipelineWirePipelinerAndSequentialCoverage(t *testing.T) {
 		t.Fatalf("pMultiIf.Flush: %v", err)
 	}
 
-	// 7. Additional edge-case coverage for wireRowsConn, PipelineCond, non-exact VariantKey (bySQL),
+	// 7. Additional edge-case coverage for PipelineCond, non-exact VariantKey (bySQL),
 	// segmented LRU protected-segment step-down, and pool oversized capacities.
-	wrc := wireRowsConnector{}
-	_ = wrc.Driver()
-	wrConn, _ := wrc.Connect(ctx)
-	_, _ = wrConn.Prepare("SELECT 1")
-	_, _ = wrConn.Begin()
-	_ = wrConn.Close()
-	if qrc, ok := wrConn.(driver.QueryerContext); ok {
-		_, _ = qrc.QueryContext(ctx, "SELECT 1", nil)
-	}
 
 	_ = rfMulti.WhereCol("score > 0", func(v int64) bool { return v > 0 })
 	_ = (*RowFuture[int64])(nil).WhereCol("score > 0", nil)
@@ -2206,7 +2197,7 @@ func TestPipelineWirePipelinerAndSequentialCoverage(t *testing.T) {
 		t.Fatalf("expected empty SQL for nil descriptor")
 	}
 	_ = BuildComposedSQL(qUpdDesc, nil, DialectQuestion)
-	_ = EstimateOpBytes(qUpdDesc, nil, nil)
+	_ = estimateOpBytes(qUpdDesc, nil, nil)
 
 	// Oversized pool allocations (>64 args, >256 indices)
 	bigArgs := AcquireArgsCap(128)
@@ -2267,13 +2258,13 @@ func TestPipelineWirePipelinerAndSequentialCoverage(t *testing.T) {
 	}
 	_ = inexactCache.Close()
 
-	// PackOrder, ExpandOrder, and AppendSeekArgs edge cases
+	// PackOrder, expandOrder, and AppendSeekArgs edge cases
 	_ = PackOrder(0, Asc(0), Desc(0), Asc(1), Asc(2), Asc(3), Asc(4), Asc(5), Asc(6), Asc(7), Asc(8))
-	// A hand-built spec with a repeated column and a column beyond numCols: ExpandOrder skips both.
+	// A hand-built spec with a repeated column and a column beyond numCols: expandOrder skips both.
 	dupOrderSpec := uint64(Asc(0)) | (uint64(Desc(0)) << orderTermBits) | (uint64(Asc(3)) << (2 * orderTermBits))
-	_, _, _, _ = ExpandOrder(dupOrderSpec, 3)
+	_, _, _, _ = expandOrder(dupOrderSpec, 3)
 	sevenOrder := PackOrder(Asc(0), Asc(1), Asc(2), Asc(3), Asc(4), Asc(5), Asc(6))
-	_, _, _, _ = ExpandOrder(sevenOrder, 8)
+	_, _, _, _ = expandOrder(sevenOrder, 8)
 	var seekArgs []any
 	AppendSeekArgs(&seekArgs, DialectQuestion, PackOrder(Asc(0), Desc(1)), 3, nil)
 	AppendSeekArgs(&seekArgs, DialectQuestion, PackOrder(Asc(0), Desc(1)), 3, []any{10})
@@ -2481,7 +2472,7 @@ func BenchmarkDynamicSliceHit(b *testing.B) {
 	if err != nil {
 		b.Fatal(err)
 	}
-	CloseRows(rows, ms)
+	closeRows(rows, ms)
 
 	b.ReportAllocs()
 	b.ResetTimer()
@@ -2502,7 +2493,7 @@ func BenchmarkDynamicSliceHit(b *testing.B) {
 				b.Fatal(err)
 			}
 		}
-		CloseRows(r, m)
+		closeRows(r, m)
 	}
 }
 
@@ -2548,16 +2539,16 @@ func BenchmarkSelectColsScan(b *testing.B) {
 			for rows.Next() {
 				item = benchItemRow{}
 				if err := rows.Scan(scanSlice...); err != nil {
-					CloseRows(rows, ms)
+					closeRows(rows, ms)
 					yield(benchItemRow{}, err)
 					return
 				}
 				if !yield(item, nil) {
-					CloseRows(rows, ms)
+					closeRows(rows, ms)
 					return
 				}
 			}
-			CloseRows(rows, ms)
+			closeRows(rows, ms)
 		}
 	}
 
@@ -2861,9 +2852,9 @@ func TestStmtCacheConcurrentAdversarialStress(t *testing.T) {
 func renderPipelineOp(t *testing.T, dialect Dialect, desc *QueryDescriptor, in RenderInput, dec OpDecorators) string {
 	t.Helper()
 	ops := []PipelineOp{{Desc: desc, Input: in, Decorators: dec}}
-	RenderPipelineBatch(dialect, nil, ops)
-	if est := EstimateOpBytes(desc, &in, &dec); len(ops[0].SQL) > est {
-		t.Fatalf("EstimateOpBytes %d < rendered length %d:\n%s", est, len(ops[0].SQL), ops[0].SQL)
+	renderPipelineBatch(dialect, nil, ops)
+	if est := estimateOpBytes(desc, &in, &dec); len(ops[0].SQL) > est {
+		t.Fatalf("estimateOpBytes %d < rendered length %d:\n%s", est, len(ops[0].SQL), ops[0].SQL)
 	}
 	return ops[0].SQL
 }
@@ -2939,7 +2930,7 @@ func TestGatedInsertPlaceholdersAreTypedOnlyForDollar(t *testing.T) {
 	}
 }
 
-// EstimateOpBytes must be a strict upper bound for every decorated pipeline-op shape, or the renderer
+// estimateOpBytes must be a strict upper bound for every decorated pipeline-op shape, or the renderer
 // would reallocate its single strings.Builder mid-render (a spec violation).
 func TestEstimateOpBytesCoversEveryPipelineOpShape(t *testing.T) {
 	sel := &QueryDescriptor{StmtVerb: VerbSelect, Segments: []string{"SELECT id FROM t WHERE id = ", ""}, Slots: []Slot{{Kind: SlotScalar}}}
@@ -3017,7 +3008,7 @@ func TestIsRetryableTxErrorSeesThroughWrapping(t *testing.T) {
 	}
 }
 
-// A database opened through WrapConnector over a driver that is NOT a WirePipeliner must fall back to
+// A database opened through WrapConnector over a driver that is NOT a wire.Pipeliner must fall back to
 // the sequential path for a standalone Pipeline.Flush instead of surfacing driver.ErrSkip.
 func TestStandalonePipelineFlushOnWrappedNonWireDriverFallsBack(t *testing.T) {
 	cfg := &mockDriverConfig{}

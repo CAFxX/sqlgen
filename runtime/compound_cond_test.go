@@ -40,7 +40,7 @@ func TestCompoundConditionLeavesAreRecordedByTheirOwnOperation(t *testing.T) {
 	r := p.If(cond, func() { p.QueueExec(3, upd, RenderInput{}, MakeVariantKey(3, 0, 0, 0), nil, nil, nil) }, nil)
 	_ = r
 	p.syncOpsFromPtrs()
-	RenderPipelineBatch(DialectDollar, nil, p.ops)
+	renderPipelineBatch(DialectDollar, nil, p.ops)
 
 	del, get := p.ops[0], p.ops[1]
 	if cond.Left.Recorded != 0 || cond.Right.Recorded != 0 || cond.Left.Op != d.op {
@@ -66,8 +66,8 @@ func TestCompoundConditionLeavesAreRecordedByTheirOwnOperation(t *testing.T) {
 		t.Fatalf("get SQL does not combine the recorded leaf:\n%s", get.SQL)
 	}
 	for i, op := range p.ops[:2] {
-		if est := EstimateOpBytes(op.Desc, &op.Input, &op.Decorators); est < len(op.SQL) {
-			t.Fatalf("op %d: EstimateOpBytes %d < rendered %d", i, est, len(op.SQL))
+		if est := estimateOpBytes(op.Desc, &op.Input, &op.Decorators); est < len(op.SQL) {
+			t.Fatalf("op %d: estimateOpBytes %d < rendered %d", i, est, len(op.SQL))
 		}
 	}
 }
@@ -85,7 +85,7 @@ func TestCompoundConditionBindingShapes(t *testing.T) {
 	// a leaf without an operation is FALSE, as in Go
 	p.If((*RowFuture[int64])(nil).WhereCol("id > 1", nil).Or(g.Found()), queueUpd, nil)
 	p.syncOpsFromPtrs()
-	RenderPipelineBatch(DialectDollar, nil, p.ops)
+	renderPipelineBatch(DialectDollar, nil, p.ops)
 
 	del, get := p.ops[0], p.ops[1]
 	if n := len(del.Decorators.LeafRecs); n != 3 { // d.NotFound (shared), d.Eq(3), d.Found
@@ -103,8 +103,8 @@ func TestCompoundConditionBindingShapes(t *testing.T) {
 		t.Fatalf("%d recorded conditions on the latest operation, want 5:\n%s", n, get.SQL)
 	}
 	for i, op := range p.ops[:2] {
-		if est := EstimateOpBytes(op.Desc, &op.Input, &op.Decorators); est < len(op.SQL) {
-			t.Fatalf("op %d: EstimateOpBytes %d < rendered %d", i, est, len(op.SQL))
+		if est := estimateOpBytes(op.Desc, &op.Input, &op.Decorators); est < len(op.SQL) {
+			t.Fatalf("op %d: estimateOpBytes %d < rendered %d", i, est, len(op.SQL))
 		}
 	}
 }

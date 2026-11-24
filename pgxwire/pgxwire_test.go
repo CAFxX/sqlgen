@@ -27,6 +27,7 @@ import (
 
 	"github.com/CAFxX/sqlgen/pgxwire"
 	"github.com/CAFxX/sqlgen/runtime"
+	"github.com/CAFxX/sqlgen/runtime/wire"
 )
 
 type testEngine struct {
@@ -628,8 +629,8 @@ func TestRawConnectionContract(t *testing.T) {
 		}
 		defer conn.Close()
 		err = conn.Raw(func(dc any) error {
-			wp, ok := dc.(runtime.WirePipeliner)
-			wtp, ok2 := dc.(runtime.WireTxPipeliner)
+			wp, ok := dc.(wire.Pipeliner)
+			wtp, ok2 := dc.(wire.TxPipeliner)
 			if !ok || !ok2 {
 				return errors.New("pgxwire connections must implement both wire interfaces")
 			}

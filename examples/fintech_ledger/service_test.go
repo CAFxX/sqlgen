@@ -12,6 +12,7 @@ import (
 	"testing"
 
 	"github.com/CAFxX/sqlgen/runtime"
+	"github.com/CAFxX/sqlgen/runtime/wire"
 	"modernc.org/sqlite"
 )
 
@@ -140,7 +141,7 @@ func (w *sqliteWireConn) ExecPipeline(ctx context.Context, ops []runtime.Pipelin
 				op.Err = runtime.TranslateWireError(op, err)
 				return op.Err
 			}
-			sqlRows, err := runtime.RowsFromDriverRows(ctx, dRows)
+			sqlRows, err := wire.RowsFromDriverRows(ctx, dRows)
 			if err != nil {
 				_ = dRows.Close()
 				op.Err = err

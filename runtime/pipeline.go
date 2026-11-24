@@ -157,7 +157,7 @@ type PipelineOp struct {
 	CondVal      bool
 	CondSet      bool
 	Err          error
-	// overflowGuard is set by RenderPipelineBatch for an operation whose guard was rendered for the
+	// overflowGuard is set by renderPipelineBatch for an operation whose guard was rendered for the
 	// question dialect (SQLite, which the example suites use to simulate a wire driver): that dialect
 	// cannot carry a marker in an error message, its guard is a constant integer overflow, and
 	// TranslateWireError recognises that overflow instead of a marker.
@@ -446,34 +446,14 @@ func (r *IfResult) Skipped() bool {
 	return r.skipped
 }
 
-// WirePipeliner is implemented by driver connections capable of executing a batch of
-// PipelineOp statements in a single network round-trip.
-//
-// ExecPipeline runs the operations in the transaction the connection is in (a user-managed
-// *sql.Tx; the caller commits or rolls back) or, on an idle connection, atomically in a transaction of
-// its own. In a user-managed transaction a failed assertion or Abort (the errors TranslateWireError
-// maps) must leave the transaction usable, with the work of the operations before the failing one
-// kept, as the sequential path does; a database error of the caller's own statement need not. The conditions recorded by set_config(..., true) need an explicit transaction block on
-// some engines (CockroachDB), so an implementation should open one itself rather than rely on the
-// implicit transaction of a Sync. Connections that can also fold BEGIN and COMMIT into the same
-// round-trip should implement WireTxPipeliner too.
-type WirePipeliner interface {
+// wirePipeliner and wireTxPipeliner are the method sets of the wire.Pipeliner and wire.TxPipeliner
+// contracts (package runtime/wire documents them); the runtime finds a driver connection's
+// implementation by structural type assertion, so it does not import that package.
+type wirePipeliner interface {
 	ExecPipeline(ctx context.Context, ops []PipelineOp) error
 }
 
-// WireTxPipeliner is implemented by driver connections that can run a complete transaction -- BEGIN
-// (with the isolation level and read-only mode of txOpts), every queued operation, COMMIT -- in a single
-// network round-trip. The runtime prefers it over WirePipeliner whenever it owns the transaction
-// (PipelineTx, and a standalone Pipeline.Flush), because with a WirePipeliner alone BEGIN and COMMIT are
-// two more round-trips.
-//
-// ExecTxPipeline must deliver op results exactly as WirePipeliner.ExecPipeline does. When it returns an
-// error the transaction must no longer be open on the connection (the implementation rolls it back, which
-// may cost one extra round-trip on this error path only) and the connection must be reusable or report
-// itself invalid so the pool discards it. An error raised by the COMMIT itself (for example a
-// serialization failure) must be wrapped in a *CommitError so that retry classification can tell that the
-// failure happened while committing.
-type WireTxPipeliner interface {
+type wireTxPipeliner interface {
 	ExecTxPipeline(ctx context.Context, txOpts *sql.TxOptions, ops []PipelineOp) error
 }
 
@@ -489,7 +469,7 @@ func (e *CommitError) Unwrap() error { return e.Err }
 // callback: the transaction flushes the pipeline itself once the callback returns.
 var ErrFlushInPipelineTx = errors.New("sqlgen: Flush must not be called inside PipelineTx; the transaction flushes the pipeline itself")
 
-// ErrWireNotApplicable is returned by a WirePipeliner or WireTxPipeliner BEFORE it sent anything to the
+// ErrWireNotApplicable is returned by a wire.Pipeliner or wire.TxPipeliner BEFORE it sent anything to the
 // server, to say that it cannot run this particular batch in one round-trip (a batch larger than the
 // server's packet limit, an argument it cannot represent, a transaction option it has no equivalent for,
 // a server that failed the capability probe, ...). The runtime then runs the pipeline on the sequential
@@ -501,9 +481,9 @@ var ErrWireNotApplicable = errors.New("sqlgen: pipeline not applicable to the si
 type WireFlavor uint8
 
 const (
-	// WireFlavorPostgres (the default for a pipeliner that does not implement WireFlavored): one statement
+	// WireFlavorPostgres (the default for a pipeliner that does not implement wire.Flavored): one statement
 	// per operation, built on WITH _sqlgen_op CTEs and transaction-local set_config conditions, with
-	// numbered placeholders. The runtime renders the SQL (RenderPipelineBatch) into PipelineOp.SQL before
+	// numbered placeholders. The runtime renders the SQL (renderPipelineBatch) into PipelineOp.SQL before
 	// it calls the pipeliner.
 	WireFlavorPostgres WireFlavor = iota
 	// WireFlavorMySQL: a statement SEQUENCE per operation built on session user variables (@sqlgen_*),
@@ -514,16 +494,15 @@ const (
 	WireFlavorMySQL
 )
 
-// WireFlavored is optionally implemented by a WirePipeliner / WireTxPipeliner to tell the runtime which
-// rendering it needs. A pipeliner without it is WireFlavorPostgres.
-type WireFlavored interface {
+// wireFlavored is the method set of wire.Flavored. A pipeliner without it is WireFlavorPostgres.
+type wireFlavored interface {
 	WireFlavor() WireFlavor
 }
 
-// prerenders reports whether the runtime must render op.SQL (RenderPipelineBatch) before handing ops to
+// prerenders reports whether the runtime must render op.SQL (renderPipelineBatch) before handing ops to
 // the pipeliner p.
 func prerenders(p any) bool {
-	if f, ok := p.(WireFlavored); ok {
+	if f, ok := p.(wireFlavored); ok {
 		return f.WireFlavor() == WireFlavorPostgres
 	}
 	return true
@@ -538,8 +517,8 @@ type pipelineCtxPayload struct {
 	handled bool
 }
 
-// WithPipelineOps attaches ops to ctx for driver-level WirePipeliner interception.
-func WithPipelineOps(ctx context.Context, ops []PipelineOp) context.Context {
+// withPipelineOps attaches ops to ctx for driver-level wire.Pipeliner interception.
+func withPipelineOps(ctx context.Context, ops []PipelineOp) context.Context {
 	return context.WithValue(ctx, pipelineCtxKey{}, &pipelineCtxPayload{ops: ops})
 }
 
@@ -547,8 +526,8 @@ func withPipelinePayload(ctx context.Context, payload *pipelineCtxPayload) conte
 	return context.WithValue(ctx, pipelineCtxKey{}, payload)
 }
 
-// PipelineOpsFromContext extracts a queued []PipelineOp slice from ctx.
-func PipelineOpsFromContext(ctx context.Context) ([]PipelineOp, bool) {
+// pipelineOpsFromContext extracts a queued []PipelineOp slice from ctx.
+func pipelineOpsFromContext(ctx context.Context) ([]PipelineOp, bool) {
 	if p, ok := ctx.Value(pipelineCtxKey{}).(*pipelineCtxPayload); ok && p != nil {
 		return p.ops, true
 	}
@@ -586,7 +565,7 @@ func (c *wrappedConnector) Driver() driver.Driver {
 
 // WrapConnector wraps a database/sql/driver.Connector so that transactions (*sql.Tx)
 // can flush PipelineTx batches in a single network round-trip when the underlying
-// driver.Conn implements WirePipeliner.
+// driver.Conn implements wire.Pipeliner.
 func WrapConnector(base driver.Connector) driver.Connector {
 	return &wrappedConnector{
 		base: base,
@@ -598,37 +577,37 @@ type pipelineConnWrapper struct {
 	driver.Conn
 }
 
-// wirePipelinerOf returns the connection's WirePipeliner, or nil. A connection produced by
+// wirePipelinerOf returns the connection's wire.Pipeliner, or nil. A connection produced by
 // WrapConnector always has an ExecPipeline method (it must intercept the transactional sentinel), so
 // merely type-asserting it would claim wire support even when the wrapped driver has none.
-func wirePipelinerOf(driverConn any) WirePipeliner {
+func wirePipelinerOf(driverConn any) wirePipeliner {
 	if w, ok := driverConn.(*pipelineConnWrapper); ok {
-		wp, _ := w.Conn.(WirePipeliner)
+		wp, _ := w.Conn.(wirePipeliner)
 		return wp
 	}
-	wp, _ := driverConn.(WirePipeliner)
+	wp, _ := driverConn.(wirePipeliner)
 	return wp
 }
 
-// wireTxPipelinerOf is wirePipelinerOf for WireTxPipeliner.
-func wireTxPipelinerOf(driverConn any) WireTxPipeliner {
+// wireTxPipelinerOf is wirePipelinerOf for wire.TxPipeliner.
+func wireTxPipelinerOf(driverConn any) wireTxPipeliner {
 	if w, ok := driverConn.(*pipelineConnWrapper); ok {
-		tp, _ := w.Conn.(WireTxPipeliner)
+		tp, _ := w.Conn.(wireTxPipeliner)
 		return tp
 	}
-	tp, _ := driverConn.(WireTxPipeliner)
+	tp, _ := driverConn.(wireTxPipeliner)
 	return tp
 }
 
 func (w *pipelineConnWrapper) ExecTxPipeline(ctx context.Context, txOpts *sql.TxOptions, ops []PipelineOp) error {
-	if tp, ok := w.Conn.(WireTxPipeliner); ok {
+	if tp, ok := w.Conn.(wireTxPipeliner); ok {
 		return tp.ExecTxPipeline(ctx, txOpts, ops)
 	}
 	return driver.ErrSkip
 }
 
 func (w *pipelineConnWrapper) ExecPipeline(ctx context.Context, ops []PipelineOp) error {
-	if wp, ok := w.Conn.(WirePipeliner); ok {
+	if wp, ok := w.Conn.(wirePipeliner); ok {
 		return wp.ExecPipeline(ctx, ops)
 	}
 	return driver.ErrSkip
@@ -637,10 +616,10 @@ func (w *pipelineConnWrapper) ExecPipeline(ctx context.Context, ops []PipelineOp
 func (w *pipelineConnWrapper) ExecContext(ctx context.Context, query string, args []driver.NamedValue) (driver.Result, error) {
 	if query == "--sqlgen:pipeline" {
 		if payload, ok := ctx.Value(pipelineCtxKey{}).(*pipelineCtxPayload); ok && payload != nil {
-			if wp, ok := w.Conn.(WirePipeliner); ok {
+			if wp, ok := w.Conn.(wirePipeliner); ok {
 				payload.handled = true
 				if prerenders(wp) {
-					RenderPipelineBatch(payload.dialect, payload.cache, payload.ops)
+					renderPipelineBatch(payload.dialect, payload.cache, payload.ops)
 				}
 				if err := wp.ExecPipeline(ctx, payload.ops); err != nil {
 					if errors.Is(err, ErrWireNotApplicable) {
@@ -652,7 +631,7 @@ func (w *pipelineConnWrapper) ExecContext(ctx context.Context, query string, arg
 				}
 				return driver.RowsAffected(1), nil
 			}
-			// Underlying connection does not support WirePipeliner; leave payload.handled = false
+			// Underlying connection does not support wire.Pipeliner; leave payload.handled = false
 			// and return without sending sentinel SQL to the database server.
 			return driver.RowsAffected(0), nil
 		}
@@ -713,7 +692,7 @@ func (w *pipelineConnWrapper) CheckNamedValue(nv *driver.NamedValue) error {
 }
 
 // WireResultKind tells a wire driver what the server answers for an operation whose SQL was rendered
-// by RenderPipelineBatch, and therefore how to read it.
+// by renderPipelineBatch, and therefore how to read it.
 type WireResultKind uint8
 
 const (
@@ -1208,7 +1187,7 @@ func QueueSlice[T any](
 			for rows.Next() {
 				var item T
 				if err := scanRowsFn(rows, &item); err != nil {
-					CloseRows(rows, ms)
+					closeRows(rows, ms)
 					fut.err = err
 					op.Err = err
 					return err
@@ -1217,7 +1196,7 @@ func QueueSlice[T any](
 				count++
 			}
 			err = rows.Err()
-			CloseRows(rows, ms)
+			closeRows(rows, ms)
 			if err != nil {
 				fut.err = err
 				op.Err = err
@@ -1458,7 +1437,7 @@ func (p *Pipeline) run() error {
 }
 
 // flushInTx runs the pipeline inside a transaction somebody else began (a user-managed *sql.Tx, or the
-// portable PipelineTx path): ops only, in one round-trip when the connection is a WirePipeliner behind
+// portable PipelineTx path): ops only, in one round-trip when the connection is a wire.Pipeliner behind
 // WrapConnector, otherwise one statement at a time.
 func (p *Pipeline) flushInTx() error {
 	if p.db != nil {
@@ -1487,7 +1466,7 @@ func (p *Pipeline) flushInTx() error {
 // flushWireConn tries the single-round-trip paths on a pooled connection obtained through db.Conn and
 // conn.Raw. handled reports whether a wire pipeliner executed the batch (err is then its outcome, a
 // *CommitError when the COMMIT failed); when it is false nothing was sent and the caller falls back.
-// A WireTxPipeliner (BEGIN + ops + COMMIT) is always preferred; a plain WirePipeliner is used only when
+// A wire.TxPipeliner (BEGIN + ops + COMMIT) is always preferred; a plain wire.Pipeliner is used only when
 // allowPlain is set, because it cannot begin or commit a transaction by itself.
 func (p *Pipeline) flushWireConn(txOpts *sql.TxOptions, allowPlain bool) (handled bool, err error) {
 	if p.db == nil || p.noWire || p.db.Stats().MaxOpenConnections == 1 {
@@ -1503,7 +1482,7 @@ func (p *Pipeline) flushWireConn(txOpts *sql.TxOptions, allowPlain bool) (handle
 			handled = true
 			ops, restore := p.wireOps()
 			if prerenders(tp) {
-				RenderPipelineBatch(p.dialect, p.cache, ops)
+				renderPipelineBatch(p.dialect, p.cache, ops)
 			}
 			wireErr = tp.ExecTxPipeline(p.ctx, txOpts, ops)
 			if !errors.Is(wireErr, ErrWireNotApplicable) {
@@ -1515,7 +1494,7 @@ func (p *Pipeline) flushWireConn(txOpts *sql.TxOptions, allowPlain bool) (handle
 			handled = true
 			ops, restore := p.wireOps()
 			if prerenders(wp) {
-				RenderPipelineBatch(p.dialect, p.cache, ops)
+				renderPipelineBatch(p.dialect, p.cache, ops)
 			}
 			wireErr = wp.ExecPipeline(p.ctx, ops)
 			if !errors.Is(wireErr, ErrWireNotApplicable) {
@@ -1569,7 +1548,7 @@ func (p *Pipeline) flushStandalone() error {
 	return tx.Commit()
 }
 
-// flushOwnTx runs a PipelineTx attempt: the runtime owns the transaction. With a WireTxPipeliner
+// flushOwnTx runs a PipelineTx attempt: the runtime owns the transaction. With a wire.TxPipeliner
 // connection BEGIN, every operation and COMMIT travel in one round-trip; otherwise it falls back to
 // BeginTx + flushInTx + Commit. Errors raised by COMMIT are wrapped in a *CommitError.
 func (p *Pipeline) flushOwnTx() error {
@@ -1615,17 +1594,17 @@ func DefaultRetryPolicy() TxRetryPolicy {
 	}
 }
 
-// TxConfig holds transaction execution options.
-type TxConfig struct {
+// txCfg holds transaction execution options.
+type txCfg struct {
 	RetryPolicy TxRetryPolicy
 }
 
 // TxOption configures InTx and PipelineTx execution.
-type TxOption func(*TxConfig)
+type TxOption func(*txCfg)
 
 // WithTxRetry enables automatic retries with exponential backoff and full jitter according to policy.
 func WithTxRetry(policy TxRetryPolicy) TxOption {
-	return func(cfg *TxConfig) {
+	return func(cfg *txCfg) {
 		cfg.RetryPolicy = policy
 	}
 }
@@ -1751,7 +1730,7 @@ func RunTxWithRetry(
 
 // RunPipelineTx implements PipelineTx. build queues the operations on the pipeline it is given; the
 // runtime then executes them in one transaction, retrying the whole attempt (build included) under
-// WithTxRetry. When the pooled connection is a WireTxPipeliner the attempt costs a single network
+// WithTxRetry. When the pooled connection is a wire.TxPipeliner the attempt costs a single network
 // round-trip, BEGIN and COMMIT included; otherwise it is BeginTx, the portable execution of the queued
 // operations, Commit. When existingTxCache is non-nil the transaction belongs to the caller and the
 // pipeline just runs inside it (no retry, no commit).
@@ -1790,8 +1769,8 @@ func RunPipelineTx(
 	})
 }
 
-func txConfig(opts []TxOption) TxConfig {
-	var cfg TxConfig
+func txConfig(opts []TxOption) txCfg {
+	var cfg txCfg
 	for _, opt := range opts {
 		if opt != nil {
 			opt(&cfg)
@@ -1837,35 +1816,4 @@ func retryTx(ctx context.Context, policy TxRetryPolicy, attempt func() (duringCo
 		case <-timer.C:
 		}
 	}
-}
-
-type wireRowsCtxKey struct{}
-
-type wireRowsConnector struct{}
-
-func (wireRowsConnector) Connect(context.Context) (driver.Conn, error) {
-	return wireRowsConn{}, nil
-}
-
-func (wireRowsConnector) Driver() driver.Driver { return nil }
-
-type wireRowsConn struct{}
-
-func (wireRowsConn) Prepare(string) (driver.Stmt, error) { return nil, driver.ErrSkip }
-func (wireRowsConn) Close() error                        { return nil }
-func (wireRowsConn) Begin() (driver.Tx, error)           { return nil, driver.ErrSkip }
-
-func (wireRowsConn) QueryContext(ctx context.Context, _ string, _ []driver.NamedValue) (driver.Rows, error) {
-	r, ok := ctx.Value(wireRowsCtxKey{}).(driver.Rows)
-	if !ok || r == nil {
-		return nil, driver.ErrSkip
-	}
-	return r, nil
-}
-
-var wireRowsDB = sql.OpenDB(wireRowsConnector{})
-
-// RowsFromDriverRows wraps a low-level driver.Rows in a standard *sql.Rows for WirePipeliner implementations.
-func RowsFromDriverRows(ctx context.Context, dRows driver.Rows) (*sql.Rows, error) {
-	return wireRowsDB.QueryContext(context.WithValue(ctx, wireRowsCtxKey{}, dRows), "wire")
 }
