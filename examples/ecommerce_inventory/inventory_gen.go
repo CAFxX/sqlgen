@@ -112,13 +112,6 @@ type SKUKey struct {
 	SKU         string
 }
 
-var sKUKeyChunkPool = sync.Pool{
-	New: func() any {
-		s := make([]SKUKey, 0, 256)
-		return &s
-	},
-}
-
 func compareSKUKey(a, b SKUKey) int {
 	if a.WarehouseID < b.WarehouseID {
 		return -1
@@ -345,6 +338,9 @@ func scanGetInventoryBySKUsRow(scanner interface{ Scan(...any) error }, dst *Inv
 
 func (q *Queries) GetInventoryBySKUs(ctx context.Context, keys []SKUKey, selectCols ...uint64) ([]InventoryItem, error) {
 	totalRows := len(keys)
+	if totalRows > q.cache.MaxRowsPerBatch(sqlDialect, 0, 2) {
+		return nil, &runtime.CollectionTooLargeError{Statement: "GetInventoryBySKUs", Items: totalRows, Limit: q.cache.MaxRowsPerBatch(sqlDialect, 0, 2)}
+	}
 	p := paramsGetInventoryBySKUs{
 		Keys:       keys,
 		SelectCols: runtime.OrCols(selectCols),
@@ -382,6 +378,10 @@ func (q *Queries) GetInventoryBySKUsSeq(ctx context.Context, keys []SKUKey, sele
 		totalRows := len(keys)
 		if totalRows == 0 {
 			yield(zero, runtime.ErrEmptySliceParam)
+			return
+		}
+		if totalRows > q.cache.MaxRowsPerBatch(sqlDialect, 0, 2) {
+			yield(zero, &runtime.CollectionTooLargeError{Statement: "GetInventoryBySKUs", Items: totalRows, Limit: q.cache.MaxRowsPerBatch(sqlDialect, 0, 2)})
 			return
 		}
 		p := paramsGetInventoryBySKUs{
@@ -474,57 +474,6 @@ func (pl *Pipeline) GetInventoryBySKUs(keys []SKUKey, selectCols ...uint64) *run
 	return runtime.QueueSlice(pl.Pipeline, stmtIDGetInventoryBySKUs, descGetInventoryBySKUs, in, vk, nil, argBuf, expandErr,
 		func(rs *sql.Rows, dst *InventoryItem) error { return scanGetInventoryBySKUsRow(rs, dst, colMask, p) },
 	)
-}
-
-func (q *Queries) GetInventoryBySKUsStreamSeq(ctx context.Context, seq iter.Seq2[SKUKey, error], selectCols ...uint64) iter.Seq2[InventoryItem, error] {
-	return func(yield func(InventoryItem, error) bool) {
-		var zero InventoryItem
-		if seq == nil {
-			yield(zero, runtime.ErrNilArgument)
-			return
-		}
-		chunkCap := min(256, q.cache.MaxRowsPerBatch(sqlDialect, 0, 2))
-		bufPtr := sKUKeyChunkPool.Get().(*[]SKUKey)
-		chunk := (*bufPtr)[:0]
-		defer func() {
-			clear(chunk[:cap(chunk)])
-			*bufPtr = chunk[:0]
-			sKUKeyChunkPool.Put(bufPtr)
-		}()
-		flushChunk := func() bool {
-			if len(chunk) == 0 {
-				return true
-			}
-			for r, err := range q.GetInventoryBySKUsSeq(ctx, chunk, selectCols...) {
-				if err != nil {
-					yield(zero, err)
-					return false
-				}
-				if !yield(r, nil) {
-					return false
-				}
-			}
-			chunk = chunk[:0]
-			return true
-		}
-		for item, err := range seq {
-			if err != nil {
-				yield(zero, err)
-				return
-			}
-			chunk = append(chunk, item)
-			if len(chunk) >= chunkCap {
-				if !flushChunk() {
-					return
-				}
-			}
-		}
-		_ = flushChunk()
-	}
-}
-
-func (q *Queries) GetInventoryBySKUsStream(ctx context.Context, seq iter.Seq2[SKUKey, error], selectCols ...uint64) ([]InventoryItem, error) {
-	return runtime.Collect(q.GetInventoryBySKUsStreamSeq(ctx, seq, selectCols...))
 }
 
 const stmtIDInsertOrderItems uint32 = 2

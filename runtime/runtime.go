@@ -81,6 +81,11 @@ var (
 	ErrInvalidSeek = errors.New("sqlgen: invalid seek cursor")
 	// ErrInvalidOrder is returned when an Order specification is invalid.
 	ErrInvalidOrder = errors.New("sqlgen: invalid order specification")
+	// ErrCollectionTooLarge is matched (errors.Is) by the error a statement whose result cannot be split
+	// into chunks (an aggregate, GROUP BY, DISTINCT, ORDER BY, LIMIT, ... over its collection, see DOCS
+	// section 3.2) returns when its collection does not fit one statement. Nothing is sent. The returned
+	// error is a *CollectionTooLargeError naming the statement and the limit.
+	ErrCollectionTooLarge = errors.New("sqlgen: collection too large for one statement")
 )
 
 var argPool = sync.Pool{
@@ -546,6 +551,23 @@ func (e *AssertionError) Error() string {
 
 // Unwrap makes errors.Is(err, ErrAssertionFailed) true.
 func (e *AssertionError) Unwrap() error { return ErrAssertionFailed }
+
+// CollectionTooLargeError is the error a non-decomposable statement (one whose result is not the
+// concatenation of the results of its chunks) returns when its collection holds more items than one
+// statement can carry (Limit, see WithMaxBatchParams). errors.Is(err, ErrCollectionTooLarge) is true for it.
+type CollectionTooLargeError struct {
+	Statement    string
+	Items, Limit int
+}
+
+func (e *CollectionTooLargeError) Error() string {
+	return "sqlgen: statement " + strconv.Quote(e.Statement) + ": collection of " + strconv.Itoa(e.Items) +
+		" items exceeds the single-statement limit of " + strconv.Itoa(e.Limit) +
+		" items, and the statement cannot be chunked (its result is not the concatenation of per-chunk results)"
+}
+
+// Unwrap makes errors.Is(err, ErrCollectionTooLarge) true.
+func (e *CollectionTooLargeError) Unwrap() error { return ErrCollectionTooLarge }
 
 // BranchGate represents an enclosing Pipeline.If condition gate on a PipelineOp.
 type BranchGate struct {

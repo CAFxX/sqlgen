@@ -2511,7 +2511,7 @@ var descFzByKeys = &runtime.QueryDescriptor{
 	Name:     "FzByKeys",
 	StmtID:   11,
 	StmtVerb: runtime.VerbSelect,
-	Segments: []string{"SELECT ", "\nFROM fz_rows\nWHERE (grp, k1) IN (", ")\nORDER BY id"},
+	Segments: []string{"SELECT ", "\nFROM fz_rows\nWHERE (grp, k1) IN (", ")"},
 	Slots: []runtime.Slot{
 		{Kind: runtime.SlotSelectCols},
 		{Kind: runtime.SlotTupleSlice, Tuple: &runtime.TupleDescriptor{Segments: []string{"", ", ", ""}, NumFields: 2}},
@@ -2877,7 +2877,7 @@ var descFzByIDs = &runtime.QueryDescriptor{
 	Name:     "FzByIDs",
 	StmtID:   12,
 	StmtVerb: runtime.VerbSelect,
-	Segments: []string{"SELECT ", "\nFROM fz_rows\nWHERE id IN (", ")\nORDER BY id"},
+	Segments: []string{"SELECT ", "\nFROM fz_rows\nWHERE id IN (", ")"},
 	Slots: []runtime.Slot{
 		{Kind: runtime.SlotSelectCols},
 		{Kind: runtime.SlotSlice},

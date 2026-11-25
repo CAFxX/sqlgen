@@ -120,21 +120,30 @@ func TestRealEngineScalarResults(t *testing.T) {
 			t.Errorf("count org 99 = %d, %v, want 0", n, err)
 		}
 
-		// many: []string across chunks (ids presorted, ORDER BY id within a chunk), unknown ids ignored.
+		// many: []string in ORDER BY order, unknown ids ignored. NamesByIDs has an ORDER BY, so it is not
+		// decomposable (DOCS section 3.2): it never chunks, and a collection over the budget fails before
+		// anything is sent.
 		ids := []int64{4, 99, 2, 1, 3}
-		want := []string{"n1", "n2", "n3", "n4"}
-		if got, err := api.names(ctx, ids); !slices.Equal(got, want) || err != nil {
+		if got, err := api.names(ctx, ids); got != nil || !errors.Is(err, runtime.ErrCollectionTooLarge) {
+			t.Errorf("names(5 ids over a 3-id budget) = %v, %v, want ErrCollectionTooLarge", got, err)
+		}
+		if _, err := runtime.Collect(api.namesSeq(ctx, ids)); !errors.Is(err, runtime.ErrCollectionTooLarge) {
+			t.Errorf("Collect(Seq(5 ids over a 3-id budget)) = %v, want ErrCollectionTooLarge", err)
+		}
+		few := []int64{4, 2, 1}
+		want := []string{"n1", "n2", "n4"}
+		if got, err := api.names(ctx, few); !slices.Equal(got, want) || err != nil {
 			t.Errorf("names = %v, %v, want %v", got, err, want)
 		}
-		if got, err := runtime.Collect(api.namesSeq(ctx, ids)); !slices.Equal(got, want) || err != nil {
+		if got, err := runtime.Collect(api.namesSeq(ctx, few)); !slices.Equal(got, want) || err != nil {
 			t.Errorf("Collect(Seq) = %v, %v", got, err)
 		}
 		dst := []string{"keep"}
-		if got, err := runtime.AppendTo(dst, api.namesSeq(ctx, ids)); !slices.Equal(got, append([]string{"keep"}, want...)) || err != nil {
+		if got, err := runtime.AppendTo(dst, api.namesSeq(ctx, few)); !slices.Equal(got, append([]string{"keep"}, want...)) || err != nil {
 			t.Errorf("AppendTo = %v, %v", got, err)
 		}
 		var each []string
-		if err := runtime.Each(api.namesSeq(ctx, ids), func(s string) error {
+		if err := runtime.Each(api.namesSeq(ctx, few), func(s string) error {
 			each = append(each, s)
 			if len(each) == 2 {
 				return runtime.ErrStop
@@ -153,8 +162,8 @@ func TestRealEngineScalarResults(t *testing.T) {
 
 		// Pipeline futures typed on the value, one turn on the wire path.
 		run := func() {
-			n, names, err := api.pipeline(ctx, 1, ids)
-			if n != 4 || !slices.Equal(names, want) || err != nil {
+			n, names, err := api.pipeline(ctx, 1, ids) // a pipeline operation never chunks
+			if n != 4 || !slices.Equal(names, []string{"n1", "n2", "n3", "n4"}) || err != nil {
 				t.Errorf("pipeline = %d, %v, %v", n, names, err)
 			}
 		}

@@ -144,13 +144,6 @@ type BatchBonusInput struct {
 	Bonus int64
 }
 
-var batchBonusInputChunkPool = sync.Pool{
-	New: func() any {
-		s := make([]BatchBonusInput, 0, 256)
-		return &s
-	},
-}
-
 func compareBatchBonusInput(a, b BatchBonusInput) int {
 	if a.ID < b.ID {
 		return -1
@@ -265,6 +258,11 @@ type InsertUsersBatchReturningRow struct {
 
 type EmailOnly struct {
 	Email string
+}
+
+type UserRoleCountsInRow struct {
+	Role string
+	N    int64
 }
 
 type QuadItem struct {
@@ -681,6 +679,9 @@ func scanListUsersByIDsRow(scanner interface{ Scan(...any) error }, dst *User, c
 
 func (q *Queries) ListUsersByIDs(ctx context.Context, ids []int64, selectCols ...uint64) ([]User, error) {
 	totalRows := len(ids)
+	if totalRows > q.cache.MaxRowsPerBatch(sqlDialect, 0, 1) {
+		return nil, &runtime.CollectionTooLargeError{Statement: "ListUsersByIDs", Items: totalRows, Limit: q.cache.MaxRowsPerBatch(sqlDialect, 0, 1)}
+	}
 	p := paramsListUsersByIDs{
 		IDs:        ids,
 		SelectCols: runtime.OrCols(selectCols),
@@ -718,6 +719,10 @@ func (q *Queries) ListUsersByIDsSeq(ctx context.Context, ids []int64, selectCols
 		totalRows := len(ids)
 		if totalRows == 0 {
 			yield(zero, runtime.ErrEmptySliceParam)
+			return
+		}
+		if totalRows > q.cache.MaxRowsPerBatch(sqlDialect, 0, 1) {
+			yield(zero, &runtime.CollectionTooLargeError{Statement: "ListUsersByIDs", Items: totalRows, Limit: q.cache.MaxRowsPerBatch(sqlDialect, 0, 1)})
 			return
 		}
 		p := paramsListUsersByIDs{
@@ -2208,6 +2213,9 @@ func (q *Queries) UpdateUsersBatchFromValues(ctx context.Context, rows []BatchBo
 	if totalRows == 0 {
 		return nil, runtime.ErrEmptySliceParam
 	}
+	if totalRows > q.cache.MaxRowsPerBatch(sqlDialect, 0, 2) {
+		return nil, &runtime.CollectionTooLargeError{Statement: "UpdateUsersBatchFromValues", Items: totalRows, Limit: q.cache.MaxRowsPerBatch(sqlDialect, 0, 2)}
+	}
 	p := paramsUpdateUsersBatchFromValues{
 		Rows: rows,
 	}
@@ -2293,48 +2301,6 @@ func (pl *Pipeline) UpdateUsersBatchFromValues(rows []BatchBonusInput) *runtime.
 		TupleLens: tupleLensBuf[:],
 	}
 	return pl.Pipeline.QueueExec(stmtIDUpdateUsersBatchFromValues, descUpdateUsersBatchFromValues, in, vk, nil, argBuf, expandErr)
-}
-
-func (q *Queries) UpdateUsersBatchFromValuesStream(ctx context.Context, seq iter.Seq2[BatchBonusInput, error]) (sql.Result, error) {
-	if seq == nil {
-		return nil, runtime.ErrNilArgument
-	}
-	chunkCap := min(256, q.cache.MaxRowsPerBatch(sqlDialect, 0, 2))
-	bufPtr := batchBonusInputChunkPool.Get().(*[]BatchBonusInput)
-	chunk := (*bufPtr)[:0]
-	defer func() {
-		clear(chunk[:cap(chunk)])
-		*bufPtr = chunk[:0]
-		batchBonusInputChunkPool.Put(bufPtr)
-	}()
-	var batchRes runtime.BatchExecResult
-	flushChunk := func() error {
-		if len(chunk) == 0 {
-			return nil
-		}
-		res, err := q.UpdateUsersBatchFromValues(ctx, chunk)
-		if err != nil {
-			return err
-		}
-		batchRes.Add(res)
-		chunk = chunk[:0]
-		return nil
-	}
-	for item, err := range seq {
-		if err != nil {
-			return nil, err
-		}
-		chunk = append(chunk, item)
-		if len(chunk) >= chunkCap {
-			if err := flushChunk(); err != nil {
-				return nil, err
-			}
-		}
-	}
-	if err := flushChunk(); err != nil {
-		return nil, err
-	}
-	return batchRes, nil
 }
 
 const stmtIDInsertQuadBatch uint32 = 12
@@ -3136,7 +3102,619 @@ func (pl *Pipeline) UserEmailOnly(id int64) *runtime.RowFuture[EmailOnly] {
 	)
 }
 
-const stmtIDPageQuad uint32 = 17
+const stmtIDUserRoleCountsIn uint32 = 17
+
+const (
+	UserRoleCountsInColRole uint64 = 1 << 0
+	UserRoleCountsInColN    uint64 = 1 << 1
+	UserRoleCountsInColsAll uint64 = (1 << 2) - 1
+)
+
+type paramsUserRoleCountsIn struct {
+	IDs        []int64
+	SelectCols uint64
+}
+
+var descUserRoleCountsIn = &runtime.QueryDescriptor{
+	Name:     "UserRoleCountsIn",
+	StmtID:   17,
+	StmtVerb: runtime.VerbSelect,
+	Segments: []string{"SELECT ", " FROM users WHERE id IN (", ") GROUP BY role"},
+	Slots: []runtime.Slot{
+		{Kind: runtime.SlotSelectCols},
+		{Kind: runtime.SlotSlice},
+	},
+	SelectColExprs: []string{"role", "COUNT(*) AS n"},
+	NumSlices:      1,
+}
+
+func expandUserRoleCountsInParams(dst *[]any, dialect runtime.Dialect, p paramsUserRoleCountsIn) error {
+	_ = dialect
+	_ = p
+	if len(p.IDs) == 0 {
+		return runtime.ErrEmptySliceParam
+	}
+	for _, v := range p.IDs {
+		*dst = append(*dst, v)
+	}
+	return nil
+}
+
+func expandUserRoleCountsInArgs(dst *[]any, dialect runtime.Dialect, q *runtime.Query) error {
+	return expandUserRoleCountsInParams(dst, dialect, q.Params.(paramsUserRoleCountsIn))
+}
+
+func computeUserRoleCountsInKey(p paramsUserRoleCountsIn) (runtime.VariantKey, uint64, uint64, int) {
+	_ = p
+	var colMask uint64
+	colMask = p.SelectCols & UserRoleCountsInColsAll
+	if colMask == UserRoleCountsInColsAll {
+		colMask = 0
+	}
+	var flagMask uint64
+	var orderSpec runtime.Order
+	var hasSeek bool
+	orderKey := runtime.EncodeOrderKey(orderSpec, hasSeek)
+	approxArgs := 5
+	var d0 uint64
+	d0 = uint64(len(p.IDs))
+	approxArgs += len(p.IDs)
+	vk := runtime.MakeVariantKey(stmtIDUserRoleCountsIn, colMask, flagMask, orderKey, d0)
+	return vk, colMask, flagMask, approxArgs
+}
+
+// UserRoleCountsInQuery constructs a composable runtime.Query without executing it (stateless: no Queries or DB needed).
+func UserRoleCountsInQuery(ids []int64, selectCols ...uint64) runtime.Query {
+	p := paramsUserRoleCountsIn{
+		IDs:        ids,
+		SelectCols: runtime.OrCols(selectCols),
+	}
+	_, colMask, flagMask, _ := computeUserRoleCountsInKey(p)
+	var sliceLensBuf [1]int
+	sliceLensBuf[0] = len(p.IDs)
+	in := runtime.RenderInput{
+		ColMask:   colMask,
+		FlagMask:  flagMask,
+		SliceLens: sliceLensBuf[:],
+	}
+	orderKey := runtime.EncodeOrderKey(in.OrderSpec, in.HasSeek)
+	var shapeLens [1]int
+	copy(shapeLens[:], in.SliceLens)
+	shapeTag := runtime.ComputeSubqueryShape(stmtIDUserRoleCountsIn, colMask, flagMask, orderKey, false, shapeLens[:]...)
+	return runtime.Query{
+		StmtID:   stmtIDUserRoleCountsIn,
+		Desc:     descUserRoleCountsIn,
+		Input:    in,
+		Params:   p,
+		Expand:   expandUserRoleCountsInArgs,
+		ShapeTag: shapeTag,
+	}
+}
+
+func scanUserRoleCountsInRow(scanner interface{ Scan(...any) error }, dst *UserRoleCountsInRow, colMask uint64, p paramsUserRoleCountsIn) error {
+	_ = colMask
+	_ = p
+	var item UserRoleCountsInRow
+	var scanBuf [2]any
+	scanCount := 0
+	effMask := colMask
+	if effMask == 0 {
+		effMask = UserRoleCountsInColsAll
+	}
+	if (effMask & (1 << 0)) != 0 {
+		scanBuf[scanCount] = &item.Role
+		scanCount++
+	}
+	if (effMask & (1 << 1)) != 0 {
+		scanBuf[scanCount] = &item.N
+		scanCount++
+	}
+	scanSlice := scanBuf[:scanCount]
+	if err := scanner.Scan(scanSlice...); err != nil {
+		return err
+	}
+	*dst = item
+	return nil
+}
+
+func (q *Queries) UserRoleCountsIn(ctx context.Context, ids []int64, selectCols ...uint64) ([]UserRoleCountsInRow, error) {
+	totalRows := len(ids)
+	if totalRows > q.cache.MaxRowsPerBatch(sqlDialect, 0, 1) {
+		return nil, &runtime.CollectionTooLargeError{Statement: "UserRoleCountsIn", Items: totalRows, Limit: q.cache.MaxRowsPerBatch(sqlDialect, 0, 1)}
+	}
+	p := paramsUserRoleCountsIn{
+		IDs:        ids,
+		SelectCols: runtime.OrCols(selectCols),
+	}
+	_, colMask, flagMask, _ := computeUserRoleCountsInKey(p)
+	maxRows := q.cache.MaxRowsPerBatch(sqlDialect, 0, 1)
+	firstChunk := q.cache.PlanBatchChunk(stmtIDUserRoleCountsIn, colMask, flagMask, totalRows, maxRows, false)
+	targetQ := q
+	var autoTx *sql.Tx
+	if q.txCache == nil && firstChunk < totalRows {
+		var err error
+		autoTx, err = q.db.BeginTx(ctx, nil)
+		if err != nil {
+			return nil, err
+		}
+		targetQ = q.WithTx(autoTx)
+		defer func() { _ = targetQ.Close() }()
+	}
+	out, err := runtime.Collect(targetQ.UserRoleCountsInSeq(ctx, ids, selectCols...))
+	if autoTx != nil {
+		if err != nil {
+			_ = autoTx.Rollback()
+			return nil, err
+		}
+		if err := autoTx.Commit(); err != nil {
+			return nil, err
+		}
+	}
+	return out, err
+}
+
+func (q *Queries) UserRoleCountsInSeq(ctx context.Context, ids []int64, selectCols ...uint64) iter.Seq2[UserRoleCountsInRow, error] {
+	return func(yield func(UserRoleCountsInRow, error) bool) {
+		var zero UserRoleCountsInRow
+		totalRows := len(ids)
+		if totalRows == 0 {
+			yield(zero, runtime.ErrEmptySliceParam)
+			return
+		}
+		if totalRows > q.cache.MaxRowsPerBatch(sqlDialect, 0, 1) {
+			yield(zero, &runtime.CollectionTooLargeError{Statement: "UserRoleCountsIn", Items: totalRows, Limit: q.cache.MaxRowsPerBatch(sqlDialect, 0, 1)})
+			return
+		}
+		p := paramsUserRoleCountsIn{
+			IDs:        ids,
+			SelectCols: runtime.OrCols(selectCols),
+		}
+		_, colMask, flagMask, _ := computeUserRoleCountsInKey(p)
+		shapeTag := runtime.ComputeBatchShapeTag(colMask, flagMask)
+		maxRows := q.cache.MaxRowsPerBatch(sqlDialect, 0, 1)
+		firstChunk := q.cache.PlanBatchChunk(stmtIDUserRoleCountsIn, colMask, flagMask, totalRows, maxRows, true)
+		var sqlRows *sql.Rows
+		var ms *runtime.ManagedStmt
+		defer runtime.ReleaseRows(&sqlRows, &ms)
+		for offset := 0; offset < totalRows; {
+			chunkSize := firstChunk
+			if offset > 0 {
+				chunkSize = q.cache.PlanBatchChunk(stmtIDUserRoleCountsIn, colMask, flagMask, totalRows-offset, maxRows, false)
+			}
+			chunkRows := ids[offset : offset+chunkSize]
+			chunkP := p
+			chunkP.IDs = chunkRows
+			vk, _, _, approxArgs := computeUserRoleCountsInKey(chunkP)
+			argBuf := runtime.AcquireArgsCap(approxArgs)
+			_ = expandUserRoleCountsInParams(argBuf, sqlDialect, chunkP)
+			var sliceLensBuf [1]int
+			sliceLensBuf[0] = len(chunkP.IDs)
+			in := runtime.RenderInput{
+				ColMask:   colMask,
+				FlagMask:  flagMask,
+				SliceLens: sliceLensBuf[:],
+			}
+			var err error
+			sqlRows, ms, err = q.cache.Query(ctx, q.db, q.txCache, q.usePrepared, vk, stmtIDUserRoleCountsIn, shapeTag, chunkSize, nil, sqlDialect, descUserRoleCountsIn, &in, (*argBuf)...)
+			runtime.ReleaseArgs(argBuf)
+			if err != nil {
+				yield(zero, err)
+				return
+			}
+			var item UserRoleCountsInRow
+			for sqlRows.Next() {
+				if err := scanUserRoleCountsInRow(sqlRows, &item, colMask, chunkP); err != nil {
+					runtime.ReleaseRows(&sqlRows, &ms)
+					yield(zero, err)
+					return
+				}
+				if !yield(item, nil) {
+					return
+				}
+			}
+			err = sqlRows.Err()
+			runtime.ReleaseRows(&sqlRows, &ms)
+			if err != nil {
+				yield(zero, err)
+				return
+			}
+			offset += chunkSize
+		}
+	}
+}
+
+func (pl *Pipeline) UserRoleCountsIn(ids []int64, selectCols ...uint64) *runtime.SliceFuture[UserRoleCountsInRow] {
+	p := paramsUserRoleCountsIn{
+		IDs:        ids,
+		SelectCols: runtime.OrCols(selectCols),
+	}
+	vk, colMask, flagMask, approxArgs := computeUserRoleCountsInKey(p)
+	argBuf := runtime.AcquireArgsCap(approxArgs)
+	expandErr := expandUserRoleCountsInParams(argBuf, sqlDialect, p)
+	var sliceLensBuf [1]int
+	sliceLensBuf[0] = len(p.IDs)
+	in := runtime.RenderInput{
+		ColMask:   colMask,
+		FlagMask:  flagMask,
+		SliceLens: sliceLensBuf[:],
+	}
+	return runtime.QueueSlice(pl.Pipeline, stmtIDUserRoleCountsIn, descUserRoleCountsIn, in, vk, nil, argBuf, expandErr,
+		func(rs *sql.Rows, dst *UserRoleCountsInRow) error {
+			return scanUserRoleCountsInRow(rs, dst, colMask, p)
+		},
+	)
+}
+
+const stmtIDTopUsersIn uint32 = 18
+
+const (
+	TopUsersInColID   uint64 = 1 << 0
+	TopUsersInColsAll uint64 = (1 << 1) - 1
+)
+
+type paramsTopUsersIn struct {
+	IDs []int64
+}
+
+var descTopUsersIn = &runtime.QueryDescriptor{
+	Name:     "TopUsersIn",
+	StmtID:   18,
+	StmtVerb: runtime.VerbSelect,
+	Segments: []string{"SELECT id FROM users WHERE id IN (", ") ORDER BY id DESC LIMIT 3"},
+	Slots: []runtime.Slot{
+		{Kind: runtime.SlotSlice},
+	},
+	NumSlices: 1,
+}
+
+func expandTopUsersInParams(dst *[]any, dialect runtime.Dialect, p paramsTopUsersIn) error {
+	_ = dialect
+	_ = p
+	if len(p.IDs) == 0 {
+		return runtime.ErrEmptySliceParam
+	}
+	for _, v := range p.IDs {
+		*dst = append(*dst, v)
+	}
+	return nil
+}
+
+func expandTopUsersInArgs(dst *[]any, dialect runtime.Dialect, q *runtime.Query) error {
+	return expandTopUsersInParams(dst, dialect, q.Params.(paramsTopUsersIn))
+}
+
+func computeTopUsersInKey(p paramsTopUsersIn) (runtime.VariantKey, uint64, uint64, int) {
+	_ = p
+	var colMask uint64
+	var flagMask uint64
+	var orderSpec runtime.Order
+	var hasSeek bool
+	orderKey := runtime.EncodeOrderKey(orderSpec, hasSeek)
+	approxArgs := 5
+	var d0 uint64
+	d0 = uint64(len(p.IDs))
+	approxArgs += len(p.IDs)
+	vk := runtime.MakeVariantKey(stmtIDTopUsersIn, colMask, flagMask, orderKey, d0)
+	return vk, colMask, flagMask, approxArgs
+}
+
+// TopUsersInQuery constructs a composable runtime.Query without executing it (stateless: no Queries or DB needed).
+func TopUsersInQuery(ids []int64) runtime.Query {
+	p := paramsTopUsersIn{
+		IDs: ids,
+	}
+	_, colMask, flagMask, _ := computeTopUsersInKey(p)
+	var sliceLensBuf [1]int
+	sliceLensBuf[0] = len(p.IDs)
+	in := runtime.RenderInput{
+		ColMask:   colMask,
+		FlagMask:  flagMask,
+		SliceLens: sliceLensBuf[:],
+	}
+	orderKey := runtime.EncodeOrderKey(in.OrderSpec, in.HasSeek)
+	var shapeLens [1]int
+	copy(shapeLens[:], in.SliceLens)
+	shapeTag := runtime.ComputeSubqueryShape(stmtIDTopUsersIn, colMask, flagMask, orderKey, false, shapeLens[:]...)
+	return runtime.Query{
+		StmtID:   stmtIDTopUsersIn,
+		Desc:     descTopUsersIn,
+		Input:    in,
+		Params:   p,
+		Expand:   expandTopUsersInArgs,
+		ShapeTag: shapeTag,
+	}
+}
+
+func scanTopUsersInRow(scanner interface{ Scan(...any) error }, dst *int64, colMask uint64, p paramsTopUsersIn) error {
+	_ = colMask
+	_ = p
+	var item int64
+	scanDest := [1]any{&item}
+	scanSlice := scanDest[:1]
+	if err := scanner.Scan(scanSlice...); err != nil {
+		return err
+	}
+	*dst = item
+	return nil
+}
+
+func (q *Queries) TopUsersIn(ctx context.Context, ids []int64) ([]int64, error) {
+	totalRows := len(ids)
+	if totalRows > q.cache.MaxRowsPerBatch(sqlDialect, 0, 1) {
+		return nil, &runtime.CollectionTooLargeError{Statement: "TopUsersIn", Items: totalRows, Limit: q.cache.MaxRowsPerBatch(sqlDialect, 0, 1)}
+	}
+	p := paramsTopUsersIn{
+		IDs: ids,
+	}
+	_, colMask, flagMask, _ := computeTopUsersInKey(p)
+	maxRows := q.cache.MaxRowsPerBatch(sqlDialect, 0, 1)
+	firstChunk := q.cache.PlanBatchChunk(stmtIDTopUsersIn, colMask, flagMask, totalRows, maxRows, false)
+	targetQ := q
+	var autoTx *sql.Tx
+	if q.txCache == nil && firstChunk < totalRows {
+		var err error
+		autoTx, err = q.db.BeginTx(ctx, nil)
+		if err != nil {
+			return nil, err
+		}
+		targetQ = q.WithTx(autoTx)
+		defer func() { _ = targetQ.Close() }()
+	}
+	out, err := runtime.Collect(targetQ.TopUsersInSeq(ctx, ids))
+	if autoTx != nil {
+		if err != nil {
+			_ = autoTx.Rollback()
+			return nil, err
+		}
+		if err := autoTx.Commit(); err != nil {
+			return nil, err
+		}
+	}
+	return out, err
+}
+
+func (q *Queries) TopUsersInSeq(ctx context.Context, ids []int64) iter.Seq2[int64, error] {
+	return func(yield func(int64, error) bool) {
+		var zero int64
+		totalRows := len(ids)
+		if totalRows == 0 {
+			yield(zero, runtime.ErrEmptySliceParam)
+			return
+		}
+		if totalRows > q.cache.MaxRowsPerBatch(sqlDialect, 0, 1) {
+			yield(zero, &runtime.CollectionTooLargeError{Statement: "TopUsersIn", Items: totalRows, Limit: q.cache.MaxRowsPerBatch(sqlDialect, 0, 1)})
+			return
+		}
+		p := paramsTopUsersIn{
+			IDs: ids,
+		}
+		_, colMask, flagMask, _ := computeTopUsersInKey(p)
+		shapeTag := runtime.ComputeBatchShapeTag(colMask, flagMask)
+		maxRows := q.cache.MaxRowsPerBatch(sqlDialect, 0, 1)
+		firstChunk := q.cache.PlanBatchChunk(stmtIDTopUsersIn, colMask, flagMask, totalRows, maxRows, true)
+		var sqlRows *sql.Rows
+		var ms *runtime.ManagedStmt
+		defer runtime.ReleaseRows(&sqlRows, &ms)
+		for offset := 0; offset < totalRows; {
+			chunkSize := firstChunk
+			if offset > 0 {
+				chunkSize = q.cache.PlanBatchChunk(stmtIDTopUsersIn, colMask, flagMask, totalRows-offset, maxRows, false)
+			}
+			chunkRows := ids[offset : offset+chunkSize]
+			chunkP := p
+			chunkP.IDs = chunkRows
+			vk, _, _, approxArgs := computeTopUsersInKey(chunkP)
+			argBuf := runtime.AcquireArgsCap(approxArgs)
+			_ = expandTopUsersInParams(argBuf, sqlDialect, chunkP)
+			var sliceLensBuf [1]int
+			sliceLensBuf[0] = len(chunkP.IDs)
+			in := runtime.RenderInput{
+				ColMask:   colMask,
+				FlagMask:  flagMask,
+				SliceLens: sliceLensBuf[:],
+			}
+			var err error
+			sqlRows, ms, err = q.cache.Query(ctx, q.db, q.txCache, q.usePrepared, vk, stmtIDTopUsersIn, shapeTag, chunkSize, nil, sqlDialect, descTopUsersIn, &in, (*argBuf)...)
+			runtime.ReleaseArgs(argBuf)
+			if err != nil {
+				yield(zero, err)
+				return
+			}
+			var item int64
+			for sqlRows.Next() {
+				if err := scanTopUsersInRow(sqlRows, &item, colMask, chunkP); err != nil {
+					runtime.ReleaseRows(&sqlRows, &ms)
+					yield(zero, err)
+					return
+				}
+				if !yield(item, nil) {
+					return
+				}
+			}
+			err = sqlRows.Err()
+			runtime.ReleaseRows(&sqlRows, &ms)
+			if err != nil {
+				yield(zero, err)
+				return
+			}
+			offset += chunkSize
+		}
+	}
+}
+
+func (pl *Pipeline) TopUsersIn(ids []int64) *runtime.SliceFuture[int64] {
+	p := paramsTopUsersIn{
+		IDs: ids,
+	}
+	vk, colMask, flagMask, approxArgs := computeTopUsersInKey(p)
+	argBuf := runtime.AcquireArgsCap(approxArgs)
+	expandErr := expandTopUsersInParams(argBuf, sqlDialect, p)
+	var sliceLensBuf [1]int
+	sliceLensBuf[0] = len(p.IDs)
+	in := runtime.RenderInput{
+		ColMask:   colMask,
+		FlagMask:  flagMask,
+		SliceLens: sliceLensBuf[:],
+	}
+	return runtime.QueueSlice(pl.Pipeline, stmtIDTopUsersIn, descTopUsersIn, in, vk, nil, argBuf, expandErr,
+		func(rs *sql.Rows, dst *int64) error { return scanTopUsersInRow(rs, dst, colMask, p) },
+	)
+}
+
+const stmtIDBumpUsersByIDs uint32 = 19
+
+type paramsBumpUsersByIDs struct {
+	Bonus int64
+	IDs   []int64
+}
+
+var descBumpUsersByIDs = &runtime.QueryDescriptor{
+	Name:     "BumpUsersByIDs",
+	StmtID:   19,
+	StmtVerb: runtime.VerbUpdate,
+	Segments: []string{"UPDATE batch_users SET points = points + ", " WHERE ", "id IN (", ")", ""},
+	Slots: []runtime.Slot{
+		{Kind: runtime.SlotScalar},
+		{Kind: runtime.SlotBranchGuardOpen},
+		{Kind: runtime.SlotSlice},
+		{Kind: runtime.SlotBranchGuardClose},
+	},
+	NumSlices: 1,
+}
+
+func expandBumpUsersByIDsParams(dst *[]any, dialect runtime.Dialect, p paramsBumpUsersByIDs) error {
+	_ = dialect
+	_ = p
+	*dst = append(*dst, p.Bonus)
+	if len(p.IDs) == 0 {
+		return runtime.ErrEmptySliceParam
+	}
+	if isint64AscSorted(p.IDs) {
+		for _, v := range p.IDs {
+			*dst = append(*dst, v)
+		}
+	} else {
+		idxBuf := runtime.AcquireIndices(len(p.IDs))
+		idx := *idxBuf
+		slices.SortFunc(idx, func(i, j int) int { return compareint64Asc(p.IDs[i], p.IDs[j]) })
+		for _, k := range idx {
+			*dst = append(*dst, p.IDs[k])
+		}
+		runtime.ReleaseIndices(idxBuf)
+	}
+	return nil
+}
+
+func computeBumpUsersByIDsKey(p paramsBumpUsersByIDs) (runtime.VariantKey, uint64, uint64, int) {
+	_ = p
+	var colMask uint64
+	var flagMask uint64
+	var orderSpec runtime.Order
+	var hasSeek bool
+	orderKey := runtime.EncodeOrderKey(orderSpec, hasSeek)
+	approxArgs := 6
+	var d0 uint64
+	d0 = uint64(len(p.IDs))
+	approxArgs += len(p.IDs)
+	vk := runtime.MakeVariantKey(stmtIDBumpUsersByIDs, colMask, flagMask, orderKey, d0)
+	return vk, colMask, flagMask, approxArgs
+}
+
+func (q *Queries) BumpUsersByIDs(ctx context.Context, bonus int64, ids []int64) (sql.Result, error) {
+	totalRows := len(ids)
+	if totalRows == 0 {
+		return nil, runtime.ErrEmptySliceParam
+	}
+	p := paramsBumpUsersByIDs{
+		Bonus: bonus,
+		IDs:   ids,
+	}
+	var sortedIdx *[]int
+	if !isint64AscSorted(ids) {
+		sortedIdx = runtime.AcquireIndices(totalRows)
+		defer runtime.ReleaseIndices(sortedIdx)
+		slices.SortFunc(*sortedIdx, func(i, j int) int { return compareint64Asc(ids[i], ids[j]) })
+	}
+	_, colMask, flagMask, _ := computeBumpUsersByIDsKey(p)
+	shapeTag := runtime.ComputeBatchShapeTag(colMask, flagMask)
+	maxRows := q.cache.MaxRowsPerBatch(sqlDialect, 1, 1)
+	firstChunk := q.cache.PlanBatchChunk(stmtIDBumpUsersByIDs, colMask, flagMask, totalRows, maxRows, true)
+	txCache := q.txCache
+	var autoTx *sql.Tx
+	if txCache == nil && firstChunk < totalRows {
+		var err error
+		autoTx, err = q.db.BeginTx(ctx, nil)
+		if err != nil {
+			return nil, err
+		}
+		txCache = runtime.NewTxStmtCache(autoTx)
+		defer func() { _ = txCache.Close() }()
+	}
+	var batchRes runtime.BatchExecResult
+	for offset := 0; offset < totalRows; {
+		chunkSize := firstChunk
+		if offset > 0 {
+			chunkSize = q.cache.PlanBatchChunk(stmtIDBumpUsersByIDs, colMask, flagMask, totalRows-offset, maxRows, false)
+		}
+		chunkRows := ids[offset : offset+chunkSize]
+		chunkP := p
+		chunkP.IDs = chunkRows
+		vk, _, _, approxArgs := computeBumpUsersByIDsKey(chunkP)
+		argBuf := runtime.AcquireArgsCap(approxArgs)
+		if sortedIdx == nil {
+			_ = expandBumpUsersByIDsParams(argBuf, sqlDialect, chunkP)
+		} else {
+			*argBuf = append(*argBuf, chunkP.Bonus)
+			idx := (*sortedIdx)[offset : offset+chunkSize]
+			for _, k := range idx {
+				*argBuf = append(*argBuf, ids[k])
+			}
+		}
+		var sliceLensBuf [1]int
+		sliceLensBuf[0] = len(chunkP.IDs)
+		in := runtime.RenderInput{
+			ColMask:   colMask,
+			FlagMask:  flagMask,
+			SliceLens: sliceLensBuf[:],
+		}
+		res, err := q.cache.Exec(ctx, q.db, txCache, q.usePrepared, vk, stmtIDBumpUsersByIDs, shapeTag, chunkSize, nil, sqlDialect, descBumpUsersByIDs, &in, (*argBuf)...)
+		runtime.ReleaseArgs(argBuf)
+		if err != nil {
+			if autoTx != nil {
+				_ = autoTx.Rollback()
+			}
+			return nil, err
+		}
+		batchRes.Add(res)
+		offset += chunkSize
+	}
+	if autoTx != nil {
+		if err := autoTx.Commit(); err != nil {
+			return nil, err
+		}
+	}
+	return batchRes, nil
+}
+
+func (pl *Pipeline) BumpUsersByIDs(bonus int64, ids []int64) *runtime.ExecFuture {
+	p := paramsBumpUsersByIDs{
+		Bonus: bonus,
+		IDs:   ids,
+	}
+	vk, colMask, flagMask, approxArgs := computeBumpUsersByIDsKey(p)
+	argBuf := runtime.AcquireArgsCap(approxArgs)
+	expandErr := expandBumpUsersByIDsParams(argBuf, sqlDialect, p)
+	var sliceLensBuf [1]int
+	sliceLensBuf[0] = len(p.IDs)
+	in := runtime.RenderInput{
+		ColMask:   colMask,
+		FlagMask:  flagMask,
+		SliceLens: sliceLensBuf[:],
+	}
+	return pl.Pipeline.QueueExec(stmtIDBumpUsersByIDs, descBumpUsersByIDs, in, vk, nil, argBuf, expandErr)
+}
+
+const stmtIDPageQuad uint32 = 20
 
 const (
 	PageQuadColID        uint64 = 1 << 0
@@ -3179,7 +3757,7 @@ type PageQuadParams struct {
 
 var descPageQuad = &runtime.QueryDescriptor{
 	Name:     "PageQuad",
-	StmtID:   17,
+	StmtID:   20,
 	StmtVerb: runtime.VerbSelect,
 	Segments: []string{"SELECT ", "\nFROM quad_items\nWHERE ", "\nORDER BY ", "\nLIMIT ", ""},
 	Slots: []runtime.Slot{

@@ -679,10 +679,16 @@ type compiledStmt struct {
 	ScalarResult bool
 	StructArgs   bool // args style is ArgsStruct; false is ArgsPositional
 	// SelectCols reports whether the statement has the row projection (SelectCols mask / variadic selectCols).
-	SelectCols    bool
-	CanBatch      bool
-	CanStream     bool
-	BatchParamIdx int
+	SelectCols bool
+	CanBatch   bool
+	CanStream  bool
+	// Decomposable reports whether a CanBatch statement may be chunked: its result is the concatenation
+	// of the per-chunk results (see decomposable). A non-decomposable one never chunks: a collection that
+	// does not fit one statement is runtime.ErrCollectionTooLarge, and it has no Stream form.
+	Decomposable bool
+	// NotDecomposableWhy is the reason a CanBatch statement is not decomposable (for diagnostics/docs).
+	NotDecomposableWhy string
+	BatchParamIdx      int
 	// ValuesParamIdx is the parameter index of the multi-row VALUES tuple slice of an INSERT
 	// (INSERT ... VALUES :rows:[]T(...)), or -1. An empty collection there is a no-op, see the X5 rule in
 	// DOCS: it is the only place where emptiness means "nothing to do" instead of an invalid statement.
@@ -2364,6 +2370,13 @@ func compileStatement(id uint32, spec StatementSpec, sd stmtDialect) (*compiledS
 		}
 	}
 
+	if cs.CanBatch {
+		cs.Decomposable, cs.NotDecomposableWhy = decomposable(cs)
+		if !cs.Decomposable {
+			cs.CanStream = false
+		}
+	}
+
 	cs.IsStatic = cs.TotalSlices == 0 &&
 		cs.TotalTuples == 0 &&
 		cs.TotalSubs == 0 &&
@@ -3835,6 +3848,24 @@ func emitArgsInit(b *bytes.Buffer, cs *compiledStmt, indent, paramsStructName st
 	fmt.Fprintf(b, "%s}\n", indent)
 }
 
+// emitTooLargeGuard emits, for a non-decomposable statement (which never chunks), the check that its
+// collection fits one statement: otherwise the method fails before sending anything. ret is the start of
+// the failing statement ("return nil, " or "yield(zero, ").
+func emitTooLargeGuard(b *bytes.Buffer, cs *compiledStmt, indent, ret string) {
+	if cs.Decomposable {
+		return
+	}
+	limit := fmt.Sprintf("q.cache.MaxRowsPerBatch(sqlDialect, %d, %d)", cs.ScalarParamCnt, cs.BatchArity)
+	fmt.Fprintf(b, "%sif totalRows > %s {\n", indent, limit)
+	err := fmt.Sprintf("&runtime.CollectionTooLargeError{Statement: %q, Items: totalRows, Limit: %s}", cs.Name, limit)
+	if strings.HasPrefix(ret, "yield") {
+		fmt.Fprintf(b, "%s\t%s%s)\n%s\treturn\n", indent, ret, err, indent)
+	} else {
+		fmt.Fprintf(b, "%s\t%s%s\n", indent, ret, err)
+	}
+	fmt.Fprintf(b, "%s}\n", indent)
+}
+
 // emitExecChunkedBody emits the body of an exec statement whose single collection parameter is split into
 // wire-safe chunks: global presort, chunk planning, one implicit transaction when there is more than one
 // chunk (unless the caller already is in one), and the summed result.
@@ -3851,6 +3882,7 @@ func emitExecChunkedBody(
 	if !cs.batchIsValues() {
 		b.WriteString("\tif totalRows == 0 {\n\t\treturn nil, runtime.ErrEmptySliceParam\n\t}\n")
 	}
+	emitTooLargeGuard(b, cs, "\t", "return nil, ")
 	emitArgsInit(b, cs, "\t", paramsStructName)
 	emitBatchGlobalPresortSetup(b, cs, "\t", collAccess)
 	fmt.Fprintf(b, "\t_, colMask, flagMask, _ := compute%sKey(p)\n", cs.Name)
@@ -3939,6 +3971,7 @@ func emitManyChunkedCollect(b *bytes.Buffer, cs *compiledStmt, paramsStructName,
 		fmt.Fprintf(b, "\tif len(%s) == 0 {\n\t\treturn nil, nil\n\t}\n", collAccess)
 	}
 	fmt.Fprintf(b, "\ttotalRows := len(%s)\n", collAccess)
+	emitTooLargeGuard(b, cs, "\t", "return nil, ")
 	emitArgsInit(b, cs, "\t", paramsStructName)
 	fmt.Fprintf(b, "\t_, colMask, flagMask, _ := compute%sKey(p)\n", cs.Name)
 	fmt.Fprintf(b, "\tmaxRows := q.cache.MaxRowsPerBatch(sqlDialect, %d, %d)\n", cs.ScalarParamCnt, cs.BatchArity)
@@ -3982,6 +4015,7 @@ func emitManyChunkedSeq(
 	} else {
 		b.WriteString("\t\tif totalRows == 0 {\n\t\t\tyield(zero, runtime.ErrEmptySliceParam)\n\t\t\treturn\n\t\t}\n")
 	}
+	emitTooLargeGuard(b, cs, "\t\t", "yield(zero, ")
 	emitArgsInit(b, cs, "\t\t", paramsStructName)
 	emitBatchGlobalPresortSetup(b, cs, "\t\t", collAccess)
 	fmt.Fprintf(b, "\t\t_, colMask, flagMask, _ := compute%sKey(p)\n", cs.Name)

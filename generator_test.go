@@ -151,6 +151,21 @@ statements:
     sql: |
       SELECT email:string FROM users WHERE id = :ID:int64
 
+  - name: UserRoleCountsIn
+    kind: many
+    sql: |
+      SELECT role:string, COUNT(*) AS n:int64 FROM users WHERE id IN (:IDs:[]int64) GROUP BY role
+
+  - name: TopUsersIn
+    kind: many
+    sql: |
+      SELECT id:int64 FROM users WHERE id IN (:IDs:[]int64) ORDER BY id DESC LIMIT 3
+
+  - name: BumpUsersByIDs
+    kind: exec
+    sql: |
+      UPDATE batch_users SET points = points + :Bonus:int64 WHERE id IN (:IDs:[]int64 ASC)
+
   - name: PageQuad
     kind: many
     args: struct
@@ -868,18 +883,31 @@ func TestE2EAdaptiveMultiRowBatchExecution(t *testing.T) {
 	for i := 0; i < 2900; i++ {
 		updates[i] = BatchBonusInput{ID: int64(i + 1), Bonus: 5}
 	}
-	// SQLite plans UPDATE ... FROM (VALUES ...) in time quadratic in the statement's row count, so a single
-	// 2900-row statement costs seconds under -race: use a 256-rows-per-statement budget to exercise the
-	// presorted, chunked-in-a-transaction path (12 chunks) cheaply.
+	// A 256-rows-per-statement budget exercises the presorted, chunked-in-a-transaction path (12 chunks) of a
+	// decomposable UPDATE ... WHERE id IN (...) cheaply. The VALUES list feeding a CTE is not decomposable
+	// (DOCS section 3.2): above the limit it fails before sending anything instead of being chunked.
 	chunkedQ := New(db, runtime.WithMaxBatchParams(512))
 	defer func() { _ = chunkedQ.Close() }()
-	updRes, err := chunkedQ.UpdateUsersBatchFromValues(ctx, updates)
+	ids := make([]int64, len(updates))
+	for i := range updates {
+		ids[len(ids)-1-i] = updates[i].ID // reversed: the ASC presort reorders it
+	}
+	updRes, err := chunkedQ.BumpUsersByIDs(ctx, 5, ids)
 	if err != nil {
-		t.Fatalf("UpdateUsersBatchFromValues(2900): %v", err)
+		t.Fatalf("BumpUsersByIDs(2900): %v", err)
 	}
 	aff, _ := updRes.RowsAffected()
 	if aff != 2900 {
 		t.Fatalf("expected 2900 rows updated, got %d", aff)
+	}
+	var tooLarge *runtime.CollectionTooLargeError
+	if _, err := chunkedQ.UpdateUsersBatchFromValues(ctx, updates); !errors.As(err, &tooLarge) || !errors.Is(err, runtime.ErrCollectionTooLarge) ||
+		tooLarge.Statement != "UpdateUsersBatchFromValues" || tooLarge.Items != 2900 || tooLarge.Limit != 256 {
+		t.Fatalf("UpdateUsersBatchFromValues(2900) over a 256-row limit: err = %v, want a CollectionTooLargeError", err)
+	}
+	var total int64
+	if err := db.QueryRowContext(ctx, `SELECT SUM(points) FROM batch_users`).Scan(&total); err != nil || total != 2900*15 {
+		t.Fatalf("points after the chunked bump = %d (%v), want %d (the rejected update must not run)", total, err, 2900*15)
 	}
 
 	if _, err := db.Exec(`DELETE FROM batch_users`); err != nil {
@@ -1553,10 +1581,10 @@ func TestMaxOpenConns1DeadlockGate(t *testing.T) {
 		}); err != nil {
 			return err
 		}
-		if _, err := txQ.UpdateUsersBatchFromValuesStream(ctx, runtime.FromSlice([]BatchBonusInput{
+		if _, err := txQ.UpdateUsersBatchFromValues(ctx, []BatchBonusInput{
 			{ID: 10, Bonus: 5},
 			{ID: 11, Bonus: 5},
-		})); err != nil {
+		}); err != nil {
 			return err
 		}
 		return txQ.InTx(ctx, nil, func(innerQ *Queries) error {
@@ -1640,9 +1668,6 @@ func TestGeneratorAndE2EAdditionalCoverage(t *testing.T) {
 	bonusIn := []BatchBonusInput{{ID: 2, Bonus: 20}, {ID: 1, Bonus: 10}}
 	if _, err := q.UpdateUsersBatchFromValues(ctx, bonusIn); err != nil {
 		t.Fatalf("UpdateUsersBatchFromValues: %v", err)
-	}
-	if _, err := q.UpdateUsersBatchFromValuesStream(ctx, runtime.FromSlice(bonusIn)); err != nil {
-		t.Fatalf("UpdateUsersBatchFromValuesStream: %v", err)
 	}
 
 	quadIn := []QuadInput{{ID: 100, GroupKey: "g", Priority: 1, CreatedTs: 1}}

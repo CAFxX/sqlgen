@@ -730,6 +730,9 @@ func scanItemsByIDsRow(scanner interface{ Scan(...any) error }, dst *Item, colMa
 
 func (q *Queries) ItemsByIDs(ctx context.Context, ids []int64, selectCols ...uint64) ([]Item, error) {
 	totalRows := len(ids)
+	if totalRows > q.cache.MaxRowsPerBatch(sqlDialect, 0, 1) {
+		return nil, &runtime.CollectionTooLargeError{Statement: "ItemsByIDs", Items: totalRows, Limit: q.cache.MaxRowsPerBatch(sqlDialect, 0, 1)}
+	}
 	p := paramsItemsByIDs{
 		IDs:        ids,
 		SelectCols: runtime.OrCols(selectCols),
@@ -767,6 +770,10 @@ func (q *Queries) ItemsByIDsSeq(ctx context.Context, ids []int64, selectCols ...
 		totalRows := len(ids)
 		if totalRows == 0 {
 			yield(zero, runtime.ErrEmptySliceParam)
+			return
+		}
+		if totalRows > q.cache.MaxRowsPerBatch(sqlDialect, 0, 1) {
+			yield(zero, &runtime.CollectionTooLargeError{Statement: "ItemsByIDs", Items: totalRows, Limit: q.cache.MaxRowsPerBatch(sqlDialect, 0, 1)})
 			return
 		}
 		p := paramsItemsByIDs{
@@ -3505,6 +3512,9 @@ func scanNamesByIDsRow(scanner interface{ Scan(...any) error }, dst *string, col
 
 func (q *Queries) NamesByIDs(ctx context.Context, ids []int64) ([]string, error) {
 	totalRows := len(ids)
+	if totalRows > q.cache.MaxRowsPerBatch(sqlDialect, 0, 1) {
+		return nil, &runtime.CollectionTooLargeError{Statement: "NamesByIDs", Items: totalRows, Limit: q.cache.MaxRowsPerBatch(sqlDialect, 0, 1)}
+	}
 	p := paramsNamesByIDs{
 		IDs: ids,
 	}
@@ -3541,6 +3551,10 @@ func (q *Queries) NamesByIDsSeq(ctx context.Context, ids []int64) iter.Seq2[stri
 		totalRows := len(ids)
 		if totalRows == 0 {
 			yield(zero, runtime.ErrEmptySliceParam)
+			return
+		}
+		if totalRows > q.cache.MaxRowsPerBatch(sqlDialect, 0, 1) {
+			yield(zero, &runtime.CollectionTooLargeError{Statement: "NamesByIDs", Items: totalRows, Limit: q.cache.MaxRowsPerBatch(sqlDialect, 0, 1)})
 			return
 		}
 		p := paramsNamesByIDs{

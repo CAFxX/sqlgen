@@ -30,15 +30,8 @@ func TestNilIteratorAndCallbackArgumentsAreErrors(t *testing.T) {
 	}
 
 	_, execStream := q.InsertOrderItemsStream(ctx, nil)
-	_, manyStream := q.GetInventoryBySKUsStream(ctx, nil)
-	var manyStreamSeq error
-	for _, err := range q.GetInventoryBySKUsStreamSeq(ctx, nil) {
-		manyStreamSeq = err
-	}
 	for name, err := range map[string]error{
 		"exec Stream":     execStream,
-		"many Stream":     manyStream,
-		"many StreamSeq":  manyStreamSeq,
 		"Each":            runtime.Each(q.GetInventoryBySKUsSeq(ctx, keys), nil),
 		"single-row Each": runtime.Each(q.StreamFulfilledOrdersSeq(ctx, 1), nil),
 		"InTx":            q.InTx(ctx, nil, nil),

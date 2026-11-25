@@ -235,25 +235,6 @@ func TestEcommerceInventoryWorkerEndToEnd(t *testing.T) {
 	_ = runtime.Each(q.GetInventoryBySKUsSeq(ctx, nil), func(item InventoryItem) error { return nil })
 	_, _ = q.GetInventoryBySKUs(ctx, nil)
 
-	// GetInventoryBySKUsStream and GetInventoryBySKUsStreamSeq (including >256 items, empty stream, early break, error stream)
-	bigKeySlice := make([]SKUKey, 260)
-	for i := range bigKeySlice {
-		bigKeySlice[i] = SKUKey{WarehouseID: int64((i % 3) + 1), SKU: fmt.Sprintf("SKU-%04d", (i%100)+1)}
-	}
-	if _, err := q.GetInventoryBySKUsStream(ctx, runtime.FromSlice(bigKeySlice)); err != nil {
-		t.Fatalf("GetInventoryBySKUsStream(260): %v", err)
-	}
-	if _, err := q.GetInventoryBySKUsStream(ctx, runtime.FromSlice([]SKUKey(nil))); err != nil {
-		t.Fatalf("GetInventoryBySKUsStream(empty): %v", err)
-	}
-	for range q.GetInventoryBySKUsStreamSeq(ctx, runtime.FromSlice(bigKeySlice)) {
-		break
-	}
-	errSeqSKU := func(yield func(SKUKey, error) bool) {
-		yield(SKUKey{}, errStop)
-	}
-	_, _ = q.GetInventoryBySKUsStream(ctx, errSeqSKU)
-
 	// InsertOrderItems direct, Stream, StreamSeq, empty/error paths
 	if _, err := q.InsertOrderItems(ctx, makeOrderItems(9000, 2)); err != nil {
 		t.Fatalf("InsertOrderItems: %v", err)
@@ -395,7 +376,6 @@ func TestEcommerceInventoryWorkerEndToEnd(t *testing.T) {
 	_, _ = closedW.IngestOrderItemsBatch(ctx, makeOrderItems(1, 2))
 	_, _ = closedW.ArchiveFulfilledOrders(ctx, cutoffTS, archivedAt)
 	_, _ = closedW.Queries().GetInventoryBySKUs(ctx, sortedKeys[:2])
-	_, _ = closedW.Queries().GetInventoryBySKUsStream(ctx, runtime.FromSlice(bigKeySlice))
 	_, _ = closedW.Queries().InsertOrderItems(ctx, makeOrderItems(1, 2))
 	_, _ = closedW.Queries().InsertOrderItemsStream(ctx, runtime.FromSlice(makeOrderItems(1, 260)))
 	_, _ = closedW.Queries().InsertOrderItemsStream(ctx, runtime.FromSlice(makeOrderItems(1, 2)))

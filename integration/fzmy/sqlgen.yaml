@@ -97,6 +97,9 @@ statements:
       GROUP BY grp
       ORDER BY grp
 
+  # FzByKeys / FzByIDs have no ORDER BY so that they stay decomposable and are chunked under a small
+  # WithMaxBatchParams budget (an ORDER BY would make them non-decomposable, DOCS section 3.2); the oracle
+  # compares the rows sorted by id.
   - name: FzByKeys
     kind: many
     result_type: FzRow
@@ -104,7 +107,6 @@ statements:
       SELECT id:int64, grp:int64, k1:int64, k2:int64, k3:int64, k4:int64, k5:int64, k6:int64, k7:int64, k8:int64, tag:string, tag2:string, note:*string
       FROM fz_rows
       WHERE (grp, k1) IN (:keys:[]FzKey(Grp:int64 ASC, K1:int64))
-      ORDER BY id
 
   - name: FzByIDs
     kind: many
@@ -113,7 +115,6 @@ statements:
       SELECT id:int64, grp:int64, k1:int64, k2:int64, k3:int64, k4:int64, k5:int64, k6:int64, k7:int64, k8:int64, tag:string, tag2:string, note:*string
       FROM fz_rows
       WHERE id IN (:ids:[]int64)
-      ORDER BY id
 
   - name: FzBump
     kind: exec

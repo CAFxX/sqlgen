@@ -4,7 +4,9 @@ import (
 	"context"
 	"database/sql"
 	"database/sql/driver"
+	"errors"
 	"fmt"
+	"slices"
 	"sync"
 	"testing"
 
@@ -265,5 +267,74 @@ func TestBatchOneOffSizeIsNotPrepared(t *testing.T) {
 		if got := tr.get("prepare"); got != want {
 			t.Errorf("%s: %d prepares, want %d", c.name, got, want)
 		}
+	}
+}
+
+// A statement whose result is not the concatenation of per-chunk results (GROUP BY, an aggregate, ORDER BY,
+// LIMIT, ...) is never chunked: over the single-statement limit it fails with ErrCollectionTooLarge before
+// sending anything; under it, it runs as one statement with the exact result. Chunking such a statement used
+// to return duplicate partial groups and per-chunk LIMITs.
+func TestNonDecomposableStatementIsNeverChunked(t *testing.T) {
+	ctx := context.Background()
+	small, trs := setupTraceDB(t, runtime.WithMaxBatchParams(10)) // 10 single-column items per statement
+	ids := make([]int64, 30)
+	for i := range ids {
+		ids[i] = int64(i + 1)
+		role := "r" + fmt.Sprint(i%2)
+		if _, err := small.db.Exec(`INSERT INTO users (id, org_id, email, role, score, bio) VALUES (?, 1, 'e', ?, 0, '')`, ids[i], role); err != nil {
+			t.Fatal(err)
+		}
+	}
+	tooLarge := func(name string, err error) {
+		t.Helper()
+		var e *runtime.CollectionTooLargeError
+		if !errors.As(err, &e) || !errors.Is(err, runtime.ErrCollectionTooLarge) || e.Statement != name || e.Items != 30 || e.Limit != 10 {
+			t.Fatalf("%s: err = %v, want a CollectionTooLargeError{%s, 30, 10}", name, err, name)
+		}
+		if n := trs.stmts() + trs.get("begin") + trs.get("prepare"); n != 0 {
+			t.Fatalf("%s: %d statements/transactions/prepares sent, want none", name, n)
+		}
+		trs.reset()
+	}
+	trs.reset()
+	_, err := small.UserRoleCountsIn(ctx, ids)
+	tooLarge("UserRoleCountsIn", err)
+	_, err = small.TopUsersIn(ctx, ids)
+	tooLarge("TopUsersIn", err)
+	_, err = small.ListUsersByIDs(ctx, ids)
+	tooLarge("ListUsersByIDs", err)
+	yields := 0
+	for _, err := range small.TopUsersInSeq(ctx, ids) {
+		yields++
+		tooLarge("TopUsersIn", err)
+	}
+	if yields != 1 {
+		t.Fatalf("TopUsersInSeq yielded %d times, want the error once", yields)
+	}
+
+	// Under the limit: one statement, the exact result.
+	big, tr := setupTraceDB(t)
+	for _, id := range ids {
+		if _, err := big.db.Exec(`INSERT INTO users (id, org_id, email, role, score, bio) VALUES (?, 1, 'e', ?, 0, '')`, id, "r"+fmt.Sprint(id%2)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	tr.reset()
+	counts, err := big.UserRoleCountsIn(ctx, ids)
+	if err != nil || len(counts) != 2 || counts[0].N+counts[1].N != 30 || counts[0].N != 15 {
+		t.Fatalf("UserRoleCountsIn = %+v, %v; want two groups of 15", counts, err)
+	}
+	top, err := big.TopUsersIn(ctx, ids)
+	if err != nil || !slices.Equal(top, []int64{30, 29, 28}) {
+		t.Fatalf("TopUsersIn = %v, %v; want [30 29 28]", top, err)
+	}
+	if tr.stmts() != 2 || tr.get("begin") != 0 {
+		t.Fatalf("statements=%d begin=%d, want 2 single statements", tr.stmts(), tr.get("begin"))
+	}
+
+	// A decomposable statement is still chunked under the small limit.
+	got, err := small.UserIDsNearScore(ctx, 0, ids)
+	if err != nil || len(got) != 30 || trs.stmts() != 5 {
+		t.Fatalf("UserIDsNearScore = %d rows in %d statements, %v; want 30 rows in 5 chunks of 7", len(got), trs.stmts(), err)
 	}
 }

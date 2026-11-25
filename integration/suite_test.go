@@ -157,13 +157,18 @@ func TestRealEngineBatchInsertAndLookup(t *testing.T) {
 			t.Fatalf("rows = %d, want 30000", n)
 		}
 
-		// A bulk lookup larger than one statement may carry (> chunk size) is chunked and must still return everything.
-		got, err := a.ByIDs(ctx, ids(shuffled(all, 2)))
+		// ItemsByIDs has an ORDER BY, so it is not decomposable (DOCS section 3.2): a lookup larger than one
+		// statement may carry fails before anything is sent, one that fits is a single statement. (Chunked
+		// lookups of decomposable statements are covered by the differential suites, TestFuzzBatchChunking.)
+		if _, err := a.ByIDs(ctx, ids(all)); !errors.Is(err, runtime.ErrCollectionTooLarge) {
+			t.Fatalf("ByIDs(30000 ids) = %v, want ErrCollectionTooLarge", err)
+		}
+		fits := all[:16384] // the default WithMaxBatchParams budget
+		got, err := a.ByIDs(ctx, ids(shuffled(fits, 2)))
 		if err != nil {
 			t.Fatalf("ByIDs: %v", err)
 		}
-		slices.SortFunc(got, func(x, y item) int { return int(x.ID - y.ID) })
-		sameItems(t, "ByIDs", got, all)
+		sameItems(t, "ByIDs", got, fits)
 
 		// Streaming ingestion in O(1) memory.
 		more := genItems(30001, 5000)
