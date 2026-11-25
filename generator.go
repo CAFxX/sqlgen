@@ -1290,6 +1290,15 @@ func parseTupleBody(structName, body string) (*tupleStructDef, error) {
 			i += 2
 			continue
 		}
+		if ch == ':' && i+1 < len(body) && isIdentStartByte(body[i+1]) {
+			// Every placeholder of a row is a field of the tuple: a statement parameter here would be bound
+			// once per row and is not supported.
+			wEnd := i + 2
+			for wEnd < len(body) && isIdentContByte(body[wEnd]) {
+				wEnd++
+			}
+			return nil, fmt.Errorf("parameter %q inside the tuple template of %s: a tuple template holds only fields (Name:Type) and literal SQL; make it a field (%s:Type) and set it in every row", body[i:wEnd], structName, toGoFieldName(body[i+1:wEnd]))
+		}
 		if isIdentStartByte(ch) && (i == 0 || !isIdentContByte(body[i-1])) {
 			wEnd := i + 1
 			for wEnd < len(body) && isIdentContByte(body[wEnd]) {
@@ -3579,6 +3588,7 @@ func emitStatementCode(
 		fmt.Fprintf(b, "\tvk, colMask, flagMask, approxArgs := compute%sKey(p)\n", cs.Name)
 		b.WriteString("\targBuf := runtime.AcquireArgsCap(approxArgs)\n")
 		fmt.Fprintf(b, "\texpandErr := expand%sParams(argBuf, sqlDialect, p)\n", cs.Name)
+		emitPipelineTooLargeGuard(b, cs)
 		emitStackRenderInput("\t", "p")
 		fmt.Fprintf(b, "\treturn pl.Pipeline.QueueExec(stmtID%s, desc%s, in, vk, %s, argBuf, expandErr)\n", cs.Name, cs.Name, pipelineFastSlotExpr)
 		b.WriteString("}\n\n")
@@ -3759,6 +3769,7 @@ func emitStatementCode(
 	fmt.Fprintf(b, "\tvk, colMask, flagMask, approxArgs := compute%sKey(p)\n", cs.Name)
 	b.WriteString("\targBuf := runtime.AcquireArgsCap(approxArgs)\n")
 	fmt.Fprintf(b, "\texpandErr := expand%sParams(argBuf, sqlDialect, p)\n", cs.Name)
+	emitPipelineTooLargeGuard(b, cs)
 	emitStackRenderInput("\t", "p")
 	fmt.Fprintf(b, "\treturn runtime.QueueSlice(pl.Pipeline, stmtID%s, desc%s, in, vk, %s, argBuf, expandErr,\n", cs.Name, cs.Name, pipelineFastSlotExpr)
 	fmt.Fprintf(b, "\t\tfunc(rs *sql.Rows, dst *%s) error { return scan%sRow(rs, dst, colMask, p) },\n", cs.RowTypeName, cs.Name)
@@ -3923,6 +3934,21 @@ func emitArgsInit(b *bytes.Buffer, cs *compiledStmt, indent, paramsStructName st
 		fmt.Fprintf(b, "%s\tSelectCols: runtime.OrCols(selectCols),\n", indent)
 	}
 	fmt.Fprintf(b, "%s}\n", indent)
+}
+
+// emitPipelineTooLargeGuard emits, in the pipeline method of a one-collection statement, the check that
+// the collection fits one statement at all (the wire parameter limit, not the WithMaxBatchParams chunk
+// size: a pipeline operation is never chunked), so a larger one fails the pipeline's build (nothing is
+// sent) with a CollectionTooLargeError instead of reaching the database.
+func emitPipelineTooLargeGuard(b *bytes.Buffer, cs *compiledStmt) {
+	if !cs.CanBatch {
+		return
+	}
+	// No new locals: they could shadow a parameter of the same name.
+	coll := "len(p." + cs.Params[cs.BatchParamIdx].FieldName + ")"
+	limit := fmt.Sprintf("runtime.MaxRowsPerStatement(sqlDialect, %d, %d)", cs.ScalarParamCnt, cs.BatchArity)
+	fmt.Fprintf(b, "\tif %s > %s && expandErr == nil {\n", coll, limit)
+	fmt.Fprintf(b, "\t\texpandErr = &runtime.CollectionTooLargeError{Statement: %q, Items: %s, Limit: %s, Pipeline: true}\n\t}\n", cs.Name, coll, limit)
 }
 
 // emitTooLargeGuard emits, for a non-decomposable statement (which never chunks), the check that its

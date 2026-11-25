@@ -6,6 +6,7 @@ package integration
 // Flush, and a Flush inside a user-managed transaction).
 
 import (
+	"cmp"
 	"context"
 	"database/sql"
 	"errors"
@@ -98,6 +99,19 @@ var wireScenarios = []scenario{
 		p.AddScoreOne(-5, 1).AssertRows(1)
 		p.AddScoreOne(5, 999).Label("line 2").AssertRows(1) // no such row: operation 1, labelled
 		return nil, nil
+	}},
+	// The futures of the operations before a failed assertion stay readable after the failure, and say the
+	// same thing on both paths; the operations after it never ran.
+	{"futures around a failed assertion", func(p *pgq.Pipeline) ([]*runtime.IfResult, func() string) {
+		g := p.GetItem(1)
+		u := p.AddScoreOne(5, 2)
+		s := p.ItemsByIDs([]int64{1, 2})
+		p.AddScoreOne(5, 999).AssertRows(1)
+		after := p.GetItem(3)
+		return nil, func() string {
+			n, uerr := u.RowsAffected()
+			return fmtRow(g) + " " + fmt.Sprintf("%d|%v", n, uerr) + " " + fmtSlice(s) + " " + fmtRow(after)
+		}
 	}},
 	{"AssertFound on a row-returning op that finds the row", func(p *pgq.Pipeline) ([]*runtime.IfResult, func() string) {
 		g := p.GetItem(1).AssertFound()
@@ -213,7 +227,13 @@ var wireScenarios = []scenario{
 		r := p.If(b.RowsEq(2),
 			func(p *pgq.Pipeline) { p.AddScoreOne(1, 3) },
 			func(p *pgq.Pipeline) { p.AddScoreOne(1, 4) })
-		return []*runtime.IfResult{r}, func() string { return fmtSlice(b) }
+		// UPDATE ... RETURNING returns its rows in no particular order (it varies with the physical row
+		// order): compare them as a set
+		return []*runtime.IfResult{r}, func() string {
+			v, err := b.Get()
+			slices.SortFunc(v, func(x, y pgq.Written) int { return cmp.Compare(x.ID, y.ID) })
+			return fmt.Sprintf("%v|%v", v, err)
+		}
 	}},
 	{"reads return the same values", func(p *pgq.Pipeline) ([]*runtime.IfResult, func() string) {
 		g := p.GetItem(2)
@@ -309,7 +329,7 @@ func compareWireSeq(t *testing.T, db *sql.DB, dsn string, mode runMode, sc scena
 				o.Taken = append(o.Taken, r.Taken())
 			}
 		}
-		if err == nil && report != nil {
+		if report != nil { // also after a failure: the futures must agree then too
 			o.Report = report()
 		}
 		st := q.CacheStats()

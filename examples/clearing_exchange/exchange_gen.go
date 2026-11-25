@@ -620,6 +620,9 @@ func (pl *Pipeline) ApplyMarginSettlements(rows []MarginSettlement) *runtime.Exe
 	vk, colMask, flagMask, approxArgs := computeApplyMarginSettlementsKey(p)
 	argBuf := runtime.AcquireArgsCap(approxArgs)
 	expandErr := expandApplyMarginSettlementsParams(argBuf, sqlDialect, p)
+	if len(p.Rows) > runtime.MaxRowsPerStatement(sqlDialect, 0, 8) && expandErr == nil {
+		expandErr = &runtime.CollectionTooLargeError{Statement: "ApplyMarginSettlements", Items: len(p.Rows), Limit: runtime.MaxRowsPerStatement(sqlDialect, 0, 8), Pipeline: true}
+	}
 	var tupleLensBuf [1]int
 	tupleLensBuf[0] = len(p.Rows)
 	in := runtime.RenderInput{
@@ -1342,6 +1345,9 @@ func (pl *Pipeline) IngestOrders(rows []OrderSubmission, epochSeq int64, selectC
 	vk, colMask, flagMask, approxArgs := computeIngestOrdersKey(p)
 	argBuf := runtime.AcquireArgsCap(approxArgs)
 	expandErr := expandIngestOrdersParams(argBuf, sqlDialect, p)
+	if len(p.Rows) > runtime.MaxRowsPerStatement(sqlDialect, 1, 9) && expandErr == nil {
+		expandErr = &runtime.CollectionTooLargeError{Statement: "IngestOrders", Items: len(p.Rows), Limit: runtime.MaxRowsPerStatement(sqlDialect, 1, 9), Pipeline: true}
+	}
 	var tupleLensBuf [1]int
 	tupleLensBuf[0] = len(p.Rows)
 	in := runtime.RenderInput{
@@ -1665,6 +1671,9 @@ func (pl *Pipeline) CancelOrdersByIDs(cancelSeq int64, firmID int64, orderIDs []
 	vk, colMask, flagMask, approxArgs := computeCancelOrdersByIDsKey(p)
 	argBuf := runtime.AcquireArgsCap(approxArgs)
 	expandErr := expandCancelOrdersByIDsParams(argBuf, sqlDialect, p)
+	if len(p.OrderIDs) > runtime.MaxRowsPerStatement(sqlDialect, 2, 1) && expandErr == nil {
+		expandErr = &runtime.CollectionTooLargeError{Statement: "CancelOrdersByIDs", Items: len(p.OrderIDs), Limit: runtime.MaxRowsPerStatement(sqlDialect, 2, 1), Pipeline: true}
+	}
 	var sliceLensBuf [1]int
 	sliceLensBuf[0] = len(p.OrderIDs)
 	in := runtime.RenderInput{

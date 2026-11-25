@@ -2033,6 +2033,9 @@ func TestGeneratorRejectsInputsThatCannotGenerateCorrectCode(t *testing.T) {
 		// descQ, paramsQ, ...) and generate code that does not compile.
 		{"unexported result_type", "  - name: Q\n    kind: one\n    result_type: paramsQ\n    sql: |\n      SELECT id:int64, n:int64 FROM t\n", `result_type "paramsQ" must be an exported Go identifier`},
 		{"unexported tuple struct", "  - name: Q\n    kind: exec\n    sql: |\n      INSERT INTO t(a) VALUES :rows:[]sqlDialect(A:int64)\n", `tuple struct name "sqlDialect" must be an exported Go identifier`},
+		// A parameter inside a tuple template used to become a tuple field with its ':' left in the SQL.
+		{"parameter inside a tuple template", "  - name: Q\n    kind: exec\n    sql: |\n      INSERT INTO t(a, b) VALUES :rows:[]R(A:int64, :batch:int64)\n", `parameter ":batch" inside the tuple template of R`},
+		{"repeated parameter inside a tuple template", "  - name: Q\n    kind: exec\n    sql: |\n      INSERT INTO t(a, b) VALUES :rows:[]R(A:int64, :rows)\n", `parameter ":rows" inside the tuple template of R`},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			if _, err := genYAML("postgres", tc.stmts); err == nil || !strings.Contains(err.Error(), tc.want) {

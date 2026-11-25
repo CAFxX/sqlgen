@@ -228,13 +228,26 @@ func (f *ExecFuture) NotFound() PipelineCond {
 	return PipelineCond{Kind: CondRowsEq, Op: f.op, Threshold: 0}
 }
 
-// futureNotReady reports whether a future queued on pl is read before pl started flushing.
-func futureNotReady(pl *Pipeline) bool { return pl != nil && !pl.flushed }
+// futureErr is what a future reports instead of a result: ErrFutureNotReady before its pipeline has
+// flushed and, when the flush failed, the operation's own error or else the pipeline's. A failed pipeline
+// committed nothing, and the single-round-trip paths do not deliver the results of a failed batch, so no
+// future of it reports a result (the same on every path).
+func futureErr(pl *Pipeline, own error) error {
+	switch {
+	case pl == nil:
+		return nil
+	case !pl.flushed:
+		return ErrFutureNotReady
+	case pl.failErr != nil && own != nil:
+		return own
+	}
+	return pl.failErr
+}
 
 // Result returns the sql.Result of the operation after the pipeline has flushed (ErrFutureNotReady before).
 func (f *ExecFuture) Result() (sql.Result, error) {
-	if futureNotReady(f.pl) {
-		return nil, ErrFutureNotReady
+	if err := futureErr(f.pl, f.err); err != nil {
+		return nil, err
 	}
 	if f.skipped {
 		return nil, ErrBranchNotTaken
@@ -257,8 +270,8 @@ var ErrLastInsertIDNotAvailable = errors.New("sqlgen: LastInsertId is not availa
 // RowsAffected returns the number of rows affected by the operation after the pipeline has flushed
 // (ErrFutureNotReady before).
 func (f *ExecFuture) RowsAffected() (int64, error) {
-	if futureNotReady(f.pl) {
-		return 0, ErrFutureNotReady
+	if err := futureErr(f.pl, f.err); err != nil {
+		return 0, err
 	}
 	if f.skipped {
 		return 0, ErrBranchNotTaken
@@ -386,8 +399,8 @@ func writePred(b *strings.Builder, s string, ph func(k int)) {
 // when the flushed statement matched no row).
 func (f *RowFuture[T]) Get() (T, error) {
 	var zero T
-	if futureNotReady(f.pl) {
-		return zero, ErrFutureNotReady
+	if err := futureErr(f.pl, f.err); err != nil {
+		return zero, err
 	}
 	if f.skipped {
 		return zero, ErrBranchNotTaken
@@ -475,8 +488,8 @@ func (f *SliceFuture[T]) WhereCol(sqlPred string, goPred func(T) bool, args ...a
 
 // Get returns the scanned slice of rows after the pipeline has flushed (ErrFutureNotReady before).
 func (f *SliceFuture[T]) Get() ([]T, error) {
-	if futureNotReady(f.pl) {
-		return nil, ErrFutureNotReady
+	if err := futureErr(f.pl, f.err); err != nil {
+		return nil, err
 	}
 	if f.skipped {
 		return nil, ErrBranchNotTaken
@@ -886,7 +899,8 @@ type Pipeline struct {
 	buildErr    error
 	noOps       int // number of NoOp operations queued
 	flushed     bool
-	ownsTx      bool // PipelineTx: the runtime begins, commits and (on error) rolls back the transaction
+	failErr     error // the error of a failed flush (futureErr)
+	ownsTx      bool  // PipelineTx: the runtime begins, commits and (on error) rolls back the transaction
 	txOpts      *sql.TxOptions
 	// noWire is set once a wire pipeliner answered ErrWireNotApplicable: the pipeline then runs entirely on
 	// the sequential path instead of being offered to another wire attempt inside the fallback transaction.
@@ -1497,10 +1511,11 @@ func (p *Pipeline) Flush() error {
 	return p.run()
 }
 
-func (p *Pipeline) run() error {
+func (p *Pipeline) run() (err error) {
 	if p.flushed {
 		return nil
 	}
+	defer func() { p.failErr = err }()
 	p.flushed = true
 	p.syncOpsFromPtrs()
 	defer p.releaseArgBufs()

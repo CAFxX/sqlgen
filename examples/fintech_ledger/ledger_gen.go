@@ -991,6 +991,9 @@ func (pl *Pipeline) UpsertAccountBalances(items []AccountSettlement) *runtime.Ex
 	vk, colMask, flagMask, approxArgs := computeUpsertAccountBalancesKey(p)
 	argBuf := runtime.AcquireArgsCap(approxArgs)
 	expandErr := expandUpsertAccountBalancesParams(argBuf, sqlDialect, p)
+	if len(p.Items) > runtime.MaxRowsPerStatement(sqlDialect, 0, 4) && expandErr == nil {
+		expandErr = &runtime.CollectionTooLargeError{Statement: "UpsertAccountBalances", Items: len(p.Items), Limit: runtime.MaxRowsPerStatement(sqlDialect, 0, 4), Pipeline: true}
+	}
 	var tupleLensBuf [1]int
 	tupleLensBuf[0] = len(p.Items)
 	in := runtime.RenderInput{

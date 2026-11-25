@@ -828,6 +828,9 @@ func (pl *Pipeline) ListUsersByIDs(ids []int64, selectCols ...uint64) *runtime.S
 	vk, colMask, flagMask, approxArgs := computeListUsersByIDsKey(p)
 	argBuf := runtime.AcquireArgsCap(approxArgs)
 	expandErr := expandListUsersByIDsParams(argBuf, sqlDialect, p)
+	if len(p.IDs) > runtime.MaxRowsPerStatement(sqlDialect, 0, 1) && expandErr == nil {
+		expandErr = &runtime.CollectionTooLargeError{Statement: "ListUsersByIDs", Items: len(p.IDs), Limit: runtime.MaxRowsPerStatement(sqlDialect, 0, 1), Pipeline: true}
+	}
 	var sliceLensBuf [1]int
 	sliceLensBuf[0] = len(p.IDs)
 	in := runtime.RenderInput{
@@ -2084,6 +2087,9 @@ func (pl *Pipeline) InsertUsersBatchReturning(rows []BatchUserInput, selectCols 
 	vk, colMask, flagMask, approxArgs := computeInsertUsersBatchReturningKey(p)
 	argBuf := runtime.AcquireArgsCap(approxArgs)
 	expandErr := expandInsertUsersBatchReturningParams(argBuf, sqlDialect, p)
+	if len(p.Rows) > runtime.MaxRowsPerStatement(sqlDialect, 0, 3) && expandErr == nil {
+		expandErr = &runtime.CollectionTooLargeError{Statement: "InsertUsersBatchReturning", Items: len(p.Rows), Limit: runtime.MaxRowsPerStatement(sqlDialect, 0, 3), Pipeline: true}
+	}
 	var tupleLensBuf [1]int
 	tupleLensBuf[0] = len(p.Rows)
 	in := runtime.RenderInput{
@@ -2298,6 +2304,9 @@ func (pl *Pipeline) UpdateUsersBatchFromValues(rows []BatchBonusInput) *runtime.
 	vk, colMask, flagMask, approxArgs := computeUpdateUsersBatchFromValuesKey(p)
 	argBuf := runtime.AcquireArgsCap(approxArgs)
 	expandErr := expandUpdateUsersBatchFromValuesParams(argBuf, sqlDialect, p)
+	if len(p.Rows) > runtime.MaxRowsPerStatement(sqlDialect, 0, 2) && expandErr == nil {
+		expandErr = &runtime.CollectionTooLargeError{Statement: "UpdateUsersBatchFromValues", Items: len(p.Rows), Limit: runtime.MaxRowsPerStatement(sqlDialect, 0, 2), Pipeline: true}
+	}
 	var tupleLensBuf [1]int
 	tupleLensBuf[0] = len(p.Rows)
 	in := runtime.RenderInput{
@@ -2457,6 +2466,9 @@ func (pl *Pipeline) InsertQuadBatch(rows []QuadInput) *runtime.ExecFuture {
 	vk, colMask, flagMask, approxArgs := computeInsertQuadBatchKey(p)
 	argBuf := runtime.AcquireArgsCap(approxArgs)
 	expandErr := expandInsertQuadBatchParams(argBuf, sqlDialect, p)
+	if len(p.Rows) > runtime.MaxRowsPerStatement(sqlDialect, 0, 4) && expandErr == nil {
+		expandErr = &runtime.CollectionTooLargeError{Statement: "InsertQuadBatch", Items: len(p.Rows), Limit: runtime.MaxRowsPerStatement(sqlDialect, 0, 4), Pipeline: true}
+	}
 	var tupleLensBuf [1]int
 	tupleLensBuf[0] = len(p.Rows)
 	in := runtime.RenderInput{
@@ -2715,6 +2727,9 @@ func (pl *Pipeline) UserIDsNearScore(score int64, ids []int64) *runtime.SliceFut
 	vk, colMask, flagMask, approxArgs := computeUserIDsNearScoreKey(p)
 	argBuf := runtime.AcquireArgsCap(approxArgs)
 	expandErr := expandUserIDsNearScoreParams(argBuf, sqlDialect, p)
+	if len(p.IDs) > runtime.MaxRowsPerStatement(sqlDialect, 3, 1) && expandErr == nil {
+		expandErr = &runtime.CollectionTooLargeError{Statement: "UserIDsNearScore", Items: len(p.IDs), Limit: runtime.MaxRowsPerStatement(sqlDialect, 3, 1), Pipeline: true}
+	}
 	var sliceLensBuf [1]int
 	sliceLensBuf[0] = len(p.IDs)
 	in := runtime.RenderInput{
@@ -3319,6 +3334,9 @@ func (pl *Pipeline) UserRoleCountsIn(ids []int64, selectCols ...uint64) *runtime
 	vk, colMask, flagMask, approxArgs := computeUserRoleCountsInKey(p)
 	argBuf := runtime.AcquireArgsCap(approxArgs)
 	expandErr := expandUserRoleCountsInParams(argBuf, sqlDialect, p)
+	if len(p.IDs) > runtime.MaxRowsPerStatement(sqlDialect, 0, 1) && expandErr == nil {
+		expandErr = &runtime.CollectionTooLargeError{Statement: "UserRoleCountsIn", Items: len(p.IDs), Limit: runtime.MaxRowsPerStatement(sqlDialect, 0, 1), Pipeline: true}
+	}
 	var sliceLensBuf [1]int
 	sliceLensBuf[0] = len(p.IDs)
 	in := runtime.RenderInput{
@@ -3532,6 +3550,9 @@ func (pl *Pipeline) TopUsersIn(ids []int64) *runtime.SliceFuture[int64] {
 	vk, colMask, flagMask, approxArgs := computeTopUsersInKey(p)
 	argBuf := runtime.AcquireArgsCap(approxArgs)
 	expandErr := expandTopUsersInParams(argBuf, sqlDialect, p)
+	if len(p.IDs) > runtime.MaxRowsPerStatement(sqlDialect, 0, 1) && expandErr == nil {
+		expandErr = &runtime.CollectionTooLargeError{Statement: "TopUsersIn", Items: len(p.IDs), Limit: runtime.MaxRowsPerStatement(sqlDialect, 0, 1), Pipeline: true}
+	}
 	var sliceLensBuf [1]int
 	sliceLensBuf[0] = len(p.IDs)
 	in := runtime.RenderInput{
@@ -3687,6 +3708,9 @@ func (pl *Pipeline) BumpUsersByIDs(bonus int64, ids []int64) *runtime.ExecFuture
 	vk, colMask, flagMask, approxArgs := computeBumpUsersByIDsKey(p)
 	argBuf := runtime.AcquireArgsCap(approxArgs)
 	expandErr := expandBumpUsersByIDsParams(argBuf, sqlDialect, p)
+	if len(p.IDs) > runtime.MaxRowsPerStatement(sqlDialect, 1, 1) && expandErr == nil {
+		expandErr = &runtime.CollectionTooLargeError{Statement: "BumpUsersByIDs", Items: len(p.IDs), Limit: runtime.MaxRowsPerStatement(sqlDialect, 1, 1), Pipeline: true}
+	}
 	var sliceLensBuf [1]int
 	sliceLensBuf[0] = len(p.IDs)
 	in := runtime.RenderInput{
@@ -3812,6 +3836,9 @@ func (pl *Pipeline) DeleteQuadsByKeys(keys []QuadDelKey) *runtime.ExecFuture {
 	vk, colMask, flagMask, approxArgs := computeDeleteQuadsByKeysKey(p)
 	argBuf := runtime.AcquireArgsCap(approxArgs)
 	expandErr := expandDeleteQuadsByKeysParams(argBuf, sqlDialect, p)
+	if len(p.Keys) > runtime.MaxRowsPerStatement(sqlDialect, 0, 2) && expandErr == nil {
+		expandErr = &runtime.CollectionTooLargeError{Statement: "DeleteQuadsByKeys", Items: len(p.Keys), Limit: runtime.MaxRowsPerStatement(sqlDialect, 0, 2), Pipeline: true}
+	}
 	var tupleLensBuf [1]int
 	tupleLensBuf[0] = len(p.Keys)
 	in := runtime.RenderInput{
@@ -4053,6 +4080,9 @@ func (pl *Pipeline) QuadIDsByKeys(p QuadIDsByKeysParams) *runtime.SliceFuture[in
 	vk, colMask, flagMask, approxArgs := computeQuadIDsByKeysKey(p)
 	argBuf := runtime.AcquireArgsCap(approxArgs)
 	expandErr := expandQuadIDsByKeysParams(argBuf, sqlDialect, p)
+	if len(p.Keys) > runtime.MaxRowsPerStatement(sqlDialect, 0, 2) && expandErr == nil {
+		expandErr = &runtime.CollectionTooLargeError{Statement: "QuadIDsByKeys", Items: len(p.Keys), Limit: runtime.MaxRowsPerStatement(sqlDialect, 0, 2), Pipeline: true}
+	}
 	var tupleLensBuf [1]int
 	tupleLensBuf[0] = len(p.Keys)
 	in := runtime.RenderInput{

@@ -517,6 +517,9 @@ func (pl *Pipeline) FzInsertAsc(rows []FzNew) *runtime.ExecFuture {
 	vk, colMask, flagMask, approxArgs := computeFzInsertAscKey(p)
 	argBuf := runtime.AcquireArgsCap(approxArgs)
 	expandErr := expandFzInsertAscParams(argBuf, sqlDialect, p)
+	if len(p.Rows) > runtime.MaxRowsPerStatement(sqlDialect, 0, 13) && expandErr == nil {
+		expandErr = &runtime.CollectionTooLargeError{Statement: "FzInsertAsc", Items: len(p.Rows), Limit: runtime.MaxRowsPerStatement(sqlDialect, 0, 13), Pipeline: true}
+	}
 	var tupleLensBuf [1]int
 	tupleLensBuf[0] = len(p.Rows)
 	in := runtime.RenderInput{
@@ -748,6 +751,9 @@ func (pl *Pipeline) FzInsertDesc(rows []FzNew) *runtime.ExecFuture {
 	vk, colMask, flagMask, approxArgs := computeFzInsertDescKey(p)
 	argBuf := runtime.AcquireArgsCap(approxArgs)
 	expandErr := expandFzInsertDescParams(argBuf, sqlDialect, p)
+	if len(p.Rows) > runtime.MaxRowsPerStatement(sqlDialect, 0, 13) && expandErr == nil {
+		expandErr = &runtime.CollectionTooLargeError{Statement: "FzInsertDesc", Items: len(p.Rows), Limit: runtime.MaxRowsPerStatement(sqlDialect, 0, 13), Pipeline: true}
+	}
 	var tupleLensBuf [1]int
 	tupleLensBuf[0] = len(p.Rows)
 	in := runtime.RenderInput{
@@ -932,6 +938,9 @@ func (pl *Pipeline) FzInsertRaw(rows []FzNew) *runtime.ExecFuture {
 	vk, colMask, flagMask, approxArgs := computeFzInsertRawKey(p)
 	argBuf := runtime.AcquireArgsCap(approxArgs)
 	expandErr := expandFzInsertRawParams(argBuf, sqlDialect, p)
+	if len(p.Rows) > runtime.MaxRowsPerStatement(sqlDialect, 0, 13) && expandErr == nil {
+		expandErr = &runtime.CollectionTooLargeError{Statement: "FzInsertRaw", Items: len(p.Rows), Limit: runtime.MaxRowsPerStatement(sqlDialect, 0, 13), Pipeline: true}
+	}
 	var tupleLensBuf [1]int
 	tupleLensBuf[0] = len(p.Rows)
 	in := runtime.RenderInput{
@@ -1136,6 +1145,9 @@ func (pl *Pipeline) FzInsertLit(rows []FzLit) *runtime.ExecFuture {
 	vk, colMask, flagMask, approxArgs := computeFzInsertLitKey(p)
 	argBuf := runtime.AcquireArgsCap(approxArgs)
 	expandErr := expandFzInsertLitParams(argBuf, sqlDialect, p)
+	if len(p.Rows) > runtime.MaxRowsPerStatement(sqlDialect, 0, 4) && expandErr == nil {
+		expandErr = &runtime.CollectionTooLargeError{Statement: "FzInsertLit", Items: len(p.Rows), Limit: runtime.MaxRowsPerStatement(sqlDialect, 0, 4), Pipeline: true}
+	}
 	var tupleLensBuf [1]int
 	tupleLensBuf[0] = len(p.Rows)
 	in := runtime.RenderInput{
@@ -2801,6 +2813,9 @@ func (pl *Pipeline) FzByKeys(keys []FzKey, selectCols ...uint64) *runtime.SliceF
 	vk, colMask, flagMask, approxArgs := computeFzByKeysKey(p)
 	argBuf := runtime.AcquireArgsCap(approxArgs)
 	expandErr := expandFzByKeysParams(argBuf, sqlDialect, p)
+	if len(p.Keys) > runtime.MaxRowsPerStatement(sqlDialect, 0, 2) && expandErr == nil {
+		expandErr = &runtime.CollectionTooLargeError{Statement: "FzByKeys", Items: len(p.Keys), Limit: runtime.MaxRowsPerStatement(sqlDialect, 0, 2), Pipeline: true}
+	}
 	var tupleLensBuf [1]int
 	tupleLensBuf[0] = len(p.Keys)
 	in := runtime.RenderInput{
@@ -3153,6 +3168,9 @@ func (pl *Pipeline) FzByIDs(ids []int64, selectCols ...uint64) *runtime.SliceFut
 	vk, colMask, flagMask, approxArgs := computeFzByIDsKey(p)
 	argBuf := runtime.AcquireArgsCap(approxArgs)
 	expandErr := expandFzByIDsParams(argBuf, sqlDialect, p)
+	if len(p.IDs) > runtime.MaxRowsPerStatement(sqlDialect, 0, 1) && expandErr == nil {
+		expandErr = &runtime.CollectionTooLargeError{Statement: "FzByIDs", Items: len(p.IDs), Limit: runtime.MaxRowsPerStatement(sqlDialect, 0, 1), Pipeline: true}
+	}
 	var sliceLensBuf [1]int
 	sliceLensBuf[0] = len(p.IDs)
 	in := runtime.RenderInput{
@@ -3320,6 +3338,9 @@ func (pl *Pipeline) FzBump(p FzBumpParams) *runtime.ExecFuture {
 	vk, colMask, flagMask, approxArgs := computeFzBumpKey(p)
 	argBuf := runtime.AcquireArgsCap(approxArgs)
 	expandErr := expandFzBumpParams(argBuf, sqlDialect, p)
+	if len(p.IDs) > runtime.MaxRowsPerStatement(sqlDialect, 3, 1) && expandErr == nil {
+		expandErr = &runtime.CollectionTooLargeError{Statement: "FzBump", Items: len(p.IDs), Limit: runtime.MaxRowsPerStatement(sqlDialect, 3, 1), Pipeline: true}
+	}
 	var sliceLensBuf [1]int
 	sliceLensBuf[0] = len(p.IDs)
 	in := runtime.RenderInput{
@@ -3478,6 +3499,9 @@ func (pl *Pipeline) FzDelete(p FzDeleteParams) *runtime.ExecFuture {
 	vk, colMask, flagMask, approxArgs := computeFzDeleteKey(p)
 	argBuf := runtime.AcquireArgsCap(approxArgs)
 	expandErr := expandFzDeleteParams(argBuf, sqlDialect, p)
+	if len(p.IDs) > runtime.MaxRowsPerStatement(sqlDialect, 1, 1) && expandErr == nil {
+		expandErr = &runtime.CollectionTooLargeError{Statement: "FzDelete", Items: len(p.IDs), Limit: runtime.MaxRowsPerStatement(sqlDialect, 1, 1), Pipeline: true}
+	}
 	var sliceLensBuf [1]int
 	sliceLensBuf[0] = len(p.IDs)
 	in := runtime.RenderInput{
@@ -4129,6 +4153,9 @@ func (pl *Pipeline) FzTypedInsert(rows []FzTypedNew) *runtime.ExecFuture {
 	vk, colMask, flagMask, approxArgs := computeFzTypedInsertKey(p)
 	argBuf := runtime.AcquireArgsCap(approxArgs)
 	expandErr := expandFzTypedInsertParams(argBuf, sqlDialect, p)
+	if len(p.Rows) > runtime.MaxRowsPerStatement(sqlDialect, 0, 6) && expandErr == nil {
+		expandErr = &runtime.CollectionTooLargeError{Statement: "FzTypedInsert", Items: len(p.Rows), Limit: runtime.MaxRowsPerStatement(sqlDialect, 0, 6), Pipeline: true}
+	}
 	var tupleLensBuf [1]int
 	tupleLensBuf[0] = len(p.Rows)
 	in := runtime.RenderInput{
@@ -4983,6 +5010,9 @@ func (pl *Pipeline) FzInsertRet(rows []FzNew, selectCols ...uint64) *runtime.Sli
 	vk, colMask, flagMask, approxArgs := computeFzInsertRetKey(p)
 	argBuf := runtime.AcquireArgsCap(approxArgs)
 	expandErr := expandFzInsertRetParams(argBuf, sqlDialect, p)
+	if len(p.Rows) > runtime.MaxRowsPerStatement(sqlDialect, 0, 13) && expandErr == nil {
+		expandErr = &runtime.CollectionTooLargeError{Statement: "FzInsertRet", Items: len(p.Rows), Limit: runtime.MaxRowsPerStatement(sqlDialect, 0, 13), Pipeline: true}
+	}
 	var tupleLensBuf [1]int
 	tupleLensBuf[0] = len(p.Rows)
 	in := runtime.RenderInput{
@@ -5277,6 +5307,9 @@ func (pl *Pipeline) FzDeleteRet(p FzDeleteRetParams) *runtime.SliceFuture[FzOut]
 	vk, colMask, flagMask, approxArgs := computeFzDeleteRetKey(p)
 	argBuf := runtime.AcquireArgsCap(approxArgs)
 	expandErr := expandFzDeleteRetParams(argBuf, sqlDialect, p)
+	if len(p.IDs) > runtime.MaxRowsPerStatement(sqlDialect, 1, 1) && expandErr == nil {
+		expandErr = &runtime.CollectionTooLargeError{Statement: "FzDeleteRet", Items: len(p.IDs), Limit: runtime.MaxRowsPerStatement(sqlDialect, 1, 1), Pipeline: true}
+	}
 	var sliceLensBuf [1]int
 	sliceLensBuf[0] = len(p.IDs)
 	in := runtime.RenderInput{

@@ -373,6 +373,9 @@ func (pl *Pipeline) InsertItems(rows []NewItem) *runtime.ExecFuture {
 	vk, colMask, flagMask, approxArgs := computeInsertItemsKey(p)
 	argBuf := runtime.AcquireArgsCap(approxArgs)
 	expandErr := expandInsertItemsParams(argBuf, sqlDialect, p)
+	if len(p.Rows) > runtime.MaxRowsPerStatement(sqlDialect, 0, 5) && expandErr == nil {
+		expandErr = &runtime.CollectionTooLargeError{Statement: "InsertItems", Items: len(p.Rows), Limit: runtime.MaxRowsPerStatement(sqlDialect, 0, 5), Pipeline: true}
+	}
 	var tupleLensBuf [1]int
 	tupleLensBuf[0] = len(p.Rows)
 	in := runtime.RenderInput{
@@ -858,6 +861,9 @@ func (pl *Pipeline) ItemsByIDs(ids []int64, selectCols ...uint64) *runtime.Slice
 	vk, colMask, flagMask, approxArgs := computeItemsByIDsKey(p)
 	argBuf := runtime.AcquireArgsCap(approxArgs)
 	expandErr := expandItemsByIDsParams(argBuf, sqlDialect, p)
+	if len(p.IDs) > runtime.MaxRowsPerStatement(sqlDialect, 0, 1) && expandErr == nil {
+		expandErr = &runtime.CollectionTooLargeError{Statement: "ItemsByIDs", Items: len(p.IDs), Limit: runtime.MaxRowsPerStatement(sqlDialect, 0, 1), Pipeline: true}
+	}
 	var sliceLensBuf [1]int
 	sliceLensBuf[0] = len(p.IDs)
 	in := runtime.RenderInput{
@@ -1739,6 +1745,9 @@ func (pl *Pipeline) AddScore(delta int64, ids []int64, orgID int64) *runtime.Exe
 	vk, colMask, flagMask, approxArgs := computeAddScoreKey(p)
 	argBuf := runtime.AcquireArgsCap(approxArgs)
 	expandErr := expandAddScoreParams(argBuf, sqlDialect, p)
+	if len(p.IDs) > runtime.MaxRowsPerStatement(sqlDialect, 2, 1) && expandErr == nil {
+		expandErr = &runtime.CollectionTooLargeError{Statement: "AddScore", Items: len(p.IDs), Limit: runtime.MaxRowsPerStatement(sqlDialect, 2, 1), Pipeline: true}
+	}
 	var sliceLensBuf [1]int
 	sliceLensBuf[0] = len(p.IDs)
 	in := runtime.RenderInput{
@@ -1958,6 +1967,9 @@ func (pl *Pipeline) DeleteItems(ids []int64) *runtime.ExecFuture {
 	vk, colMask, flagMask, approxArgs := computeDeleteItemsKey(p)
 	argBuf := runtime.AcquireArgsCap(approxArgs)
 	expandErr := expandDeleteItemsParams(argBuf, sqlDialect, p)
+	if len(p.IDs) > runtime.MaxRowsPerStatement(sqlDialect, 0, 1) && expandErr == nil {
+		expandErr = &runtime.CollectionTooLargeError{Statement: "DeleteItems", Items: len(p.IDs), Limit: runtime.MaxRowsPerStatement(sqlDialect, 0, 1), Pipeline: true}
+	}
 	var sliceLensBuf [1]int
 	sliceLensBuf[0] = len(p.IDs)
 	in := runtime.RenderInput{
@@ -2763,6 +2775,9 @@ func (pl *Pipeline) InsertItemsReturning(rows []NewItem, selectCols ...uint64) *
 	vk, colMask, flagMask, approxArgs := computeInsertItemsReturningKey(p)
 	argBuf := runtime.AcquireArgsCap(approxArgs)
 	expandErr := expandInsertItemsReturningParams(argBuf, sqlDialect, p)
+	if len(p.Rows) > runtime.MaxRowsPerStatement(sqlDialect, 0, 5) && expandErr == nil {
+		expandErr = &runtime.CollectionTooLargeError{Statement: "InsertItemsReturning", Items: len(p.Rows), Limit: runtime.MaxRowsPerStatement(sqlDialect, 0, 5), Pipeline: true}
+	}
 	var tupleLensBuf [1]int
 	tupleLensBuf[0] = len(p.Rows)
 	in := runtime.RenderInput{
@@ -3052,6 +3067,9 @@ func (pl *Pipeline) DeleteReturning(ids []int64, selectCols ...uint64) *runtime.
 	vk, colMask, flagMask, approxArgs := computeDeleteReturningKey(p)
 	argBuf := runtime.AcquireArgsCap(approxArgs)
 	expandErr := expandDeleteReturningParams(argBuf, sqlDialect, p)
+	if len(p.IDs) > runtime.MaxRowsPerStatement(sqlDialect, 0, 1) && expandErr == nil {
+		expandErr = &runtime.CollectionTooLargeError{Statement: "DeleteReturning", Items: len(p.IDs), Limit: runtime.MaxRowsPerStatement(sqlDialect, 0, 1), Pipeline: true}
+	}
 	var sliceLensBuf [1]int
 	sliceLensBuf[0] = len(p.IDs)
 	in := runtime.RenderInput{
@@ -3533,6 +3551,9 @@ func (pl *Pipeline) NamesByIDs(ids []int64) *runtime.SliceFuture[string] {
 	vk, colMask, flagMask, approxArgs := computeNamesByIDsKey(p)
 	argBuf := runtime.AcquireArgsCap(approxArgs)
 	expandErr := expandNamesByIDsParams(argBuf, sqlDialect, p)
+	if len(p.IDs) > runtime.MaxRowsPerStatement(sqlDialect, 0, 1) && expandErr == nil {
+		expandErr = &runtime.CollectionTooLargeError{Statement: "NamesByIDs", Items: len(p.IDs), Limit: runtime.MaxRowsPerStatement(sqlDialect, 0, 1), Pipeline: true}
+	}
 	var sliceLensBuf [1]int
 	sliceLensBuf[0] = len(p.IDs)
 	in := runtime.RenderInput{
@@ -3753,6 +3774,9 @@ func (pl *Pipeline) InsertedIDs(rows []NewItem) *runtime.SliceFuture[int64] {
 	vk, colMask, flagMask, approxArgs := computeInsertedIDsKey(p)
 	argBuf := runtime.AcquireArgsCap(approxArgs)
 	expandErr := expandInsertedIDsParams(argBuf, sqlDialect, p)
+	if len(p.Rows) > runtime.MaxRowsPerStatement(sqlDialect, 0, 5) && expandErr == nil {
+		expandErr = &runtime.CollectionTooLargeError{Statement: "InsertedIDs", Items: len(p.Rows), Limit: runtime.MaxRowsPerStatement(sqlDialect, 0, 5), Pipeline: true}
+	}
 	var tupleLensBuf [1]int
 	tupleLensBuf[0] = len(p.Rows)
 	in := runtime.RenderInput{

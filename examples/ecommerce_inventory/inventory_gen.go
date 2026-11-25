@@ -464,6 +464,9 @@ func (pl *Pipeline) GetInventoryBySKUs(keys []SKUKey, selectCols ...uint64) *run
 	vk, colMask, flagMask, approxArgs := computeGetInventoryBySKUsKey(p)
 	argBuf := runtime.AcquireArgsCap(approxArgs)
 	expandErr := expandGetInventoryBySKUsParams(argBuf, sqlDialect, p)
+	if len(p.Keys) > runtime.MaxRowsPerStatement(sqlDialect, 0, 2) && expandErr == nil {
+		expandErr = &runtime.CollectionTooLargeError{Statement: "GetInventoryBySKUs", Items: len(p.Keys), Limit: runtime.MaxRowsPerStatement(sqlDialect, 0, 2), Pipeline: true}
+	}
 	var tupleLensBuf [1]int
 	tupleLensBuf[0] = len(p.Keys)
 	in := runtime.RenderInput{
@@ -596,6 +599,9 @@ func (pl *Pipeline) InsertOrderItems(items []NewOrderItem) *runtime.ExecFuture {
 	vk, colMask, flagMask, approxArgs := computeInsertOrderItemsKey(p)
 	argBuf := runtime.AcquireArgsCap(approxArgs)
 	expandErr := expandInsertOrderItemsParams(argBuf, sqlDialect, p)
+	if len(p.Items) > runtime.MaxRowsPerStatement(sqlDialect, 0, 4) && expandErr == nil {
+		expandErr = &runtime.CollectionTooLargeError{Statement: "InsertOrderItems", Items: len(p.Items), Limit: runtime.MaxRowsPerStatement(sqlDialect, 0, 4), Pipeline: true}
+	}
 	var tupleLensBuf [1]int
 	tupleLensBuf[0] = len(p.Items)
 	in := runtime.RenderInput{
@@ -948,6 +954,9 @@ func (pl *Pipeline) InsertArchivedOrders(rows []ArchivedOrderRow) *runtime.ExecF
 	vk, colMask, flagMask, approxArgs := computeInsertArchivedOrdersKey(p)
 	argBuf := runtime.AcquireArgsCap(approxArgs)
 	expandErr := expandInsertArchivedOrdersParams(argBuf, sqlDialect, p)
+	if len(p.Rows) > runtime.MaxRowsPerStatement(sqlDialect, 0, 5) && expandErr == nil {
+		expandErr = &runtime.CollectionTooLargeError{Statement: "InsertArchivedOrders", Items: len(p.Rows), Limit: runtime.MaxRowsPerStatement(sqlDialect, 0, 5), Pipeline: true}
+	}
 	var tupleLensBuf [1]int
 	tupleLensBuf[0] = len(p.Rows)
 	in := runtime.RenderInput{
@@ -1140,6 +1149,9 @@ func (pl *Pipeline) DeleteFulfilledOrdersByIDs(ids []int64) *runtime.ExecFuture 
 	vk, colMask, flagMask, approxArgs := computeDeleteFulfilledOrdersByIDsKey(p)
 	argBuf := runtime.AcquireArgsCap(approxArgs)
 	expandErr := expandDeleteFulfilledOrdersByIDsParams(argBuf, sqlDialect, p)
+	if len(p.IDs) > runtime.MaxRowsPerStatement(sqlDialect, 0, 1) && expandErr == nil {
+		expandErr = &runtime.CollectionTooLargeError{Statement: "DeleteFulfilledOrdersByIDs", Items: len(p.IDs), Limit: runtime.MaxRowsPerStatement(sqlDialect, 0, 1), Pipeline: true}
+	}
 	var sliceLensBuf [1]int
 	sliceLensBuf[0] = len(p.IDs)
 	in := runtime.RenderInput{

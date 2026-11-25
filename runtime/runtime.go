@@ -576,17 +576,24 @@ func (e *invalidArgumentError) Error() string { return ErrInvalidArgument.Error(
 func (e *invalidArgumentError) Unwrap() error { return ErrInvalidArgument }
 
 // CollectionTooLargeError is the error a non-decomposable statement (one whose result is not the
-// concatenation of the results of its chunks) returns when its collection holds more items than one
-// statement can carry (Limit, see WithMaxBatchParams). errors.Is(err, ErrCollectionTooLarge) is true for it.
+// concatenation of the results of its chunks), or any one-collection statement queued on a pipeline,
+// returns when its collection holds more items than one statement can carry (Limit, see
+// WithMaxBatchParams). errors.Is(err, ErrCollectionTooLarge) is true for it.
 type CollectionTooLargeError struct {
 	Statement    string
 	Items, Limit int
+	// Pipeline is set when the collection was queued as a pipeline operation, which is never chunked
+	// (whether or not the statement's own method would chunk it).
+	Pipeline bool
 }
 
 func (e *CollectionTooLargeError) Error() string {
-	return "sqlgen: statement " + strconv.Quote(e.Statement) + ": collection of " + strconv.Itoa(e.Items) +
-		" items exceeds the single-statement limit of " + strconv.Itoa(e.Limit) +
-		" items, and the statement cannot be chunked (its result is not the concatenation of per-chunk results)"
+	msg := "sqlgen: statement " + strconv.Quote(e.Statement) + ": collection of " + strconv.Itoa(e.Items) +
+		" items exceeds the single-statement limit of " + strconv.Itoa(e.Limit) + " items"
+	if e.Pipeline {
+		return msg + ", and a pipeline operation is never chunked (split the collection over several operations, or call the statement's own method)"
+	}
+	return msg + ", and the statement cannot be chunked (its result is not the concatenation of per-chunk results)"
 }
 
 // Unwrap makes errors.Is(err, ErrCollectionTooLarge) true.

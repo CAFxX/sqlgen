@@ -282,13 +282,14 @@ To allow any statement inside a pipelined `p.If(...)` branch to be gated on the 
    - **Result type (scalar vs struct).** For `kind: one` / `kind: many`: when the statement has exactly one output column, that column is unconditional and `result_type` is empty, `RowTypeName` is the column's Go type and the statement returns the value itself (`ScalarResult == true`: `(T, error)`, `([]T, error)`, `iter.Seq2[T, error]`, `*RowFuture[T]` / `*SliceFuture[T]`), for any `T` the column may be declared as (`time.Time`, `[]byte`, `*string`, `pkg.Type`). Otherwise `RowTypeName` is `result_type` when set, and `<Name>Row` when not; the row struct is then generated, even for one column. `result_type` MUST be a valid Go identifier that is not declared in the Go universe scope (`go/types.Universe.Lookup(name) == nil`: `int64`, `string`, `any`, `error`, `nil`, `len`, ... are rejected with an error naming the predeclared identifier).
    - Statement names, `result_type` names and tuple struct names MUST NOT equal a generated declaration (`reservedStatementNames`, `reservedTypeNames`).
    - A parameter whose Go name equals a generated local (`reservedParamNames`) is renamed `<name>Param`.
-   - Tuple bodies accept `--` and `/* */` comments and `$tag$` strings. `DISTINCT ON (...)` stays in the projection prefix, and neither `IS [NOT] DISTINCT FROM` nor a qualified word such as `t.limit` ends the projection.
+   - A `:name` token inside a tuple body (outside quotes, comments and `::` casts) is a generate-time error naming the parameter: a tuple body holds only fields and literal SQL (a parameter would otherwise be left in the text with its `:`). Tuple bodies accept `--` and `/* */` comments and `$tag$` strings. `DISTINCT ON (...)` stays in the projection prefix, and neither `IS [NOT] DISTINCT FROM` nor a qualified word such as `t.limit` ends the projection.
 3. **Exact `CanBatch` and `CanStream` Predicates**:
    - Let `collectionOccs := ps.SliceOccs + ps.TupleOccs`.
    - `CanBatch` is `true` if and only if:
      `(ps.Spec.Kind == KindExec || ps.Spec.Kind == KindMany) && collectionOccs == 1 && collectionParam.FlagBit == 0 && ps.QueryOccs == 0 && !ps.HasOrder && !ps.HasSeek`.
    - `Decomposable` (only meaningful when `CanBatch`) is the lexical, conservative verdict of `decomposable()` (`decompose.go`): the collection is the `VALUES` list of a top-level `INSERT`, or a positive `IN (...)` list that is a whole conjunct of the top-level `WHERE` of a `SELECT`/`UPDATE`/`DELETE` (also inside parenthesised `AND` groups that are not sub-queries), and the top level (plus the enclosing groups) has no aggregate call, `GROUP BY`, `HAVING`, `DISTINCT`, `ORDER BY`, `LIMIT`, `OFFSET`, `FETCH`, `OVER`, `WINDOW`, `UNION`, `INTERSECT`, `EXCEPT` and, for an `IN` list, no `OR`; optional blocks are inlined, the SelectCols projection is scanned through its column expressions, sub-queries that do not contain the collection are ignored. When unsure: not decomposable.
    - A `CanBatch && !Decomposable` statement never chunks: its plain method and `<Name>Seq` return `*runtime.CollectionTooLargeError` (`errors.Is(err, runtime.ErrCollectionTooLarge)`) before sending anything when `len(collection) > MaxRowsPerBatch`, and otherwise run the single statement.
+   - The pipeline method of every `CanBatch` statement (decomposable or not: a pipeline operation is one statement of the batch and never chunks) sets `expandErr` to a `*runtime.CollectionTooLargeError{Statement, Items, Limit, Pipeline: true}` when `len(collection) > runtime.MaxRowsPerStatement(sqlDialect, ScalarParamCnt, BatchArity)` (the wire parameter limit: 65535 placeholders for `$N`, 32766 for `?`, minus the scalars, over the arity; `WithMaxBatchParams` does not apply), so the flush fails with it before sending anything (no connection, no transaction).
    - `CanStream` is `true` if and only if:
      `ps.CanBatch && ps.Decomposable && ps.TupleOccs == 1`.
    - A struct-style `<Name>Stream` / `<Name>StreamSeq` returns `runtime.InvalidArgument("<Name>Stream: p.<Field> must be empty: ...")` (matching `runtime.ErrInvalidArgument`) when the collection field of `p` is non-empty, before pulling `seq`. An empty `seq` is a no-op when `ValuesParamIdx == BatchParamIdx` and `runtime.ErrEmptySliceParam` otherwise (counted with `totalRows`).
@@ -371,6 +372,8 @@ var (
 	ErrNilArgument        = errors.New("sqlgen: nil iterator or callback argument")
 	ErrStop               = errors.New("sqlgen: stop iteration") // returned by an Each callback to end early without an error
 	ErrFutureNotReady     = errors.New("sqlgen: pipeline future read before the pipeline was flushed")
+	// After a failed flush (Pipeline.failErr, set by run), a future reports its operation's own error or
+	// else the flush error, never a result: futureErr.
 )
 
 // AssertionError is what a failed AssertRows / AssertFound returns. It matches

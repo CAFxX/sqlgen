@@ -219,3 +219,54 @@ func TestFutureLabelIsChainableOnEveryFuture(t *testing.T) {
 		t.Fatalf("labels = %q %q %q", op1.label, op2.label, op3.label)
 	}
 }
+
+// When a pipeline fails, no future reports a result that could be mistaken for a real one: the failing
+// operation's future has its own error and every other future the pipeline's, on every path (the
+// single-round-trip paths do not deliver the earlier operations' results of a failed batch, and nothing
+// of it is committed).
+func TestFuturesOfAFailedPipelineReportTheError(t *testing.T) {
+	ctx := context.Background()
+	db := openTestDB(t)
+	cache := NewStmtCache()
+	defer func() { _ = cache.Close() }()
+	updDesc, selDesc := assertTestDescs()
+	scan := func(r *sql.Row, dst *int64) error { return r.Scan(dst) }
+	scanRows := func(rs *sql.Rows, dst *int64) error { return rs.Scan(dst) }
+
+	p := NewPipeline(ctx, db, cache, nil, true, DialectQuestion)
+	before := p.QueueExec(21, updDesc, RenderInput{}, MakeVariantKey(21, 0, 0, 0), nil, argsOf("cat_0"), nil)
+	get := QueueRow[int64](p, 22, selDesc, RenderInput{}, MakeVariantKey(22, 0, 0, 0), nil, argsOf(int64(1)), nil, scan, scanRows)
+	failing := p.QueueExec(21, updDesc, RenderInput{}, MakeVariantKey(21, 0, 0, 0), nil, argsOf("cat_1"), nil).AssertRows(5)
+	after := QueueSlice[int64](p, 22, selDesc, RenderInput{}, MakeVariantKey(22, 0, 0, 0), nil, argsOf(int64(2)), nil, scanRows)
+	err := p.Flush()
+	if !errors.Is(err, ErrAssertionFailed) {
+		t.Fatalf("flush: %v", err)
+	}
+	if _, ferr := before.Result(); ferr != err {
+		t.Errorf("earlier exec future: %v, want the pipeline error", ferr)
+	}
+	if n, ferr := before.RowsAffected(); ferr != err || n != 0 {
+		t.Errorf("earlier exec future: %d, %v", n, ferr)
+	}
+	if v, ferr := get.Get(); ferr != err || v != 0 {
+		t.Errorf("earlier row future: %v, %v", v, ferr)
+	}
+	if _, ferr := failing.Result(); ferr != err {
+		t.Errorf("failing future: %v", ferr)
+	}
+	if v, ferr := after.Get(); ferr != err || v != nil {
+		t.Errorf("later slice future: %v, %v", v, ferr)
+	}
+
+	// A build error: nothing ran, every future reports it.
+	buildErr := errors.New("bad argument")
+	p = NewPipeline(ctx, db, cache, nil, true, DialectQuestion)
+	get = QueueRow[int64](p, 22, selDesc, RenderInput{}, MakeVariantKey(22, 0, 0, 0), nil, argsOf(int64(1)), nil, scan, scanRows)
+	p.QueueExec(21, updDesc, RenderInput{}, MakeVariantKey(21, 0, 0, 0), nil, argsOf("cat_1"), buildErr)
+	if err := p.Flush(); err != buildErr {
+		t.Fatalf("flush: %v", err)
+	}
+	if _, ferr := get.Get(); ferr != buildErr {
+		t.Errorf("row future of a pipeline that failed to build: %v", ferr)
+	}
+}

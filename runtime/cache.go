@@ -647,13 +647,26 @@ func (c *StmtCache) MaxBatchParams() int {
 	return c.maxBatchParams
 }
 
+// wireParamLimit is the most placeholders one statement may carry in dialect.
+func wireParamLimit(dialect Dialect) int {
+	if dialect == DialectQuestion {
+		return 32766
+	}
+	return 65535
+}
+
+// MaxRowsPerStatement is the most items of a collection one statement can carry at all: the dialect's wire
+// parameter limit (65535 placeholders for $N, 32766 for ?) less the statement's scalarCount other
+// parameters, over the tuple arity (1 for a 1D slice). A pipeline operation, which is never chunked, may not
+// exceed it (the generated pipeline methods check it before queuing anything that would be sent).
+func MaxRowsPerStatement(dialect Dialect, scalarCount, tupleFields int) int {
+	return max(1, (wireParamLimit(dialect)-scalarCount)/max(1, tupleFields))
+}
+
 // MaxRowsPerBatch computes the maximum rows per statement given dialect wire limits,
 // WithMaxBatchParams, scalar parameter count S, and tuple arity F.
 func (c *StmtCache) MaxRowsPerBatch(dialect Dialect, scalarCount, tupleFields int) int {
-	wireLimit := 65535
-	if dialect == DialectQuestion {
-		wireLimit = 32766
-	}
+	wireLimit := wireParamLimit(dialect)
 	budget := c.MaxBatchParams()
 	if budget > wireLimit {
 		budget = wireLimit

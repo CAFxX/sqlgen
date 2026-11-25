@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"slices"
+	"strings"
 	"sync"
 	"testing"
 
@@ -336,5 +337,57 @@ func TestNonDecomposableStatementIsNeverChunked(t *testing.T) {
 	got, err := small.UserIDsNearScore(ctx, 0, ids)
 	if err != nil || len(got) != 30 || trs.stmts() != 5 {
 		t.Fatalf("UserIDsNearScore = %d rows in %d statements, %v; want 30 rows in 5 chunks of 7", len(got), trs.stmts(), err)
+	}
+}
+
+// A pipeline operation is never chunked (it is one statement of the batch): a collection over the
+// single-statement limit fails the pipeline with a CollectionTooLargeError naming the statement before
+// anything is sent, instead of reaching the database and failing there ("too many SQL variables"). Every
+// future of the pipeline reports the error.
+func TestPipelineOperationOverTheLimitFailsBeforeSending(t *testing.T) {
+	ctx := context.Background()
+	// The limit is the wire's (32766 placeholders on SQLite), not the WithMaxBatchParams chunk size.
+	small, trs := setupTraceDB(t, runtime.WithMaxBatchParams(10))
+	ids := make([]int64, 32767)
+	rows := make([]BatchUserInput, 10923) // 3 fields: 10922 rows per statement
+	for i := range ids {
+		ids[i] = int64(i + 1)
+	}
+	for i := range rows {
+		rows[i] = BatchUserInput{ID: int64(i + 1), Name: "n", Points: 1}
+	}
+	check := func(name string, items, limit int, err error) {
+		t.Helper()
+		var e *runtime.CollectionTooLargeError
+		if !errors.As(err, &e) || !errors.Is(err, runtime.ErrCollectionTooLarge) || e.Statement != name || e.Items != items || e.Limit != limit || !e.Pipeline {
+			t.Fatalf("%s: err = %v, want a pipeline CollectionTooLargeError{%s, %d, %d}", name, err, name, items, limit)
+		}
+		if !strings.Contains(err.Error(), "pipeline operation") {
+			t.Fatalf("%s: message %q does not say a pipeline operation is never chunked", name, err)
+		}
+		if n := trs.stmts() + trs.get("begin") + trs.get("prepare"); n != 0 {
+			t.Fatalf("%s: %d statements/transactions/prepares sent, want none", name, n)
+		}
+		trs.reset()
+	}
+	trs.reset()
+	var before *runtime.RowFuture[User]
+	err := small.PipelineTx(ctx, nil, func(p *Pipeline) error {
+		before = p.GetUserByID(1)
+		p.ListUsersByIDs(ids)
+		return nil
+	})
+	check("ListUsersByIDs", 32767, 32766, err)
+	if _, ferr := before.Get(); ferr != err {
+		t.Fatalf("future of the failed pipeline: %v, want %v", ferr, err)
+	}
+	p := small.Pipeline(ctx)
+	p.InsertUsersBatchReturning(rows)
+	check("InsertUsersBatchReturning", 10923, 10922, p.Flush())
+	// Over the chunk size but within the wire limit: one statement of the batch, not chunked.
+	p = small.Pipeline(ctx)
+	p.InsertUsersBatchReturning(rows[:30])
+	if err := p.Flush(); err != nil {
+		t.Fatal(err)
 	}
 }

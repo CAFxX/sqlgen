@@ -99,6 +99,19 @@ var myWireScenarios = []myScenario{
 		p.AddScoreOne(5, 999).Label("line 2").AssertRows(1) // no such row: operation 1, labelled
 		return nil, nil
 	}},
+	// The futures of the operations before a failed assertion stay readable after the failure, and say the
+	// same thing on both paths; the operations after it never ran.
+	{"futures around a failed assertion", func(p *myq.Pipeline) ([]*runtime.IfResult, func() string) {
+		g := p.GetItem(1)
+		u := p.AddScoreOne(5, 2)
+		s := p.ItemsByIDs([]int64{1, 2})
+		p.AddScoreOne(5, 999).AssertRows(1)
+		after := p.GetItem(3)
+		return nil, func() string {
+			n, uerr := u.RowsAffected()
+			return myFmtRow(g) + " " + fmt.Sprintf("%d|%v", n, uerr) + " " + myFmtSlice(s) + " " + myFmtRow(after)
+		}
+	}},
 	{"AssertFound on a row-returning op that finds the row", func(p *myq.Pipeline) ([]*runtime.IfResult, func() string) {
 		g := p.GetItem(1).AssertFound()
 		p.AddScoreOne(1, 1).AssertRows(1)
@@ -152,8 +165,8 @@ var myWireScenarios = []myScenario{
 	{"WhereCol bound arguments true -> then", func(p *myq.Pipeline) ([]*runtime.IfResult, func() string) {
 		get := p.GetItem(2) // name n2, score 20
 		return []*runtime.IfResult{p.If(get.WhereCol("score >= ? AND name = ? AND name <> ? AND status <> '?'", func(it myq.Item) bool {
-			return it.Score >= 20 && it.Name == "n2" && it.Name != "o'k\\?"
-		}, int64(20), "n2", "o'k\\?"),
+			return it.Score >= 20 && it.Name == "n2" && it.Name != "o'k?"
+		}, int64(20), "n2", "o'k?"), // no backslash: TiDB reads its hex literal as a number (sequential fallback)
 			func(p *myq.Pipeline) { p.AddScoreOne(1, 2).AssertRows(1) },
 			func(p *myq.Pipeline) { p.AddScoreOne(2, 3).AssertRows(1) })}, nil
 	}},
@@ -305,7 +318,7 @@ func compareMyWireSeq(t *testing.T, db *sql.DB, dsn string, mode myRunMode, sc m
 				o.Taken = append(o.Taken, r.Taken())
 			}
 		}
-		if err == nil && report != nil {
+		if report != nil { // also after a failure: the futures must agree then too
 			o.Report = report()
 		}
 		st := q.CacheStats()
