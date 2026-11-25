@@ -1829,9 +1829,15 @@ func OrderFzPage(terms ...FzPageSortTerm) runtime.Order {
 	return runtime.PackOrder(terms...)
 }
 
+// NewSeekFzPage returns the keyset cursor positioned after the row whose sort columns (grp, k1, k2, k3, k4, k5, k6, k7, k8, tag, tag2, id) hold these
+// values, for example the values of a decoded page token.
+func NewSeekFzPage(grp int64, k1 int64, k2 int64, k3 int64, k4 int64, k5 int64, k6 int64, k7 int64, k8 int64, tag string, tag2 string, id int64) runtime.Seek {
+	return runtime.Seek{Values: []any{grp, k1, k2, k3, k4, k5, k6, k7, k8, tag, tag2, id}}
+}
+
 // SeekFzPage returns the keyset cursor positioned after row.
 func SeekFzPage(row FzRow) runtime.Seek {
-	return runtime.NewSeek(row.Grp, row.K1, row.K2, row.K3, row.K4, row.K5, row.K6, row.K7, row.K8, row.Tag, row.Tag2, row.ID)
+	return NewSeekFzPage(row.Grp, row.K1, row.K2, row.K3, row.K4, row.K5, row.K6, row.K7, row.K8, row.Tag, row.Tag2, row.ID)
 }
 
 type FzPageParams struct {
@@ -4539,9 +4545,15 @@ func OrderFzTypedPage(terms ...FzTypedPageSortTerm) runtime.Order {
 	return runtime.PackOrder(terms...)
 }
 
+// NewSeekFzTypedPage returns the keyset cursor positioned after the row whose sort columns (f64, i32, flag, id) hold these
+// values, for example the values of a decoded page token.
+func NewSeekFzTypedPage(f64 float64, i32 int32, flag bool, id int64) runtime.Seek {
+	return runtime.Seek{Values: []any{f64, i32, flag, id}}
+}
+
 // SeekFzTypedPage returns the keyset cursor positioned after row.
 func SeekFzTypedPage(row FzTypedRow) runtime.Seek {
-	return runtime.NewSeek(row.F64, row.I32, row.Flag, row.ID)
+	return NewSeekFzTypedPage(row.F64, row.I32, row.Flag, row.ID)
 }
 
 type paramsFzTypedPage struct {

@@ -437,9 +437,15 @@ func OrderListMembersPaginated(terms ...ListMembersPaginatedSortTerm) runtime.Or
 	return runtime.PackOrder(terms...)
 }
 
+// NewSeekListMembersPaginated returns the keyset cursor positioned after the row whose sort columns (m.role, m.score, m.created_at, m.id) hold these
+// values, for example the values of a decoded page token.
+func NewSeekListMembersPaginated(role string, score int64, createdAt int64, id int64) runtime.Seek {
+	return runtime.Seek{Values: []any{role, score, createdAt, id}}
+}
+
 // SeekListMembersPaginated returns the keyset cursor positioned after row.
 func SeekListMembersPaginated(row MemberItem) runtime.Seek {
-	return runtime.NewSeek(row.Role, row.Score, row.CreatedAt, row.ID)
+	return NewSeekListMembersPaginated(row.Role, row.Score, row.CreatedAt, row.ID)
 }
 
 type ListMembersPaginatedParams struct {

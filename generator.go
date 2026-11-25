@@ -3213,6 +3213,62 @@ func emitSortHelpers(b *bytes.Buffer, tag string, orderCols []orderColRef) {
 	b.WriteString("}\n\n")
 }
 
+// emitSeekConstructors emits NewSeek<Stmt>, the typed keyset cursor built from the values of the
+// statement's sqlgen.Order columns (in their declared order, with their Go types, so a value decoded from a
+// page token cannot bind with the wrong type or arity), and Seek<Stmt>(row), the cursor after a row.
+func emitSeekConstructors(b *bytes.Buffer, cs *compiledStmt) {
+	names := make([]string, len(cs.OrderCols))
+	cols := make([]string, len(cs.OrderCols))
+	for i, oc := range cs.OrderCols {
+		names[i] = seekParamName(oc.FieldName)
+		cols[i] = oc.RawRef
+	}
+	fmt.Fprintf(b, "// NewSeek%s returns the keyset cursor positioned after the row whose sort columns (%s) hold these\n", cs.Name, strings.Join(cols, ", "))
+	b.WriteString("// values, for example the values of a decoded page token.\n")
+	fmt.Fprintf(b, "func NewSeek%s(", cs.Name)
+	for i, oc := range cs.OrderCols {
+		if i > 0 {
+			b.WriteString(", ")
+		}
+		fmt.Fprintf(b, "%s %s", names[i], oc.GoType)
+	}
+	fmt.Fprintf(b, ") runtime.Seek {\n\treturn runtime.Seek{Values: []any{%s}}\n}\n\n", strings.Join(names, ", "))
+	if cs.ScalarResult || cs.RowTypeName == "" {
+		return
+	}
+	fmt.Fprintf(b, "// Seek%s returns the keyset cursor positioned after row.\n", cs.Name)
+	fmt.Fprintf(b, "func Seek%s(row %s) runtime.Seek {\n\treturn NewSeek%s(", cs.Name, cs.RowTypeName, cs.Name)
+	for i, oc := range cs.OrderCols {
+		if i > 0 {
+			b.WriteString(", ")
+		}
+		fmt.Fprintf(b, "row.%s", oc.FieldName)
+	}
+	b.WriteString(")\n}\n\n")
+}
+
+// seekParamName is the parameter of NewSeek<Stmt> for the sort column whose row field is field: the field
+// in lowerCamelCase with a leading initialism lowered whole (ID -> id, URLPath -> urlPath), suffixed with
+// "Val" when that would be a Go keyword or a name the body uses (runtime, any).
+func seekParamName(field string) string {
+	r := []rune(field)
+	n := 0
+	for n < len(r) && unicode.IsUpper(r[n]) {
+		n++
+	}
+	if n > 1 && n < len(r) {
+		n-- // URLPath: the P starts the next word
+	}
+	for i := 0; i < n; i++ {
+		r[i] = unicode.ToLower(r[i])
+	}
+	name := string(r)
+	if token.IsKeyword(name) || name == "runtime" || name == "any" || name == "" {
+		name += "Val"
+	}
+	return name
+}
+
 func emitColMaskConstants(b *bytes.Buffer, prefix string, uncondCols []colDef) {
 	b.WriteString("const (\n")
 	for i, uc := range uncondCols {
@@ -3240,16 +3296,8 @@ func emitStatementCode(
 	// share them: each statement declares its own sqlgen.Order list, so its own sort vocabulary).
 	if cs.HasOrder {
 		emitSortHelpers(b, cs.Name, cs.OrderCols)
-		if cs.HasSeek && !cs.ScalarResult && cs.RowTypeName != "" {
-			fmt.Fprintf(b, "// Seek%s returns the keyset cursor positioned after row.\n", cs.Name)
-			fmt.Fprintf(b, "func Seek%s(row %s) runtime.Seek {\n\treturn runtime.NewSeek(", cs.Name, cs.RowTypeName)
-			for idx, oc := range cs.OrderCols {
-				if idx > 0 {
-					b.WriteString(", ")
-				}
-				fmt.Fprintf(b, "row.%s", oc.FieldName)
-			}
-			b.WriteString(")\n}\n\n")
+		if cs.HasSeek {
+			emitSeekConstructors(b, cs)
 		}
 	}
 

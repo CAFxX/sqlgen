@@ -501,7 +501,7 @@ func TestPostgresSQLGeneration(t *testing.T) {
 		RoleFilter: true,
 		FilterRole: "admin",
 		Order:      OrderPageUsers(PageUsersOrderByScore.Desc()),
-		Seek:       runtime.NewSeek("admin", int64(50), int64(5)),
+		Seek:       NewSeekPageUsers("admin", 50, 5),
 		Limit:      10,
 	})
 	idSub := SubUserIDsByScoreQuery(30)
@@ -834,7 +834,7 @@ func TestE2ECurriedQueryComposition(t *testing.T) {
 		RoleFilter: true,
 		FilterRole: "admin",
 		Order:      OrderPageUsers(PageUsersOrderByScore.Asc(), PageUsersOrderByID.Asc()),
-		Seek:       runtime.NewSeek("admin", int64(20), int64(2)),
+		Seek:       NewSeekPageUsers("admin", 20, 2),
 		Limit:      3,
 	})
 	idSub := SubUserIDsByScoreQuery(40)
@@ -2061,7 +2061,7 @@ func TestGeneratorHandlesTrickyButValidInputs(t *testing.T) {
 		{"shared result_type with different Order lists", "  - name: A\n    kind: many\n    result_type: M\n    sql: |\n      SELECT name:string, age:int64 FROM t WHERE :After:sqlgen.Seek ORDER BY :Sort:sqlgen.Order(name, age)\n  - name: B\n    kind: many\n    result_type: M\n    sql: |\n      SELECT name:string, age:int64 FROM u WHERE :After:sqlgen.Seek ORDER BY :Sort:sqlgen.Order(age, name)\n",
 			func(t *testing.T, src string) {
 				// One helper set per statement; no row-type-keyed duplicate and no ambiguous row.Seek().
-				for _, want := range []string{"func SeekA(row M) runtime.Seek", "runtime.NewSeek(row.Name, row.Age)", "func SeekB(row M) runtime.Seek", "runtime.NewSeek(row.Age, row.Name)", "AOrderByName", "BOrderByAge"} {
+				for _, want := range []string{"func SeekA(row M) runtime.Seek", "return NewSeekA(row.Name, row.Age)", "func NewSeekA(name string, age int64) runtime.Seek", "func SeekB(row M) runtime.Seek", "return NewSeekB(row.Age, row.Name)", "func NewSeekB(age int64, name string) runtime.Seek", "return runtime.Seek{Values: []any{age, name}}", "AOrderByName", "BOrderByAge"} {
 					if !strings.Contains(src, want) {
 						t.Errorf("missing %q", want)
 					}

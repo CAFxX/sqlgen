@@ -1144,9 +1144,15 @@ func OrderPageItems(terms ...PageItemsSortTerm) runtime.Order {
 	return runtime.PackOrder(terms...)
 }
 
+// NewSeekPageItems returns the keyset cursor positioned after the row whose sort columns (score, id) hold these
+// values, for example the values of a decoded page token.
+func NewSeekPageItems(score int64, id int64) runtime.Seek {
+	return runtime.Seek{Values: []any{score, id}}
+}
+
 // SeekPageItems returns the keyset cursor positioned after row.
 func SeekPageItems(row PagedItem) runtime.Seek {
-	return runtime.NewSeek(row.Score, row.ID)
+	return NewSeekPageItems(row.Score, row.ID)
 }
 
 type PageItemsParams struct {
@@ -1380,9 +1386,15 @@ func OrderWideRows(terms ...WideRowsSortTerm) runtime.Order {
 	return runtime.PackOrder(terms...)
 }
 
+// NewSeekWideRows returns the keyset cursor positioned after the row whose sort columns (c1, c2, c3, c4, c5, c6, c7, c8, c9, c10, c11, id) hold these
+// values, for example the values of a decoded page token.
+func NewSeekWideRows(c1 int64, c2 int64, c3 int64, c4 int64, c5 int64, c6 int64, c7 int64, c8 int64, c9 int64, c10 int64, c11 int64, id int64) runtime.Seek {
+	return runtime.Seek{Values: []any{c1, c2, c3, c4, c5, c6, c7, c8, c9, c10, c11, id}}
+}
+
 // SeekWideRows returns the keyset cursor positioned after row.
 func SeekWideRows(row Wide) runtime.Seek {
-	return runtime.NewSeek(row.C1, row.C2, row.C3, row.C4, row.C5, row.C6, row.C7, row.C8, row.C9, row.C10, row.C11, row.ID)
+	return NewSeekWideRows(row.C1, row.C2, row.C3, row.C4, row.C5, row.C6, row.C7, row.C8, row.C9, row.C10, row.C11, row.ID)
 }
 
 type WideRowsParams struct {

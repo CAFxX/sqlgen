@@ -1352,11 +1352,11 @@ func TestExpandOrderAndSeekAndHelpers(t *testing.T) {
 		t.Fatalf("expected 0 seek args when hasSeek=false, got %d", n)
 	}
 
-	sEmpty := NewSeek()
+	sEmpty := Seek{}
 	if sEmpty.IsActive() || sEmpty.Count() != 0 {
 		t.Fatalf("expected inactive empty Seek")
 	}
-	sGood := NewSeek("cat_a", 999, 42)
+	sGood := Seek{Values: []any{"cat_a", 999, 42}}
 	if !sGood.IsActive() || sGood.Count() != 3 || sGood.Val(0) != "cat_a" {
 		t.Fatalf("unexpected Seek accessors")
 	}

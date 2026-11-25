@@ -2851,9 +2851,15 @@ func OrderQueryRiskPositionsPage(terms ...QueryRiskPositionsPageSortTerm) runtim
 	return runtime.PackOrder(terms...)
 }
 
+// NewSeekQueryRiskPositionsPage returns the keyset cursor positioned after the row whose sort columns (notional_cents, unrealized_pnl_cents, updated_seq, position_id) hold these
+// values, for example the values of a decoded page token.
+func NewSeekQueryRiskPositionsPage(notionalCents int64, unrealizedPnlCents int64, updatedSeq int64, positionID int64) runtime.Seek {
+	return runtime.Seek{Values: []any{notionalCents, unrealizedPnlCents, updatedSeq, positionID}}
+}
+
 // SeekQueryRiskPositionsPage returns the keyset cursor positioned after row.
 func SeekQueryRiskPositionsPage(row RiskPositionView) runtime.Seek {
-	return runtime.NewSeek(row.NotionalCents, row.UnrealizedPnlCents, row.UpdatedSeq, row.PositionID)
+	return NewSeekQueryRiskPositionsPage(row.NotionalCents, row.UnrealizedPnlCents, row.UpdatedSeq, row.PositionID)
 }
 
 type QueryRiskPositionsPageParams struct {

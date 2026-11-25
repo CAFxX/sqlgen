@@ -180,3 +180,16 @@ statements:
 		t.Error("found no exported runtime.Pipeline methods; test is stale")
 	}
 }
+
+// The parameters of NewSeek<Stmt> are the sort columns' fields in lowerCamelCase, never a keyword or a
+// name the constructor's body uses.
+func TestSeekParamNames(t *testing.T) {
+	for in, want := range map[string]string{
+		"ID": "id", "CreatedAt": "createdAt", "URLPath": "urlPath", "X": "x", "GroupKey": "groupKey",
+		"Type": "typeVal", "Func": "funcVal", "Runtime": "runtimeVal", "Any": "anyVal", "Score2": "score2",
+	} {
+		if got := seekParamName(in); got != want {
+			t.Errorf("seekParamName(%q) = %q, want %q", in, got, want)
+		}
+	}
+}

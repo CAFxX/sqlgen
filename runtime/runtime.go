@@ -409,9 +409,10 @@ func expandOrder(orderSpec uint64, numCols int) (cols [MaxOrderCols]int, desc [M
 	return cols, desc, count, allSameDir
 }
 
-// Seek holds keyset pagination cursor values.
+// Seek holds keyset pagination cursor values: the zero Seek is the first page; the generated
+// NewSeek<Stmt>(...) (typed, one argument per sqlgen.Order column) and Seek<Stmt>(row) build the others.
 type Seek struct {
-	Values []any
+	Values []any // one value per sqlgen.Order column, in their declared order (written by generated code)
 }
 
 // OrCols combines the column constants a positional statement receives in its variadic selectCols argument
@@ -422,14 +423,6 @@ func OrCols(cols []uint64) uint64 {
 		m |= c
 	}
 	return m
-}
-
-// NewSeek constructs an active Seek cursor with the given column values.
-func NewSeek(vals ...any) Seek {
-	if len(vals) == 0 {
-		return Seek{}
-	}
-	return Seek{Values: vals}
 }
 
 // IsActive reports whether the Seek cursor is populated.

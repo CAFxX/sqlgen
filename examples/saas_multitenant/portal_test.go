@@ -372,7 +372,7 @@ func TestSaaSMultitenantPortalEndToEnd(t *testing.T) {
 	}); !errors.Is(err, errStop) {
 		t.Fatalf("expected errStop from ListMembersPaginatedEach, got %v", err)
 	}
-	if err := runtime.Each(q.ListMembersPaginatedSeq(ctx, ListMembersPaginatedParams{OrgID: 1, After: runtime.NewSeek("bad"), Sort: sortConfigs[0].order, Limit: 5}), func(r MemberItem) error {
+	if err := runtime.Each(q.ListMembersPaginatedSeq(ctx, ListMembersPaginatedParams{OrgID: 1, After: runtime.Seek{Values: []any{"bad"}}, Sort: sortConfigs[0].order, Limit: 5}), func(r MemberItem) error {
 		return nil
 	}); !errors.Is(err, runtime.ErrInvalidSeek) {
 		t.Fatalf("expected ErrInvalidSeek from ListMembersPaginatedEach, got %v", err)
@@ -416,7 +416,7 @@ func TestSaaSMultitenantPortalEndToEnd(t *testing.T) {
 	}
 	if _, err := q.ListMembersPaginated(ctx, ListMembersPaginatedParams{
 		OrgID: 1,
-		After: runtime.NewSeek("admin"), // wrong arity (1 instead of 4)
+		After: runtime.Seek{Values: []any{"admin"}}, // wrong arity (1 instead of 4): only a hand-built cursor can have it
 		Sort:  sortConfigs[0].order,
 		Limit: 5,
 	}); !errors.Is(err, runtime.ErrInvalidSeek) {

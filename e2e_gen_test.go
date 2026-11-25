@@ -1392,9 +1392,15 @@ func OrderPageUsers(terms ...PageUsersSortTerm) runtime.Order {
 	return runtime.PackOrder(terms...)
 }
 
+// NewSeekPageUsers returns the keyset cursor positioned after the row whose sort columns (role, score, id) hold these
+// values, for example the values of a decoded page token.
+func NewSeekPageUsers(role string, score int64, id int64) runtime.Seek {
+	return runtime.Seek{Values: []any{role, score, id}}
+}
+
 // SeekPageUsers returns the keyset cursor positioned after row.
 func SeekPageUsers(row PageUsersRow) runtime.Seek {
-	return runtime.NewSeek(row.Role, row.Score, row.ID)
+	return NewSeekPageUsers(row.Role, row.Score, row.ID)
 }
 
 type PageUsersParams struct {
@@ -4193,9 +4199,15 @@ func OrderPageQuad(terms ...PageQuadSortTerm) runtime.Order {
 	return runtime.PackOrder(terms...)
 }
 
+// NewSeekPageQuad returns the keyset cursor positioned after the row whose sort columns (group_key, priority, created_ts, id) hold these
+// values, for example the values of a decoded page token.
+func NewSeekPageQuad(groupKey string, priority int64, createdTs int64, id int64) runtime.Seek {
+	return runtime.Seek{Values: []any{groupKey, priority, createdTs, id}}
+}
+
 // SeekPageQuad returns the keyset cursor positioned after row.
 func SeekPageQuad(row QuadItem) runtime.Seek {
-	return runtime.NewSeek(row.GroupKey, row.Priority, row.CreatedTs, row.ID)
+	return NewSeekPageQuad(row.GroupKey, row.Priority, row.CreatedTs, row.ID)
 }
 
 type PageQuadParams struct {
