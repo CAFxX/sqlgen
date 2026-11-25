@@ -527,3 +527,11 @@ func TestExtraConditionsAreRecordedServerSide(t *testing.T) {
 		t.Fatalf("taken = %v / %v", r1.Taken(0), r2.Taken(0))
 	}
 }
+
+// Wrapping a wrapped connector again is harmless: it returns the same connector.
+func TestWrapConnectorIsIdempotent(t *testing.T) {
+	w := WrapConnector(&mockConnector{cfg: &mockDriverConfig{}})
+	if WrapConnector(w) != w {
+		t.Fatal("WrapConnector wrapped its own result again")
+	}
+}

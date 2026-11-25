@@ -778,8 +778,11 @@ func (c *wrappedConnector) Driver() driver.Driver {
 
 // WrapConnector wraps a database/sql/driver.Connector so that transactions (*sql.Tx)
 // can flush PipelineTx batches in a single network round-trip when the underlying
-// driver.Conn implements wire.Pipeliner.
+// driver.Conn implements wire.Pipeliner. Wrapping a connector it returned again returns it unchanged.
 func WrapConnector(base driver.Connector) driver.Connector {
+	if w, ok := base.(*wrappedConnector); ok {
+		return w
+	}
 	return &wrappedConnector{
 		base: base,
 		drv:  &wrappedDriver{base: base.Driver()},

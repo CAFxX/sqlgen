@@ -2,6 +2,8 @@
 
 Note: the spec comes from the spec workshop on https://share.gemini.google/Nm8OXGBJD6LD
 
+The design rules every change is held to are [docs/DESIGN-PRINCIPLES.md](docs/DESIGN-PRINCIPLES.md) and the review checklist [docs/API-REVIEW-CHECKLIST.md](docs/API-REVIEW-CHECKLIST.md); where they and this history disagree, they win. The user contract is DOCS.md, whose section "Known divergences" lists every remaining difference between paths and engines.
+
 ## 1. System Overview & The Ten Non-Negotiable Architectural Laws
 
 `sqlgen` is a production-grade Go SQL code generator and zero-reflection runtime library that compiles a declarative YAML configuration (`sqlgen.yaml`) containing annotated SQL statements into strongly-typed, idiomatic Go code backed by `database/sql`.

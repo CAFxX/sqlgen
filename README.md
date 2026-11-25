@@ -80,6 +80,10 @@ larger than MySQL's `max_allowed_packet`).
 
 ## Development
 
+Every user-facing change follows [docs/DESIGN-PRINCIPLES.md](docs/DESIGN-PRINCIPLES.md) and is reviewed with
+[docs/API-REVIEW-CHECKLIST.md](docs/API-REVIEW-CHECKLIST.md); remaining differences between paths and engines are
+listed in DOCS "Known divergences".
+
 ```sh
 make check            # gofmt, go vet (every module), fixtures and generated code up to date
 make gen              # regenerate the engine fixtures (integration/fixtures templates), then every generated package

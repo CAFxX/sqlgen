@@ -283,3 +283,29 @@ func TestDocsShowOnlyTheChainedIf(t *testing.T) {
 		t.Fatal("no .If( call found in the documentation: the scan is broken")
 	}
 }
+
+// Wording that asks the reader to compensate for the implementation is a design defect report (docs/
+// DESIGN-PRINCIPLES.md, 4): DOCS may carry it only inside the "Known divergences" register, whose rows the
+// owner accepted.
+var compensationWording = regexp.MustCompile(`(?i)keep\b[^.\n]{0,40}\bin sync|\bremember to\b|\bdo not\b[^.\n]{0,40}\bagain\b|\bexplicit cast\b|\byou must\b`)
+
+func TestDocsCompensationWordingOnlyInTheDivergenceRegister(t *testing.T) {
+	raw, err := os.ReadFile("DOCS.md")
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := string(raw)
+	reg := strings.Index(s, "\n## 4. Known divergences\n")
+	if reg < 0 {
+		t.Fatal(`DOCS.md has no "## 4. Known divergences" section`)
+	}
+	end := len(s)
+	if next := strings.Index(s[reg+1:], "\n## "); next >= 0 {
+		end = reg + 1 + next
+	}
+	for _, m := range compensationWording.FindAllStringIndex(s, -1) {
+		if m[0] < reg || m[0] >= end {
+			t.Errorf("DOCS.md:%d says %q outside \"Known divergences\": fix the design, or record it there", strings.Count(s[:m[0]], "\n")+1, s[m[0]:m[1]])
+		}
+	}
+}
