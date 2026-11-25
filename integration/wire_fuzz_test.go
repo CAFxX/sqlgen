@@ -320,6 +320,10 @@ func (g *fuzzGen) describe(err error) string {
 			fmt.Fprintf(&sb, " fwd[%v,%s,sk=%v]", v, fuzzClassify(e), errors.Is(e, runtime.ErrBranchNotTaken))
 		case f.ns != nil:
 			v, e := f.ns.Get()
+			// The guard CTE a statement with a recorded condition is wrapped in does not carry its ORDER BY
+			// on every engine (CockroachDB): compare the ids as a set, as for bump above
+			v = slices.Clone(v)
+			slices.Sort(v)
 			fmt.Fprintf(&sb, " above[%v,%s,sk=%v]", v, fuzzClassify(e), errors.Is(e, runtime.ErrBranchNotTaken))
 		}
 	}
