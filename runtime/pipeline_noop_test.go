@@ -172,31 +172,86 @@ func TestPipelineNoOpConditionsAndBranches(t *testing.T) {
 	}
 }
 
-// An assertion over a no-op is evaluated (0 rows): it passes for 0 and fails, rolling back, for anything else.
+// An assertion over a no-op is decided client-side (its row count is 0): a passing one costs nothing (a
+// pipeline of only such no-ops sends nothing, not even BEGIN; with real operations it keeps its single wire
+// round trip), a failing one fails the pipeline before anything is sent. Inside an If branch the assertion
+// applies only if the branch is taken, so the pipeline runs on the sequential path.
 func TestPipelineNoOpAssertion(t *testing.T) {
+	var wireOps []int
 	cfg := &mockDriverConfig{enableWireTx: true}
-	cfg.wireTxHandler = func(context.Context, *sql.TxOptions, []PipelineOp) error {
-		t.Error("a pipeline with an asserted no-op must run sequentially")
+	cfg.wireTxHandler = func(_ context.Context, _ *sql.TxOptions, ops []PipelineOp) error {
+		wireOps = append(wireOps, len(ops))
+		for i := range ops {
+			ops[i].RowCount = 1
+			if ops[i].OnDone != nil {
+				ops[i].OnDone(1, nil)
+			}
+		}
 		return nil
 	}
 	db, cache := noopTestDB(t, cfg)
+	sent := func() int64 {
+		return cfg.beginCalls.Load() + cfg.execCalls.Load() + cfg.queryCalls.Load() + cfg.wireTxCalls.Load() + cfg.wireCalls.Load()
+	}
 
+	// Only asserted no-ops: nothing at all reaches the driver.
 	p := NewPipeline(context.Background(), db, cache, nil, true, DialectDollar)
-	p.QueueExecNoop().AssertRows(0)
+	only := p.QueueExecNoop()
+	only.AssertRows(0)
 	if err := p.Flush(); err != nil {
 		t.Fatalf("assertion of 0 rows over a no-op: %v", err)
 	}
+	if n := sent(); n != 0 {
+		t.Fatalf("a pipeline of asserted no-ops used the driver %d times, want 0", n)
+	}
+	if n, err := only.RowsAffected(); err != nil || n != 0 {
+		t.Fatalf("no-op future: %d, %v", n, err)
+	}
 
+	// With a real operation: one wire round trip carrying only the real operation.
+	p = NewPipeline(context.Background(), db, cache, nil, true, DialectDollar)
+	real := queueTestExec(p)
+	p.QueueExecNoop().AssertRows(0)
+	if err := p.Flush(); err != nil {
+		t.Fatal(err)
+	}
+	if len(wireOps) != 1 || wireOps[0] != 1 || cfg.beginCalls.Load() != 0 {
+		t.Fatalf("wire batches %v, begin=%d; want one wire round trip of the real operation", wireOps, cfg.beginCalls.Load())
+	}
+	if n, err := real.RowsAffected(); err != nil || n != 1 {
+		t.Fatalf("real op: %d, %v", n, err)
+	}
+	if st := cache.Stats(); st.WirePipelines != 1 || st.SequentialPipelines != 0 {
+		t.Fatalf("stats = %+v, want one wire pipeline", st)
+	}
+
+	// A failing assertion: the same error the sequential path returns, nothing sent.
+	before := sent()
 	p = NewPipeline(context.Background(), db, cache, nil, true, DialectDollar)
 	queueTestExec(p)
 	p.QueueExecNoop().AssertFound()
 	err := p.Flush()
 	var ae *AssertionError
-	if !errors.As(err, &ae) || !errors.Is(err, ErrAssertionFailed) || ae.Got != 0 || ae.Want != 1 {
+	if !errors.As(err, &ae) || !errors.Is(err, ErrAssertionFailed) || ae.Got != 0 || ae.Want != 1 || !ae.GotKnown {
 		t.Fatalf("err = %v, want an assertion error (wanted 1, got 0)", err)
 	}
-	if cfg.commitCalls.Load() != 1 || cfg.rollbackCalls.Load() != 1 {
-		t.Fatalf("commit/rollback = %d/%d, want the first pipeline committed and the failed one rolled back", cfg.commitCalls.Load(), cfg.rollbackCalls.Load())
+	if n := sent() - before; n != 0 {
+		t.Fatalf("a failing no-op assertion used the driver %d times, want 0", n)
+	}
+
+	// Inside an If branch: sequential path (the assertion holds only if the branch is taken).
+	before = sent()
+	p = NewPipeline(context.Background(), db, cache, nil, true, DialectDollar)
+	gate := queueTestExec(p)
+	p.If(gate.Found(), func() { p.QueueExecNoop().AssertRows(0) }, nil)
+	if err := p.Flush(); err != nil {
+		t.Fatal(err)
+	}
+	if len(wireOps) != 1 || cfg.beginCalls.Load() != 1 || sent()-before < 2 {
+		t.Fatalf("wire batches %v, begin=%d: want the gated assertion on the sequential path", wireOps, cfg.beginCalls.Load())
+	}
+	if cfg.rollbackCalls.Load() != 0 {
+		t.Fatalf("rollbacks = %d, want none", cfg.rollbackCalls.Load())
 	}
 }
 

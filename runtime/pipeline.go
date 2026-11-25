@@ -999,15 +999,32 @@ func (p *Pipeline) wireOps() (ops []PipelineOp, restore func()) {
 
 // prepareNoOps decides how a pipeline with NoOp operations runs. done is true when nothing is left to
 // send, so the operations are resolved without touching the database (no connection, no transaction).
-// A NoOp that something depends on (an assertion, a condition) makes the pipeline run on the sequential
-// path instead, which resolves it exactly like any other operation.
-func (p *Pipeline) prepareNoOps() (done bool) {
+//
+// A NoOp's row count is known client-side (0), so an assertion on a NoOp outside any If branch is decided
+// here: a passing one is dropped (the NoOp becomes plain and the pipeline keeps its single round trip), a
+// failing one fails the pipeline before anything is sent (err, the same *AssertionError the sequential path
+// returns; nothing is committed either way). A NoOp that something else depends on (an assertion inside an
+// If branch, which applies only if the branch is taken, or a condition) makes the pipeline run on the
+// sequential path instead, which resolves it exactly like any other operation.
+func (p *Pipeline) prepareNoOps() (done bool, err error) {
 	if p.noOps == 0 {
-		return false
+		return false, nil
 	}
 	allPlain := true
 	for i := range p.ops {
 		op := &p.ops[i]
+		if op.NoOp && op.Decorators.AssertRows >= 0 && len(op.Input.BranchGates) == 0 {
+			if op.Decorators.AssertRows != 0 {
+				aerr := &AssertionError{Statement: op.stmtName(), Want: op.Decorators.AssertRows, Got: 0, GotKnown: true}
+				op.Err = aerr
+				*p.opPtrs[i] = *op
+				if op.OnDone != nil {
+					op.OnDone(0, aerr)
+				}
+				return false, aerr
+			}
+			op.Decorators.AssertRows = -1
+		}
 		if op.NoOp && !op.plainNoOp() {
 			p.noWire = true
 		}
@@ -1015,7 +1032,7 @@ func (p *Pipeline) prepareNoOps() (done bool) {
 			allPlain = false
 		}
 	}
-	return allPlain
+	return allPlain, nil
 }
 
 // QueueRow queues a single-row ("one") operation on p and returns its *RowFuture[T].
@@ -1423,7 +1440,9 @@ func (p *Pipeline) run() error {
 	if len(p.ops) == 0 {
 		return nil
 	}
-	if p.prepareNoOps() {
+	if done, err := p.prepareNoOps(); err != nil {
+		return err
+	} else if done {
 		return p.executePipelineOps(p.ctx, true)
 	}
 	switch {

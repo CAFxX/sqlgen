@@ -11,6 +11,7 @@ import (
 	"database/sql"
 	"errors"
 	"os"
+	"sync/atomic"
 	"testing"
 
 	"github.com/CAFxX/sqlgen/integration/mdbq"
@@ -157,6 +158,20 @@ func TestRealEnginePGWireEmptyValuesInPipelines(t *testing.T) {
 				if after := wireStats(q.CacheStats()); after != before {
 					t.Errorf("only-empty pipeline (wire=%v tx=%v) was counted as a flush: %d -> %d", wire, tx, before, after)
 				}
+				checkAssertedEmpty(t, wdb, turns, wire, tx, func(tx, withReal bool, want int64) error {
+					build := func(p *pgq.Pipeline) {
+						if withReal {
+							p.AddScoreOne(0, 1)
+						}
+						p.InsertItems(nil).AssertRows(want)
+					}
+					if tx {
+						return q.PipelineTx(ctx, nil, func(p *pgq.Pipeline) error { build(p); return nil })
+					}
+					p := q.Pipeline(ctx)
+					build(p)
+					return p.Flush()
+				})
 			}
 			q.Close()
 		}
@@ -314,14 +329,43 @@ func TestRealEngineMySQLWireEmptyValuesInPipelines(t *testing.T) {
 			var stats func() runtime.CacheStats
 			var mixed func(tx bool) emptyOutcome
 			var only func(tx bool)
+			var asserted func(tx, withReal bool, want int64) error
 			if maria {
 				q := mdbq.New(wdb)
 				defer q.Close()
 				stats, mixed, only = q.CacheStats, func(tx bool) emptyOutcome { return mixedMaria(q, tx) }, func(tx bool) { onlyEmptyMaria(q, tx) }
+				asserted = func(tx, withReal bool, want int64) error {
+					build := func(p *mdbq.Pipeline) {
+						if withReal {
+							p.AddScoreOne(0, 1)
+						}
+						p.InsertItems(nil).AssertRows(want)
+					}
+					if tx {
+						return q.PipelineTx(ctx, nil, func(p *mdbq.Pipeline) error { build(p); return nil })
+					}
+					p := q.Pipeline(ctx)
+					build(p)
+					return p.Flush()
+				}
 			} else {
 				q := myq.New(wdb)
 				defer q.Close()
 				stats, mixed, only = q.CacheStats, func(tx bool) emptyOutcome { return mixedMy(q, tx) }, func(tx bool) { onlyEmptyMy(q, tx) }
+				asserted = func(tx, withReal bool, want int64) error {
+					build := func(p *myq.Pipeline) {
+						if withReal {
+							p.AddScoreOne(0, 1)
+						}
+						p.InsertItems(nil).AssertRows(want)
+					}
+					if tx {
+						return q.PipelineTx(ctx, nil, func(p *myq.Pipeline) error { build(p); return nil })
+					}
+					p := q.Pipeline(ctx)
+					build(p)
+					return p.Flush()
+				}
 			}
 			for ti, tx := range []bool{true, false} {
 				mixed(tx)
@@ -339,6 +383,7 @@ func TestRealEngineMySQLWireEmptyValuesInPipelines(t *testing.T) {
 				if after := wireStats(stats()); after != before {
 					t.Errorf("only-empty pipeline (wire=%v tx=%v) was counted as a flush: %d -> %d", wire, tx, before, after)
 				}
+				checkAssertedEmpty(t, wdb, turns, wire, tx, asserted)
 			}
 		}
 		if results[0] != results[1] {
@@ -348,4 +393,28 @@ func TestRealEngineMySQLWireEmptyValuesInPipelines(t *testing.T) {
 			t.Errorf("INSERT INTO sg_items went over the wire %d times: an empty VALUES operation reached the driver", n)
 		}
 	})
+}
+
+// checkAssertedEmpty: an assertion over an empty (no-op) operation is decided client-side, its row count
+// being 0 (DOCS section 2.3). A passing one costs nothing (0 turns alone, the single wire turn with a real
+// operation), a failing one fails the pipeline before anything is sent (0 turns, nothing applied).
+func checkAssertedEmpty(t *testing.T, wdb *sql.DB, turns *atomic.Int64, wire, tx bool, run func(tx, withReal bool, want int64) error) {
+	t.Helper()
+	for _, c := range []struct {
+		withReal bool
+		want     int64
+	}{{false, 0}, {true, 0}, {false, 1}, {true, 1}} {
+		var err error
+		cost := measure(t, wdb, turns, func() { err = run(tx, c.withReal, c.want) })
+		if (c.want == 0) != (err == nil) || c.want != 0 && !errors.Is(err, runtime.ErrAssertionFailed) {
+			t.Errorf("asserted empty op (wire=%v tx=%v real=%v want=%d): err = %v", wire, tx, c.withReal, c.want, err)
+		}
+		wantCost := int64(0)
+		if c.withReal && c.want == 0 {
+			wantCost = 1
+		}
+		if (wire || wantCost == 0) && cost != wantCost {
+			t.Errorf("asserted empty op (wire=%v tx=%v real=%v want=%d) cost %d turns, want %d", wire, tx, c.withReal, c.want, cost, wantCost)
+		}
+	}
 }
