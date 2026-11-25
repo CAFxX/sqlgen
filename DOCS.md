@@ -19,7 +19,7 @@ Everything below is the whole surface; each item has one spelling and the sectio
   - `one`: `q.Name(ctx, ...) (Row, error)`. `many`: `q.Name(ctx, ...) ([]Row, error)` and `q.NameSeq(ctx, ...) iter.Seq2[Row, error]`; with a tuple slice also `NameStream` / `NameStreamSeq`.
   - every kind except `exec`: package-level `NameQuery(...) runtime.Query` (compose into `:sub:sqlgen.Query` slots); every non-`subquery` kind: `p.Name(...)` returning a future (`ExecFuture`, `RowFuture[T]`, `SliceFuture[T]`).
   - types and helpers: `Row` struct, `NameParams` (struct style), `NameCol<X>` / `NameColsAll` projection masks (trailing `selectCols ...uint64`, or a `SelectCols` field), and per statement with `sqlgen.Order`: `NameOrderBy<Col>.Asc()/.Desc()`, `OrderName(...)`, `SeekName(row)`.
-  - on every `*Queries`: `WithTx(tx)`, `InTx(ctx, opts, fn, ...runtime.TxOption)`, `Pipeline(ctx)`, `PipelineTx(ctx, opts, fn, ...)`, `WithPrepared(bool)`, `Cache()`, `CacheStats()`, `Close()`; package-level `New(db, ...runtime.CacheOption)`.
+  - on every `*Queries`: `WithTx(tx)`, `InTx(ctx, opts, fn, ...runtime.TxOption)`, `Pipeline(ctx)`, `PipelineTx(ctx, opts, fn, ...)`, `WithPrepared(bool)`, `CacheStats()`, `Close()`; package-level `New(db, ...runtime.CacheOption)`.
 - **Runtime user API** (import `github.com/CAFxX/sqlgen/runtime`; the generated file declares no aliases):
   - reading: `Collect`, `AppendTo`, `Each` (+ `ErrStop`), `FromSlice`, `FromSeq`, `MapSeq2`.
   - values: `Query`, `Order`, `Seek`, `NewSeek`, `OrCols`.
@@ -917,7 +917,7 @@ Every generated file declares the same fixed set of exported top-level names in 
 
 The generated file never re-declares runtime symbols: everything user-facing from the runtime (`runtime.Query`, `runtime.Order`, `runtime.Seek`, `runtime.NewSeek`, `runtime.WithTxRetry`, `runtime.DefaultRetryPolicy`, `runtime.PipelineCond`, `runtime.ExecFuture`, `runtime.IfResult`, ...) is spelled `runtime.X` in application code, which imports `github.com/CAFxX/sqlgen/runtime` itself. For example `q.InTx(ctx, nil, fn, runtime.WithTxRetry(runtime.DefaultRetryPolicy()))` and `After: runtime.NewSeek(...)`.
 
-**Method names generated on `*Queries` and `*Pipeline`** that a statement name must avoid (`reservedStatementNames`): `Cache`, `CacheStats`, `Close`, `If`, `InTx`, `Pipeline`, `PipelineTx`, `WithPrepared`, `WithTx`, plus `SetBuildError`, `QueueExec`, `QueueExecNoop`, `Abort` and `Flush`, which the generated `Pipeline` inherits from `runtime.Pipeline`. A statement becomes a method with its own name on both `*Queries` and `*Pipeline`, so it must not shadow any of them.
+**Method names generated on `*Queries` and `*Pipeline`** that a statement name must avoid (`reservedStatementNames`): `CacheStats`, `Close`, `If`, `InTx`, `Pipeline`, `PipelineTx`, `WithPrepared`, `WithTx`, plus `SetBuildError`, `QueueExec`, `QueueExecNoop`, `Abort` and `Flush`, which the generated `Pipeline` inherits from `runtime.Pipeline`. A statement becomes a method with its own name on both `*Queries` and `*Pipeline`, so it must not shadow any of them.
 
 **What happens on a clash.** Generation fails with a clear error instead of emitting code that does not compile:
 
