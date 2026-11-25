@@ -98,7 +98,7 @@ var myBenchWorkloads = []myBenchWorkload{
 		return q.PipelineTx(ctx, nil, func(p *myq.Pipeline) error {
 			p.AddScoreOne(1, int64(i%8)+1).AssertRows(1)
 			get := p.GetItem(1).AssertFound()
-			p.If(get.Found(), func(p *myq.Pipeline) { p.GetItem(2); p.GetItem(3) }, func(p *myq.Pipeline) { p.GetItem(4) })
+			p.If(get.Found(), func(p *myq.Pipeline) { p.GetItem(2); p.GetItem(3) }).Else(func(p *myq.Pipeline) { p.GetItem(4) })
 			for k := 0; k < 5; k++ {
 				p.GetItem(int64((i+k)%8) + 1)
 			}

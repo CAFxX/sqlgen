@@ -1,7 +1,7 @@
 package integration
 
 // The single-round-trip pipeline path (pgxwire) must be observationally equivalent to the sequential
-// fallback: same final table state, same error kind, same IfResult.Taken() and the same future values,
+// fallback: same final table state, same error kind, same IfChain.Taken(i) of every arm and the same future values,
 // on every PostgreSQL-protocol engine and for every way of running a pipeline (PipelineTx, a standalone
 // Flush, and a Flush inside a user-managed transaction).
 
@@ -46,7 +46,7 @@ func openWire(t testing.TB, dsn string, wire bool) *sql.DB {
 type outcome struct {
 	Err    string
 	State  string    // every row, id-ordered
-	Taken  []bool    // IfResult.Taken() for each If queued by the scenario
+	Taken  []bool    // IfChain.Taken(i) of every arm of each If chain queued by the scenario
 	Report string    // values read from futures after a successful flush
 	Stats  [2]uint64 // WirePipelines, SequentialPipelines
 }
@@ -74,7 +74,7 @@ func snapshot(t *testing.T, db *sql.DB) string {
 // (called only after a successful flush).
 type scenario struct {
 	name  string
-	build func(p *pgq.Pipeline) (ifs []*runtime.IfResult, report func() string)
+	build func(p *pgq.Pipeline) (ifs []ifRes, report func() string)
 }
 
 var errStop = errors.New("scenario abort")
@@ -90,19 +90,55 @@ func fmtRow[T any](f *runtime.RowFuture[T]) string {
 }
 
 var wireScenarios = []scenario{
-	{"guarded transfer succeeds", func(p *pgq.Pipeline) ([]*runtime.IfResult, func() string) {
+	// If / ElseIf / Else chains: at most one arm runs, the first whose condition holds; an ElseIf condition
+	// may read an operation queued in an earlier arm (which then did not run); chains nest.
+	{"if chain: the second arm runs", func(p *pgq.Pipeline) ([]ifRes, func() string) {
+		hit, miss := p.GetItem(1), p.GetItem(999)
+		var inner ifRes
+		var inArm *runtime.RowFuture[pgq.Item]
+		r := p.If(miss.Found(), func(p *pgq.Pipeline) {
+			inArm = p.GetItem(2)
+			p.AddScoreOne(100, 1).AssertRows(1)
+		}).ElseIf(hit.WhereCol("score >= ?", 10), func(p *pgq.Pipeline) {
+			p.AddScoreOne(1, 1).AssertRows(1)
+			inner = p.If(hit.RowsGt(1), func(p *pgq.Pipeline) { p.AddScoreOne(1000, 2) }).
+				ElseIf(hit.Found(), func(p *pgq.Pipeline) { p.AddScoreOne(2, 2).AssertRows(1) }).
+				Else(func(p *pgq.Pipeline) { p.Abort(errFuzzAbort) })
+		}).ElseIf(hit.Found(), func(p *pgq.Pipeline) { // holds too, but an earlier arm ran
+			p.AddScoreOne(10000, 3)
+		}).Else(func(p *pgq.Pipeline) { p.AddScoreOne(20000, 4) })
+		after := p.If(inArm.NotFound().Not(), func(p *pgq.Pipeline) { p.AddScoreOne(3, 4) }).
+			ElseIf(inArm.NotFound(), func(p *pgq.Pipeline) { p.AddScoreOne(4, 4) })
+		return []ifRes{r, inner, after}, func() string { return fmtRow(inArm) }
+	}},
+	{"if chain: no arm runs without an Else, and the Else arm runs", func(p *pgq.Pipeline) ([]ifRes, func() string) {
+		miss := p.GetItem(999)
+		r1 := p.If(miss.Found(), func(p *pgq.Pipeline) { p.AddScoreOne(1, 1) }).
+			ElseIf(miss.RowsGt(0), func(p *pgq.Pipeline) { p.AddScoreOne(2, 1) })
+		r2 := p.If(miss.Found(), nil).ElseIf(miss.RowsGe(2), nil).Else(func(p *pgq.Pipeline) { p.AddScoreOne(3, 2).AssertRows(1) })
+		return []ifRes{r1, r2}, nil
+	}},
+	{"if chain: an assertion in the running ElseIf arm fails the batch", func(p *pgq.Pipeline) ([]ifRes, func() string) {
+		hit := p.GetItem(1)
+		r := p.If(hit.NotFound(), nil).ElseIf(hit.Found(), func(p *pgq.Pipeline) {
+			p.AddScoreOne(1, 1).AssertRows(1)
+			p.AddScoreOne(1, 999).Label("in elseif").AssertRows(1)
+		})
+		return []ifRes{r}, nil
+	}},
+	{"guarded transfer succeeds", func(p *pgq.Pipeline) ([]ifRes, func() string) {
 		p.AddScoreOne(-5, 1).AssertRows(1)
 		p.AddScoreOne(5, 2).AssertRows(1)
 		return nil, nil
 	}},
-	{"failed assertion rolls the whole batch back", func(p *pgq.Pipeline) ([]*runtime.IfResult, func() string) {
+	{"failed assertion rolls the whole batch back", func(p *pgq.Pipeline) ([]ifRes, func() string) {
 		p.AddScoreOne(-5, 1).AssertRows(1)
 		p.AddScoreOne(5, 999).Label("line 2").AssertRows(1) // no such row: operation 1, labelled
 		return nil, nil
 	}},
 	// The futures of the operations before a failed assertion stay readable after the failure, and say the
 	// same thing on both paths; the operations after it never ran.
-	{"futures around a failed assertion", func(p *pgq.Pipeline) ([]*runtime.IfResult, func() string) {
+	{"futures around a failed assertion", func(p *pgq.Pipeline) ([]ifRes, func() string) {
 		g := p.GetItem(1)
 		u := p.AddScoreOne(5, 2)
 		s := p.ItemsByIDs([]int64{1, 2})
@@ -113,167 +149,154 @@ var wireScenarios = []scenario{
 			return fmtRow(g) + " " + fmt.Sprintf("%d|%v", n, uerr) + " " + fmtSlice(s) + " " + fmtRow(after)
 		}
 	}},
-	{"AssertFound on a row-returning op that finds the row", func(p *pgq.Pipeline) ([]*runtime.IfResult, func() string) {
+	{"AssertFound on a row-returning op that finds the row", func(p *pgq.Pipeline) ([]ifRes, func() string) {
 		g := p.GetItem(1).AssertFound()
 		p.AddScoreOne(1, 1).AssertRows(1)
 		return nil, func() string { return fmtRow(g) }
 	}},
-	{"AssertFound on a row-returning op that finds nothing", func(p *pgq.Pipeline) ([]*runtime.IfResult, func() string) {
+	{"AssertFound on a row-returning op that finds nothing", func(p *pgq.Pipeline) ([]ifRes, func() string) {
 		p.AddScoreOne(1, 1).AssertRows(1)
 		p.GetItem(999).AssertFound() // must fire even though the op returns zero rows
 		return nil, nil
 	}},
-	{"assertion on a many-op row count", func(p *pgq.Pipeline) ([]*runtime.IfResult, func() string) {
+	{"assertion on a many-op row count", func(p *pgq.Pipeline) ([]ifRes, func() string) {
 		p.AddScoreOne(1, 1)
 		p.ItemsByIDs([]int64{1, 2}).AssertRows(3)
 		return nil, nil
 	}},
-	{"zero-row assertion", func(p *pgq.Pipeline) ([]*runtime.IfResult, func() string) {
+	{"zero-row assertion", func(p *pgq.Pipeline) ([]ifRes, func() string) {
 		p.AddScoreOne(1, 999).AssertRows(0)
 		p.DeleteItems([]int64{998, 999}).AssertRows(0)
 		return nil, nil
 	}},
-	{"if: row found -> then branch", func(p *pgq.Pipeline) ([]*runtime.IfResult, func() string) {
+	{"if: row found -> then branch", func(p *pgq.Pipeline) ([]ifRes, func() string) {
 		get := p.GetItem(1)
-		return []*runtime.IfResult{p.If(get.Found(),
-			func(p *pgq.Pipeline) { p.AddScoreOne(100, 2).AssertRows(1) },
-			func(p *pgq.Pipeline) { p.AddScoreOne(7, 3).AssertRows(1) })}, nil
+		return []ifRes{p.If(get.Found(),
+			func(p *pgq.Pipeline) { p.AddScoreOne(100, 2).AssertRows(1) }).Else(func(p *pgq.Pipeline) { p.AddScoreOne(7, 3).AssertRows(1) })}, nil
 	}},
-	{"if: row missing -> else branch", func(p *pgq.Pipeline) ([]*runtime.IfResult, func() string) {
+	{"if: row missing -> else branch", func(p *pgq.Pipeline) ([]ifRes, func() string) {
 		get := p.GetItem(12345)
-		return []*runtime.IfResult{p.If(get.Found(),
-			func(p *pgq.Pipeline) { p.AddScoreOne(100, 2).AssertRows(1) },
-			func(p *pgq.Pipeline) { p.AddScoreOne(7, 3).AssertRows(1) })}, nil
+		return []ifRes{p.If(get.Found(),
+			func(p *pgq.Pipeline) { p.AddScoreOne(100, 2).AssertRows(1) }).Else(func(p *pgq.Pipeline) { p.AddScoreOne(7, 3).AssertRows(1) })}, nil
 	}},
-	{"if: unguarded else delete", func(p *pgq.Pipeline) ([]*runtime.IfResult, func() string) {
+	{"if: unguarded else delete", func(p *pgq.Pipeline) ([]ifRes, func() string) {
 		get := p.GetItem(12345)
-		return []*runtime.IfResult{p.If(get.Found(),
-			func(p *pgq.Pipeline) { p.DeleteItems([]int64{1}) },
-			func(p *pgq.Pipeline) { p.DeleteItems([]int64{4}) })}, nil
+		return []ifRes{p.If(get.Found(),
+			func(p *pgq.Pipeline) { p.DeleteItems([]int64{1}) }).Else(func(p *pgq.Pipeline) { p.DeleteItems([]int64{4}) })}, nil
 	}},
-	{"WhereCol predicate true -> then", func(p *pgq.Pipeline) ([]*runtime.IfResult, func() string) {
+	{"WhereCol predicate true -> then", func(p *pgq.Pipeline) ([]ifRes, func() string) {
 		get := p.GetItem(2) // score 20
-		return []*runtime.IfResult{p.If(get.WhereCol("score >= 20"),
-			func(p *pgq.Pipeline) { p.AddScoreOne(1, 2).AssertRows(1) },
-			func(p *pgq.Pipeline) { p.AddScoreOne(2, 3).AssertRows(1) })}, nil
+		return []ifRes{p.If(get.WhereCol("score >= 20"),
+			func(p *pgq.Pipeline) { p.AddScoreOne(1, 2).AssertRows(1) }).Else(func(p *pgq.Pipeline) { p.AddScoreOne(2, 3).AssertRows(1) })}, nil
 	}},
-	{"WhereCol predicate false -> else", func(p *pgq.Pipeline) ([]*runtime.IfResult, func() string) {
+	{"WhereCol predicate false -> else", func(p *pgq.Pipeline) ([]ifRes, func() string) {
 		get := p.GetItem(2)
-		return []*runtime.IfResult{p.If(get.WhereCol("score >= 21"),
-			func(p *pgq.Pipeline) { p.AddScoreOne(1, 2).AssertRows(1) },
-			func(p *pgq.Pipeline) { p.AddScoreOne(2, 3).AssertRows(1) })}, nil
+		return []ifRes{p.If(get.WhereCol("score >= 21"),
+			func(p *pgq.Pipeline) { p.AddScoreOne(1, 2).AssertRows(1) }).Else(func(p *pgq.Pipeline) { p.AddScoreOne(2, 3).AssertRows(1) })}, nil
 	}},
-	{"gated single-row insert (then) / multi-row insert (else)", func(p *pgq.Pipeline) ([]*runtime.IfResult, func() string) {
+	{"gated single-row insert (then) / multi-row insert (else)", func(p *pgq.Pipeline) ([]ifRes, func() string) {
 		get := p.GetItem(1)
-		return []*runtime.IfResult{p.If(get.Found(),
-			func(p *pgq.Pipeline) { p.InsertItem(50, 9, "then-row", 5, "new").AssertRows(1) },
-			func(p *pgq.Pipeline) {
-				p.InsertItems([]pgq.NewItem{{ID: 60, OrgID: 9, Name: "else-a"}, {ID: 61, OrgID: 9, Name: "else-b"}})
-			})}, nil
+		return []ifRes{p.If(get.Found(),
+			func(p *pgq.Pipeline) { p.InsertItem(50, 9, "then-row", 5, "new").AssertRows(1) }).Else(func(p *pgq.Pipeline) {
+			p.InsertItems([]pgq.NewItem{{ID: 60, OrgID: 9, Name: "else-a"}, {ID: 61, OrgID: 9, Name: "else-b"}})
+		})}, nil
 	}},
-	{"gated multi-row insert runs when the else branch is taken", func(p *pgq.Pipeline) ([]*runtime.IfResult, func() string) {
+	{"gated multi-row insert runs when the else branch is taken", func(p *pgq.Pipeline) ([]ifRes, func() string) {
 		get := p.GetItem(777)
-		return []*runtime.IfResult{p.If(get.Found(),
-			func(p *pgq.Pipeline) { p.InsertItem(50, 9, "then-row", 5, "new").AssertRows(1) },
-			func(p *pgq.Pipeline) {
-				p.InsertItems([]pgq.NewItem{{ID: 61, OrgID: 9, Name: "else-b", Status: "x"}, {ID: 60, OrgID: 9, Name: "else-a", Status: "x"}})
-			})}, nil
+		return []ifRes{p.If(get.Found(),
+			func(p *pgq.Pipeline) { p.InsertItem(50, 9, "then-row", 5, "new").AssertRows(1) }).Else(func(p *pgq.Pipeline) {
+			p.InsertItems([]pgq.NewItem{{ID: 61, OrgID: 9, Name: "else-b", Status: "x"}, {ID: 60, OrgID: 9, Name: "else-a", Status: "x"}})
+		})}, nil
 	}},
-	{"gated UPDATE without WHERE", func(p *pgq.Pipeline) ([]*runtime.IfResult, func() string) {
+	{"gated UPDATE without WHERE", func(p *pgq.Pipeline) ([]ifRes, func() string) {
 		get := p.GetItem(1)
-		return []*runtime.IfResult{p.If(get.Found(),
-			func(p *pgq.Pipeline) { p.SetAllStatus("then") },
-			func(p *pgq.Pipeline) { p.SetAllStatus("else") })}, nil
+		return []ifRes{p.If(get.Found(),
+			func(p *pgq.Pipeline) { p.SetAllStatus("then") }).Else(func(p *pgq.Pipeline) { p.SetAllStatus("else") })}, nil
 	}},
-	{"abort in the taken branch rolls everything back", func(p *pgq.Pipeline) ([]*runtime.IfResult, func() string) {
+	{"abort in the taken branch rolls everything back", func(p *pgq.Pipeline) ([]ifRes, func() string) {
 		p.AddScoreOne(1, 1).AssertRows(1)
 		get := p.GetItem(1)
-		return []*runtime.IfResult{p.If(get.Found(),
-			func(p *pgq.Pipeline) { p.Abort(errStop) }, nil)}, nil
-	}},
-	{"abort in the branch NOT taken is inert", func(p *pgq.Pipeline) ([]*runtime.IfResult, func() string) {
-		p.AddScoreOne(1, 1).AssertRows(1)
-		get := p.GetItem(1)
-		return []*runtime.IfResult{p.If(get.Found(), nil,
+		return []ifRes{p.If(get.Found(),
 			func(p *pgq.Pipeline) { p.Abort(errStop) })}, nil
 	}},
-	{"nested if", func(p *pgq.Pipeline) ([]*runtime.IfResult, func() string) {
+	{"abort in the branch NOT taken is inert", func(p *pgq.Pipeline) ([]ifRes, func() string) {
+		p.AddScoreOne(1, 1).AssertRows(1)
+		get := p.GetItem(1)
+		return []ifRes{p.If(get.Found(), nil).Else(func(p *pgq.Pipeline) { p.Abort(errStop) })}, nil
+	}},
+	{"nested if", func(p *pgq.Pipeline) ([]ifRes, func() string) {
 		outer := p.GetItem(1)
-		var inner *runtime.IfResult
+		var inner *runtime.IfChain[*pgq.Pipeline]
 		o := p.If(outer.Found(), func(p *pgq.Pipeline) {
 			g2 := p.GetItem(12345)
 			inner = p.If(g2.Found(),
-				func(p *pgq.Pipeline) { p.AddScoreOne(1000, 1) },
-				func(p *pgq.Pipeline) { p.AddScoreOne(5, 4).AssertRows(1) })
-		}, func(p *pgq.Pipeline) { p.AddScoreOne(2000, 1) })
-		return []*runtime.IfResult{o, inner}, nil
+				func(p *pgq.Pipeline) { p.AddScoreOne(1000, 1) }).Else(func(p *pgq.Pipeline) { p.AddScoreOne(5, 4).AssertRows(1) })
+		}).Else(func(p *pgq.Pipeline) { p.AddScoreOne(2000, 1) })
+		return []ifRes{o, inner}, nil
 	}},
-	{"two conditions on one future", func(p *pgq.Pipeline) ([]*runtime.IfResult, func() string) {
+	{"two conditions on one future", func(p *pgq.Pipeline) ([]ifRes, func() string) {
 		get := p.GetItem(1)
-		i1 := p.If(get.Found(), func(p *pgq.Pipeline) { p.AddScoreOne(1, 2) }, nil)
+		i1 := p.If(get.Found(), func(p *pgq.Pipeline) { p.AddScoreOne(1, 2) })
 		i2 := p.If(get.NotFound(),
-			func(p *pgq.Pipeline) { p.AddScoreOne(1000, 3) },
-			func(p *pgq.Pipeline) { p.AddScoreOne(7, 4) })
-		return []*runtime.IfResult{i1, i2}, nil
+			func(p *pgq.Pipeline) { p.AddScoreOne(1000, 3) }).Else(func(p *pgq.Pipeline) { p.AddScoreOne(7, 4) })
+		return []ifRes{i1, i2}, nil
 	}},
-	{"server error in the middle of the batch (duplicate key)", func(p *pgq.Pipeline) ([]*runtime.IfResult, func() string) {
+	{"server error in the middle of the batch (duplicate key)", func(p *pgq.Pipeline) ([]ifRes, func() string) {
 		p.AddScoreOne(1, 1).AssertRows(1)
 		p.InsertItem(2, 1, "dup", 0, "x")
 		p.AddScoreOne(1, 3)
 		return nil, nil
 	}},
-	{"RETURNING op feeds a condition", func(p *pgq.Pipeline) ([]*runtime.IfResult, func() string) {
+	{"RETURNING op feeds a condition", func(p *pgq.Pipeline) ([]ifRes, func() string) {
 		b := p.BumpScoresReturning(5, []int64{1, 2})
 		r := p.If(b.RowsEq(2),
-			func(p *pgq.Pipeline) { p.AddScoreOne(1, 3) },
-			func(p *pgq.Pipeline) { p.AddScoreOne(1, 4) })
+			func(p *pgq.Pipeline) { p.AddScoreOne(1, 3) }).Else(func(p *pgq.Pipeline) { p.AddScoreOne(1, 4) })
 		// UPDATE ... RETURNING returns its rows in no particular order (it varies with the physical row
 		// order): compare them as a set
-		return []*runtime.IfResult{r}, func() string {
+		return []ifRes{r}, func() string {
 			v, err := b.Get()
 			slices.SortFunc(v, func(x, y pgq.Written) int { return cmp.Compare(x.ID, y.ID) })
 			return fmt.Sprintf("%v|%v", v, err)
 		}
 	}},
-	{"reads return the same values", func(p *pgq.Pipeline) ([]*runtime.IfResult, func() string) {
+	{"reads return the same values", func(p *pgq.Pipeline) ([]ifRes, func() string) {
 		g := p.GetItem(2)
 		missing := p.GetItem(404)
 		many := p.ItemsByIDs([]int64{3, 1, 2})
 		return nil, func() string { return fmtRow(g) + "#" + fmtRow(missing) + "#" + fmtSlice(many) }
 	}},
-	{"gated RETURNING upsert in the else branch", func(p *pgq.Pipeline) ([]*runtime.IfResult, func() string) {
+	{"gated RETURNING upsert in the else branch", func(p *pgq.Pipeline) ([]ifRes, func() string) {
 		get := p.GetItem(999)
 		var up *runtime.SliceFuture[pgq.Written]
 		var bump *runtime.SliceFuture[pgq.Written]
 		r := p.If(get.Found(),
-			func(p *pgq.Pipeline) { bump = p.BumpScoresReturning(1, []int64{1}) },
-			func(p *pgq.Pipeline) {
-				up = p.UpsertItemsReturning([]pgq.NewItem{{ID: 1, OrgID: 1, Name: "u", Score: 5, Status: "x"}, {ID: 70, OrgID: 2, Name: "v", Score: 6, Status: "y"}})
-			})
-		return []*runtime.IfResult{r}, func() string { return fmtSlice(up) + "#" + fmtSlice(bump) }
+			func(p *pgq.Pipeline) { bump = p.BumpScoresReturning(1, []int64{1}) }).Else(func(p *pgq.Pipeline) {
+			up = p.UpsertItemsReturning([]pgq.NewItem{{ID: 1, OrgID: 1, Name: "u", Score: 5, Status: "x"}, {ID: 70, OrgID: 2, Name: "v", Score: 6, Status: "y"}})
+		})
+		return []ifRes{r}, func() string { return fmtSlice(up) + "#" + fmtSlice(bump) }
 	}},
 }
 
 type runMode struct {
 	name string
-	run  func(ctx context.Context, db *sql.DB, q *pgq.Queries, sc scenario) (ifs []*runtime.IfResult, report func() string, err error)
+	run  func(ctx context.Context, db *sql.DB, q *pgq.Queries, sc scenario) (ifs []ifRes, report func() string, err error)
 }
 
 var runModes = []runMode{
-	{"PipelineTx", func(ctx context.Context, db *sql.DB, q *pgq.Queries, sc scenario) (ifs []*runtime.IfResult, report func() string, err error) {
+	{"PipelineTx", func(ctx context.Context, db *sql.DB, q *pgq.Queries, sc scenario) (ifs []ifRes, report func() string, err error) {
 		err = q.PipelineTx(ctx, nil, func(p *pgq.Pipeline) error {
 			ifs, report = sc.build(p)
 			return nil
 		})
 		return
 	}},
-	{"standalone Flush", func(ctx context.Context, db *sql.DB, q *pgq.Queries, sc scenario) (ifs []*runtime.IfResult, report func() string, err error) {
+	{"standalone Flush", func(ctx context.Context, db *sql.DB, q *pgq.Queries, sc scenario) (ifs []ifRes, report func() string, err error) {
 		p := q.Pipeline(ctx)
 		ifs, report = sc.build(p)
 		err = p.Flush()
 		return
 	}},
-	{"user-managed tx", func(ctx context.Context, db *sql.DB, q *pgq.Queries, sc scenario) (ifs []*runtime.IfResult, report func() string, err error) {
+	{"user-managed tx", func(ctx context.Context, db *sql.DB, q *pgq.Queries, sc scenario) (ifs []ifRes, report func() string, err error) {
 		tx, berr := db.BeginTx(ctx, nil)
 		if berr != nil {
 			return nil, nil, berr
@@ -329,7 +352,7 @@ func compareWireSeq(t *testing.T, db *sql.DB, dsn string, mode runMode, sc scena
 		o := outcome{State: snapshot(t, db), Err: errKind(err)}
 		for _, r := range ifs {
 			if r != nil {
-				o.Taken = append(o.Taken, r.Taken())
+				o.Taken = append(o.Taken, takenArms(r)...)
 			}
 		}
 		if report != nil { // also after a failure: the futures must agree then too

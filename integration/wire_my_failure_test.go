@@ -133,7 +133,7 @@ func TestRealEngineMySQLWireFailurePathsLeaveTheConnectionClean(t *testing.T) {
 				return q.PipelineTx(ctx, nil, func(p *myq.Pipeline) error {
 					p.AddScoreOne(1, 1)
 					g := p.GetItem(1)
-					p.If(g.Found(), func(p *myq.Pipeline) { p.Abort(stop) }, nil)
+					p.If(g.Found(), func(p *myq.Pipeline) { p.Abort(stop) })
 					return nil
 				})
 			}, func(err error) bool { return errors.Is(err, stop) }},
@@ -675,7 +675,7 @@ func myRunScenario(t *testing.T, admin *sql.DB, wdb *sql.DB, q *myq.Queries, mod
 	o := myScenarioOutcome{Err: myErrKind(err), State: mySnap(t, admin)}
 	for _, r := range ifs {
 		if r != nil {
-			o.Taken = append(o.Taken, r.Taken())
+			o.Taken = append(o.Taken, takenArms(r)...)
 		}
 	}
 	if err == nil && report != nil {
@@ -702,13 +702,13 @@ func TestRealEngineMySQLWireSessionVariablesDoNotLeakBetweenBatches(t *testing.T
 					p.AddScoreOne(1, int64(i%4)+1).AssertRows(1)
 				}
 				g := p.GetItem(1)
-				p.If(g.Found(), func(p *myq.Pipeline) { p.AddScoreOne(1, 2) }, func(p *myq.Pipeline) { p.AddScoreOne(1, 3) })
+				p.If(g.Found(), func(p *myq.Pipeline) { p.AddScoreOne(1, 2) }).Else(func(p *myq.Pipeline) { p.AddScoreOne(1, 3) })
 				p.AddScoreOne(1, 999).AssertRows(1)
 				p.AddScoreOne(1, 4)
 			},
 			func(p *myq.Pipeline) { // an Abort in a taken branch
 				g := p.GetItem(2)
-				p.If(g.Found(), func(p *myq.Pipeline) { p.AddScoreOne(1, 1); p.Abort(myErrStop) }, nil)
+				p.If(g.Found(), func(p *myq.Pipeline) { p.AddScoreOne(1, 1); p.Abort(myErrStop) })
 			},
 			func(p *myq.Pipeline) { // a duplicate key (DB error: @sqlgen_p points into the batch)
 				p.AddScoreOne(1, 1)
@@ -776,8 +776,8 @@ func myRandomScenario(r *rand.Rand) myScenario {
 			s.b = int64(5 + r.IntN(12)) // new ids, some collide with earlier inserts
 		}
 	}
-	return myScenario{fmt.Sprintf("random%v", specs), func(p *myq.Pipeline) ([]*runtime.IfResult, func() string) {
-		var ifs []*runtime.IfResult
+	return myScenario{fmt.Sprintf("random%v", specs), func(p *myq.Pipeline) ([]ifRes, func() string) {
+		var ifs []ifRes
 		var reads []func() string
 		for _, s := range specs {
 			switch s.kind {
@@ -799,8 +799,7 @@ func myRandomScenario(r *rand.Rand) myScenario {
 			case 3:
 				g := p.GetItem(s.b)
 				ifs = append(ifs, p.If(g.Found(),
-					func(p *myq.Pipeline) { p.AddScoreOne(1, s.b).AssertRows(1) },
-					func(p *myq.Pipeline) { p.AddScoreOne(2, s.c) }))
+					func(p *myq.Pipeline) { p.AddScoreOne(1, s.b).AssertRows(1) }).Else(func(p *myq.Pipeline) { p.AddScoreOne(2, s.c) }))
 				reads = append(reads, func() string { return myFmtRow(g) })
 			case 4:
 				g := p.ItemsByIDs([]int64{s.b, s.c})
@@ -813,7 +812,7 @@ func myRandomScenario(r *rand.Rand) myScenario {
 			case 6:
 				if s.assert {
 					g := p.GetItem(s.b)
-					ifs = append(ifs, p.If(g.NotFound(), func(p *myq.Pipeline) { p.Abort(myErrStop) }, func(p *myq.Pipeline) { p.SetAllStatus(s.status) }))
+					ifs = append(ifs, p.If(g.NotFound(), func(p *myq.Pipeline) { p.Abort(myErrStop) }).Else(func(p *myq.Pipeline) { p.SetAllStatus(s.status) }))
 				} else {
 					p.SetAllStatus(s.status)
 				}
@@ -861,7 +860,7 @@ func TestRealEngineMySQLWireRandomShapesMatchSequential(t *testing.T) {
 				o := myScenarioOutcome{Err: myErrKind(err), State: mySnap(t, db)}
 				for _, r := range ifs {
 					if r != nil {
-						o.Taken = append(o.Taken, r.Taken())
+						o.Taken = append(o.Taken, takenArms(r)...)
 					}
 				}
 				if err == nil && report != nil {
@@ -1010,8 +1009,7 @@ func TestRealEngineMySQLWireConcurrentPipelinesMatchTheModel(t *testing.T) {
 							// error 1020 once the read has established the snapshot.
 							gt := p.GetItem(xid(g, i-1))
 							p.If(gt.Found(),
-								func(p *myq.Pipeline) { p.AddScoreOne(1, xid(g, i-1)).AssertRows(1) },
-								func(p *myq.Pipeline) { p.AddScoreOne(1000, 1) })
+								func(p *myq.Pipeline) { p.AddScoreOne(1, xid(g, i-1)).AssertRows(1) }).Else(func(p *myq.Pipeline) { p.AddScoreOne(1000, 1) })
 						}
 						return nil
 					}, runtime.WithTxRetry(myRetryPolicy))

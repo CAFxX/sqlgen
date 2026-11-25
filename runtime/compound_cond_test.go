@@ -2,6 +2,7 @@ package runtime
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"testing"
 )
@@ -36,7 +37,7 @@ func compoundFixture(t *testing.T) (p *Pipeline, d *ExecFuture, g *RowFuture[int
 func TestCompoundConditionLeavesAreRecordedByTheirOwnOperation(t *testing.T) {
 	p, d, g, upd := compoundFixture(t)
 	cond := d.NotFound().And(g.Found())
-	r := p.If(cond, func() { p.QueueExec(3, upd, RenderInput{}, MakeVariantKey(3, 0, 0, 0), nil, nil, nil) }, nil)
+	r := p.If(cond, func(p *Pipeline) { p.QueueExec(3, upd, RenderInput{}, MakeVariantKey(3, 0, 0, 0), nil, nil, nil) })
 	_ = r
 	p.syncOpsFromPtrs()
 	renderPipelineBatch(DialectDollar, nil, p.ops)
@@ -73,16 +74,14 @@ func TestCompoundConditionLeavesAreRecordedByTheirOwnOperation(t *testing.T) {
 
 func TestCompoundConditionBindingShapes(t *testing.T) {
 	p, d, g, upd := compoundFixture(t)
-	queueUpd := func() { p.QueueExec(3, upd, RenderInput{}, MakeVariantKey(3, 0, 0, 0), nil, nil, nil) }
+	queueUpd := func(p *Pipeline) { p.QueueExec(3, upd, RenderInput{}, MakeVariantKey(3, 0, 0, 0), nil, nil, nil) }
 
 	// equal leaves of one operation share a record; different ones do not
-	p.If(d.NotFound().And(g.Found()), queueUpd, nil)
-	p.If(d.NotFound().Or(g.NotFound()), queueUpd, nil)
-	p.If(d.RowsEq(3).Or(g.Found()), queueUpd, nil)
+	p.If(d.NotFound().And(g.Found()), queueUpd)
+	p.If(d.NotFound().Or(g.NotFound()), queueUpd)
+	p.If(d.RowsEq(3).Or(g.Found()), queueUpd)
 	// a WhereCol with a different predicate is a different leaf
-	p.If(g.WhereCol("id > 1").And(d.Found()).Not(), queueUpd, nil)
-	// a leaf without an operation is FALSE, as in Go
-	p.If((*RowFuture[int64])(nil).WhereCol("id > 1").Or(g.Found()), queueUpd, nil)
+	p.If(g.WhereCol("id > 1").And(d.Found()).Not(), queueUpd)
 	p.syncOpsFromPtrs()
 	renderPipelineBatch(DialectDollar, nil, p.ops)
 
@@ -94,12 +93,11 @@ func TestCompoundConditionBindingShapes(t *testing.T) {
 		t.Fatalf("the latest operation records %d leaves, want none", n)
 	}
 	if !strings.Contains(get.SQL, "NOT ((COUNT(*) > 0 AND MIN(_sqlgen_wc1) = 1 AND COALESCE(current_setting('sqlgen.l") ||
-		!strings.Contains(get.SQL, "(FALSE OR COUNT(*) > 0)") ||
 		!strings.Contains(get.SQL, "SELECT id , CASE WHEN (id > 1) THEN 1 ELSE 0 END AS _sqlgen_wc1 FROM t") {
 		t.Fatalf("unexpected condition SQL:\n%s", get.SQL)
 	}
-	if n := strings.Count(get.SQL, "set_config("); n != 5 {
-		t.Fatalf("%d recorded conditions on the latest operation, want 5:\n%s", n, get.SQL)
+	if n := strings.Count(get.SQL, "set_config("); n != 4 {
+		t.Fatalf("%d recorded conditions on the latest operation, want 4:\n%s", n, get.SQL)
 	}
 	for i, op := range p.ops[:2] {
 		if est := estimateOpBytes(op.Desc, &op.Input, &op.Decorators); est < len(op.SQL) {
@@ -128,5 +126,27 @@ func TestConditionLeavesOfGatedOperationsAreFalseWhenTheOperationDidNotRun(t *te
 	got = renderPipelineOp(t, DialectDollar, sel, RenderInput{}, dec)
 	if !strings.Contains(got, "CASE WHEN (COUNT(*) = 0) THEN 'true'") || strings.Contains(got, "ELSE FALSE END") {
 		t.Errorf("ungated condition changed:\n%s", got)
+	}
+}
+
+// A condition with a leaf that has no operation (a zero PipelineCond, a nil future's) or whose operation
+// belongs to another pipeline is not silently false: it fails the pipeline with ErrInvalidArgument.
+func TestIfRejectsConditionsWithoutAnOperationOfThePipeline(t *testing.T) {
+	for name, mk := range map[string]func(p, other *Pipeline, g *RowFuture[int64]) PipelineCond{
+		"zero": func(_, _ *Pipeline, _ *RowFuture[int64]) PipelineCond { return PipelineCond{} },
+		"nil future": func(_, _ *Pipeline, g *RowFuture[int64]) PipelineCond {
+			return (*RowFuture[int64])(nil).WhereCol("id > 1").Or(g.Found())
+		},
+		"zero operand": func(_, _ *Pipeline, g *RowFuture[int64]) PipelineCond { return g.Found().And(PipelineCond{}).Not() },
+		"other pipeline": func(_, other *Pipeline, g *RowFuture[int64]) PipelineCond {
+			return g.Found().Or(queueTestExec(other).Found())
+		},
+	} {
+		p, _, g, _ := compoundFixture(t)
+		other, _, _, _ := compoundFixture(t)
+		p.If(mk(p, other, g), nil)
+		if err := p.Flush(); !errors.Is(err, ErrInvalidArgument) {
+			t.Errorf("%s: Flush = %v", name, err)
+		}
 	}
 }

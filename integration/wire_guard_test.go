@@ -74,17 +74,16 @@ func guardScenarios() []scenario {
 				for nconds := 0; nconds <= 3; nconds++ {
 					out = append(out, scenario{
 						name: fmt.Sprintf("%s id=%d assert=%d conds=%d", k.name, id, assert, nconds),
-						build: func(p *pgq.Pipeline) ([]*runtime.IfResult, func() string) {
+						build: func(p *pgq.Pipeline) ([]ifRes, func() string) {
 							p.AddScoreOne(1, 1)
 							op := k.queue(p, id)
 							if assert >= 0 {
 								op.assert(assert)
 							}
-							var ifs []*runtime.IfResult
+							var ifs []ifRes
 							for c := 0; c < nconds; c++ {
 								ifs = append(ifs, p.If(op.cond(c),
-									func(p *pgq.Pipeline) { p.AddScoreOne(10, int64(2+c)) },
-									func(p *pgq.Pipeline) { p.AddScoreOne(1000, int64(2+c)) }))
+									func(p *pgq.Pipeline) { p.AddScoreOne(10, int64(2+c)) }).Else(func(p *pgq.Pipeline) { p.AddScoreOne(1000, int64(2+c)) }))
 							}
 							// a statement after the guarded one: it must not run when the batch failed
 							p.DeleteItems([]int64{4})
@@ -118,47 +117,46 @@ func TestRealEnginePipelineGuardMatrix(t *testing.T) {
 // A genuine integer overflow (SQLSTATE 22003) raised by the caller's own statement must surface as the
 // database error, never as ErrAssertionFailed (the guards used to be recognised by 22003 alone).
 var overflowScenarios = []scenario{
-	{"overflowing update with an assertion", func(p *pgq.Pipeline) ([]*runtime.IfResult, func() string) {
+	{"overflowing update with an assertion", func(p *pgq.Pipeline) ([]ifRes, func() string) {
 		p.AddScoreOne(1, 1)
 		p.AddScoreOne(math.MaxInt64, 2).AssertRows(1) // 20 + MaxInt64 overflows
 		return nil, nil
 	}},
-	{"overflowing update without an assertion", func(p *pgq.Pipeline) ([]*runtime.IfResult, func() string) {
+	{"overflowing update without an assertion", func(p *pgq.Pipeline) ([]ifRes, func() string) {
 		p.AddScoreOne(math.MaxInt64, 2)
 		return nil, nil
 	}},
-	{"overflowing update with an assertion and a condition", func(p *pgq.Pipeline) ([]*runtime.IfResult, func() string) {
+	{"overflowing update with an assertion and a condition", func(p *pgq.Pipeline) ([]ifRes, func() string) {
 		u := p.AddScoreOne(math.MaxInt64, 2).AssertRows(1)
-		return []*runtime.IfResult{p.If(u.Found(), func(p *pgq.Pipeline) { p.AddScoreOne(1, 3) }, nil)}, nil
+		return []ifRes{p.If(u.Found(), func(p *pgq.Pipeline) { p.AddScoreOne(1, 3) })}, nil
 	}},
-	{"overflowing update in a taken branch", func(p *pgq.Pipeline) ([]*runtime.IfResult, func() string) {
+	{"overflowing update in a taken branch", func(p *pgq.Pipeline) ([]ifRes, func() string) {
 		g := p.GetItem(1)
-		return []*runtime.IfResult{p.If(g.Found(), func(p *pgq.Pipeline) { p.AddScoreOne(math.MaxInt64, 2).AssertRows(1) }, nil)}, nil
+		return []ifRes{p.If(g.Found(), func(p *pgq.Pipeline) { p.AddScoreOne(math.MaxInt64, 2).AssertRows(1) })}, nil
 	}},
-	{"overflowing update in a branch that is not taken", func(p *pgq.Pipeline) ([]*runtime.IfResult, func() string) {
+	{"overflowing update in a branch that is not taken", func(p *pgq.Pipeline) ([]ifRes, func() string) {
 		g := p.GetItem(404)
-		return []*runtime.IfResult{p.If(g.Found(), func(p *pgq.Pipeline) { p.AddScoreOne(math.MaxInt64, 2).AssertRows(1) },
-			func(p *pgq.Pipeline) { p.AddScoreOne(1, 2).AssertRows(1) })}, nil
+		return []ifRes{p.If(g.Found(), func(p *pgq.Pipeline) { p.AddScoreOne(math.MaxInt64, 2).AssertRows(1) }).Else(func(p *pgq.Pipeline) { p.AddScoreOne(1, 2).AssertRows(1) })}, nil
 	}},
-	{"overflow after a failed assertion never runs", func(p *pgq.Pipeline) ([]*runtime.IfResult, func() string) {
+	{"overflow after a failed assertion never runs", func(p *pgq.Pipeline) ([]ifRes, func() string) {
 		p.AddScoreOne(1, 999).AssertRows(1) // fails first
 		p.AddScoreOne(math.MaxInt64, 2)
 		return nil, nil
 	}},
-	{"abort after an overflow never runs", func(p *pgq.Pipeline) ([]*runtime.IfResult, func() string) {
+	{"abort after an overflow never runs", func(p *pgq.Pipeline) ([]ifRes, func() string) {
 		p.AddScoreOne(math.MaxInt64, 2).AssertRows(1)
 		p.Abort(errStop)
 		return nil, nil
 	}},
-	{"abort in a taken branch keeps its own error", func(p *pgq.Pipeline) ([]*runtime.IfResult, func() string) {
+	{"abort in a taken branch keeps its own error", func(p *pgq.Pipeline) ([]ifRes, func() string) {
 		g := p.GetItem(1)
-		return []*runtime.IfResult{p.If(g.Found(), func(p *pgq.Pipeline) { p.Abort(errStop) }, nil)}, nil
+		return []ifRes{p.If(g.Found(), func(p *pgq.Pipeline) { p.Abort(errStop) })}, nil
 	}},
-	{"failed assertion reports the actual count (many rows)", func(p *pgq.Pipeline) ([]*runtime.IfResult, func() string) {
+	{"failed assertion reports the actual count (many rows)", func(p *pgq.Pipeline) ([]ifRes, func() string) {
 		p.ItemsByIDs([]int64{1, 2, 3}).AssertRows(2)
 		return nil, nil
 	}},
-	{"failed assertion reports the actual count (zero rows)", func(p *pgq.Pipeline) ([]*runtime.IfResult, func() string) {
+	{"failed assertion reports the actual count (zero rows)", func(p *pgq.Pipeline) ([]ifRes, func() string) {
 		p.DeleteItems([]int64{98, 99}).AssertRows(2)
 		return nil, nil
 	}},

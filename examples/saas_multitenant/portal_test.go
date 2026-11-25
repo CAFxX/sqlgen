@@ -440,12 +440,12 @@ func TestSaaSMultitenantPortalEndToEnd(t *testing.T) {
 		f3 := p.AggregateCohortInvoices(cohortQ, invStatus)
 		p.If(f1.Found(), func(thenP *Pipeline) {
 			_ = thenP.ListMembersPaginated(ListMembersPaginatedParams{OrgID: 1, Sort: sortConfigs[0].order, Limit: 2})
-		}, func(elseP *Pipeline) {
+		}).Else(func(elseP *Pipeline) {
 			_ = elseP.SearchMembers(SearchMembersParams{OrgID: 1})
 		})
 		p.If(f1.NotFound(), func(thenP *Pipeline) {
 			_ = thenP.SearchMembers(SearchMembersParams{OrgID: 1})
-		}, func(elseP *Pipeline) {
+		}).Else(func(elseP *Pipeline) {
 			_ = elseP.ListMembersPaginated(ListMembersPaginatedParams{OrgID: 1, Sort: sortConfigs[0].order, Limit: 1})
 		})
 		_ = f2

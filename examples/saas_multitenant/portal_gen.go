@@ -90,17 +90,14 @@ func (q *Queries) PipelineTx(ctx context.Context, txOpts *sql.TxOptions, fn func
 	})
 }
 
-// If queues conditional thenFn and optional elseFn branches gated on cond.
-func (pl *Pipeline) If(cond runtime.PipelineCond, thenFn func(*Pipeline), elseFn func(*Pipeline)) *runtime.IfResult {
-	var tFn, eFn func()
-	if thenFn != nil {
-		tFn = func() { thenFn(pl) }
-	}
-	if elseFn != nil {
-		eFn = func() { elseFn(pl) }
-	}
-	return pl.Pipeline.If(cond, tFn, eFn)
+// If starts an If chain on pl: fn queues the arm's operations on the handle it receives, which runs
+// them only when cond holds. That handle can queue only while fn runs, and no other handle can meanwhile.
+// Add arms with ElseIf and Else (at most one arm runs); Taken(i) reports which one ran.
+func (pl *Pipeline) If(cond runtime.PipelineCond, fn func(*Pipeline)) *runtime.IfChain[*Pipeline] {
+	return runtime.If(pl.Pipeline, cond, fn, pl.arm)
 }
+
+func (pl *Pipeline) arm(h *runtime.Pipeline) *Pipeline { return &Pipeline{Pipeline: h, q: pl.q} }
 
 type MemberRow struct {
 	ID        int64

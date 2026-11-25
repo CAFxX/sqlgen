@@ -270,19 +270,19 @@ func TestIfElseAndAbortOverTheWire(t *testing.T) {
 	forEachEngine(t, func(t *testing.T, e testEngine, db, plain *sql.DB) {
 		k := newKVTable(t, db)
 		ctx := ctxT(t)
-		var thenRes, elseRes *runtime.IfResult
+		var thenRes, elseRes *runtime.IfChain[*runtime.Pipeline]
 		var skipped, taken *runtime.ExecFuture
 		err := k.tx(ctx, db, nil, nil, func(p *runtime.Pipeline) error {
 			hit, miss := k.Get(p, 1), k.Get(p, 99)
-			thenRes = p.If(hit.Found(), func() { taken = k.Upd(p, 1, 1) }, func() { skipped = k.Upd(p, 1000, 2) })
-			elseRes = p.If(miss.Found(), func() { k.Upd(p, 1000, 3) }, nil)
+			thenRes = ifp(p, hit.Found(), func(p *runtime.Pipeline) { taken = k.Upd(p, 1, 1) }).Else(func(p *runtime.Pipeline) { skipped = k.Upd(p, 1000, 2) })
+			elseRes = ifp(p, miss.Found(), func(p *runtime.Pipeline) { k.Upd(p, 1000, 3) })
 			return nil
 		})
 		if err != nil {
 			t.Fatal(err)
 		}
-		if !thenRes.Taken() || elseRes.Taken() {
-			t.Fatalf("taken = %v / %v", thenRes.Taken(), elseRes.Taken())
+		if !thenRes.Taken(0) || elseRes.Taken(0) {
+			t.Fatalf("taken = %v / %v", thenRes.Taken(0), elseRes.Taken(0))
 		}
 		if _, serr := skipped.Result(); !errors.Is(serr, runtime.ErrBranchNotTaken) {
 			t.Fatalf("untaken branch future: err = %v, want ErrBranchNotTaken", serr)
@@ -297,7 +297,7 @@ func TestIfElseAndAbortOverTheWire(t *testing.T) {
 		err = k.tx(ctx, db, nil, nil, func(p *runtime.Pipeline) error {
 			k.Upd(p, 100, 1)
 			hit := k.Get(p, 1)
-			p.If(hit.Found(), func() { p.Abort(stop) }, nil)
+			ifp(p, hit.Found(), func(p *runtime.Pipeline) { p.Abort(stop) })
 			k.Upd(p, 100, 2)
 			return nil
 		})
@@ -314,20 +314,20 @@ func TestIfElseAndAbortOverTheWire(t *testing.T) {
 func TestSeveralConditionsOverOneFuture(t *testing.T) {
 	forEachEngine(t, func(t *testing.T, e testEngine, db, plain *sql.DB) {
 		k := newKVTable(t, db)
-		var first, second, third *runtime.IfResult
+		var first, second, third *runtime.IfChain[*runtime.Pipeline]
 		var skipped *runtime.ExecFuture
 		err := k.tx(ctxT(t), db, nil, nil, func(p *runtime.Pipeline) error {
 			hit := k.Get(p, 1)
-			first = p.If(hit.Found(), func() { k.Upd(p, 1, 1) }, nil)
-			second = p.If(hit.NotFound(), func() { skipped = k.Upd(p, 1000, 2) }, func() { k.Upd(p, 7, 3) })
-			third = p.If(hit.RowsGe(1), func() { k.Upd(p, 3, 2) }, nil)
+			first = ifp(p, hit.Found(), func(p *runtime.Pipeline) { k.Upd(p, 1, 1) })
+			second = ifp(p, hit.NotFound(), func(p *runtime.Pipeline) { skipped = k.Upd(p, 1000, 2) }).Else(func(p *runtime.Pipeline) { k.Upd(p, 7, 3) })
+			third = ifp(p, hit.RowsGe(1), func(p *runtime.Pipeline) { k.Upd(p, 3, 2) })
 			return nil
 		})
 		if err != nil {
 			t.Fatal(err)
 		}
-		if _, serr := skipped.Result(); !first.Taken() || second.Taken() || !third.Taken() || !errors.Is(serr, runtime.ErrBranchNotTaken) {
-			t.Fatalf("taken = %v %v %v, skipped err = %v", first.Taken(), second.Taken(), third.Taken(), serr)
+		if _, serr := skipped.Result(); !first.Taken(0) || second.Taken(0) || !third.Taken(0) || !errors.Is(serr, runtime.ErrBranchNotTaken) {
+			t.Fatalf("taken = %v %v %v, skipped err = %v", first.Taken(0), second.Taken(0), third.Taken(0), serr)
 		}
 		sameRows(t, k.rows(t, plain), []row{{1, 11}, {2, 23}, {3, 37}})
 	})
@@ -466,7 +466,7 @@ func TestUserManagedTransactionSurvivesAGuardFailure(t *testing.T) {
 			{"abort", func(p *runtime.Pipeline) {
 				k.Upd(p, 1, 1).AssertRows(1)
 				g := k.Get(p, 1)
-				p.If(g.Found(), func() { p.Abort(abortErr) }, nil)
+				ifp(p, g.Found(), func(p *runtime.Pipeline) { p.Abort(abortErr) })
 				k.Upd(p, 1000, 3)
 			}, func(err error) bool { return errors.Is(err, abortErr) }, []row{{1, 11}, {2, 20}, {3, 130}}},
 		} {
@@ -697,4 +697,9 @@ func TestConnectorOptionsAndOpenDBErrors(t *testing.T) {
 		t.Fatal("stdlib options must be forwarded")
 	}
 	var _ driver.Connector = c
+}
+
+// ifp is the generated Pipeline.If for tests that queue on a *runtime.Pipeline directly.
+func ifp(p *runtime.Pipeline, cond runtime.PipelineCond, fn func(*runtime.Pipeline)) *runtime.IfChain[*runtime.Pipeline] {
+	return runtime.If(p, cond, fn, func(h *runtime.Pipeline) *runtime.Pipeline { return h })
 }

@@ -61,10 +61,16 @@ func (f fuzzFut) src() fuzzCondSrc {
 	return f.e
 }
 
+// fuzzIf is a generated If chain and its number of arms.
+type fuzzIf struct {
+	c    ifRes
+	arms int
+}
+
 type fuzzGen struct {
 	rnd   *rand.Rand
 	futs  []fuzzFut
-	ifs   []*runtime.IfResult
+	ifs   []fuzzIf
 	trace []string
 	// avail are the forwarded values a consumer queued here may use: those produced in this If branch or
 	// in an enclosing one (a value from a sibling branch is a build error by design, not fuzzed).
@@ -193,22 +199,29 @@ func (g *fuzzGen) gen(p *pgq.Pipeline, depth, n int) {
 			}
 			cond := g.cond()
 			g.tr(depth, "if (%d futures so far)", len(g.futs))
-			hasElse := g.rnd.IntN(2) == 0
 			mark := len(g.avail)
-			r := p.If(cond, func(p *pgq.Pipeline) {
-				g.gen(p, depth+1, 1+g.rnd.IntN(3))
-				g.avail = g.avail[:mark]
-			}, func() func(*pgq.Pipeline) {
-				if !hasElse {
-					return nil
-				}
+			arm := func(label string, n int) func(*pgq.Pipeline) {
 				return func(p *pgq.Pipeline) {
-					g.tr(depth, "else")
-					g.gen(p, depth+1, 1+g.rnd.IntN(2))
+					if label != "" {
+						g.tr(depth, "%s", label)
+					}
+					g.gen(p, depth+1, n)
 					g.avail = g.avail[:mark]
 				}
-			}())
-			g.ifs = append(g.ifs, r)
+			}
+			// a chain: If, up to two ElseIf (whose conditions may read the earlier arms' operations), an
+			// optional Else
+			c := p.If(cond, arm("", 1+g.rnd.IntN(3)))
+			arms := 1
+			for e := g.rnd.IntN(3); e > 0; e-- {
+				c.ElseIf(g.cond(), arm("elseif", 1+g.rnd.IntN(2)))
+				arms++
+			}
+			if g.rnd.IntN(2) == 0 {
+				c.Else(arm("else", 1+g.rnd.IntN(2)))
+				arms++
+			}
+			g.ifs = append(g.ifs, fuzzIf{c, arms})
 		case k == 9 && depth > 0:
 			g.tr(depth, "ABORT")
 			p.Abort(errFuzzAbort)
@@ -295,7 +308,11 @@ func (g *fuzzGen) describe(err error) string {
 	}
 	var sb strings.Builder
 	for _, r := range g.ifs {
-		fmt.Fprintf(&sb, "if(%v,%v)", r.Taken(), r.Skipped())
+		fmt.Fprintf(&sb, "if(")
+		for i := range r.arms {
+			fmt.Fprintf(&sb, "%v,", r.c.Taken(i))
+		}
+		fmt.Fprintf(&sb, "%v)", r.c.Skipped())
 	}
 	for _, f := range g.futs {
 		switch {

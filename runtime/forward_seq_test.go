@@ -79,10 +79,10 @@ func TestForwardSequentialRuntime(t *testing.T) {
 	// branch scope: nested is fine; outside or in the sibling branch is a build error
 	if err := run(func(p *Pipeline) error {
 		o := qRow(p, fwdGetOrder, "alice")
-		p.If(o.Found(), func() {
+		p.If(o.Found(), func(p *Pipeline) {
 			inner := qRow(p, fwdGetOrder, "alice")
-			p.If(inner.Found(), func() { fwdExec(p, fwdInsertLine, inner.Arg().Bind(), "nested", int64(1)) }, nil)
-		}, nil)
+			p.If(inner.Found(), func(p *Pipeline) { fwdExec(p, fwdInsertLine, inner.Arg().Bind(), "nested", int64(1)) })
+		})
 		return nil
 	}); err != nil || lines() != 2 {
 		t.Fatalf("nested: %v", err)
@@ -91,13 +91,13 @@ func TestForwardSequentialRuntime(t *testing.T) {
 		"outside": func(p *Pipeline) {
 			var a Arg[int64]
 			o := qRow(p, fwdGetOrder, "alice")
-			p.If(o.Found(), func() { a = qRow(p, fwdGetOrder, "alice").Arg() }, nil)
+			p.If(o.Found(), func(p *Pipeline) { a = qRow(p, fwdGetOrder, "alice").Arg() })
 			fwdExec(p, fwdInsertLine, a.Bind(), "x", int64(1))
 		},
 		"sibling": func(p *Pipeline) {
 			var a Arg[int64]
 			o := qRow(p, fwdGetOrder, "alice")
-			p.If(o.Found(), func() { a = qRow(p, fwdGetOrder, "alice").Arg() }, func() { fwdExec(p, fwdInsertLine, a.Bind(), "x", int64(1)) })
+			p.If(o.Found(), func(p *Pipeline) { a = qRow(p, fwdGetOrder, "alice").Arg() }).Else(func(p *Pipeline) { fwdExec(p, fwdInsertLine, a.Bind(), "x", int64(1)) })
 		},
 	} {
 		if err := run(func(p *Pipeline) error { fn(p); return nil }); !errors.Is(err, ErrInvalidArgument) {

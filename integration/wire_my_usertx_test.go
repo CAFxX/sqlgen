@@ -68,7 +68,7 @@ func myUserTxFlows() []myUserTxFlow {
 		{"Abort in a taken branch keeps the earlier work", func(p *myq.Pipeline) {
 			p.AddScoreOne(1, 1)
 			g := p.GetItem(1)
-			p.If(g.Found(), func(p *myq.Pipeline) { p.Abort(stop) }, nil)
+			p.If(g.Found(), func(p *myq.Pipeline) { p.Abort(stop) })
 			p.AddScoreOne(1000, 3)
 		}, func(err error) bool { return errors.Is(err, stop) }, myUserTxState(11, 20, 30, 40), ""},
 		{"duplicate key leaves the transaction open, earlier work kept", func(p *myq.Pipeline) {
@@ -93,7 +93,7 @@ func myUserTxFlows() []myUserTxFlow {
 		{"successful pipeline (control)", func(p *myq.Pipeline) {
 			p.AddScoreOne(1, 1).AssertRows(1)
 			g := p.GetItem(2)
-			p.If(g.Found(), func(p *myq.Pipeline) { p.AddScoreOne(2, 3).AssertRows(1) }, nil)
+			p.If(g.Found(), func(p *myq.Pipeline) { p.AddScoreOne(2, 3).AssertRows(1) })
 		}, nil, myUserTxState(11, 20, 32, 40), ""},
 	}
 }

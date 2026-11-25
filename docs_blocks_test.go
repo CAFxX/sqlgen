@@ -236,3 +236,50 @@ func TestDocsWhereColHasNoGoPredicate(t *testing.T) {
 		t.Fatal("no WhereCol call found in the documentation: the scan is broken")
 	}
 }
+
+// The pipeline If takes a condition and ONE closure; further arms are chained (.ElseIf / .Else) and Taken
+// takes the arm index. The documentation must not show the retired If(cond, thenFn, elseFn) or Taken().
+func TestDocsShowOnlyTheChainedIf(t *testing.T) {
+	n := 0
+	for _, f := range []string{"DOCS.md", "README.md", "SPEC.md"} {
+		raw, err := os.ReadFile(f)
+		if err != nil {
+			t.Fatal(err)
+		}
+		s := string(raw)
+		if i := strings.Index(s, ".Taken()"); i >= 0 {
+			t.Errorf("%s:%d shows Taken() without an arm index", f, strings.Count(s[:i], "\n")+1)
+		}
+		for off := 0; ; {
+			k := strings.Index(s[off:], ".If(")
+			if k < 0 {
+				break
+			}
+			i := off + k + len(".If")
+			off = i
+			n++
+			depth, commas := 0, 0
+			for j := i; j < len(s); j++ {
+				switch s[j] {
+				case '(', '{', '[':
+					depth++
+				case ')', '}', ']':
+					depth--
+				case ',':
+					if depth == 1 {
+						commas++
+					}
+				}
+				if depth == 0 {
+					break
+				}
+			}
+			if commas > 1 {
+				t.Errorf("%s:%d shows If with more than a condition and one closure", f, strings.Count(s[:i], "\n")+1)
+			}
+		}
+	}
+	if n == 0 {
+		t.Fatal("no .If( call found in the documentation: the scan is broken")
+	}
+}

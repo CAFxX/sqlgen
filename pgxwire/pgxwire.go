@@ -200,7 +200,7 @@ func (c *conn) exec(ctx context.Context, tx bool, txOpts *sql.TxOptions, ops []r
 		if op.Decorators.ProduceCond != nil {
 			// The condition was recorded server-side by set_config('sqlgen.c<ID>', ..., true). Read it back
 			// inside the same batch: later operations are gated on it by the server, and the Go side needs
-			// the value to resolve IfResult.Taken() and the skipped futures.
+			// the value to resolve IfResult.Taken(0) and the skipped futures.
 			batch.ExecParams(condSQL(op.Decorators.CondID), nil, nil, nil, nil)
 			refs = append(refs, stmtRef{role: roleCond, op: op})
 			for j := range op.ExtraConds {

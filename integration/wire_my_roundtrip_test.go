@@ -188,8 +188,7 @@ func myMixedN(n int) myWorkload {
 			}
 			get := p.GetItem(1).AssertFound()
 			p.If(get.Found(),
-				func(p *myq.Pipeline) { p.AddScoreOne(-1, 1).AssertRows(1) },
-				func(p *myq.Pipeline) { p.AddScoreOne(7, 3).AssertRows(1) })
+				func(p *myq.Pipeline) { p.AddScoreOne(-1, 1).AssertRows(1) }).Else(func(p *myq.Pipeline) { p.AddScoreOne(7, 3).AssertRows(1) })
 			p.ItemsByIDs([]int64{1, 2, 3})
 			return nil
 		})
@@ -291,11 +290,11 @@ func myTurnCases() []myTurnCase {
 	abort := func(p *myq.Pipeline) {
 		p.AddScoreOne(1, 1)
 		g := p.GetItem(1)
-		p.If(g.Found(), func(p *myq.Pipeline) { p.Abort(myErrAbortStop) }, nil)
+		p.If(g.Found(), func(p *myq.Pipeline) { p.Abort(myErrAbortStop) })
 	}
 	ok := func(p *myq.Pipeline) {
 		get := p.GetItem(1)
-		p.If(get.Found(), func(p *myq.Pipeline) { p.AddScoreOne(1, 2).AssertRows(1) }, nil)
+		p.If(get.Found(), func(p *myq.Pipeline) { p.AddScoreOne(1, 2).AssertRows(1) })
 	}
 	ptx := func(build func(*myq.Pipeline)) func(context.Context, *myq.Queries) error {
 		return func(ctx context.Context, q *myq.Queries) error {

@@ -84,7 +84,7 @@ func (s *LedgerService) Transfer(
 		return TransferResult{}, ErrSameAccount
 	}
 
-	var transferBranch *runtime.IfResult
+	var transferBranch *runtime.IfChain[*Pipeline]
 	err := s.q.PipelineTx(ctx, nil, func(p *Pipeline) error {
 		firstID, secondID := senderID, receiverID
 		if firstID > secondID {
@@ -110,20 +110,18 @@ func (s *LedgerService) Transfer(
 			eitherFrozenCond,
 			func(frozenP *Pipeline) {
 				frozenP.Abort(ErrAccountFrozen)
+			}).Else(func(activeP *Pipeline) {
+			transferBranch = activeP.If(
+				sufficientCond,
+				func(thenP *Pipeline) {
+					thenP.DebitAccount(amountCents, orgID, senderID).AssertRows(1)
+					thenP.CreditAccount(amountCents, orgID, receiverID).AssertRows(1)
+					thenP.InsertTransferReceipt(idempotencyKey, orgID, senderID, receiverID, amountCents).AssertRows(1)
+				}).Else(func(elseP *Pipeline) {
+				elseP.InsertAuditEvent(orgID, senderID, "rejected_insufficient_funds", amountCents).AssertRows(1)
 			},
-			func(activeP *Pipeline) {
-				transferBranch = activeP.If(
-					sufficientCond,
-					func(thenP *Pipeline) {
-						thenP.DebitAccount(amountCents, orgID, senderID).AssertRows(1)
-						thenP.CreditAccount(amountCents, orgID, receiverID).AssertRows(1)
-						thenP.InsertTransferReceipt(idempotencyKey, orgID, senderID, receiverID, amountCents).AssertRows(1)
-					},
-					func(elseP *Pipeline) {
-						elseP.InsertAuditEvent(orgID, senderID, "rejected_insufficient_funds", amountCents).AssertRows(1)
-					},
-				)
-			},
+			)
+		},
 		)
 		return nil
 	}, runtime.WithTxRetry(runtime.DefaultRetryPolicy()))
@@ -132,8 +130,8 @@ func (s *LedgerService) Transfer(
 	}
 
 	return TransferResult{
-		Transferred:       transferBranch != nil && transferBranch.Taken(),
-		InsufficientFunds: transferBranch != nil && !transferBranch.Taken(),
+		Transferred:       transferBranch != nil && transferBranch.Taken(0),
+		InsufficientFunds: transferBranch != nil && !transferBranch.Taken(0),
 	}, nil
 }
 

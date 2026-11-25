@@ -154,11 +154,11 @@ func TestPipelineNoOpConditionsAndBranches(t *testing.T) {
 	p := NewPipeline(context.Background(), db, cache, nil, true, DialectDollar)
 	noop := p.QueueExecNoop()
 	var thenExec, elseNoop *ExecFuture
-	res := p.If(noop.NotFound(), func() { thenExec = queueTestExec(p) }, func() { elseNoop = p.QueueExecNoop() })
+	res := p.If(noop.NotFound(), func(p *Pipeline) { thenExec = queueTestExec(p) }).Else(func(p *Pipeline) { elseNoop = p.QueueExecNoop() })
 	if err := p.Flush(); err != nil {
 		t.Fatal(err)
 	}
-	if !res.Taken() {
+	if !res.Taken(0) {
 		t.Fatal("NotFound over a no-op must hold")
 	}
 	if n, err := thenExec.RowsAffected(); err != nil || n != 1 {
@@ -250,7 +250,7 @@ func TestPipelineNoOpAssertion(t *testing.T) {
 	before = sent()
 	p = NewPipeline(context.Background(), db, cache, nil, true, DialectDollar)
 	gate := queueTestExec(p)
-	p.If(gate.Found(), func() { p.QueueExecNoop().AssertRows(0) }, nil)
+	p.If(gate.Found(), func(p *Pipeline) { p.QueueExecNoop().AssertRows(0) })
 	if err := p.Flush(); err != nil {
 		t.Fatal(err)
 	}
@@ -265,7 +265,7 @@ func TestPipelineNoOpAssertion(t *testing.T) {
 	p = NewPipeline(context.Background(), db, cache, nil, true, DialectDollar)
 	gate = queueTestExec(p)
 	var inBranch *SliceFuture[int]
-	p.If(gate.Found(), func() { inBranch = QueueSliceNoop[int](p).AssertRows(2) }, nil)
+	p.If(gate.Found(), func(p *Pipeline) { inBranch = QueueSliceNoop[int](p).AssertRows(2) })
 	err = p.Flush()
 	if !errors.As(err, &ae) || ae.Want != 2 || ae.Got != 0 {
 		t.Fatalf("err = %v, want an assertion error (wanted 2, got 0)", err)

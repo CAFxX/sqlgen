@@ -14,9 +14,9 @@ import (
 func TestWhereColArgumentsAreBoundOnTheDollarPath(t *testing.T) {
 	p, d, g, upd := compoundFixture(t)
 	g.op.Args = []any{int64(7)}
-	queueUpd := func() { p.QueueExec(3, upd, RenderInput{}, MakeVariantKey(3, 0, 0, 0), nil, nil, nil) }
+	queueUpd := func(p *Pipeline) { p.QueueExec(3, upd, RenderInput{}, MakeVariantKey(3, 0, 0, 0), nil, nil, nil) }
 	// g's own leaf, evaluated by g (the latest operation of the condition)
-	p.If(d.NotFound().And(g.WhereCol("id >= ? AND note <> '?' AND id < ?", int64(3), "x")), queueUpd, nil)
+	p.If(d.NotFound().And(g.WhereCol("id >= ? AND note <> '?' AND id < ?", int64(3), "x")), queueUpd)
 	p.syncOpsFromPtrs()
 	renderPipelineBatch(DialectDollar, nil, p.ops)
 	get := p.ops[1]
@@ -45,13 +45,13 @@ func TestWhereColArgumentsAreBoundOnTheDollarPath(t *testing.T) {
 // keeps '?'.
 func TestWhereColArgumentsOfARecordedLeaf(t *testing.T) {
 	p, d, g, upd := compoundFixture(t)
-	queueUpd := func() { p.QueueExec(3, upd, RenderInput{}, MakeVariantKey(3, 0, 0, 0), nil, nil, nil) }
-	p.If(g.WhereCol("id = ?", int64(9)).And(d.Found()), queueUpd, nil)
+	queueUpd := func(p *Pipeline) { p.QueueExec(3, upd, RenderInput{}, MakeVariantKey(3, 0, 0, 0), nil, nil, nil) }
+	p.If(g.WhereCol("id = ?", int64(9)).And(d.Found()), queueUpd)
 	// d was queued before g: the latest operation is g, so g evaluates its own leaf. Queue a later
 	// operation so g's leaf is recorded by g and read by the later one.
 	p2, _, g2, _ := compoundFixture(t)
 	late := p2.QueueExec(1, d.op.Desc, RenderInput{}, MakeVariantKey(1, 0, 0, 0), nil, nil, nil)
-	p2.If(g2.WhereCol("id = ?", int64(9)).And(late.Found()), func() {}, nil)
+	p2.If(g2.WhereCol("id = ?", int64(9)).And(late.Found()), func(p2 *Pipeline) {})
 	for _, pl := range []*Pipeline{p, p2} {
 		pl.syncOpsFromPtrs()
 		renderPipelineBatch(DialectQuestion, nil, pl.ops)
@@ -102,8 +102,8 @@ func TestWhereColPlaceholderCountMismatchFailsTheBuild(t *testing.T) {
 func TestWhereColLeavesWithArgumentsAreNotShared(t *testing.T) {
 	p, _, g, upd := compoundFixture(t)
 	late := p.QueueExec(3, upd, RenderInput{}, MakeVariantKey(3, 0, 0, 0), nil, nil, nil)
-	p.If(g.WhereCol("id = ?", 1).And(late.Found()), func() {}, nil)
-	p.If(g.WhereCol("id = ?", 2).And(late.Found()), func() {}, nil)
+	p.If(g.WhereCol("id = ?", 1).And(late.Found()), func(p *Pipeline) {})
+	p.If(g.WhereCol("id = ?", 2).And(late.Found()), func(p *Pipeline) {})
 	if n := len(g.op.Decorators.LeafRecs); n != 2 {
 		t.Fatalf("leaf records = %d, want 2", n)
 	}
@@ -127,9 +127,9 @@ func TestWhereColArgumentsDroppedOnSequentialFallback(t *testing.T) {
 	del := p.QueueExec(1, d.op.Desc, RenderInput{}, MakeVariantKey(1, 0, 0, 0), nil, argsOf(int64(1)), nil)
 	get := QueueRow[int64](p, 2, g.op.Desc, RenderInput{}, MakeVariantKey(2, 0, 0, 0), nil, argsOf(int64(2)), nil,
 		func(s RowScanner, dst *int64) error { return s.Scan(dst) })
-	p.If(del.Found().And(get.WhereCol("id > ?", int64(0))), func() {
+	p.If(del.Found().And(get.WhereCol("id > ?", int64(0))), func(p *Pipeline) {
 		p.QueueExec(3, upd, RenderInput{}, MakeVariantKey(3, 0, 0, 0), nil, argsOf(int64(1), int64(2)), nil)
-	}, nil)
+	})
 	_ = p.Flush()
 	if wireArgs != 2 {
 		t.Fatalf("the pipeliner saw %d arguments on the get, want 2", wireArgs)

@@ -133,8 +133,7 @@ var mixedWorkload = workload{"read + If/Else + assertions", 6, func(ctx context.
 			func(p *pgq.Pipeline) {
 				p.AddScoreOne(-1, 1).AssertRows(1)
 				p.AddScoreOne(1, 2).AssertRows(1)
-			},
-			func(p *pgq.Pipeline) { p.AddScoreOne(7, 3).AssertRows(1) })
+			}).Else(func(p *pgq.Pipeline) { p.AddScoreOne(7, 3).AssertRows(1) })
 		p.ItemsByIDs([]int64{1, 2, 3})
 		return nil
 	})
@@ -225,7 +224,7 @@ func TestRealEngineWireFlushVariantsRoundTrips(t *testing.T) {
 		defer q.Close()
 		build := func(p *pgq.Pipeline) {
 			get := p.GetItem(1)
-			p.If(get.Found(), func(p *pgq.Pipeline) { p.AddScoreOne(1, 2).AssertRows(1) }, nil)
+			p.If(get.Found(), func(p *pgq.Pipeline) { p.AddScoreOne(1, 2).AssertRows(1) })
 		}
 
 		standalone := measure(t, wdb, turns, func() {

@@ -58,7 +58,7 @@ func TestRealEngineWireFailurePathsLeaveTheConnectionClean(t *testing.T) {
 				return q.PipelineTx(ctx, nil, func(p *pgq.Pipeline) error {
 					p.AddScoreOne(1, 1)
 					g := p.GetItem(1)
-					p.If(g.Found(), func(p *pgq.Pipeline) { p.Abort(stop) }, nil)
+					p.If(g.Found(), func(p *pgq.Pipeline) { p.Abort(stop) })
 					return nil
 				})
 			}, func(err error) bool { return errors.Is(err, stop) }},

@@ -61,72 +61,71 @@ var myForwardWorkload = myWorkload{"forwarded values", 6, func(ctx context.Conte
 // ---- PostgreSQL protocol (pgq): the matrix of wire_pg_test.go ----------------------------------------
 
 var forwardScenarios = []scenario{
-	{"forward a selected value", func(p *pgq.Pipeline) ([]*runtime.IfResult, func() string) {
+	{"forward a selected value", func(p *pgq.Pipeline) ([]ifRes, func() string) {
 		s := p.FwdScoreOf(2)
 		u := p.FwdSetScore(s.Arg(), runtime.Val(int64(1))).AssertRows(1)
 		return nil, func() string { return fmtRow(s) + "#" + fmtExec(u) }
 	}},
-	{"forward a RETURNING id into an update and an insert", func(p *pgq.Pipeline) ([]*runtime.IfResult, func() string) {
+	{"forward a RETURNING id into an update and an insert", func(p *pgq.Pipeline) ([]ifRes, func() string) {
 		r := p.FwdInsertReturningID(10, 1, "r")
 		p.FwdSetScore(runtime.Val(int64(77)), r.Arg()).AssertRows(1)
 		p.FwdInsertItem(runtime.Val(int64(11)), "copy", r.Arg()).AssertRows(1)
 		return nil, func() string { return fmtRow(r) }
 	}},
-	{"forward a COUNT into a read", func(p *pgq.Pipeline) ([]*runtime.IfResult, func() string) {
+	{"forward a COUNT into a read", func(p *pgq.Pipeline) ([]ifRes, func() string) {
 		n := p.CountOrgItems(1)
 		above := p.FwdItemsAbove(n.Arg())
 		return nil, func() string { return fmtRow(n) + "#" + fmtSlice(above) }
 	}},
-	{"zero rows: the consumer fails and the batch rolls back", func(p *pgq.Pipeline) ([]*runtime.IfResult, func() string) {
+	{"zero rows: the consumer fails and the batch rolls back", func(p *pgq.Pipeline) ([]ifRes, func() string) {
 		p.AddScoreOne(1, 1)
 		s := p.FwdScoreOf(99).Label("missing")
 		p.FwdSetScore(s.Arg(), runtime.Val(int64(1))).Label("consumer")
 		p.AddScoreOne(1, 2)
 		return nil, nil
 	}},
-	{"several rows: the consumer fails with the count", func(p *pgq.Pipeline) ([]*runtime.IfResult, func() string) {
+	{"several rows: the consumer fails with the count", func(p *pgq.Pipeline) ([]ifRes, func() string) {
 		ids := p.FwdIDsByStatus("new")
 		p.FwdSetScore(runtime.Val(int64(5)), ids.Arg())
 		return nil, nil
 	}},
-	{"the first unresolved value in argument order is reported", func(p *pgq.Pipeline) ([]*runtime.IfResult, func() string) {
+	{"the first unresolved value in argument order is reported", func(p *pgq.Pipeline) ([]ifRes, func() string) {
 		a := p.FwdScoreOf(99)
 		b := p.FwdIDsByStatus("new")
 		p.FwdSetScore(b.Arg(), a.Arg())
 		return nil, nil
 	}},
-	{"a consumer in an untaken branch is silent", func(p *pgq.Pipeline) ([]*runtime.IfResult, func() string) {
+	{"a consumer in an untaken branch is silent", func(p *pgq.Pipeline) ([]ifRes, func() string) {
 		s := p.FwdScoreOf(99)
 		r := p.If(s.Found(),
-			func(p *pgq.Pipeline) { p.FwdSetScore(s.Arg(), runtime.Val(int64(1))) },
-			func(p *pgq.Pipeline) { p.AddScoreOne(1, 2) })
-		return []*runtime.IfResult{r}, nil
+			func(p *pgq.Pipeline) { p.FwdSetScore(s.Arg(), runtime.Val(int64(1))) }).Else(func(p *pgq.Pipeline) { p.AddScoreOne(1, 2) })
+		return []ifRes{r}, nil
 	}},
-	{"a consumer in a taken nested branch (gated insert)", func(p *pgq.Pipeline) ([]*runtime.IfResult, func() string) {
+	{"a consumer in a taken nested branch (gated insert)", func(p *pgq.Pipeline) ([]ifRes, func() string) {
 		s := p.FwdScoreOf(3)
-		var r2 *runtime.IfResult
+		var r2 ifRes
 		r1 := p.If(s.Found(), func(p *pgq.Pipeline) {
 			g := p.GetItem(4)
-			r2 = p.If(g.Found(), func(p *pgq.Pipeline) { p.FwdInsertItem(runtime.Val(int64(12)), "nested", s.Arg()).AssertRows(1) }, nil)
-		}, nil)
-		return []*runtime.IfResult{r1, r2}, nil
+			r2 = p.If(g.Found(), func(p *pgq.Pipeline) { p.FwdInsertItem(runtime.Val(int64(12)), "nested", s.Arg()).AssertRows(1) })
+		})
+		return []ifRes{r1, r2}, nil
 	}},
-	{"an unresolved value in a taken branch fails", func(p *pgq.Pipeline) ([]*runtime.IfResult, func() string) {
+	{"an unresolved value in a taken branch fails", func(p *pgq.Pipeline) ([]ifRes, func() string) {
 		s := p.FwdScoreOf(99)
-		r := p.If(s.NotFound(), func(p *pgq.Pipeline) { p.FwdSetScore(s.Arg(), runtime.Val(int64(1))) }, nil)
-		return []*runtime.IfResult{r}, nil
+		r := p.If(s.NotFound(), func(p *pgq.Pipeline) { p.FwdSetScore(s.Arg(), runtime.Val(int64(1))) })
+		return []ifRes{r}, nil
 	}},
-	{"a failed assertion on the producer comes first", func(p *pgq.Pipeline) ([]*runtime.IfResult, func() string) {
+	{"a failed assertion on the producer comes first", func(p *pgq.Pipeline) ([]ifRes, func() string) {
 		s := p.FwdScoreOf(99).AssertFound()
 		p.FwdSetScore(s.Arg(), runtime.Val(int64(1)))
 		return nil, nil
 	}},
-	{"an assertion and a condition on the consumer", func(p *pgq.Pipeline) ([]*runtime.IfResult, func() string) {
+	{"an assertion and a condition on the consumer", func(p *pgq.Pipeline) ([]ifRes, func() string) {
 		s := p.FwdScoreOf(2)
 		c := p.FwdSetScore(runtime.Val(int64(5)), s.Arg()) // id 20: no such row
-		r := p.If(c.Found(), func(p *pgq.Pipeline) { p.AddScoreOne(100, 1) }, func(p *pgq.Pipeline) { p.AddScoreOne(1000, 1) })
+		r := p.If(c.Found(), func(p *pgq.Pipeline) { p.AddScoreOne(100, 1) }).Else(func(p *pgq.Pipeline) { p.AddScoreOne(1000, 1) })
 		p.FwdSetScore(runtime.Val(int64(1)), s.Arg()).AssertRows(1)
-		return []*runtime.IfResult{r}, nil
+		return []ifRes{r}, nil
 	}},
 }
 
@@ -150,73 +149,72 @@ func TestRealEngineForwardWireMatchesSequential(t *testing.T) {
 // ---- MySQL protocol (myq; mdbq for RETURNING) ----------------------------------------------------------
 
 var myForwardScenarios = []myScenario{
-	{"forward a selected value", func(p *myq.Pipeline) ([]*runtime.IfResult, func() string) {
+	{"forward a selected value", func(p *myq.Pipeline) ([]ifRes, func() string) {
 		s := p.FwdScoreOf(2)
 		u := p.FwdSetScore(s.Arg(), runtime.Val(int64(1))).AssertRows(1)
 		return nil, func() string { return myFmtRow(s) + "#" + fmtExec(u) }
 	}},
-	{"forward a COUNT into a read", func(p *myq.Pipeline) ([]*runtime.IfResult, func() string) {
+	{"forward a COUNT into a read", func(p *myq.Pipeline) ([]ifRes, func() string) {
 		n := p.CountOrgItems(1)
 		above := p.FwdItemsAbove(n.Arg())
 		return nil, func() string { return myFmtRow(n) + "#" + myFmtSlice(above) }
 	}},
-	{"zero rows: the consumer fails and the batch rolls back", func(p *myq.Pipeline) ([]*runtime.IfResult, func() string) {
+	{"zero rows: the consumer fails and the batch rolls back", func(p *myq.Pipeline) ([]ifRes, func() string) {
 		p.AddScoreOne(1, 1)
 		s := p.FwdScoreOf(99).Label("missing")
 		p.FwdSetScore(s.Arg(), runtime.Val(int64(1))).Label("consumer")
 		p.AddScoreOne(1, 2)
 		return nil, nil
 	}},
-	{"several rows: the consumer fails with the count", func(p *myq.Pipeline) ([]*runtime.IfResult, func() string) {
+	{"several rows: the consumer fails with the count", func(p *myq.Pipeline) ([]ifRes, func() string) {
 		ids := p.FwdIDsByStatus("new")
 		p.FwdSetScore(runtime.Val(int64(5)), ids.Arg())
 		return nil, nil
 	}},
-	{"the first unresolved value in argument order is reported", func(p *myq.Pipeline) ([]*runtime.IfResult, func() string) {
+	{"the first unresolved value in argument order is reported", func(p *myq.Pipeline) ([]ifRes, func() string) {
 		a := p.FwdScoreOf(99)
 		b := p.FwdIDsByStatus("new")
 		p.FwdSetScore(b.Arg(), a.Arg())
 		return nil, nil
 	}},
-	{"a consumer in an untaken branch is silent", func(p *myq.Pipeline) ([]*runtime.IfResult, func() string) {
+	{"a consumer in an untaken branch is silent", func(p *myq.Pipeline) ([]ifRes, func() string) {
 		s := p.FwdScoreOf(99)
 		r := p.If(s.Found(),
-			func(p *myq.Pipeline) { p.FwdSetScore(s.Arg(), runtime.Val(int64(1))) },
-			func(p *myq.Pipeline) { p.AddScoreOne(1, 2) })
-		return []*runtime.IfResult{r}, nil
+			func(p *myq.Pipeline) { p.FwdSetScore(s.Arg(), runtime.Val(int64(1))) }).Else(func(p *myq.Pipeline) { p.AddScoreOne(1, 2) })
+		return []ifRes{r}, nil
 	}},
-	{"a consumer in a taken nested branch (gated insert)", func(p *myq.Pipeline) ([]*runtime.IfResult, func() string) {
+	{"a consumer in a taken nested branch (gated insert)", func(p *myq.Pipeline) ([]ifRes, func() string) {
 		s := p.FwdScoreOf(3)
-		var r2 *runtime.IfResult
+		var r2 ifRes
 		r1 := p.If(s.Found(), func(p *myq.Pipeline) {
 			g := p.GetItem(4)
-			r2 = p.If(g.Found(), func(p *myq.Pipeline) { p.FwdInsertItem(runtime.Val(int64(12)), "nested", s.Arg()).AssertRows(1) }, nil)
-		}, nil)
-		return []*runtime.IfResult{r1, r2}, nil
+			r2 = p.If(g.Found(), func(p *myq.Pipeline) { p.FwdInsertItem(runtime.Val(int64(12)), "nested", s.Arg()).AssertRows(1) })
+		})
+		return []ifRes{r1, r2}, nil
 	}},
-	{"an unresolved value in a taken branch fails", func(p *myq.Pipeline) ([]*runtime.IfResult, func() string) {
+	{"an unresolved value in a taken branch fails", func(p *myq.Pipeline) ([]ifRes, func() string) {
 		s := p.FwdScoreOf(99)
-		r := p.If(s.NotFound(), func(p *myq.Pipeline) { p.FwdSetScore(s.Arg(), runtime.Val(int64(1))) }, nil)
-		return []*runtime.IfResult{r}, nil
+		r := p.If(s.NotFound(), func(p *myq.Pipeline) { p.FwdSetScore(s.Arg(), runtime.Val(int64(1))) })
+		return []ifRes{r}, nil
 	}},
-	{"a failed assertion on the producer comes first", func(p *myq.Pipeline) ([]*runtime.IfResult, func() string) {
+	{"a failed assertion on the producer comes first", func(p *myq.Pipeline) ([]ifRes, func() string) {
 		s := p.FwdScoreOf(99).AssertFound()
 		p.FwdSetScore(s.Arg(), runtime.Val(int64(1)))
 		return nil, nil
 	}},
-	{"an assertion and a condition on the consumer", func(p *myq.Pipeline) ([]*runtime.IfResult, func() string) {
+	{"an assertion and a condition on the consumer", func(p *myq.Pipeline) ([]ifRes, func() string) {
 		s := p.FwdScoreOf(2)
 		c := p.FwdSetScore(runtime.Val(int64(5)), s.Arg()) // id 20: no such row
-		r := p.If(c.Found(), func(p *myq.Pipeline) { p.AddScoreOne(100, 1) }, func(p *myq.Pipeline) { p.AddScoreOne(1000, 1) })
+		r := p.If(c.Found(), func(p *myq.Pipeline) { p.AddScoreOne(100, 1) }).Else(func(p *myq.Pipeline) { p.AddScoreOne(1000, 1) })
 		p.FwdSetScore(runtime.Val(int64(1)), s.Arg()).AssertRows(1)
-		return []*runtime.IfResult{r}, nil
+		return []ifRes{r}, nil
 	}},
-	{"a value forwarded into a condition's column predicate", func(p *myq.Pipeline) ([]*runtime.IfResult, func() string) {
+	{"a value forwarded into a condition's column predicate", func(p *myq.Pipeline) ([]ifRes, func() string) {
 		s := p.FwdScoreOf(2)
 		g := p.GetItem(3)
 		r := p.If(g.WhereCol("score > ?", int64(25)),
-			func(p *myq.Pipeline) { p.FwdSetScore(s.Arg(), runtime.Val(int64(4))) }, nil)
-		return []*runtime.IfResult{r}, nil
+			func(p *myq.Pipeline) { p.FwdSetScore(s.Arg(), runtime.Val(int64(4))) })
+		return []ifRes{r}, nil
 	}},
 }
 
@@ -316,8 +314,8 @@ func TestRealEngineForwardLastInsertID(t *testing.T) {
 				g := p.GetItem(1)
 				p.If(g.Found(), func(p *myq.Pipeline) {
 					id := p.FwdAutoInsert(8).LastInsertIDArg()
-					p.If(g.Found(), func(p *myq.Pipeline) { p.FwdInsertItem(id, "branch", runtime.Val(int64(2))).AssertRows(1) }, nil)
-				}, nil)
+					p.If(g.Found(), func(p *myq.Pipeline) { p.FwdInsertItem(id, "branch", runtime.Val(int64(2))).AssertRows(1) })
+				})
 			}},
 		} {
 			t.Run(strings.ReplaceAll(sc.name, " ", "_"), func(t *testing.T) {
@@ -356,7 +354,7 @@ func TestRealEngineForwardMariaDBReturning(t *testing.T) {
 				p.If(g.NotFound(), func(p *mdbq.Pipeline) {
 					r := p.FwdInsertReturningID(1, 1, "dup") // duplicate key: a database error on both paths
 					p.FwdSetScore(runtime.Val(int64(77)), r.Arg())
-				}, nil)
+				})
 				return nil
 			}},
 		} {
@@ -566,4 +564,18 @@ func TestRealEngineForwardUserTxStaysUsable(t *testing.T) {
 			}
 		}
 	})
+}
+
+// ifRes is what the tables here read of an If chain of any generated package.
+type ifRes interface {
+	Taken(i int) bool
+	Skipped() bool
+}
+
+// takenArms is Taken(i) for every arm of r (Taken panics past the last arm).
+func takenArms(r ifRes) (taken []bool) {
+	defer func() { _ = recover() }()
+	for i := 0; ; i++ {
+		taken = append(taken, r.Taken(i))
+	}
 }

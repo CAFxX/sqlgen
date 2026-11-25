@@ -334,7 +334,7 @@ func TestEcommerceInventoryWorkerEndToEnd(t *testing.T) {
 		_ = p.DeleteFulfilledOrdersByIDs([]int64{999999})
 		p.If(f1.Found(), func(thenP *Pipeline) {
 			_ = thenP.DeleteFulfilledOrdersByIDs([]int64{999998})
-		}, func(elseP *Pipeline) {
+		}).Else(func(elseP *Pipeline) {
 			_ = elseP.DeleteFulfilledOrdersByIDs([]int64{999997})
 		})
 		return nil

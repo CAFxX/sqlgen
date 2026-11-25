@@ -110,16 +110,16 @@ func TestForwardSequential(t *testing.T) {
 	})
 
 	t.Run("a consumer in an untaken branch is silent", func(t *testing.T) {
-		var ifr *runtime.IfResult
+		var ifr *runtime.IfChain[*Pipeline]
 		err := q.PipelineTx(ctx, nil, func(p *Pipeline) error {
 			o := p.FwdOrderByCustomer("nobody")
 			ifr = p.If(o.Found(), func(t *Pipeline) {
 				t.FwdInsertLine(o.Arg(), "never", 1)
-			}, nil)
+			})
 			return nil
 		})
-		if err != nil || ifr.Taken() {
-			t.Fatalf("err = %v taken = %v", err, ifr.Taken())
+		if err != nil || ifr.Taken(0) {
+			t.Fatalf("err = %v taken = %v", err, ifr.Taken(0))
 		}
 	})
 
@@ -201,7 +201,7 @@ func TestForwardSequential(t *testing.T) {
 			var inner runtime.Arg[int64]
 			p.If(o.Found(), func(t *Pipeline) {
 				inner = t.FwdInsertOrder("carol", 1).Arg()
-			}, nil)
+			})
 			p.FwdInsertLine(inner, "outside", 1)
 			return nil
 		})
@@ -213,7 +213,7 @@ func TestForwardSequential(t *testing.T) {
 			var then runtime.Arg[int64]
 			p.If(o.Found(), func(t *Pipeline) {
 				then = t.FwdInsertOrder("carol", 1).Arg()
-			}, func(e *Pipeline) {
+			}).Else(func(e *Pipeline) {
 				e.FwdInsertLine(then, "sibling", 1)
 			})
 			return nil

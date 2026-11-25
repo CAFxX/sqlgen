@@ -160,3 +160,8 @@ func TestSeqHelpersAllocations(t *testing.T) {
 		t.Errorf("Collect of 64 rows: %v allocs/op; want only the slice growth (<=7)", n)
 	}
 }
+
+// If is the generated Pipeline.If for the runtime's own tests (the handle type is *Pipeline itself).
+func (p *Pipeline) If(cond PipelineCond, fn func(*Pipeline)) *IfChain[*Pipeline] {
+	return If(p, cond, fn, func(b *Pipeline) *Pipeline { return b })
+}

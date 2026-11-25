@@ -3,7 +3,7 @@ package integration
 // Every combination of statement kind x assertion x recorded conditions x gating x run mode must behave
 // on the MySQL / MariaDB single-round-trip path (mysqlwire) exactly as on the sequential fallback (plain
 // go-sql-driver): same final state, same error (kind, assertion statement / wanted / actual row count,
-// MySQL error number), same IfResult.Taken() and same future values. Counterpart of wire_guard_test.go.
+// MySQL error number), same IfChain.Taken(i) of every arm and same future values. Counterpart of wire_guard_test.go.
 //
 // The guards of the single-round-trip path are SET statements over session user variables, gated by
 // @sqlgen_f<0; a shape that lets a later statement run after a failed guard, or that loses a recorded
@@ -46,6 +46,26 @@ type myNew struct {
 	Status  string
 }
 
+// myChain is an If chain of either generated package, behind myPipe.
+type myChain interface {
+	ElseIf(cond runtime.PipelineCond, fn func(myPipe)) myChain
+	Else(fn func(myPipe)) myChain
+	ifRes
+}
+
+type chainOf[P any] struct {
+	c   *runtime.IfChain[P]
+	arm func(func(myPipe)) func(P)
+}
+
+func (c chainOf[P]) ElseIf(cond runtime.PipelineCond, fn func(myPipe)) myChain {
+	c.c.ElseIf(cond, c.arm(fn))
+	return c
+}
+func (c chainOf[P]) Else(fn func(myPipe)) myChain { c.c.Else(c.arm(fn)); return c }
+func (c chainOf[P]) Taken(i int) bool             { return c.c.Taken(i) }
+func (c chainOf[P]) Skipped() bool                { return c.c.Skipped() }
+
 type myPipe interface {
 	AddScoreOne(delta, id int64) myFut
 	AddScore(delta int64, ids []int64, org int64) myFut
@@ -61,7 +81,7 @@ type myPipe interface {
 	DeleteReturning(ids []int64) myFut
 	DeleteOneReturning(id int64) myFut
 	Returning() bool
-	If(cond runtime.PipelineCond, thenFn, elseFn func(myPipe)) *runtime.IfResult
+	If(cond runtime.PipelineCond, fn func(myPipe)) myChain
 	Abort(err error)
 	// value forwarding: producers return the forwarded value too
 	FwdScoreOf(id int64) (myFut, runtime.Arg[int64])
@@ -208,15 +228,14 @@ func (a myqPipe) FwdInsertItem(id int64, score runtime.Arg[int64]) myFut {
 func (a myqPipe) FwdInsertReturningID(int64) (myFut, runtime.Arg[int64]) {
 	panic("RETURNING does not exist on MySQL")
 }
-func (a myqPipe) If(cond runtime.PipelineCond, thenFn, elseFn func(myPipe)) *runtime.IfResult {
-	var t, e func(*myq.Pipeline)
-	if thenFn != nil {
-		t = func(p *myq.Pipeline) { thenFn(myqPipe{p}) }
+func (a myqPipe) If(cond runtime.PipelineCond, fn func(myPipe)) myChain {
+	arm := func(fn func(myPipe)) func(*myq.Pipeline) {
+		if fn == nil {
+			return nil
+		}
+		return func(p *myq.Pipeline) { fn(myqPipe{p}) }
 	}
-	if elseFn != nil {
-		e = func(p *myq.Pipeline) { elseFn(myqPipe{p}) }
-	}
-	return a.p.If(cond, t, e)
+	return chainOf[*myq.Pipeline]{a.p.If(cond, arm(fn)), arm}
 }
 
 type myqQueries struct{ q *myq.Queries }
@@ -298,15 +317,14 @@ func (a mdbqPipe) FwdInsertReturningID(id int64) (myFut, runtime.Arg[int64]) {
 	f := a.p.FwdInsertReturningID(id, 1, "r")
 	return myRowFut(f, false), f.Arg()
 }
-func (a mdbqPipe) If(cond runtime.PipelineCond, thenFn, elseFn func(myPipe)) *runtime.IfResult {
-	var t, e func(*mdbq.Pipeline)
-	if thenFn != nil {
-		t = func(p *mdbq.Pipeline) { thenFn(mdbqPipe{p}) }
+func (a mdbqPipe) If(cond runtime.PipelineCond, fn func(myPipe)) myChain {
+	arm := func(fn func(myPipe)) func(*mdbq.Pipeline) {
+		if fn == nil {
+			return nil
+		}
+		return func(p *mdbq.Pipeline) { fn(mdbqPipe{p}) }
 	}
-	if elseFn != nil {
-		e = func(p *mdbq.Pipeline) { elseFn(mdbqPipe{p}) }
-	}
-	return a.p.If(cond, t, e)
+	return chainOf[*mdbq.Pipeline]{a.p.If(cond, arm(fn)), arm}
 }
 
 type mdbqQueries struct{ q *mdbq.Queries }
@@ -335,7 +353,7 @@ func myNewQueries(e engine, db *sql.DB) myQueries {
 
 type myScn struct {
 	name  string
-	build func(p myPipe) (ifs []*runtime.IfResult, report func() string)
+	build func(p myPipe) (ifs []ifRes, report func() string)
 	// fallback: the single-round-trip path does not apply to this pipeline (documented: a column predicate
 	// over a RETURNING operation), it must run sequentially, with the same outcome.
 	fallback bool
@@ -343,24 +361,24 @@ type myScn struct {
 
 type myMode struct {
 	name string
-	run  func(ctx context.Context, db *sql.DB, q myQueries, sc myScn) (ifs []*runtime.IfResult, report func() string, err error)
+	run  func(ctx context.Context, db *sql.DB, q myQueries, sc myScn) (ifs []ifRes, report func() string, err error)
 }
 
 var myModes = []myMode{
-	{"PipelineTx", func(ctx context.Context, db *sql.DB, q myQueries, sc myScn) (ifs []*runtime.IfResult, report func() string, err error) {
+	{"PipelineTx", func(ctx context.Context, db *sql.DB, q myQueries, sc myScn) (ifs []ifRes, report func() string, err error) {
 		err = q.PipelineTx(ctx, func(p myPipe) error {
 			ifs, report = sc.build(p)
 			return nil
 		})
 		return
 	}},
-	{"standalone Flush", func(ctx context.Context, db *sql.DB, q myQueries, sc myScn) (ifs []*runtime.IfResult, report func() string, err error) {
+	{"standalone Flush", func(ctx context.Context, db *sql.DB, q myQueries, sc myScn) (ifs []ifRes, report func() string, err error) {
 		p, flush := q.Pipeline(ctx)
 		ifs, report = sc.build(p)
 		err = flush()
 		return
 	}},
-	{"user-managed tx", func(ctx context.Context, db *sql.DB, q myQueries, sc myScn) (ifs []*runtime.IfResult, report func() string, err error) {
+	{"user-managed tx", func(ctx context.Context, db *sql.DB, q myQueries, sc myScn) (ifs []ifRes, report func() string, err error) {
 		tx, berr := db.BeginTx(ctx, nil)
 		if berr != nil {
 			return nil, nil, berr
@@ -411,7 +429,7 @@ func myRunOnce(t *testing.T, e engine, pr myPair, wire bool, mode myMode, sc myS
 	o := myOutcome{State: mySnapshot(t, pr.admin), Err: myErrKind(err)}
 	for _, r := range ifs {
 		if r != nil {
-			o.Taken = append(o.Taken, r.Taken())
+			o.Taken = append(o.Taken, takenArms(r)...)
 		}
 	}
 	if err == nil && report != nil {
@@ -510,7 +528,7 @@ func myGuardScenario(k myGuardKind, id int64, assert int64, nconds int, colPred 
 		name: fmt.Sprintf("%s id=%d assert=%d conds=%d colpred=%v %s", k.name, id, assert, nconds, colPred, gate),
 		// a column predicate over a RETURNING operation is the documented sequential fallback
 		fallback: colPred && nconds > 0 && k.returning,
-		build: func(p myPipe) ([]*runtime.IfResult, func() string) {
+		build: func(p myPipe) ([]ifRes, func() string) {
 			p.AddScoreOne(1, 1)
 			var op myFut
 			queue := func(p myPipe) {
@@ -523,15 +541,14 @@ func myGuardScenario(k myGuardKind, id int64, assert int64, nconds int, colPred 
 			case gateNone:
 				queue(p)
 			case gateTaken:
-				p.If(p.GetItem(1).src.Found(), queue, nil)
+				p.If(p.GetItem(1).src.Found(), queue)
 			case gateSkipped:
-				p.If(p.GetItem(404).src.Found(), queue, nil)
+				p.If(p.GetItem(404).src.Found(), queue)
 			}
-			var ifs []*runtime.IfResult
+			var ifs []ifRes
 			for c := 0; c < nconds; c++ {
 				ifs = append(ifs, p.If(myGuardCond(op, c, colPred),
-					func(p myPipe) { p.AddScoreOne(10, int64(2+c)) },
-					func(p myPipe) { p.AddScoreOne(1000, int64(2+c)) }))
+					func(p myPipe) { p.AddScoreOne(10, int64(2+c)) }).Else(func(p myPipe) { p.AddScoreOne(1000, int64(2+c)) }))
 			}
 			// a statement after the guarded one: it must not run when the batch failed
 			p.DeleteItems([]int64{4})
@@ -595,48 +612,47 @@ func TestRealEngineMySQLPipelineGuardMatrix(t *testing.T) {
 // surface as the database error, never as ErrAssertionFailed, and a failed assertion must report the
 // actual count.
 var myOverflowScenarios = []myScn{
-	{name: "overflowing update with an assertion", build: func(p myPipe) ([]*runtime.IfResult, func() string) {
+	{name: "overflowing update with an assertion", build: func(p myPipe) ([]ifRes, func() string) {
 		p.AddScoreOne(1, 1)
 		p.AddScoreOne(1<<63-1, 2).assertRows(1) // BIGINT overflow
 		return nil, nil
 	}},
-	{name: "overflowing update without an assertion", build: func(p myPipe) ([]*runtime.IfResult, func() string) {
+	{name: "overflowing update without an assertion", build: func(p myPipe) ([]ifRes, func() string) {
 		p.AddScoreOne(1<<63-1, 2)
 		return nil, nil
 	}},
-	{name: "overflowing update with an assertion and a condition", build: func(p myPipe) ([]*runtime.IfResult, func() string) {
+	{name: "overflowing update with an assertion and a condition", build: func(p myPipe) ([]ifRes, func() string) {
 		u := p.AddScoreOne(1<<63-1, 2)
 		u.assertRows(1)
-		return []*runtime.IfResult{p.If(u.src.Found(), func(p myPipe) { p.AddScoreOne(1, 3) }, nil)}, nil
+		return []ifRes{p.If(u.src.Found(), func(p myPipe) { p.AddScoreOne(1, 3) })}, nil
 	}},
-	{name: "overflowing update in a taken branch", build: func(p myPipe) ([]*runtime.IfResult, func() string) {
+	{name: "overflowing update in a taken branch", build: func(p myPipe) ([]ifRes, func() string) {
 		g := p.GetItem(1)
-		return []*runtime.IfResult{p.If(g.src.Found(), func(p myPipe) { p.AddScoreOne(1<<63-1, 2).assertRows(1) }, nil)}, nil
+		return []ifRes{p.If(g.src.Found(), func(p myPipe) { p.AddScoreOne(1<<63-1, 2).assertRows(1) })}, nil
 	}},
-	{name: "overflowing update in a branch that is not taken", build: func(p myPipe) ([]*runtime.IfResult, func() string) {
+	{name: "overflowing update in a branch that is not taken", build: func(p myPipe) ([]ifRes, func() string) {
 		g := p.GetItem(404)
-		return []*runtime.IfResult{p.If(g.src.Found(), func(p myPipe) { p.AddScoreOne(1<<63-1, 2).assertRows(1) },
-			func(p myPipe) { p.AddScoreOne(1, 2).assertRows(1) })}, nil
+		return []ifRes{p.If(g.src.Found(), func(p myPipe) { p.AddScoreOne(1<<63-1, 2).assertRows(1) }).Else(func(p myPipe) { p.AddScoreOne(1, 2).assertRows(1) })}, nil
 	}},
-	{name: "overflow after a failed assertion never runs", build: func(p myPipe) ([]*runtime.IfResult, func() string) {
+	{name: "overflow after a failed assertion never runs", build: func(p myPipe) ([]ifRes, func() string) {
 		p.AddScoreOne(1, 999).assertRows(1) // fails first
 		p.AddScoreOne(1<<63-1, 2)
 		return nil, nil
 	}},
-	{name: "abort after an overflow never runs", build: func(p myPipe) ([]*runtime.IfResult, func() string) {
+	{name: "abort after an overflow never runs", build: func(p myPipe) ([]ifRes, func() string) {
 		p.AddScoreOne(1<<63-1, 2).assertRows(1)
 		p.Abort(myErrStop)
 		return nil, nil
 	}},
-	{name: "abort in a taken branch keeps its own error", build: func(p myPipe) ([]*runtime.IfResult, func() string) {
+	{name: "abort in a taken branch keeps its own error", build: func(p myPipe) ([]ifRes, func() string) {
 		g := p.GetItem(1)
-		return []*runtime.IfResult{p.If(g.src.Found(), func(p myPipe) { p.Abort(myErrStop) }, nil)}, nil
+		return []ifRes{p.If(g.src.Found(), func(p myPipe) { p.Abort(myErrStop) })}, nil
 	}},
-	{name: "failed assertion reports the actual count (many rows)", build: func(p myPipe) ([]*runtime.IfResult, func() string) {
+	{name: "failed assertion reports the actual count (many rows)", build: func(p myPipe) ([]ifRes, func() string) {
 		p.ItemsByIDs([]int64{1, 2, 3}).assertRows(2)
 		return nil, nil
 	}},
-	{name: "failed assertion reports the actual count (zero rows)", build: func(p myPipe) ([]*runtime.IfResult, func() string) {
+	{name: "failed assertion reports the actual count (zero rows)", build: func(p myPipe) ([]ifRes, func() string) {
 		p.DeleteItems([]int64{98, 99}).assertRows(2)
 		return nil, nil
 	}},

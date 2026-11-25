@@ -1748,7 +1748,7 @@ func TestPipelineWirePipelinerAndSequentialCoverage(t *testing.T) {
 	sc3 := sliceFut.WhereCol("id = 42").And(sc1).And(sc2)
 
 	var execFutThen, execFutElse *ExecFuture
-	ifRes := p.If(c3.And(sc3), func() {
+	ifRes := p.If(c3.And(sc3), func(p *Pipeline) {
 		ab3 := AcquireArgsCap(1)
 		*ab3 = append(*ab3, int64(99))
 		execFutThen = p.QueueExec(2, updNoWhereDesc, RenderInput{}, MakeVariantKey(2, 0, 0, 0), nil, ab3, nil).AssertFound().AssertRows(1)
@@ -1763,8 +1763,8 @@ func TestPipelineWirePipelinerAndSequentialCoverage(t *testing.T) {
 
 		ec1 := execFutThen.Found().And(execFutThen.RowsEq(1)).And(execFutThen.RowsGe(1)).And(execFutThen.RowsLe(1))
 		ec2 := execFutThen.NotFound().Or(execFutThen.RowsGt(5)).Or(execFutThen.RowsLt(0)).Not()
-		p.If(ec1.And(ec2), func() {}, nil)
-	}, func() {
+		p.If(ec1.And(ec2), func(p *Pipeline) {})
+	}).Else(func(p *Pipeline) {
 		abElse := AcquireArgsCap(1)
 		*abElse = append(*abElse, int64(0))
 		execFutElse = p.QueueExec(2, updNoWhereDesc, RenderInput{}, MakeVariantKey(2, 0, 0, 0), nil, abElse, nil)
@@ -1773,8 +1773,8 @@ func TestPipelineWirePipelinerAndSequentialCoverage(t *testing.T) {
 	if err := p.Flush(); err != nil {
 		t.Fatalf("wirePipeliner Flush: %v", err)
 	}
-	if !ifRes.Taken() {
-		t.Fatalf("expected ifRes.Taken() == true")
+	if !ifRes.Taken(0) {
+		t.Fatalf("expected ifRes.Taken(0) == true")
 	}
 	if val, err := rowFut.Get(); err != nil || val != 42 {
 		t.Fatalf("rowFut.Get() = %d, err=%v", val, err)
@@ -1827,11 +1827,11 @@ func TestPipelineWirePipelinerAndSequentialCoverage(t *testing.T) {
 		rf := QueueRow[int64](pTx, 1, selDesc, RenderInput{}, vk, nil, ab, nil,
 			func(s RowScanner, dst *int64) error { return s.Scan(dst) },
 		)
-		pTx.If(rf.Found(), func() {
+		pTx.If(rf.Found(), func(pTx *Pipeline) {
 			abIn := AcquireArgsCap(1)
 			*abIn = append(*abIn, int64(5))
 			_ = pTx.QueueExec(2, updNoWhereDesc, RenderInput{}, MakeVariantKey(2, 0, 0, 0), nil, abIn, nil)
-		}, nil)
+		})
 		return pTx.Flush()
 	}); err != nil {
 		t.Fatalf("PipelineTx wire execution failed: %v", err)
@@ -1900,21 +1900,21 @@ func TestPipelineWirePipelinerAndSequentialCoverage(t *testing.T) {
 		And(sfSeq.WhereCol("score = 20"))
 
 	var efSeqThen *ExecFuture
-	var nestedSkippedIf *IfResult
+	var nestedSkippedIf *IfChain[*Pipeline]
 	var rfSkipped *RowFuture[int64]
 	var sfSkipped *SliceFuture[int64]
-	pSeq.If(seqCond, func() {
+	pSeq.If(seqCond, func(pSeq *Pipeline) {
 		abUpd := AcquireArgsCap(2)
 		*abUpd = append(*abUpd, int64(111), int64(1))
 		efSeqThen = pSeq.QueueExec(11, qUpdDesc, RenderInput{}, MakeVariantKey(11, 0, 0, 0), nil, abUpd, nil).AssertFound()
-	}, func() {
+	}).Else(func(pSeq *Pipeline) {
 		rfSkipped = QueueRow[int64](pSeq, 10, qSelDesc, RenderInput{}, MakeVariantKey(10, 0, 0, 0), nil, nil, nil,
 			func(s RowScanner, dst *int64) error { return s.Scan(dst) },
 		)
 		sfSkipped = QueueSlice[int64](pSeq, 10, qSelDesc, RenderInput{}, MakeVariantKey(10, 0, 0, 0), nil, nil, nil,
 			func(s RowScanner, dst *int64) error { return s.Scan(dst) },
 		)
-		nestedSkippedIf = pSeq.If(rfSeq.Found(), func() {}, nil)
+		nestedSkippedIf = pSeq.If(rfSeq.Found(), func(pSeq *Pipeline) {})
 		pSeq.Abort(errors.New("should not abort in untaken else"))
 	})
 
@@ -1934,7 +1934,7 @@ func TestPipelineWirePipelinerAndSequentialCoverage(t *testing.T) {
 	if _, err := sfSkipped.Get(); !errors.Is(err, ErrBranchNotTaken) {
 		t.Fatalf("expected ErrBranchNotTaken for sfSkipped, got %v", err)
 	}
-	if !nestedSkippedIf.Skipped() || nestedSkippedIf.Taken() || (*IfResult)(nil).Taken() || !(*IfResult)(nil).Skipped() {
+	if !nestedSkippedIf.Skipped() || nestedSkippedIf.Taken(0) {
 		t.Fatalf("unexpected nestedSkippedIf state")
 	}
 	if _, err := efSeqThen.Result(); err != nil {
@@ -2222,8 +2222,8 @@ func TestPipelineWirePipelinerAndSequentialCoverage(t *testing.T) {
 	rfMulti := QueueRow[int64](pMultiIf, 10, qSelDesc, RenderInput{}, hotVK, nil, abMulti, nil,
 		func(s RowScanner, dst *int64) error { return s.Scan(dst) },
 	)
-	pMultiIf.If(rfMulti.Found(), func() {}, nil)
-	pMultiIf.If(rfMulti.RowsEq(1), func() {}, nil)
+	pMultiIf.If(rfMulti.Found(), func(pMultiIf *Pipeline) {})
+	pMultiIf.If(rfMulti.RowsEq(1), func(pMultiIf *Pipeline) {})
 	if err := pMultiIf.Flush(); err != nil {
 		t.Fatalf("pMultiIf.Flush: %v", err)
 	}

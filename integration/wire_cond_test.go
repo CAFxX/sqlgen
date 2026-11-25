@@ -159,7 +159,7 @@ func condScenarios() []scenario {
 	for _, v := range condVariants {
 		out = append(out, scenario{
 			name: "cond " + v.name,
-			build: func(p *pgq.Pipeline) ([]*runtime.IfResult, func() string) {
+			build: func(p *pgq.Pipeline) ([]ifRes, func() string) {
 				var o condOps
 				o.d = p.DeleteItems([]int64{98, 99})
 				o.u = p.AddScoreOne(1, 1)
@@ -168,14 +168,13 @@ func condScenarios() []scenario {
 				o.s = p.ItemsByIDs([]int64{1, 2})
 				o.r = p.BumpScoresReturning(5, []int64{1, 2})
 				// never taken: m finds nothing
-				p.If(o.m.Found(), func(p *pgq.Pipeline) { o.skipped = p.GetItem(2) }, nil)
+				p.If(o.m.Found(), func(p *pgq.Pipeline) { o.skipped = p.GetItem(2) })
 				cond := v.mk(o)
 				r1 := p.If(cond,
-					func(p *pgq.Pipeline) { p.AddScoreOne(1000, 2) },
-					func(p *pgq.Pipeline) { p.AddScoreOne(7, 4) })
+					func(p *pgq.Pipeline) { p.AddScoreOne(1000, 2) }).Else(func(p *pgq.Pipeline) { p.AddScoreOne(7, 4) })
 				// the same condition value again, and its negation: both must still be intact
-				r2 := p.If(cond.Not(), func(p *pgq.Pipeline) { p.AddScoreOne(100000, 3) }, nil)
-				return []*runtime.IfResult{r1, r2}, nil
+				r2 := p.If(cond.Not(), func(p *pgq.Pipeline) { p.AddScoreOne(100000, 3) })
+				return []ifRes{r1, r2}, nil
 			},
 		})
 	}

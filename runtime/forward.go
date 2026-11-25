@@ -202,7 +202,7 @@ func (p *Pipeline) BindForwarded() {
 		}
 		n++
 		switch {
-		case r.pl != p:
+		case r.pl.pipelineState != p.pipelineState:
 			p.SetBuildError(InvalidArgument("statement " + strconv.Quote(op.stmtName()) + " (operation " + strconv.Itoa(op.opIdx) +
 				") uses a value forwarded from another pipeline (a future of an earlier Pipeline, Flush or PipelineTx attempt); forward values within one pipeline only"))
 		case !gatePrefix(r.op.Input.BranchGates, op.Input.BranchGates):

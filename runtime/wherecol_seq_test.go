@@ -59,12 +59,12 @@ func TestWhereColSequentialIsEvaluatedByTheServer(t *testing.T) {
 	p := NewPipeline(context.Background(), db, NewStmtCache(), nil, false, DialectQuestion)
 	type check struct {
 		name string
-		r    *IfResult
+		r    *IfChain[*Pipeline]
 		want bool
 	}
 	var checks []check
 	is := func(name string, c PipelineCond, want bool) {
-		checks = append(checks, check{name, p.If(c, nil, nil), want})
+		checks = append(checks, check{name, p.If(c, nil), want})
 	}
 
 	s := wcSlice(p, wcByMin, "T", int64(2))
@@ -92,8 +92,8 @@ func TestWhereColSequentialIsEvaluatedByTheServer(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, c := range checks {
-		if c.r.Taken() != c.want {
-			t.Errorf("%s: taken = %v, want %v", c.name, c.r.Taken(), c.want)
+		if c.r.Taken(0) != c.want {
+			t.Errorf("%s: taken = %v, want %v", c.name, c.r.Taken(0), c.want)
 		}
 	}
 	// the WhereCol columns never reach the scanned rows, and the arguments bind in order around them
@@ -111,14 +111,14 @@ func TestWhereColErrors(t *testing.T) {
 	// a statement that has no place for the column fails the build: nothing runs
 	p := NewPipeline(context.Background(), db, NewStmtCache(), nil, false, DialectQuestion)
 	u := wcSlice(p, wcNoSlot)
-	p.If(u.WhereCol("id > 0"), nil, nil)
+	p.If(u.WhereCol("id > 0"), nil)
 	if err := p.Flush(); !errors.Is(err, ErrInvalidArgument) {
 		t.Fatalf("no slot: err = %v", err)
 	}
 	// the server rejects a bad predicate on the sequential path as well
 	p = NewPipeline(context.Background(), db, NewStmtCache(), nil, false, DialectQuestion)
 	g := wcOneRow(p, wcOne, int64(1))
-	p.If(g.WhereCol("no_such_column = 1"), nil, nil)
+	p.If(g.WhereCol("no_such_column = 1"), nil)
 	if err := p.Flush(); err == nil {
 		t.Fatal("a predicate over an unknown column must fail")
 	}

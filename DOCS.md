@@ -24,7 +24,7 @@ Everything below is the whole surface; each item has one spelling and the sectio
   - reading: `Collect`, `AppendTo`, `Each` (+ `ErrStop`), `FromSlice`, `FromSeq`, `MapSeq2`.
   - values: `Query`, `Order`, `Seek` (the zero value is the first page), `OrCols`.
   - transactions: `WithTxRetry`, `DefaultRetryPolicy`, `TxRetryPolicy`.
-  - pipelines: futures (`ExecFuture`, `RowFuture`, `SliceFuture`: `Rows{Eq,Gt,Ge,Lt,Le}`, `Found`, `NotFound`, `AssertRows`, `AssertFound`, `Label`, `WhereCol`, `Result`, `Get`), `PipelineCond` (`And`, `Or`, `Not`), `p.If`, `p.Abort`, `p.Flush`, `AssertionError`.
+  - pipelines: futures (`ExecFuture`, `RowFuture`, `SliceFuture`: `Rows{Eq,Gt,Ge,Lt,Le}`, `Found`, `NotFound`, `AssertRows`, `AssertFound`, `Label`, `WhereCol`, `Result`, `Get`), `PipelineCond` (`And`, `Or`, `Not`), `p.If(cond, fn).ElseIf(cond, fn).Else(fn)` (`IfChain`: `Taken(i)`, `Skipped`), `p.Abort`, `p.Flush`, `AssertionError`.
   - cache: `WithMaxPreparedStmts`, `WithMaxSQLVariants`, `WithMaxBatchParams`, `CacheStats`; drivers: `WrapConnector` and the `pgxwire` / `mysqlwire` modules.
 
 ---
@@ -613,7 +613,7 @@ err := q.InTx(ctx, nil, func(txQ *Queries) error {
 
 ### 3.4. Single-Roundtrip Speculative Pipelining (`Pipeline` & `PipelineTx`)
 
-`Pipeline` and `PipelineTx` allow you to queue multiple reads, writes, row-count assertions, and data-dependent `If/Then/Else` branches and flush them together.
+`Pipeline` and `PipelineTx` allow you to queue multiple reads, writes, row-count assertions, and data-dependent `If` / `ElseIf` / `Else` chains and flush them together.
 - With the `pgxwire` driver (below) on PostgreSQL, CockroachDB or YugabyteDB, or the `mysqlwire` driver (below) on MySQL, MariaDB or TiDB, the entire conditional workflow, `BEGIN` and `COMMIT` included, is sent to the server in **one network round-trip** (PostgreSQL protocol: one write, one `Sync`; MySQL protocol: one multi-statement text).
 - On every other driver and engine (plain `*sql.DB`, SQLite, ...), and for any batch a wire driver declines (see "Falling back" below), `Pipeline` seamlessly falls back to sequential execution while preserving identical branching, assertion, and rollback semantics. Nothing to configure, and nothing silently pretends to be faster than it is: see "Verifying which path ran" below.
 
@@ -817,30 +817,18 @@ err := q.PipelineTx(ctx, nil, func(p *Pipeline) error {
     // 1. Queue a read or update and attach assertions:
     senderFut := p.GetAccount(orgID, senderID).AssertFound()
 
-    // 2. Branch on the future's result and columns:
-    p.If(
-        senderFut.Found().And(
-            senderFut.WhereCol("balance_cents >= ?", transferAmount), // bound, never spliced into the SQL
-        ),
-        func(thenP *Pipeline) {
-            // Nested check: abort and roll back if account is frozen!
-            thenP.If(
-                senderFut.WhereCol("status = 'frozen'"),
-                func(frozenP *Pipeline) {
-                    frozenP.Abort(ErrAccountFrozen)
-                },
-                func(activeP *Pipeline) {
-                    activeP.DebitAccount(orgID, senderID, transferAmount).AssertRows(1)
-                    activeP.CreditAccount(orgID, receiverID, transferAmount).AssertRows(1)
-                    activeP.InsertTransferReceipt(idempotencyKey, orgID, senderID, receiverID, transferAmount).AssertRows(1)
-                },
-            )
-        },
-        func(elseP *Pipeline) {
-            // Insufficient funds: record rejection audit log and commit cleanly!
-            elseP.InsertAuditEvent(orgID, senderID, "rejected_insufficient_funds", transferAmount).AssertRows(1)
-        },
-    )
+    // 2. Branch on the future's result and columns. Each arm's closure queues on the handle it
+    //    receives (p here shadows the outer one); at most one arm runs.
+    p.If(senderFut.WhereCol("status = 'frozen'"), func(p *Pipeline) {
+        p.Abort(ErrAccountFrozen) // aborts the pipeline: everything rolls back
+    }).ElseIf(senderFut.WhereCol("balance_cents >= ?", transferAmount), func(p *Pipeline) { // bound, never spliced into the SQL
+        p.DebitAccount(orgID, senderID, transferAmount).AssertRows(1)
+        p.CreditAccount(orgID, receiverID, transferAmount).AssertRows(1)
+        p.InsertTransferReceipt(idempotencyKey, orgID, senderID, receiverID, transferAmount).AssertRows(1)
+    }).Else(func(p *Pipeline) {
+        // Insufficient funds: record rejection audit log and commit cleanly!
+        p.InsertAuditEvent(orgID, senderID, "rejected_insufficient_funds", transferAmount).AssertRows(1)
+    })
     return nil
 }, runtime.WithTxRetry(runtime.DefaultRetryPolicy()))
 ```
@@ -851,7 +839,7 @@ err := q.PipelineTx(ctx, nil, func(p *Pipeline) error {
    - `*runtime.ExecFuture`: returned by `kind: exec` pipeline methods.
      - `.AssertRows(n int64) *ExecFuture`: fails the pipeline with an error matching `runtime.ErrAssertionFailed` if rows affected $\ne n$.
      - `.AssertFound() *ExecFuture`: fails the pipeline with an error matching `runtime.ErrAssertionFailed` if rows affected $\ne 1$.
-     - `.RowsEq(n)`, `.RowsGt(n)`, `.RowsGe(n)`, `.RowsLt(n)`, `.RowsLe(n)`, `.Found()`, `.NotFound()`: returns a `PipelineCond` for `p.If(...)`.
+     - `.RowsEq(n)`, `.RowsGt(n)`, `.RowsGe(n)`, `.RowsLt(n)`, `.RowsLe(n)`, `.Found()`, `.NotFound()`: returns a `PipelineCond` for `p.If(...)` / `.ElseIf(...)`.
      - The `Rows*` / `AssertRows` family is the same on every future (`ExecFuture`, `RowFuture`, `SliceFuture`): the count is rows affected for an exec statement and rows returned for a query.
      - `.Label(s string)` (every future, chainable): tags the operation; a failed assertion on it reports the label in `AssertionError.Label` and in the message (see *Assertion errors* below).
      - `.Result() (sql.Result, error)` and `.RowsAffected() (int64, error)` (valid after `Flush` / `PipelineTx` completes).
@@ -870,8 +858,10 @@ err := q.PipelineTx(ctx, nil, func(p *Pipeline) error {
 2. **Boolean Combinators & Control Flow**:
    - `condA.And(condB)`, `condA.Or(condB)`, `condA.Not()` combine `PipelineCond` values.
      The operands may come from different futures (`del.NotFound().And(get.Found())`): every leaf is evaluated over its own operation's rows, also on the single-round-trip path, where each earlier operation records its leaf server-side and the latest one combines the records, still in one network round-trip. A leaf over an operation that did not run (its branch was not taken) is false, so `Not` of it is true, identically on both paths.
-   - `ifRes := p.If(cond, thenFn, elseFn)`: `ifRes.Taken()` and `ifRes.Skipped()` report whether the `then` branch was taken after flush.
-   - **One mechanism for "this operation did not run"**: reading a future whose operation sits in an untaken `If`/`Else` branch returns `runtime.ErrBranchNotTaken` (test it with `errors.Is`); there is no separate `Skipped()` on futures. `ifRes.Skipped()` is about the block (it is inside an outer untaken branch), which has no error to carry the answer.
+   - **If chains**: `ch := p.If(cond, func(p *Pipeline) { ... }).ElseIf(cond2, func(p *Pipeline) { ... }).Else(func(p *Pipeline) { ... })` (any number of `ElseIf`, `Else` optional; a nil closure is an arm with no operations). The arms are mutually exclusive and evaluated in order: an arm runs when its own condition holds and no earlier arm's did, the `Else` arm when none did; an `ElseIf` condition matters only when the earlier arms did not run. After a successful flush `ch.Taken(i)` reports whether arm `i` ran: 0 is the `If` arm, 1 the first `ElseIf`, and so on; the `Else` arm is the index after the last `ElseIf` (an index that names no arm panics). Before the flush, after a failed one, and for a chain inside an enclosing arm that did not run (`ch.Skipped()`), `Taken` is false for every arm. The value is a `*runtime.IfChain[*Pipeline]`.
+   - **Arm handles are scoped**: each closure receives its own `*Pipeline` handle, valid only while the closure runs, and while it runs only that handle can queue. Queuing (or `If`, `Abort`, `Flush`) on the outer handle inside a closure, or on an arm's handle kept after its closure returned, fails the pipeline with `runtime.ErrInvalidArgument` naming the statement and its queue position, before anything is sent; so does an `ElseIf` / `Else` that does not directly follow its chain's previous arm (something queued in between, or a second `Else`). Name the parameter like the outer handle (`func(p *Pipeline)`) so the outer one is out of reach.
+   - **Conditions come from futures of the same pipeline**: a zero `PipelineCond{}`, a nil future's condition or one over another pipeline's future fails the pipeline with `runtime.ErrInvalidArgument` instead of being silently false.
+   - **One mechanism for "this operation did not run"**: reading a future whose operation sits in an untaken `If`/`Else` branch returns `runtime.ErrBranchNotTaken` (test it with `errors.Is`); there is no separate `Skipped()` on futures. `ch.Skipped()` is about the chain (it is inside an outer untaken branch), which has no error to carry the answer.
    - **Empty `VALUES` operations**: queuing an `INSERT ... VALUES` statement with an empty collection (section 2.3) queues an operation that sends no SQL: its future reports zero rows affected / no rows (a `Found()`/`RowsGt(0)` condition over it is false, `NotFound()` is true; `AssertRows(0)` holds), it is never handed to `pgxwire` / `mysqlwire`, and the other operations of the pipeline still run in one round trip. A pipeline in which an empty operation carries an assertion or a condition runs on the sequential path (counted in `CacheStats.SequentialPipelines`) so that the assertion and condition are evaluated in order; a pipeline made only of empty operations sends nothing at all. A failing assertion on an empty operation (say `AssertFound()`) fails the pipeline with a `*runtime.AssertionError` (got 0) before anything is sent, and the operation's own future reports that same error, like the future of any other failing operation.
    - `p.Abort(err)`: when reached inside an active branch, aborts the pipeline, returning `err` from `PipelineTx` / `Flush` (the transaction is rolled back only inside `PipelineTx` or a standalone `Pipeline`; see below).
 3. **Assertion errors**: a failed assertion returns a `*runtime.AssertionError` (`errors.Is(err, runtime.ErrAssertionFailed)` is true; use `errors.As` to read the fields `Statement`, `Op`, `Label`, `Want`, `Got`, `GotKnown`). `Op` says *which* queued operation failed when one pipeline queues the same statement several times: it is the operation's 0-based position in the pipeline's queue (every `p.<Stmt>(...)` call and every `p.Abort` counts, in queue order, inside `If` branches too, taken or not). `Label` is an optional caller tag set with `.Label("...")` on any future (chainable: `p.Reserve(sku, qty).Label("cart line 3").AssertFound()`). The message names the statement, the operation, its label if any and the expected count, for example `sqlgen: pipeline assertion failed on statement "Reserve", operation 3 ("cart line 3"): expected 1 rows affected, got 0`. `Op` and `Label` are the same on the single-round-trip and the sequential path. On the single-roundtrip wire path the guard's error carries the actual row count too, so `Got` / `GotKnown` and the message are the same on both paths. Only the guard's own, marked error is translated: a genuine database error of one of your statements (an integer overflow, a unique violation, ...) that happens to carry an assertion is returned as that database error, identically on both paths.
@@ -924,9 +914,9 @@ err := q.PipelineTx(ctx, nil, func(p *store.Pipeline) error {
 | :--- | :--- |
 | The producer returned exactly one row (`Arg`) / affected exactly one row and generated an id (`LastInsertIDArg`) | the consumer runs with that value; a SQL `NULL` forwards as `NULL` (representable when `T` is a pointer or `sql.Null*`) |
 | The producer returned 0 rows or more than one; an `INSERT IGNORE` that inserted nothing; a multi-row `INSERT` (`LastInsertIDArg`) | the consumer fails, when (and only when) it would run, with a `*runtime.ArgError` (`errors.Is(err, runtime.ErrArgUnresolved)`): `Statement`, `Op`, `Label` name the consumer as in an `AssertionError`, `Producer`, `ProducerOp`, `ProducerLabel` the producer, `Got` its row count. The pipeline fails and rolls back like a failed assertion; with several unresolved values the first in argument order is reported |
-| The consumer sits in an `If` branch that is not taken | silent, as for any skipped operation. To skip instead of failing, branch on the producer: `p.If(order.Found(), func(p *Pipeline) { p.InsertOrderLine(order.Arg(), ...) }, nil)` |
+| The consumer sits in an `If` branch that is not taken | silent, as for any skipped operation. To skip instead of failing, branch on the producer: `p.If(order.Found(), func(p *Pipeline) { p.InsertOrderLine(order.Arg(), ...) })` |
 | The producer has an assertion (`AssertFound()`) | the assertion fails first, at the producer; with `AssertFound()` the value is always resolved when the consumer runs |
-| The consumer is queued outside the `If` branch its producer is in (or in the sibling branch) | build error before anything is sent (`runtime.ErrInvalidArgument`): the consumer must be in the producer's branch or in one nested in it, so "the producer did not run" cannot happen |
+| The consumer is queued outside the `If` arm its producer is in (or in another arm of the chain) | build error before anything is sent (`runtime.ErrInvalidArgument`): the consumer must be in the producer's branch or in one nested in it, so "the producer did not run" cannot happen |
 | A value from another pipeline (an earlier `Pipeline`, `Flush`, or a `PipelineTx` attempt captured in a closure) | build error (`runtime.ErrInvalidArgument`); a retried `PipelineTx` closure creates new futures and values |
 | A pipeline in a transaction you began (`q.WithTx(tx).Pipeline(ctx)`) | an unresolved value leaves the transaction usable, on every path (the consumer did not run) |
 | An empty `VALUES` operation (section 3.4, "Empty `VALUES` operations") as the producer of `LastInsertIDArg` | unresolved (no id); such a pipeline runs on the sequential path |
@@ -989,7 +979,7 @@ Every generated file declares the same fixed set of exported top-level names in 
 | Types | `Queries`, `Pipeline` |
 | Functions | `New` |
 
-The generated file never re-declares runtime symbols: everything user-facing from the runtime (`runtime.Query`, `runtime.Order`, `runtime.Seek`, `runtime.WithTxRetry`, `runtime.DefaultRetryPolicy`, `runtime.PipelineCond`, `runtime.ExecFuture`, `runtime.IfResult`, ...) is spelled `runtime.X` in application code, which imports `github.com/CAFxX/sqlgen/runtime` itself. For example `q.InTx(ctx, nil, fn, runtime.WithTxRetry(runtime.DefaultRetryPolicy()))` and `After: runtime.Seek{}` (the first page).
+The generated file never re-declares runtime symbols: everything user-facing from the runtime (`runtime.Query`, `runtime.Order`, `runtime.Seek`, `runtime.WithTxRetry`, `runtime.DefaultRetryPolicy`, `runtime.PipelineCond`, `runtime.ExecFuture`, `runtime.IfChain`, ...) is spelled `runtime.X` in application code, which imports `github.com/CAFxX/sqlgen/runtime` itself. For example `q.InTx(ctx, nil, fn, runtime.WithTxRetry(runtime.DefaultRetryPolicy()))` and `After: runtime.Seek{}` (the first page).
 
 **Method names generated on `*Queries` and `*Pipeline`** that a statement name must avoid (`reservedStatementNames`): `CacheStats`, `Close`, `If`, `InTx`, `Pipeline`, `PipelineTx`, `WithPrepared`, `WithTx`, plus `SetBuildError`, `QueueExec`, `QueueExecNoop`, `Abort` and `Flush`, which the generated `Pipeline` inherits from `runtime.Pipeline`. A statement becomes a method with its own name on both `*Queries` and `*Pipeline`, so it must not shadow any of them.
 

@@ -13,7 +13,6 @@ import (
 	"testing"
 
 	"github.com/CAFxX/sqlgen/integration/pgq"
-	"github.com/CAFxX/sqlgen/runtime"
 )
 
 type userTxOutcome struct {
@@ -25,44 +24,44 @@ type userTxOutcome struct {
 
 func TestRealEnginePipelineUserTransactionAfterFailure(t *testing.T) {
 	scenarios := []scenario{
-		{"failed assertion, nothing changed by the failing op", func(p *pgq.Pipeline) ([]*runtime.IfResult, func() string) {
+		{"failed assertion, nothing changed by the failing op", func(p *pgq.Pipeline) ([]ifRes, func() string) {
 			p.AddScoreOne(1, 1).AssertRows(1)
 			p.AddScoreOne(1, 999).AssertRows(1) // no such row
 			p.AddScoreOne(1000, 2)              // never runs
 			return nil, nil
 		}},
-		{"failed assertion on a read", func(p *pgq.Pipeline) ([]*runtime.IfResult, func() string) {
+		{"failed assertion on a read", func(p *pgq.Pipeline) ([]ifRes, func() string) {
 			p.AddScoreOne(5, 1)
 			p.GetItem(999).AssertFound()
 			return nil, nil
 		}},
-		{"two asserted operations, the second fails", func(p *pgq.Pipeline) ([]*runtime.IfResult, func() string) {
+		{"two asserted operations, the second fails", func(p *pgq.Pipeline) ([]ifRes, func() string) {
 			p.AddScoreOne(1, 1).AssertRows(1)
 			p.AddScoreOne(2, 2).AssertRows(1)
 			p.DeleteItems([]int64{98}).AssertRows(1)
 			p.AddScoreOne(4, 4).AssertRows(1)
 			return nil, nil
 		}},
-		{"abort in a taken branch", func(p *pgq.Pipeline) ([]*runtime.IfResult, func() string) {
+		{"abort in a taken branch", func(p *pgq.Pipeline) ([]ifRes, func() string) {
 			p.AddScoreOne(1, 1)
 			g := p.GetItem(1)
-			return []*runtime.IfResult{p.If(g.Found(), func(p *pgq.Pipeline) { p.Abort(errStop) }, nil)}, nil
+			return []ifRes{p.If(g.Found(), func(p *pgq.Pipeline) { p.Abort(errStop) })}, nil
 		}},
-		{"assertion on an operation that feeds a condition", func(p *pgq.Pipeline) ([]*runtime.IfResult, func() string) {
+		{"assertion on an operation that feeds a condition", func(p *pgq.Pipeline) ([]ifRes, func() string) {
 			p.AddScoreOne(1, 1)
 			u := p.AddScoreOne(1, 999).AssertRows(1)
-			return []*runtime.IfResult{p.If(u.Found(), func(p *pgq.Pipeline) { p.AddScoreOne(1, 3) }, nil)}, nil
+			return []ifRes{p.If(u.Found(), func(p *pgq.Pipeline) { p.AddScoreOne(1, 3) })}, nil
 		}},
-		{"successful pipeline (control)", func(p *pgq.Pipeline) ([]*runtime.IfResult, func() string) {
+		{"successful pipeline (control)", func(p *pgq.Pipeline) ([]ifRes, func() string) {
 			p.AddScoreOne(1, 1).AssertRows(1)
 			return nil, nil
 		}},
-		{"unique violation aborts the transaction on both paths", func(p *pgq.Pipeline) ([]*runtime.IfResult, func() string) {
+		{"unique violation aborts the transaction on both paths", func(p *pgq.Pipeline) ([]ifRes, func() string) {
 			p.AddScoreOne(1, 1).AssertRows(1)
 			p.InsertItem(2, 1, "dup", 0, "x")
 			return nil, nil
 		}},
-		{"unique violation in an asserted operation", func(p *pgq.Pipeline) ([]*runtime.IfResult, func() string) {
+		{"unique violation in an asserted operation", func(p *pgq.Pipeline) ([]ifRes, func() string) {
 			p.AddScoreOne(1, 1)
 			p.InsertItem(2, 1, "dup", 0, "x").AssertRows(1)
 			return nil, nil

@@ -1572,14 +1572,14 @@ func TestPropertyPipelineWireVsSequentialParity(t *testing.T) {
 
 		runDAG := func(q *Queries) (User, error, bool, bool, error) {
 			var getFut *runtime.RowFuture[User]
-			var ifRes *runtime.IfResult
+			var ifRes *runtime.IfChain[*Pipeline]
 			err := q.PipelineTx(ctx, nil, func(p *Pipeline) error {
 				getFut = p.GetUserByID(targetID)
 				cond := getFut.WhereCol("score >= ?", minScore).And(getFut.Found())
 
 				ifRes = p.If(cond, func(p *Pipeline) {
 					p.CreateUser(100+int64(trial), 1, "then@p.com", "admin", 99, "ok").AssertRows(1)
-				}, func(p *Pipeline) {
+				}).Else(func(p *Pipeline) {
 					if triggerAbort {
 						p.Abort(errCustomAbort)
 					} else {
@@ -1589,7 +1589,7 @@ func TestPropertyPipelineWireVsSequentialParity(t *testing.T) {
 				return nil
 			})
 			u, getErr := getFut.Get()
-			return u, getErr, ifRes.Taken(), ifRes.Skipped(), err
+			return u, getErr, ifRes.Taken(0), ifRes.Skipped(), err
 		}
 
 		uSeq, getErrSeq, takenSeq, skippedSeq, errSeq := runDAG(seqQ)
@@ -1682,7 +1682,7 @@ func TestMaxOpenConns1DeadlockGate(t *testing.T) {
 		uFut := ptx.GetUserByID(2)
 		ptx.If(uFut.Found(), func(ptx *Pipeline) {
 			ptx.CreateUser(99, 1, "p99@x.com", "member", 50, "bio")
-		}, nil)
+		})
 		return nil
 	}); err != nil {
 		t.Fatalf("PipelineTx on MaxOpenConns(1): %v", err)

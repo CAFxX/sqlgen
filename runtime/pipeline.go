@@ -550,29 +550,113 @@ func (f *SliceFuture[T]) Get() ([]T, error) {
 	return f.vals, nil
 }
 
-// IfResult reports whether the "then" branch of a Pipeline.If block was taken.
-type IfResult struct {
-	condID  int
-	cond    PipelineCond
-	gates   []BranchGate
-	taken   bool
-	skipped bool
+// ifResult records which arm of an If chain ran; executePipelineOps resolves it after a successful run.
+type ifResult struct {
+	base     []BranchGate   // the gates of the scope the chain was queued in
+	arms     [][]BranchGate // each arm's gates: base, the earlier arms' conditions false, its own true
+	taken    int            // the arm that ran (-1: none); valid once resolved
+	skipped  bool
+	resolved bool
 }
 
-// Taken reports whether the condition evaluated to true (and any enclosing If branch was also active).
-func (r *IfResult) Taken() bool {
-	if r == nil || r.skipped {
+// IfChain is an If block of a pipeline: If starts it with its first arm, ElseIf adds an arm, Else adds
+// the final arm and ends the chain. At most one arm runs: the first whose condition holds, else the Else
+// arm. Each arm's closure receives a handle scoped to that arm (see Pipeline). Once the pipeline ran,
+// Taken reports which arm ran.
+type IfChain[P any] struct {
+	res    *ifResult
+	p      *Pipeline // the handle If was called on
+	handle func(*Pipeline) P
+	negs   []BranchGate // the earlier arms' conditions, false
+	end    int          // the queue length when the last arm's closure returned
+	done   bool         // Else was added
+}
+
+// Taken reports whether arm i ran: 0 is the If arm, 1 the first ElseIf, and so on; the Else arm (if any)
+// is the index after the last ElseIf. It is false for every arm before the pipeline ran successfully, and
+// when the chain sits inside an enclosing arm that did not run (Skipped). An i that names no arm of the
+// chain panics.
+func (c *IfChain[P]) Taken(i int) bool {
+	r := c.res
+	if i < 0 || i >= len(r.arms) {
+		panic("sqlgen: IfChain.Taken(" + strconv.Itoa(i) + "): the chain has " + strconv.Itoa(len(r.arms)) + " arms")
+	}
+	return r.resolved && r.taken == i
+}
+
+// Skipped reports whether the chain sat inside an enclosing If arm that did not run, so that none of its
+// conditions was considered (false before the pipeline ran successfully).
+func (c *IfChain[P]) Skipped() bool {
+	return c.res.resolved && c.res.skipped
+}
+
+// If is used by generated code: it queues the first arm of an If chain on p, gated on cond, and runs fn
+// with a handle scoped to that arm (handle wraps the runtime handle in the generated Pipeline type).
+func If[P any](p *Pipeline, cond PipelineCond, fn func(P), handle func(*Pipeline) P) *IfChain[P] {
+	c := &IfChain[P]{res: &ifResult{base: p.cloneGates(), taken: -1}, p: p, handle: handle}
+	p.checkHandle("If")
+	p.ifResults = append(p.ifResults, c.res)
+	c.arm("If", &cond, fn)
+	return c
+}
+
+// ElseIf adds an arm that runs when no earlier arm of the chain ran and cond holds. It must directly follow
+// the chain's previous arm, on the same pipeline handle.
+func (c *IfChain[P]) ElseIf(cond PipelineCond, fn func(P)) *IfChain[P] {
+	if c.follows("ElseIf") {
+		c.arm("ElseIf", &cond, fn)
+	}
+	return c
+}
+
+// Else adds the final arm, which runs when no other arm of the chain ran, and ends the chain: adding
+// another arm afterwards fails the pipeline with ErrInvalidArgument.
+func (c *IfChain[P]) Else(fn func(P)) *IfChain[P] {
+	if c.follows("Else") {
+		c.arm("Else", nil, fn)
+		c.done = true
+	}
+	return c
+}
+
+// follows checks that an ElseIf / Else is added right after the chain's previous arm.
+func (c *IfChain[P]) follows(what string) bool {
+	p := c.p
+	p.checkHandle(what)
+	switch {
+	case c.done:
+		p.SetBuildError(InvalidArgument(what + " after the chain's Else"))
+		return false
+	case p.cur != p.scope || len(p.opPtrs) != c.end:
+		p.SetBuildError(InvalidArgument(what + " must directly follow the previous arm of its If chain: nothing may be queued in between"))
 		return false
 	}
-	return r.taken
+	return true
 }
 
-// Skipped reports whether this If block was inside an outer untaken branch.
-func (r *IfResult) Skipped() bool {
-	if r == nil {
-		return true
+// arm queues one arm: its gates are the chain's scope, every earlier arm's condition false and (except
+// for Else) its own condition true; fn runs with a handle scoped to the arm.
+func (c *IfChain[P]) arm(what string, cond *PipelineCond, fn func(P)) {
+	p := c.p
+	n := len(p.branchStack)
+	p.branchStack = append(p.branchStack, c.negs...)
+	if cond != nil {
+		cc := *cond
+		id := p.produceCond(what, &cc)
+		p.branchStack = append(p.branchStack, BranchGate{CondID: id, WantTrue: true, Cond: &cc})
+		c.negs = append(c.negs, BranchGate{CondID: id, WantTrue: false, Cond: &cc})
 	}
-	return r.skipped
+	c.res.arms = append(c.res.arms, p.cloneGates())
+	if fn != nil {
+		s := &branchScope{}
+		prev := p.cur
+		p.cur = s
+		fn(c.handle(&Pipeline{pipelineState: p.pipelineState, scope: s}))
+		s.closed = true
+		p.cur = prev
+	}
+	p.branchStack = p.branchStack[:n]
+	c.end = len(p.opPtrs)
 }
 
 // wirePipeliner and wireTxPipeliner are the method sets of the wire.Pipeliner and wire.TxPipeliner
@@ -980,7 +1064,21 @@ func translateOverflowGuard(op *PipelineOp, err error) error {
 }
 
 // Pipeline queues SQL operations for single-roundtrip wire execution or sequential fallback.
+//
+// A *Pipeline is a handle on the queue. The handle an If arm's closure receives is scoped to that arm:
+// it can queue only while the closure runs, and while it runs no other handle can queue (doing so fails
+// the pipeline with ErrInvalidArgument), so every operation lands in the branch its code is written in.
 type Pipeline struct {
+	*pipelineState
+	scope *branchScope // the If arm this handle belongs to; nil for the pipeline itself
+}
+
+// branchScope is one If arm; closed once its closure returned.
+type branchScope struct{ closed bool }
+
+// pipelineState is the queue the handles of one pipeline share.
+type pipelineState struct {
+	cur         *branchScope // the arm whose closure is running (nil: none)
 	ctx         context.Context
 	db          *sql.DB
 	cache       *StmtCache
@@ -990,7 +1088,7 @@ type Pipeline struct {
 	ops         []PipelineOp
 	opPtrs      []*PipelineOp
 	branchStack []BranchGate
-	ifResults   []*IfResult
+	ifResults   []*ifResult // every If chain, resolved after the run
 	condSeq     int
 	valSeq      int // ValRec IDs
 	buildErr    error
@@ -1007,7 +1105,7 @@ type Pipeline struct {
 
 // NewPipeline creates a new Pipeline.
 func NewPipeline(ctx context.Context, db *sql.DB, cache *StmtCache, txCache *TxStmtCache, usePrepared bool, dialect Dialect) *Pipeline {
-	return &Pipeline{
+	return &Pipeline{pipelineState: &pipelineState{
 		ctx:         ctx,
 		db:          db,
 		cache:       cache,
@@ -1016,6 +1114,21 @@ func NewPipeline(ctx context.Context, db *sql.DB, cache *StmtCache, txCache *TxS
 		dialect:     dialect,
 		ops:         make([]PipelineOp, 0, 8),
 		opPtrs:      make([]*PipelineOp, 0, 8),
+	}}
+}
+
+// checkHandle fails the pipeline when handle p cannot queue now (what names the call): the pipeline
+// already ran, p belongs to an If arm whose closure returned, or another arm's closure is running.
+func (p *Pipeline) checkHandle(what string) {
+	switch {
+	case p.flushed:
+		p.noteLate(&PipelineRanError{Statement: what, Op: len(p.opPtrs)})
+	case p.scope != nil && p.scope.closed:
+		p.SetBuildError(InvalidArgument(what + " was queued on the handle of an If arm whose closure has returned; " +
+			"queue it on the handle in scope (the enclosing arm's parameter, or the pipeline)"))
+	case p.scope != p.cur:
+		p.SetBuildError(InvalidArgument(what + " was queued on an outer pipeline handle while an If arm's closure is running; " +
+			"queue it on the handle the closure received"))
 	}
 }
 
@@ -1056,6 +1169,12 @@ func (p *Pipeline) appendOp(op PipelineOp) *PipelineOp {
 	if p.flushed {
 		op.queueErr = &PipelineRanError{Statement: op.stmtName(), Op: op.opIdx}
 		p.noteLate(op.queueErr)
+	} else if p.scope != p.cur {
+		what := "Abort"
+		if !op.Decorators.IsAbort {
+			what = "statement " + strconv.Quote(op.stmtName())
+		}
+		p.checkHandle(what + " (operation " + strconv.Itoa(op.opIdx) + ")")
 	}
 	opPtr := new(PipelineOp)
 	*opPtr = op
@@ -1539,54 +1658,50 @@ func (p *Pipeline) Abort(err error) {
 	})
 }
 
-// If queues conditional thenFn and optional elseFn branches gated on cond.
-func (p *Pipeline) If(cond PipelineCond, thenFn func(), elseFn func()) *IfResult {
-	if p.flushed {
-		p.noteLate(&PipelineRanError{Statement: "If", Op: len(p.opPtrs)})
-	}
+// produceCond makes cond's latest operation produce its value under a new condition ID, which it
+// returns. Every leaf of a compound condition is evaluated over ITS OWN operation's rows: only the root
+// (latest) operation's statement can see its own rows, so the earlier operations record their leaves
+// server-side and the bound condition reads those records. A zero PipelineCond, or one over an operation
+// of another pipeline, fails the pipeline with ErrInvalidArgument.
+func (p *Pipeline) produceCond(what string, cond *PipelineCond) int {
 	p.condSeq++
 	condID := p.condSeq
-	if rootOp := cond.Op; rootOp != nil {
-		// Every leaf of a compound condition must be evaluated over ITS OWN operation's rows. Only the
-		// root (latest) operation's statement can see its own rows, so the earlier operations record
-		// their leaves server-side and the bound condition reads those records.
-		bound := p.bindCond(&cond, rootOp)
-		if rootOp.Decorators.ProduceCond == nil {
-			rootOp.Decorators.ProduceCond = bound
-			rootOp.Decorators.CondID = condID
-		} else {
-			pc := ProducedCond{CondID: condID, Cond: bound}
-			rootOp.ExtraConds = append(rootOp.ExtraConds, pc)
-			rootOp.Decorators.ExtraConds = append(rootOp.Decorators.ExtraConds, pc)
-		}
+	if err := p.checkCond(cond); err != "" {
+		p.SetBuildError(InvalidArgument(what + ": " + err))
+		return condID
 	}
-	res := &IfResult{
-		condID: condID,
-		cond:   cond,
-		gates:  p.cloneGates(),
+	rootOp := cond.Op
+	bound := p.bindCond(cond, rootOp)
+	if rootOp.Decorators.ProduceCond == nil {
+		rootOp.Decorators.ProduceCond = bound
+		rootOp.Decorators.CondID = condID
+	} else {
+		pc := ProducedCond{CondID: condID, Cond: bound}
+		rootOp.ExtraConds = append(rootOp.ExtraConds, pc)
+		rootOp.Decorators.ExtraConds = append(rootOp.Decorators.ExtraConds, pc)
 	}
-	p.ifResults = append(p.ifResults, res)
+	return condID
+}
 
-	cCopy := cond
-	if thenFn != nil {
-		p.branchStack = append(p.branchStack, BranchGate{
-			CondID:   condID,
-			WantTrue: true,
-			Cond:     &cCopy,
-		})
-		thenFn()
-		p.branchStack = p.branchStack[:len(p.branchStack)-1]
+// checkCond returns why c cannot be a condition of p ("" when it can): every leaf must be over an
+// operation queued on p (a zero PipelineCond has none).
+func (p *Pipeline) checkCond(c *PipelineCond) string {
+	switch {
+	case c == nil:
+		return "a missing operand"
+	case c.Kind == CondAnd || c.Kind == CondOr:
+		if e := p.checkCond(c.Left); e != "" {
+			return e
+		}
+		return p.checkCond(c.Right)
+	case c.Kind == CondNot:
+		return p.checkCond(c.Left)
+	case c.Op == nil:
+		return "the condition is a zero PipelineCond; build conditions from a future (f.Found(), f.RowsEq(n), f.WhereCol(...))"
+	case c.Op.opIdx >= len(p.opPtrs) || p.opPtrs[c.Op.opIdx] != c.Op:
+		return "the condition is over an operation of another pipeline; use the futures of this pipeline"
 	}
-	if elseFn != nil {
-		p.branchStack = append(p.branchStack, BranchGate{
-			CondID:   condID,
-			WantTrue: false,
-			Cond:     &cCopy,
-		})
-		elseFn()
-		p.branchStack = p.branchStack[:len(p.branchStack)-1]
-	}
-	return res
+	return ""
 }
 
 // bindCond returns a copy of c in which every leaf over an operation other than root refers to the
@@ -1712,15 +1827,16 @@ func (p *Pipeline) executePipelineOps(ctx context.Context, wireMode bool) error 
 		}
 	}
 	for _, r := range p.ifResults {
-		if !evalGatesGo(r.gates, condVals) {
+		r.resolved = true
+		if !evalGatesGo(r.base, condVals) {
 			r.skipped = true
-			r.taken = false
 			continue
 		}
-		if v, ok := condVals[r.condID]; ok {
-			r.taken = v
-		} else {
-			r.taken = r.cond.EvalGoFn()
+		for i, g := range r.arms {
+			if evalGatesGo(g, condVals) {
+				r.taken = i
+				break
+			}
 		}
 	}
 	return nil
@@ -1730,6 +1846,11 @@ func (p *Pipeline) executePipelineOps(ctx context.Context, wireMode bool) error 
 func (p *Pipeline) Flush() error {
 	if p.ownsTx {
 		return ErrFlushInPipelineTx
+	}
+	if p.scope != nil || p.cur != nil {
+		err := InvalidArgument("Flush was called on an If arm's handle or while an If arm's closure is running; flush the pipeline itself, after its If chains")
+		p.SetBuildError(err)
+		return err
 	}
 	return p.run()
 }

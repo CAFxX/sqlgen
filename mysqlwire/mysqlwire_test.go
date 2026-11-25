@@ -409,12 +409,12 @@ func TestAbortAndConditionsOverTheWire(t *testing.T) {
 		db.SetMaxOpenConns(1)
 
 		// If/Else on rows found, with the skipped branch inert
-		var thenRes, elseRes *runtime.IfResult
+		var thenRes, elseRes *runtime.IfChain[*runtime.Pipeline]
 		var skipped, taken *runtime.ExecFuture
 		err := k.tx(ctx, db, nil, nil, func(p *runtime.Pipeline) error {
 			hit, miss := k.Get(p, 1), k.Get(p, 99)
-			thenRes = p.If(hit.Found(), func() { taken = k.Upd(p, 1, 1) }, func() { skipped = k.Upd(p, 1000, 2) })
-			elseRes = p.If(miss.Found(), func() { k.Upd(p, 1000, 3) }, nil)
+			thenRes = ifp(p, hit.Found(), func(p *runtime.Pipeline) { taken = k.Upd(p, 1, 1) }).Else(func(p *runtime.Pipeline) { skipped = k.Upd(p, 1000, 2) })
+			elseRes = ifp(p, miss.Found(), func(p *runtime.Pipeline) { k.Upd(p, 1000, 3) })
 			return nil
 		})
 		if err != nil {
@@ -422,44 +422,44 @@ func TestAbortAndConditionsOverTheWire(t *testing.T) {
 		}
 		_, skippedErr := skipped.Result()
 		_, takenErr := taken.Result()
-		if !thenRes.Taken() || elseRes.Taken() || !errors.Is(skippedErr, runtime.ErrBranchNotTaken) || errors.Is(takenErr, runtime.ErrBranchNotTaken) {
-			t.Fatalf("taken = %v / %v, branch errors = %v / %v", thenRes.Taken(), elseRes.Taken(), skippedErr, takenErr)
+		if !thenRes.Taken(0) || elseRes.Taken(0) || !errors.Is(skippedErr, runtime.ErrBranchNotTaken) || errors.Is(takenErr, runtime.ErrBranchNotTaken) {
+			t.Fatalf("taken = %v / %v, branch errors = %v / %v", thenRes.Taken(0), elseRes.Taken(0), skippedErr, takenErr)
 		}
 		sameRows(t, k.rows(t, plain), []row{{1, 11}, {2, 20}, {3, 30}})
 
 		// conditions on RowsAffected of an exec and on several reads of one future
-		var c1, c2, c3 *runtime.IfResult
+		var c1, c2, c3 *runtime.IfChain[*runtime.Pipeline]
 		err = k.tx(ctx, db, nil, nil, func(p *runtime.Pipeline) error {
 			up := k.Upd(p, 1, 1)
-			c1 = p.If(up.RowsEq(1), func() { k.Upd(p, 1, 2) }, func() { k.Upd(p, 1000, 2) })
-			c2 = p.If(up.RowsGt(1).Or(up.NotFound()), func() { k.Upd(p, 1000, 2) }, func() { k.Upd(p, 1, 3) })
+			c1 = ifp(p, up.RowsEq(1), func(p *runtime.Pipeline) { k.Upd(p, 1, 2) }).Else(func(p *runtime.Pipeline) { k.Upd(p, 1000, 2) })
+			c2 = ifp(p, up.RowsGt(1).Or(up.NotFound()), func(p *runtime.Pipeline) { k.Upd(p, 1000, 2) }).Else(func(p *runtime.Pipeline) { k.Upd(p, 1, 3) })
 			hit := k.Get(p, 1)
-			c3 = p.If(hit.RowsGe(1).And(hit.RowsLe(1)).And(hit.RowsLt(2)), func() { k.Upd(p, 3, 3) }, nil)
+			c3 = ifp(p, hit.RowsGe(1).And(hit.RowsLe(1)).And(hit.RowsLt(2)), func(p *runtime.Pipeline) { k.Upd(p, 3, 3) })
 			return nil
 		})
 		if err != nil {
 			t.Fatal(err)
 		}
-		if !c1.Taken() || c2.Taken() || !c3.Taken() {
-			t.Fatalf("taken = %v %v %v", c1.Taken(), c2.Taken(), c3.Taken())
+		if !c1.Taken(0) || c2.Taken(0) || !c3.Taken(0) {
+			t.Fatalf("taken = %v %v %v", c1.Taken(0), c2.Taken(0), c3.Taken(0))
 		}
 		sameRows(t, k.rows(t, plain), []row{{1, 12}, {2, 21}, {3, 34}})
 
 		// WhereCol (the select runs a second time, inside the aggregate) and a compound condition over two
 		// operations
-		var w1, w2, w3 *runtime.IfResult
+		var w1, w2, w3 *runtime.IfChain[*runtime.Pipeline]
 		err = k.tx(ctx, db, nil, nil, func(p *runtime.Pipeline) error {
 			a, b := k.Get(p, 1), k.Get(p, 2)
-			w1 = p.If(a.WhereCol("v > 10"), func() { k.Upd(p, 100, 1) }, nil)
-			w2 = p.If(a.Found().And(b.WhereCol("v >= 1000")), func() { k.Upd(p, 1000, 2) }, func() { k.Upd(p, 7, 2) })
-			w3 = p.If(a.NotFound().Or(b.WhereCol("v = 28")).Not(), func() { k.Upd(p, 11, 3) }, nil)
+			w1 = ifp(p, a.WhereCol("v > 10"), func(p *runtime.Pipeline) { k.Upd(p, 100, 1) })
+			w2 = ifp(p, a.Found().And(b.WhereCol("v >= 1000")), func(p *runtime.Pipeline) { k.Upd(p, 1000, 2) }).Else(func(p *runtime.Pipeline) { k.Upd(p, 7, 2) })
+			w3 = ifp(p, a.NotFound().Or(b.WhereCol("v = 28")).Not(), func(p *runtime.Pipeline) { k.Upd(p, 11, 3) })
 			return nil
 		})
 		if err != nil {
 			t.Fatal(err)
 		}
-		if !w1.Taken() || w2.Taken() || !w3.Taken() {
-			t.Fatalf("taken = %v %v %v", w1.Taken(), w2.Taken(), w3.Taken())
+		if !w1.Taken(0) || w2.Taken(0) || !w3.Taken(0) {
+			t.Fatalf("taken = %v %v %v", w1.Taken(0), w2.Taken(0), w3.Taken(0))
 		}
 		sameRows(t, k.rows(t, plain), []row{{1, 112}, {2, 28}, {3, 45}})
 
@@ -468,7 +468,7 @@ func TestAbortAndConditionsOverTheWire(t *testing.T) {
 		err = k.tx(ctx, db, nil, nil, func(p *runtime.Pipeline) error {
 			k.Upd(p, 1, 1)
 			miss := k.Get(p, 99)
-			p.If(miss.Found(), func() { p.Abort(stop) }, nil)
+			ifp(p, miss.Found(), func(p *runtime.Pipeline) { p.Abort(stop) })
 			k.Upd(p, 1, 2)
 			return nil
 		})
@@ -481,7 +481,7 @@ func TestAbortAndConditionsOverTheWire(t *testing.T) {
 		err = k.tx(ctx, db, nil, nil, func(p *runtime.Pipeline) error {
 			k.Upd(p, 100, 1)
 			hit := k.Get(p, 1)
-			p.If(hit.Found(), func() { p.Abort(stop) }, nil)
+			ifp(p, hit.Found(), func(p *runtime.Pipeline) { p.Abort(stop) })
 			k.Upd(p, 100, 2)
 			return nil
 		})
@@ -612,7 +612,7 @@ func TestUserManagedTransaction(t *testing.T) {
 			{"abort", func(p *runtime.Pipeline) {
 				k.Upd(p, 1, 1).AssertRows(1)
 				g := k.Get(p, 1)
-				p.If(g.Found(), func() { p.Abort(abortErr) }, nil)
+				ifp(p, g.Found(), func(p *runtime.Pipeline) { p.Abort(abortErr) })
 				k.Upd(p, 1000, 3)
 			}, func(err error) bool { return errors.Is(err, abortErr) }, []row{{1, 11}, {2, 20}, {3, 130}}},
 			{"assertion on the update that fails after changing a row", func(p *runtime.Pipeline) {
@@ -1223,4 +1223,9 @@ func TestConnectorKeepsTheConfig(t *testing.T) {
 		}
 		stats(t, k, 2, 0)
 	})
+}
+
+// ifp is the generated Pipeline.If for tests that queue on a *runtime.Pipeline directly.
+func ifp(p *runtime.Pipeline, cond runtime.PipelineCond, fn func(*runtime.Pipeline)) *runtime.IfChain[*runtime.Pipeline] {
+	return runtime.If(p, cond, fn, func(h *runtime.Pipeline) *runtime.Pipeline { return h })
 }

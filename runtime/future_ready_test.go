@@ -157,7 +157,7 @@ func TestIfOnAPipelineThatRanFails(t *testing.T) {
 	if err := p.Flush(); err != nil {
 		t.Fatal(err)
 	}
-	p.If(f.Found(), func() {}, nil)
+	p.If(f.Found(), func(p *Pipeline) {})
 	if err := p.Flush(); !errors.Is(err, ErrPipelineRan) {
 		t.Errorf("Flush after a late If: %v", err)
 	}

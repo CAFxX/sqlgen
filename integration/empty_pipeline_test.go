@@ -76,7 +76,7 @@ func TestRealEnginePGWireEmptyValuesInPipelines(t *testing.T) {
 			var a1, a2, ins, thenIns, elseIns *runtime.ExecFuture
 			var ret *runtime.SliceFuture[int64]
 			var get *runtime.RowFuture[pgq.Item]
-			var ifr *runtime.IfResult
+			var ifr ifRes
 			build := func(p *pgq.Pipeline) {
 				a1 = p.AddScoreOne(1, 1)
 				ins = p.InsertItems(nil)
@@ -85,8 +85,7 @@ func TestRealEnginePGWireEmptyValuesInPipelines(t *testing.T) {
 				g := p.GetItem(2)
 				get = g
 				ifr = p.If(g.Found(),
-					func(p *pgq.Pipeline) { thenIns = p.InsertItems(nil) },
-					func(p *pgq.Pipeline) { elseIns = p.InsertItems(nil) })
+					func(p *pgq.Pipeline) { thenIns = p.InsertItems(nil) }).Else(func(p *pgq.Pipeline) { elseIns = p.InsertItems(nil) })
 			}
 			var err error
 			if tx {
@@ -109,7 +108,7 @@ func TestRealEnginePGWireEmptyValuesInPipelines(t *testing.T) {
 			o.got = it.Name
 			o.thenAff, o.errThen = thenIns.RowsAffected()
 			_, o.elseErr = elseIns.RowsAffected()
-			o.taken, o.skipped = ifr.Taken(), ifr.Skipped()
+			o.taken, o.skipped = ifr.Taken(0), ifr.Skipped()
 			return o
 		}
 		onlyEmpty := func(q *pgq.Queries, tx bool) {
@@ -215,7 +214,7 @@ func TestRealEngineMySQLWireEmptyValuesInPipelines(t *testing.T) {
 		mixedMy := func(q *myq.Queries, tx bool) (o emptyOutcome) {
 			var a1, a2, ins, thenIns, elseIns *runtime.ExecFuture
 			var get *runtime.RowFuture[myq.Item]
-			var ifr *runtime.IfResult
+			var ifr ifRes
 			build := func(p *myq.Pipeline) {
 				a1 = p.AddScoreOne(1, 1)
 				ins = p.InsertItems(nil)
@@ -223,8 +222,7 @@ func TestRealEngineMySQLWireEmptyValuesInPipelines(t *testing.T) {
 				g := p.GetItem(2)
 				get = g
 				ifr = p.If(g.Found(),
-					func(p *myq.Pipeline) { thenIns = p.InsertItems(nil) },
-					func(p *myq.Pipeline) { elseIns = p.InsertItems(nil) })
+					func(p *myq.Pipeline) { thenIns = p.InsertItems(nil) }).Else(func(p *myq.Pipeline) { elseIns = p.InsertItems(nil) })
 			}
 			var err error
 			if tx {
@@ -245,14 +243,14 @@ func TestRealEngineMySQLWireEmptyValuesInPipelines(t *testing.T) {
 			o.got = it.Name
 			o.thenAff, o.errThen = thenIns.RowsAffected()
 			_, o.elseErr = elseIns.RowsAffected()
-			o.taken, o.skipped = ifr.Taken(), ifr.Skipped()
+			o.taken, o.skipped = ifr.Taken(0), ifr.Skipped()
 			return o
 		}
 		mixedMaria := func(q *mdbq.Queries, tx bool) (o emptyOutcome) {
 			var a1, a2, ins, thenIns, elseIns *runtime.ExecFuture
 			var ret *runtime.SliceFuture[int64]
 			var get *runtime.RowFuture[mdbq.Item]
-			var ifr *runtime.IfResult
+			var ifr ifRes
 			build := func(p *mdbq.Pipeline) {
 				a1 = p.AddScoreOne(1, 1)
 				ins = p.InsertItems(nil)
@@ -261,8 +259,7 @@ func TestRealEngineMySQLWireEmptyValuesInPipelines(t *testing.T) {
 				g := p.GetItem(2)
 				get = g
 				ifr = p.If(g.Found(),
-					func(p *mdbq.Pipeline) { thenIns = p.InsertItems(nil) },
-					func(p *mdbq.Pipeline) { elseIns = p.InsertItems(nil) })
+					func(p *mdbq.Pipeline) { thenIns = p.InsertItems(nil) }).Else(func(p *mdbq.Pipeline) { elseIns = p.InsertItems(nil) })
 			}
 			var err error
 			if tx {
@@ -285,7 +282,7 @@ func TestRealEngineMySQLWireEmptyValuesInPipelines(t *testing.T) {
 			o.got = it.Name
 			o.thenAff, o.errThen = thenIns.RowsAffected()
 			_, o.elseErr = elseIns.RowsAffected()
-			o.taken, o.skipped = ifr.Taken(), ifr.Skipped()
+			o.taken, o.skipped = ifr.Taken(0), ifr.Skipped()
 			return o
 		}
 		onlyEmptyMy := func(q *myq.Queries, tx bool) {

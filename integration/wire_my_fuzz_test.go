@@ -24,7 +24,7 @@ type myFuzzGen struct {
 	returning bool
 	futs      []myFut
 	kinds     []string
-	ifs       []*runtime.IfResult
+	ifs       []fuzzIf
 	trace     []string
 	// avail are the forwarded values a consumer queued here may use (see fuzzGen.avail)
 	avail []runtime.Arg[int64]
@@ -158,22 +158,29 @@ func (g *myFuzzGen) gen(p myPipe, depth, n int) {
 			}
 			cond := g.cond()
 			g.tr(depth, "if (%d futures so far)", len(g.futs))
-			hasElse := g.rnd.IntN(2) == 0
 			mark := len(g.avail)
-			r := p.If(cond, func(p myPipe) {
-				g.gen(p, depth+1, 1+g.rnd.IntN(3))
-				g.avail = g.avail[:mark]
-			}, func() func(myPipe) {
-				if !hasElse {
-					return nil
-				}
+			arm := func(label string, n int) func(myPipe) {
 				return func(p myPipe) {
-					g.tr(depth, "else")
-					g.gen(p, depth+1, 1+g.rnd.IntN(2))
+					if label != "" {
+						g.tr(depth, "%s", label)
+					}
+					g.gen(p, depth+1, n)
 					g.avail = g.avail[:mark]
 				}
-			}())
-			g.ifs = append(g.ifs, r)
+			}
+			// a chain: If, up to two ElseIf (whose conditions may read the earlier arms' operations), an
+			// optional Else
+			c := p.If(cond, arm("", 1+g.rnd.IntN(3)))
+			arms := 1
+			for e := g.rnd.IntN(3); e > 0; e-- {
+				c.ElseIf(g.cond(), arm("elseif", 1+g.rnd.IntN(2)))
+				arms++
+			}
+			if g.rnd.IntN(2) == 0 {
+				c.Else(arm("else", 1+g.rnd.IntN(2)))
+				arms++
+			}
+			g.ifs = append(g.ifs, fuzzIf{c, arms})
 		case k == 9 && depth > 0:
 			g.tr(depth, "ABORT")
 			p.Abort(errFuzzAbort)
@@ -271,7 +278,11 @@ func (g *myFuzzGen) describe(err error) string {
 	}
 	var sb strings.Builder
 	for _, r := range g.ifs {
-		fmt.Fprintf(&sb, "if(%v,%v)", r.Taken(), r.Skipped())
+		fmt.Fprintf(&sb, "if(")
+		for i := range r.arms {
+			fmt.Fprintf(&sb, "%v,", r.c.Taken(i))
+		}
+		fmt.Fprintf(&sb, "%v)", r.c.Skipped())
 	}
 	for i, f := range g.futs {
 		fmt.Fprintf(&sb, " %s[%s]", g.kinds[i], f.desc())
@@ -473,7 +484,7 @@ func myCondScenarios() []myScn {
 	for _, v := range myCondVariants {
 		out = append(out, myScn{
 			name: "cond " + v.name,
-			build: func(p myPipe) ([]*runtime.IfResult, func() string) {
+			build: func(p myPipe) ([]ifRes, func() string) {
 				var o myCondOps
 				o.d = p.DeleteItems([]int64{98, 99})
 				o.u = p.AddScoreOne(1, 1)
@@ -486,14 +497,13 @@ func myCondScenarios() []myScn {
 					o.r = p.ItemsByIDs([]int64{3, 4})
 				}
 				// never taken: m finds nothing
-				p.If(o.m.src.Found(), func(p myPipe) { o.skipped = p.GetItem(2) }, nil)
+				p.If(o.m.src.Found(), func(p myPipe) { o.skipped = p.GetItem(2) })
 				cond := v.mk(o)
 				r1 := p.If(cond,
-					func(p myPipe) { p.AddScoreOne(1000, 2) },
-					func(p myPipe) { p.AddScoreOne(7, 4) })
+					func(p myPipe) { p.AddScoreOne(1000, 2) }).Else(func(p myPipe) { p.AddScoreOne(7, 4) })
 				// the same condition value again, and its negation: both must still be intact
-				r2 := p.If(cond.Not(), func(p myPipe) { p.AddScoreOne(100000, 3) }, nil)
-				return []*runtime.IfResult{r1, r2}, nil
+				r2 := p.If(cond.Not(), func(p myPipe) { p.AddScoreOne(100000, 3) })
+				return []ifRes{r1, r2}, nil
 			},
 		})
 	}

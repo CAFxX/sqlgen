@@ -468,9 +468,9 @@ func TestExtraConditionsAreRecordedServerSide(t *testing.T) {
 	p := NewPipeline(context.Background(), nil, nil, nil, true, DialectDollar)
 	f := QueueRow[int64](p, 2, get, RenderInput{}, MakeVariantKey(2, 0, 0, 0), nil, nil, nil,
 		func(s RowScanner, dst *int64) error { return s.Scan(dst) })
-	p.If(f.Found(), func() { p.QueueExec(3, upd, RenderInput{}, MakeVariantKey(3, 0, 0, 0), nil, nil, nil) }, nil)
-	p.If(f.NotFound(), nil, func() { p.QueueExec(3, upd, RenderInput{}, MakeVariantKey(3, 0, 0, 0), nil, nil, nil) })
-	p.If(f.RowsGe(1), nil, nil)
+	p.If(f.Found(), func(p *Pipeline) { p.QueueExec(3, upd, RenderInput{}, MakeVariantKey(3, 0, 0, 0), nil, nil, nil) })
+	p.If(f.NotFound(), nil).Else(func(p *Pipeline) { p.QueueExec(3, upd, RenderInput{}, MakeVariantKey(3, 0, 0, 0), nil, nil, nil) })
+	p.If(f.RowsGe(1), nil)
 	p.syncOpsFromPtrs()
 	renderPipelineBatch(DialectDollar, nil, p.ops)
 
@@ -515,15 +515,15 @@ func TestExtraConditionsAreRecordedServerSide(t *testing.T) {
 	p2 := NewPipeline(context.Background(), nil, nil, nil, true, DialectDollar)
 	f2 := QueueRow[int64](p2, 2, get, RenderInput{}, MakeVariantKey(2, 0, 0, 0), nil, nil, nil,
 		func(s RowScanner, dst *int64) error { return s.Scan(dst) })
-	r1 := p2.If(f2.Found(), nil, nil)
-	r2 := p2.If(f2.NotFound(), nil, nil)
+	r1 := p2.If(f2.Found(), nil)
+	r2 := p2.If(f2.NotFound(), nil)
 	p2.syncOpsFromPtrs()
 	p2.ops[0].CondVal, p2.ops[0].CondSet = true, true
 	p2.ops[0].ExtraConds[0].Val, p2.ops[0].ExtraConds[0].Set = true, true // the Go evaluation would say false
 	if err := p2.executePipelineOps(context.Background(), true); err != nil {
 		t.Fatal(err)
 	}
-	if !r1.Taken() || !r2.Taken() {
-		t.Fatalf("taken = %v / %v", r1.Taken(), r2.Taken())
+	if !r1.Taken(0) || !r2.Taken(0) {
+		t.Fatalf("taken = %v / %v", r1.Taken(0), r2.Taken(0))
 	}
 }

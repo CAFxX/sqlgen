@@ -192,7 +192,7 @@ func (e *ClearingEngine) ExecuteMatchAndClear(ctx context.Context, req MatchRequ
 	}
 
 	notionalCents := req.PriceCents * req.Quantity
-	var clearBranch, complianceBranch *runtime.IfResult
+	var clearBranch, complianceBranch *runtime.IfChain[*Pipeline]
 
 	err := e.q.PipelineTx(ctx, nil, func(p *Pipeline) error {
 		// Acquire account reads in canonical (firm_id, account_id) order
@@ -235,58 +235,55 @@ func (e *ClearingEngine) ExecuteMatchAndClear(ctx context.Context, req MatchRequ
 			eitherHaltedCond,
 			func(haltP *Pipeline) {
 				haltP.Abort(ErrAccountNotActive)
-			},
-			func(activeP *Pipeline) {
-				// Level 2 If: Sufficient Margin & Matching Book vs. Margin/Price Rejection
-				clearBranch = activeP.If(
-					canClearCond,
-					func(clearP *Pipeline) {
-						// Double-entry zero-sum clearing fee / PnL transfer between buyer and seller
-						clearP.AdjustAccountMarginAndPnl(-req.ClearingFeeCents, -req.ClearingFeeCents, req.Seq, req.BuyerFirmID, req.BuyerAccountID).AssertRows(1)
-						clearP.AdjustAccountMarginAndPnl(req.ClearingFeeCents, req.ClearingFeeCents, req.Seq, req.SellerFirmID, req.SellerAccountID).AssertRows(1)
+			}).Else(func(activeP *Pipeline) {
+			// Level 2 If: Sufficient Margin & Matching Book vs. Margin/Price Rejection
+			clearBranch = activeP.If(
+				canClearCond,
+				func(clearP *Pipeline) {
+					// Double-entry zero-sum clearing fee / PnL transfer between buyer and seller
+					clearP.AdjustAccountMarginAndPnl(-req.ClearingFeeCents, -req.ClearingFeeCents, req.Seq, req.BuyerFirmID, req.BuyerAccountID).AssertRows(1)
+					clearP.AdjustAccountMarginAndPnl(req.ClearingFeeCents, req.ClearingFeeCents, req.Seq, req.SellerFirmID, req.SellerAccountID).AssertRows(1)
 
-						clearP.MarkOrderFilled("filled", 0, req.Seq, req.BuyOrderID).AssertRows(1)
-						clearP.MarkOrderFilled("filled", 0, req.Seq, req.SellOrderID).AssertRows(1)
+					clearP.MarkOrderFilled("filled", 0, req.Seq, req.BuyOrderID).AssertRows(1)
+					clearP.MarkOrderFilled("filled", 0, req.Seq, req.SellOrderID).AssertRows(1)
 
-						// Double-entry position updates (+Qty for buyer, -Qty for seller)
-						clearP.UpsertPositionSnapshot(
-							req.BuyerPositionID, req.BuyerFirmID, req.BuyerAccountID, req.Symbol,
-							req.Quantity, req.PriceCents, notionalCents, 0, 10000, 250, req.Seq,
-						).AssertRows(1)
-						clearP.UpsertPositionSnapshot(
-							req.SellerPositionID, req.SellerFirmID, req.SellerAccountID, req.Symbol,
-							-req.Quantity, req.PriceCents, notionalCents, 0, -10000, 250, req.Seq,
-						).AssertRows(1)
+					// Double-entry position updates (+Qty for buyer, -Qty for seller)
+					clearP.UpsertPositionSnapshot(
+						req.BuyerPositionID, req.BuyerFirmID, req.BuyerAccountID, req.Symbol,
+						req.Quantity, req.PriceCents, notionalCents, 0, 10000, 250, req.Seq,
+					).AssertRows(1)
+					clearP.UpsertPositionSnapshot(
+						req.SellerPositionID, req.SellerFirmID, req.SellerAccountID, req.Symbol,
+						-req.Quantity, req.PriceCents, notionalCents, 0, -10000, 250, req.Seq,
+					).AssertRows(1)
 
-						fillFut := clearP.InsertClearingFill(
-							req.FillID, req.BuyOrderID, req.SellOrderID, req.BuyerAccountID, req.SellerAccountID,
-							req.Symbol, req.PriceCents, req.Quantity, notionalCents, req.Seq,
-						).AssertRows(1)
+					fillFut := clearP.InsertClearingFill(
+						req.FillID, req.BuyOrderID, req.SellOrderID, req.BuyerAccountID, req.SellerAccountID,
+						req.Symbol, req.PriceCents, req.Quantity, notionalCents, req.Seq,
+					).AssertRows(1)
 
-						// Exercise UPDATE without WHERE and DELETE without WHERE inside Pipeline.If
-						clearP.TouchExchangeHeartbeat(req.Seq).AssertRows(1)
-						clearP.PurgeExpiredLocks()
+					// Exercise UPDATE without WHERE and DELETE without WHERE inside Pipeline.If
+					clearP.TouchExchangeHeartbeat(req.Seq).AssertRows(1)
+					clearP.PurgeExpiredLocks()
 
-						// Level 3 Nested If: Large-trader institutional KYC compliance filing vs. standard audit notice
-						isInstitutionalCond := fillFut.RowsEq(1).And(
-							buyerFut.WhereCol("kyc_verified = 1 AND margin_ratio_bps >= 1500"),
-						)
-						complianceBranch = clearP.If(
-							isInstitutionalCond,
-							func(instP *Pipeline) {
-								instP.InsertComplianceNotice(req.FillID, req.BuyerFirmID, req.BuyerAccountID, "institutional_cleared", notionalCents, req.Seq).AssertRows(1)
-							},
-							func(retailP *Pipeline) {
-								retailP.InsertComplianceNotice(req.FillID, req.BuyerFirmID, req.BuyerAccountID, "standard_cleared", notionalCents, req.Seq).AssertRows(1)
-							},
-						)
+					// Level 3 Nested If: Large-trader institutional KYC compliance filing vs. standard audit notice
+					isInstitutionalCond := fillFut.RowsEq(1).And(
+						buyerFut.WhereCol("kyc_verified = 1 AND margin_ratio_bps >= 1500"),
+					)
+					complianceBranch = clearP.If(
+						isInstitutionalCond,
+						func(instP *Pipeline) {
+							instP.InsertComplianceNotice(req.FillID, req.BuyerFirmID, req.BuyerAccountID, "institutional_cleared", notionalCents, req.Seq).AssertRows(1)
+						}).Else(func(retailP *Pipeline) {
+						retailP.InsertComplianceNotice(req.FillID, req.BuyerFirmID, req.BuyerAccountID, "standard_cleared", notionalCents, req.Seq).AssertRows(1)
 					},
-					func(rejectP *Pipeline) {
-						rejectP.InsertComplianceNotice(req.FillID, req.BuyerFirmID, req.BuyerAccountID, "rejected_margin_or_price", notionalCents, req.Seq).AssertRows(1)
-						rejectP.TouchExchangeHeartbeat(req.Seq).AssertRows(1)
-					},
-				)
+					)
+				}).Else(func(rejectP *Pipeline) {
+				rejectP.InsertComplianceNotice(req.FillID, req.BuyerFirmID, req.BuyerAccountID, "rejected_margin_or_price", notionalCents, req.Seq).AssertRows(1)
+				rejectP.TouchExchangeHeartbeat(req.Seq).AssertRows(1)
 			},
+			)
+		},
 		)
 		return nil
 	}, runtime.WithTxRetry(runtime.DefaultRetryPolicy()))
@@ -294,11 +291,11 @@ func (e *ClearingEngine) ExecuteMatchAndClear(ctx context.Context, req MatchRequ
 		return MatchOutcome{}, err
 	}
 
-	cleared := clearBranch != nil && clearBranch.Taken()
+	cleared := clearBranch != nil && clearBranch.Taken(0)
 	return MatchOutcome{
 		Cleared:          cleared,
-		Rejected:         clearBranch != nil && !clearBranch.Taken(),
-		LargeTraderFiled: cleared && complianceBranch != nil && complianceBranch.Taken(),
+		Rejected:         clearBranch != nil && !clearBranch.Taken(0),
+		LargeTraderFiled: cleared && complianceBranch != nil && complianceBranch.Taken(0),
 	}, nil
 }
 

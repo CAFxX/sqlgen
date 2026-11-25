@@ -64,9 +64,9 @@ func TestForwardPostgresShapes(t *testing.T) {
 	}
 	fwdExec(p, fwdInsertLine, id.Bind(), "sku", int64(2))
 	var thenLine *ExecFuture
-	p.If(order.Found(), func() {
+	p.If(order.Found(), func(p *Pipeline) {
 		thenLine = fwdExec(p, fwdUpdate, id.Bind(), "b", id.Bind())
-	}, nil)
+	})
 	ops := fwdOps(p)
 	if err := renderPipelineBatch(DialectDollar, nil, ops); err != nil {
 		t.Fatal(err)
@@ -164,7 +164,7 @@ func TestForwardBuildErrors(t *testing.T) {
 	if nilRow.Arg().Forwarded() || nilExec.LastInsertIDArg().Forwarded() {
 		t.Fatal("nil futures forward nothing")
 	}
-	(&Pipeline{}).BindForwarded() // nothing queued: no-op
+	(&Pipeline{pipelineState: &pipelineState{}}).BindForwarded() // nothing queued: no-op
 	if (&ArgError{Producer: "P", LastInsertID: true}).Error() == (&ArgError{Producer: "P"}).Error() {
 		t.Fatal("messages must differ")
 	}
@@ -233,7 +233,7 @@ func TestForwardMySQLShapes(t *testing.T) {
 	// A user transaction: the consumer's check needs no savepoint; a gated consumer checks its gates.
 	p = fwdPipeline(DialectQuestion)
 	o := fwdRow(p, fwdGetOrder, "x")
-	p.If(o.Found(), func() { fwdExec(p, fwdInsertLine, o.Arg().Bind(), "s", int64(1)) }, nil)
+	p.If(o.Found(), func(p *Pipeline) { fwdExec(p, fwdInsertLine, o.Arg().Bind(), "s", int64(1)) })
 	b, err = RenderMySQLBatch(fwdOps(p), MySQLRenderOptions{Flavor: fl, InTx: true})
 	if err != nil {
 		t.Fatal(err)

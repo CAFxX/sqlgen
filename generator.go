@@ -3118,17 +3118,13 @@ func Generate(cfg Config) ([]byte, error) {
 	b.WriteString("\t})\n")
 	b.WriteString("}\n\n")
 
-	b.WriteString("// If queues conditional thenFn and optional elseFn branches gated on cond.\n")
-	b.WriteString("func (pl *Pipeline) If(cond runtime.PipelineCond, thenFn func(*Pipeline), elseFn func(*Pipeline)) *runtime.IfResult {\n")
-	b.WriteString("\tvar tFn, eFn func()\n")
-	b.WriteString("\tif thenFn != nil {\n")
-	b.WriteString("\t\ttFn = func() { thenFn(pl) }\n")
-	b.WriteString("\t}\n")
-	b.WriteString("\tif elseFn != nil {\n")
-	b.WriteString("\t\teFn = func() { elseFn(pl) }\n")
-	b.WriteString("\t}\n")
-	b.WriteString("\treturn pl.Pipeline.If(cond, tFn, eFn)\n")
+	b.WriteString("// If starts an If chain on pl: fn queues the arm's operations on the handle it receives, which runs\n")
+	b.WriteString("// them only when cond holds. That handle can queue only while fn runs, and no other handle can meanwhile.\n")
+	b.WriteString("// Add arms with ElseIf and Else (at most one arm runs); Taken(i) reports which one ran.\n")
+	b.WriteString("func (pl *Pipeline) If(cond runtime.PipelineCond, fn func(*Pipeline)) *runtime.IfChain[*Pipeline] {\n")
+	b.WriteString("\treturn runtime.If(pl.Pipeline, cond, fn, pl.arm)\n")
 	b.WriteString("}\n\n")
+	b.WriteString("func (pl *Pipeline) arm(h *runtime.Pipeline) *Pipeline { return &Pipeline{Pipeline: h, q: pl.q} }\n\n")
 
 	// Emit tuple struct definitions, chunk pools, and presort comparators
 	for _, tName := range tupleStructOrder {
