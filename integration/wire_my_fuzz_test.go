@@ -425,6 +425,20 @@ var myCondVariants = []myCondVariant{
 	{"m.WhereCol&g.Found", func(o myCondOps) runtime.PipelineCond {
 		return myScoreAtLeast(o.m, 0).And(o.g.src.Found())
 	}},
+	// the server evaluates the predicate on every path: NULL is not TRUE (and its negation is), bound
+	// arguments, SQL-only functions, several columns on one future
+	{"g.WhereCol(NULL)", func(o myCondOps) runtime.PipelineCond {
+		return o.g.where("score > (SELECT MAX(score) FROM sg_items WHERE id < 0)")
+	}},
+	{"!g.WhereCol(NULL)&d.NotFound", func(o myCondOps) runtime.PipelineCond {
+		return o.g.where("score > (SELECT MAX(score) FROM sg_items WHERE id < 0)").Not().And(o.d.src.NotFound())
+	}},
+	{"g.WhereCol&!g.WhereCol(args)", func(o myCondOps) runtime.PipelineCond {
+		return o.g.where("score >= ? AND name = ?", int64(30), "n3").And(o.g.where("score >= ?", int64(31)).Not())
+	}},
+	{"s.WhereCol(fn)&g.Found", func(o myCondOps) runtime.PipelineCond {
+		return o.s.where("CHAR_LENGTH(name) = ? AND UPPER(name) LIKE 'N%'", int64(2)).And(o.g.src.Found())
+	}},
 	// three operations, nested
 	{"(d.NotFound&g.Found)&s.Eq2", func(o myCondOps) runtime.PipelineCond {
 		return o.d.src.NotFound().And(o.g.src.Found()).And(o.s.src.RowsEq(2))

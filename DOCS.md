@@ -767,7 +767,7 @@ Count turns the same way as above, with a custom dialer registered through `mysq
 
 **Differences from the PostgreSQL path** (each is asserted by a test, not hidden):
 - **`RETURNING`:** none on MySQL (no statement can have it); on MariaDB `INSERT ... RETURNING` and `DELETE ... RETURNING` work, including assertions and row-count conditions over them (an extra counter column is added and hidden); `WhereCol` over them falls back as above.
-- **`WhereCol` runs the SELECT twice** (once for its rows, once inside the aggregate that evaluates the predicate), in the same transaction with the same arguments. Under `READ COMMITTED` the two executions can see different rows; under the default `REPEATABLE READ` they cannot.
+- **A `WhereCol` condition runs the SELECT twice** (once for its rows, once inside the aggregate that reads its `WhereCol` column: MySQL cannot aggregate over the rows a statement returned to the client), in the same transaction with the same arguments. Under `READ COMMITTED` the two executions can see different rows; under the default `REPEATABLE READ` they cannot.
 - **`LastInsertId` is not available** for an operation run on the single-round-trip path: `ExecFuture.Result().LastInsertId()` returns `runtime.ErrLastInsertIDNotAvailable` (on every wire driver) instead of a silent 0; read the key back with a `SELECT`, or insert outside the pipeline.
 - **A gated `SELECT` (inside an `If` branch) and a `WhereCol` condition wrap the query in a derived table**, which MySQL requires to have unique column names: a select list such as `a.id, b.id` fails with error 1060 (give the columns aliases). The sequential path has no such limit.
 - **A gated multi-row `INSERT`** becomes `SELECT ... FROM DUAL WHERE <gates> UNION ALL SELECT ...` (MySQL has no filterable `VALUES` table constructor), so the gate text is repeated per row.
@@ -819,16 +819,12 @@ err := q.PipelineTx(ctx, nil, func(p *Pipeline) error {
     // 2. Branch on the future's result and columns:
     p.If(
         senderFut.Found().And(
-            senderFut.WhereCol("balance_cents >= ?", func(a Account) bool {
-                return a.BalanceCents >= transferAmount
-            }, transferAmount), // bound, never spliced into the SQL
+            senderFut.WhereCol("balance_cents >= ?", transferAmount), // bound, never spliced into the SQL
         ),
         func(thenP *Pipeline) {
             // Nested check: abort and roll back if account is frozen!
             thenP.If(
-                senderFut.WhereCol("status = 'frozen'", func(a Account) bool {
-                    return a.Status == "frozen"
-                }),
+                senderFut.WhereCol("status = 'frozen'"),
                 func(frozenP *Pipeline) {
                     frozenP.Abort(ErrAccountFrozen)
                 },
@@ -862,11 +858,11 @@ err := q.PipelineTx(ctx, nil, func(p *Pipeline) error {
      - `.AssertFound() *RowFuture[T]`: fails the pipeline with an error matching `runtime.ErrAssertionFailed` if the row count is not 1.
      - `.AssertRows(n int64) *RowFuture[T]`: fails the pipeline with an error matching `runtime.ErrAssertionFailed` if row count $\ne n$.
      - `.Found()`, `.NotFound()`, `.RowsEq(n)`, `.RowsGt(n)`, `.RowsGe(n)`, `.RowsLt(n)`, `.RowsLe(n)`: returns a `PipelineCond`.
-     - `.WhereCol(sqlPred string, goPred func(T) bool, args ...any) PipelineCond`: true when the row was found and satisfies the predicate. `sqlPred` is a boolean SQL expression over the statement's output columns; write one `?` per value in `args` (every `?` outside `'...'`, `"..."` and `` `...` `` counts, in every dialect; a count that does not match `args` fails the pipeline with `runtime.ErrInvalidArgument`). The values are bound, never spliced into the SQL text: placeholders numbered after the statement's own on the PostgreSQL-protocol path (`pgxwire`, where the server infers their type from the comparison), literals written by the same rules as the statement's own arguments on `mysqlwire` (an argument that has no literal form sends the pipeline down the sequential path). On the sequential path `goPred(row)` is evaluated instead, so it must express the same predicate over the same values: `f.WhereCol("balance_cents >= ?", func(a Account) bool { return a.BalanceCents >= amt }, amt)`. Never build `sqlPred` with `fmt.Sprintf` from values: bind them. (PostgreSQL's `jsonb` `?` operators need their function forms, for example `jsonb_exists(col, ?)`.)
+     - `.WhereCol(sqlPred string, args ...any) PipelineCond`: true when the row was found and the predicate is `TRUE` for it (`NULL` counts as false). `sqlPred` is a boolean SQL expression that the server evaluates on every path, in the same round trip as the statement: it is added to the statement's own output column list as one more (hidden) column, `CASE WHEN (<sqlPred>) THEN 1 ELSE 0 END AS _sqlgen_wc<k>`, which never reaches the scanned row, the `SelectCols` projection or a forwarded value. So it is written in the scope of that list, as an extra output column would be: it can use the statement's tables and columns (and its aggregates, in a grouped or aggregate `SELECT`), but not the list's own aliases (write `SUM(qty) > ?`, not `total > ?`, for `SUM(qty) AS total`). The statement needs such a list: a `SELECT` that is neither `DISTINCT` nor a `UNION` / `INTERSECT` / `EXCEPT`, or a `RETURNING` clause; any other statement fails the pipeline with `runtime.ErrInvalidArgument`. Write one `?` per value in `args` (every `?` outside `'...'`, `"..."` and `` `...` `` counts, in every dialect; a count that does not match `args` fails the pipeline with `runtime.ErrInvalidArgument`). The values are bound, never spliced into the SQL text: placeholders on the sequential path and on `pgxwire` (where the server infers their type from the comparison), literals written by the same rules as the statement's own arguments on `mysqlwire` (an argument that has no literal form sends the pipeline down the sequential path): `f.WhereCol("balance_cents >= ?", amt)`. Never build `sqlPred` with `fmt.Sprintf` from values: bind them. (PostgreSQL's `jsonb` `?` operators need their function forms, for example `jsonb_exists(col, ?)`.) Several `WhereCol` on one future add one column each.
      - `.Get() (T, error)` (valid after flush).
    - `*runtime.SliceFuture[T]`: returned by `kind: many` pipeline methods.
      - `.AssertRows(n int64) *SliceFuture[T]`, `.AssertFound() *SliceFuture[T]`
-     - `.Found()`, `.NotFound()`, `.RowsEq(n)`, `.RowsGt(n)`, `.RowsGe(n)`, `.RowsLt(n)`, `.RowsLe(n)`, `.WhereCol(sqlPred, goPred func(T) bool, args ...any)` (true when at least one row was returned and every row satisfies the predicate)
+     - `.Found()`, `.NotFound()`, `.RowsEq(n)`, `.RowsGt(n)`, `.RowsGe(n)`, `.RowsLt(n)`, `.RowsLe(n)`, `.WhereCol(sqlPred, args ...any)` (true when at least one row was returned and the predicate is `TRUE` for every row; `sqlPred` and `args` as for `RowFuture`)
      - `.Get() ([]T, error)` (valid after flush; no rows is an empty slice, not an error).
    - Reading any future's result (`Result`, `RowsAffected`, `Get`) before its pipeline has flushed (`Flush`, or the end of `PipelineTx`) returns `runtime.ErrFutureNotReady`, never a result that could be mistaken for a real one; after the flush a `*RowFuture` whose statement matched no row returns `sql.ErrNoRows`. **A failed pipeline has no results**: when `Flush` / `PipelineTx` returns an error (a failed assertion, `Abort`, a database error, a build error such as `ErrCollectionTooLarge`, a failed commit), the failing operation's future returns its own error and every other future returns the pipeline's error, also those of the operations that ran before the failure (nothing was committed, and the single-round-trip paths do not deliver the results of a failed batch); the same on every path. Read what you need for an error message after the failure, in a new query.
 2. **Boolean Combinators & Control Flow**:

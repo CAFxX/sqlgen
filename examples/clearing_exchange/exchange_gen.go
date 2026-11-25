@@ -710,9 +710,10 @@ var descGetMarginAccount = &runtime.QueryDescriptor{
 	StmtID:    4,
 	StmtVerb:  runtime.VerbSelect,
 	StaticSQL: "SELECT\n  firm_id, account_id, status, collateral_cents, realized_pnl_cents, margin_ratio_bps, kyc_verified, updated_seq\nFROM margin_accounts\nWHERE firm_id = ? AND account_id = ?",
-	Segments:  []string{"SELECT\n  ", "\nFROM margin_accounts\nWHERE firm_id = ", " AND account_id = ", ""},
+	Segments:  []string{"SELECT\n  ", "\n", "FROM margin_accounts\nWHERE firm_id = ", " AND account_id = ", ""},
 	Slots: []runtime.Slot{
 		{Kind: runtime.SlotSelectCols},
+		{Kind: runtime.SlotColPreds},
 		{Kind: runtime.SlotScalar},
 		{Kind: runtime.SlotScalar},
 	},
@@ -865,8 +866,9 @@ func (pl *Pipeline) GetMarginAccount(firmID int64, accountID int64, selectCols .
 		FlagMask: flagMask,
 	}
 	return runtime.QueueRow(pl.Pipeline, stmtIDGetMarginAccount, descGetMarginAccount, in, vk, runtime.FastSlot(colMask, &pl.q.fastSlots[2]), argBuf, expandErr,
-		func(r *sql.Row, dst *MarginAccount) error { return scanGetMarginAccountRow(r, dst, colMask, p) },
-		func(rs *sql.Rows, dst *MarginAccount) error { return scanGetMarginAccountRow(rs, dst, colMask, p) },
+		func(rs runtime.RowScanner, dst *MarginAccount) error {
+			return scanGetMarginAccountRow(rs, dst, colMask, p)
+		},
 	)
 }
 
@@ -882,8 +884,9 @@ var descGetAccountCollateralCents = &runtime.QueryDescriptor{
 	StmtID:    5,
 	StmtVerb:  runtime.VerbSelect,
 	StaticSQL: "SELECT collateral_cents\nFROM margin_accounts\nWHERE firm_id = ? AND account_id = ?",
-	Segments:  []string{"SELECT collateral_cents\nFROM margin_accounts\nWHERE firm_id = ", " AND account_id = ", ""},
+	Segments:  []string{"SELECT collateral_cents\n", "FROM margin_accounts\nWHERE firm_id = ", " AND account_id = ", ""},
 	Slots: []runtime.Slot{
+		{Kind: runtime.SlotColPreds},
 		{Kind: runtime.SlotScalar},
 		{Kind: runtime.SlotScalar},
 	},
@@ -992,8 +995,9 @@ func (pl *Pipeline) GetAccountCollateralCents(firmID int64, accountID int64) *ru
 		FlagMask: flagMask,
 	}
 	return runtime.QueueRow(pl.Pipeline, stmtIDGetAccountCollateralCents, descGetAccountCollateralCents, in, vk, &pl.q.fastSlots[3], argBuf, expandErr,
-		func(r *sql.Row, dst *int64) error { return scanGetAccountCollateralCentsRow(r, dst, colMask, p) },
-		func(rs *sql.Rows, dst *int64) error { return scanGetAccountCollateralCentsRow(rs, dst, colMask, p) },
+		func(rs runtime.RowScanner, dst *int64) error {
+			return scanGetAccountCollateralCentsRow(rs, dst, colMask, p)
+		},
 	)
 }
 
@@ -1102,13 +1106,14 @@ var descIngestOrders = &runtime.QueryDescriptor{
 	StmtID:       7,
 	StmtVerb:     runtime.VerbInsert,
 	HasReturning: true,
-	Segments:     []string{"INSERT INTO orders (\n  firm_id, account_id, symbol, side, limit_price_cents, quantity, status, client_order_id, updated_seq\n)\n", "", "", "\nON CONFLICT (firm_id, client_order_id) DO UPDATE SET\n  quantity = excluded.quantity,\n  limit_price_cents = excluded.limit_price_cents,\n  status = excluded.status,\n  updated_seq = ", "\nRETURNING\n  ", ""},
+	Segments:     []string{"INSERT INTO orders (\n  firm_id, account_id, symbol, side, limit_price_cents, quantity, status, client_order_id, updated_seq\n)\n", "", "", "\nON CONFLICT (firm_id, client_order_id) DO UPDATE SET\n  quantity = excluded.quantity,\n  limit_price_cents = excluded.limit_price_cents,\n  status = excluded.status,\n  updated_seq = ", "\nRETURNING\n  ", "", ""},
 	Slots: []runtime.Slot{
 		{Kind: runtime.SlotInsertTupleValuesOpen},
 		{Kind: runtime.SlotTupleSlice, Tuple: &runtime.TupleDescriptor{Segments: []string{"\n  ", ",\n  ", ",\n  ", ",\n  ", ",\n  ", ",\n  ", ",\n  ", ",\n  ", ",\n  ", "\n"}, NumFields: 9}},
 		{Kind: runtime.SlotInsertTupleValuesClose},
 		{Kind: runtime.SlotScalar},
 		{Kind: runtime.SlotSelectCols},
+		{Kind: runtime.SlotColPreds},
 	},
 	SelectColExprs: []string{"order_id", "firm_id", "account_id", "symbol", "status", "updated_seq"},
 	NumTuples:      1,
@@ -1366,7 +1371,7 @@ func (pl *Pipeline) IngestOrders(rows []OrderSubmission, epochSeq int64, selectC
 		TupleLens: tupleLensBuf[:],
 	}
 	return runtime.QueueSlice(pl.Pipeline, stmtIDIngestOrders, descIngestOrders, in, vk, nil, argBuf, expandErr,
-		func(rs *sql.Rows, dst *OrderAck) error { return scanIngestOrdersRow(rs, dst, colMask, p) },
+		func(rs runtime.RowScanner, dst *OrderAck) error { return scanIngestOrdersRow(rs, dst, colMask, p) },
 	)
 }
 
@@ -1451,7 +1456,7 @@ var descCancelOrdersByIDs = &runtime.QueryDescriptor{
 	StmtID:       8,
 	StmtVerb:     runtime.VerbUpdate,
 	HasReturning: true,
-	Segments:     []string{"UPDATE orders\nSET status = 'cancelled', updated_seq = ", "\nWHERE ", "firm_id = ", "\n  AND status = 'open'\n  AND order_id IN (", ")\n", "RETURNING\n  ", ""},
+	Segments:     []string{"UPDATE orders\nSET status = 'cancelled', updated_seq = ", "\nWHERE ", "firm_id = ", "\n  AND status = 'open'\n  AND order_id IN (", ")\n", "RETURNING\n  ", "", ""},
 	Slots: []runtime.Slot{
 		{Kind: runtime.SlotScalar},
 		{Kind: runtime.SlotBranchGuardOpen},
@@ -1459,6 +1464,7 @@ var descCancelOrdersByIDs = &runtime.QueryDescriptor{
 		{Kind: runtime.SlotSlice},
 		{Kind: runtime.SlotBranchGuardClose},
 		{Kind: runtime.SlotSelectCols},
+		{Kind: runtime.SlotColPreds},
 	},
 	SelectColExprs: []string{"order_id", "firm_id", "account_id", "symbol", "status", "updated_seq"},
 	NumSlices:      1,
@@ -1692,7 +1698,7 @@ func (pl *Pipeline) CancelOrdersByIDs(cancelSeq int64, firmID int64, orderIDs []
 		SliceLens: sliceLensBuf[:],
 	}
 	return runtime.QueueSlice(pl.Pipeline, stmtIDCancelOrdersByIDs, descCancelOrdersByIDs, in, vk, nil, argBuf, expandErr,
-		func(rs *sql.Rows, dst *OrderAck) error { return scanCancelOrdersByIDsRow(rs, dst, colMask, p) },
+		func(rs runtime.RowScanner, dst *OrderAck) error { return scanCancelOrdersByIDsRow(rs, dst, colMask, p) },
 	)
 }
 
@@ -1785,9 +1791,10 @@ var descListOpenOrdersForSymbol = &runtime.QueryDescriptor{
 	StmtID:    9,
 	StmtVerb:  runtime.VerbSelect,
 	StaticSQL: "SELECT\n  order_id, firm_id, account_id, symbol, side, limit_price_cents, quantity, status\nFROM orders\nWHERE symbol = ?\n  AND side = ?\n  AND status = 'open'\nORDER BY limit_price_cents DESC, order_id ASC\nLIMIT ?",
-	Segments:  []string{"SELECT\n  ", "\nFROM orders\nWHERE symbol = ", "\n  AND side = ", "\n  AND status = 'open'\nORDER BY limit_price_cents DESC, order_id ASC\nLIMIT ", ""},
+	Segments:  []string{"SELECT\n  ", "\n", "FROM orders\nWHERE symbol = ", "\n  AND side = ", "\n  AND status = 'open'\nORDER BY limit_price_cents DESC, order_id ASC\nLIMIT ", ""},
 	Slots: []runtime.Slot{
 		{Kind: runtime.SlotSelectCols},
+		{Kind: runtime.SlotColPreds},
 		{Kind: runtime.SlotScalar},
 		{Kind: runtime.SlotScalar},
 		{Kind: runtime.SlotScalar},
@@ -1961,7 +1968,7 @@ func (pl *Pipeline) ListOpenOrdersForSymbol(symbol string, side string, limit in
 		FlagMask: flagMask,
 	}
 	return runtime.QueueSlice(pl.Pipeline, stmtIDListOpenOrdersForSymbol, descListOpenOrdersForSymbol, in, vk, runtime.FastSlot(colMask, &pl.q.fastSlots[5]), argBuf, expandErr,
-		func(rs *sql.Rows, dst *OpenOrderRow) error {
+		func(rs runtime.RowScanner, dst *OpenOrderRow) error {
 			return scanListOpenOrdersForSymbolRow(rs, dst, colMask, p)
 		},
 	)
@@ -2596,8 +2603,9 @@ var descEligibleAccountsSubquery = &runtime.QueryDescriptor{
 	Name:     "EligibleAccountsSubquery",
 	StmtID:   17,
 	StmtVerb: runtime.VerbSelect,
-	Segments: []string{"-- Level-1 subquery filtering margin accounts by presorted FirmIDs and optional KYC / margin gates\nSELECT account_id\nFROM margin_accounts\nWHERE firm_id IN (", ")\n  AND status = ", "\n  ", "\n  ", ""},
+	Segments: []string{"-- Level-1 subquery filtering margin accounts by presorted FirmIDs and optional KYC / margin gates\nSELECT account_id\n", "FROM margin_accounts\nWHERE firm_id IN (", ")\n  AND status = ", "\n  ", "\n  ", ""},
 	Slots: []runtime.Slot{
+		{Kind: runtime.SlotColPreds},
 		{Kind: runtime.SlotSlice},
 		{Kind: runtime.SlotScalar},
 		{Kind: runtime.SlotOptBlock, FlagBit: 0, Inner: &runtime.QueryDescriptor{
@@ -2703,8 +2711,9 @@ var descActiveInstrumentsSubquery = &runtime.QueryDescriptor{
 	Name:     "ActiveInstrumentsSubquery",
 	StmtID:   18,
 	StmtVerb: runtime.VerbSelect,
-	Segments: []string{"/* Level-1 subquery filtering tradeable instruments */\nSELECT symbol\nFROM instruments\nWHERE asset_class IN (", ")\n  ", "\n  ", ""},
+	Segments: []string{"/* Level-1 subquery filtering tradeable instruments */\nSELECT symbol\n", "FROM instruments\nWHERE asset_class IN (", ")\n  ", "\n  ", ""},
 	Slots: []runtime.Slot{
+		{Kind: runtime.SlotColPreds},
 		{Kind: runtime.SlotSlice},
 		{Kind: runtime.SlotOptBlock, FlagBit: 0, Inner: &runtime.QueryDescriptor{
 			Segments: []string{" AND is_marginable = 1 "},
@@ -2808,8 +2817,9 @@ var descFilteredPositionsSubquery = &runtime.QueryDescriptor{
 	Name:     "FilteredPositionsSubquery",
 	StmtID:   19,
 	StmtVerb: runtime.VerbSelect,
-	Segments: []string{"-- Level-2 subquery composing EligibleAccountsSubquery and ActiveInstrumentsSubquery\nSELECT position_id\nFROM positions\nWHERE account_id IN (", ")\n  AND symbol IN (", ")\n  ", ""},
+	Segments: []string{"-- Level-2 subquery composing EligibleAccountsSubquery and ActiveInstrumentsSubquery\nSELECT position_id\n", "FROM positions\nWHERE account_id IN (", ")\n  AND symbol IN (", ")\n  ", ""},
 	Slots: []runtime.Slot{
+		{Kind: runtime.SlotColPreds},
 		{Kind: runtime.SlotQuery},
 		{Kind: runtime.SlotQuery},
 		{Kind: runtime.SlotOptBlock, FlagBit: 0, Inner: &runtime.QueryDescriptor{
@@ -2953,7 +2963,7 @@ var descQueryRiskPositionsPage = &runtime.QueryDescriptor{
 	Name:     "QueryRiskPositionsPage",
 	StmtID:   20,
 	StmtVerb: runtime.VerbSelect,
-	Segments: []string{"SELECT\n  ", "\n  ", "\n  ", "\nFROM positions p\n", "\nWHERE p.position_id IN (", ")\n  ", "\n  ", "\n  AND ", "\nORDER BY ", "\nLIMIT ", ""},
+	Segments: []string{"SELECT\n  ", "\n  ", "\n  ", "\n", "FROM positions p\n", "\nWHERE p.position_id IN (", ")\n  ", "\n  ", "\n  AND ", "\nORDER BY ", "\nLIMIT ", ""},
 	Slots: []runtime.Slot{
 		{Kind: runtime.SlotSelectCols},
 		{Kind: runtime.SlotOptBlock, FlagBit: 0, Inner: &runtime.QueryDescriptor{
@@ -2962,6 +2972,7 @@ var descQueryRiskPositionsPage = &runtime.QueryDescriptor{
 		{Kind: runtime.SlotOptBlock, FlagBit: 1, Inner: &runtime.QueryDescriptor{
 			Segments: []string{" , f.firm_name, f.regulator_code "},
 		}},
+		{Kind: runtime.SlotColPreds},
 		{Kind: runtime.SlotOptBlock, FlagBit: 1, Inner: &runtime.QueryDescriptor{
 			Segments: []string{" INNER JOIN firms f ON f.firm_id = p.firm_id "},
 		}},
@@ -3252,7 +3263,7 @@ func (pl *Pipeline) QueryRiskPositionsPage(p QueryRiskPositionsPageParams) *runt
 		Subs:      subsBuf[:],
 	}
 	return runtime.QueueSlice(pl.Pipeline, stmtIDQueryRiskPositionsPage, descQueryRiskPositionsPage, in, vk, nil, argBuf, expandErr,
-		func(rs *sql.Rows, dst *RiskPositionView) error {
+		func(rs runtime.RowScanner, dst *RiskPositionView) error {
 			return scanQueryRiskPositionsPageRow(rs, dst, colMask, p)
 		},
 	)
@@ -3264,11 +3275,14 @@ type paramsTotalExchangeEquityCents struct {
 }
 
 var descTotalExchangeEquityCents = &runtime.QueryDescriptor{
-	Name:       "TotalExchangeEquityCents",
-	StmtID:     21,
-	StmtVerb:   runtime.VerbSelect,
-	StaticSQL:  "SELECT COALESCE(SUM(collateral_cents + realized_pnl_cents), 0) AS total_equity\nFROM margin_accounts",
-	Segments:   []string{"SELECT COALESCE(SUM(collateral_cents + realized_pnl_cents), 0) AS total_equity\nFROM margin_accounts"},
+	Name:      "TotalExchangeEquityCents",
+	StmtID:    21,
+	StmtVerb:  runtime.VerbSelect,
+	StaticSQL: "SELECT COALESCE(SUM(collateral_cents + realized_pnl_cents), 0) AS total_equity\nFROM margin_accounts",
+	Segments:  []string{"SELECT COALESCE(SUM(collateral_cents + realized_pnl_cents), 0) AS total_equity\n", "FROM margin_accounts"},
+	Slots: []runtime.Slot{
+		{Kind: runtime.SlotColPreds},
+	},
 	ResultCols: []string{"total_equity"},
 	ResultExpr: "COALESCE(SUM(collateral_cents + realized_pnl_cents), 0)",
 }
@@ -3363,8 +3377,9 @@ func (pl *Pipeline) TotalExchangeEquityCents() *runtime.RowFuture[int64] {
 		FlagMask: flagMask,
 	}
 	return runtime.QueueRow(pl.Pipeline, stmtIDTotalExchangeEquityCents, descTotalExchangeEquityCents, in, vk, &pl.q.fastSlots[13], argBuf, expandErr,
-		func(r *sql.Row, dst *int64) error { return scanTotalExchangeEquityCentsRow(r, dst, colMask, p) },
-		func(rs *sql.Rows, dst *int64) error { return scanTotalExchangeEquityCentsRow(rs, dst, colMask, p) },
+		func(rs runtime.RowScanner, dst *int64) error {
+			return scanTotalExchangeEquityCentsRow(rs, dst, colMask, p)
+		},
 	)
 }
 
@@ -3379,8 +3394,9 @@ var descTotalNetPositionBySymbol = &runtime.QueryDescriptor{
 	StmtID:    22,
 	StmtVerb:  runtime.VerbSelect,
 	StaticSQL: "SELECT COALESCE(SUM(net_quantity), 0) AS net_qty\nFROM positions\nWHERE symbol = ?",
-	Segments:  []string{"SELECT COALESCE(SUM(net_quantity), 0) AS net_qty\nFROM positions\nWHERE symbol = ", ""},
+	Segments:  []string{"SELECT COALESCE(SUM(net_quantity), 0) AS net_qty\n", "FROM positions\nWHERE symbol = ", ""},
 	Slots: []runtime.Slot{
+		{Kind: runtime.SlotColPreds},
 		{Kind: runtime.SlotScalar},
 	},
 	ResultCols: []string{"net_qty"},
@@ -3484,8 +3500,9 @@ func (pl *Pipeline) TotalNetPositionBySymbol(symbol string) *runtime.RowFuture[i
 		FlagMask: flagMask,
 	}
 	return runtime.QueueRow(pl.Pipeline, stmtIDTotalNetPositionBySymbol, descTotalNetPositionBySymbol, in, vk, &pl.q.fastSlots[14], argBuf, expandErr,
-		func(r *sql.Row, dst *int64) error { return scanTotalNetPositionBySymbolRow(r, dst, colMask, p) },
-		func(rs *sql.Rows, dst *int64) error { return scanTotalNetPositionBySymbolRow(rs, dst, colMask, p) },
+		func(rs runtime.RowScanner, dst *int64) error {
+			return scanTotalNetPositionBySymbolRow(rs, dst, colMask, p)
+		},
 	)
 }
 
@@ -3495,11 +3512,14 @@ type paramsCountClearingFills struct {
 }
 
 var descCountClearingFills = &runtime.QueryDescriptor{
-	Name:       "CountClearingFills",
-	StmtID:     23,
-	StmtVerb:   runtime.VerbSelect,
-	StaticSQL:  "SELECT COUNT(*) AS cnt\nFROM clearing_fills",
-	Segments:   []string{"SELECT COUNT(*) AS cnt\nFROM clearing_fills"},
+	Name:      "CountClearingFills",
+	StmtID:    23,
+	StmtVerb:  runtime.VerbSelect,
+	StaticSQL: "SELECT COUNT(*) AS cnt\nFROM clearing_fills",
+	Segments:  []string{"SELECT COUNT(*) AS cnt\n", "FROM clearing_fills"},
+	Slots: []runtime.Slot{
+		{Kind: runtime.SlotColPreds},
+	},
 	ResultCols: []string{"cnt"},
 	ResultExpr: "COUNT(*)",
 }
@@ -3594,8 +3614,7 @@ func (pl *Pipeline) CountClearingFills() *runtime.RowFuture[int64] {
 		FlagMask: flagMask,
 	}
 	return runtime.QueueRow(pl.Pipeline, stmtIDCountClearingFills, descCountClearingFills, in, vk, &pl.q.fastSlots[15], argBuf, expandErr,
-		func(r *sql.Row, dst *int64) error { return scanCountClearingFillsRow(r, dst, colMask, p) },
-		func(rs *sql.Rows, dst *int64) error { return scanCountClearingFillsRow(rs, dst, colMask, p) },
+		func(rs runtime.RowScanner, dst *int64) error { return scanCountClearingFillsRow(rs, dst, colMask, p) },
 	)
 }
 
@@ -3610,8 +3629,9 @@ var descCountComplianceNotices = &runtime.QueryDescriptor{
 	StmtID:    24,
 	StmtVerb:  runtime.VerbSelect,
 	StaticSQL: "SELECT COUNT(*) AS cnt\nFROM compliance_notices\nWHERE notice_kind = ?",
-	Segments:  []string{"SELECT COUNT(*) AS cnt\nFROM compliance_notices\nWHERE notice_kind = ", ""},
+	Segments:  []string{"SELECT COUNT(*) AS cnt\n", "FROM compliance_notices\nWHERE notice_kind = ", ""},
 	Slots: []runtime.Slot{
+		{Kind: runtime.SlotColPreds},
 		{Kind: runtime.SlotScalar},
 	},
 	ResultCols: []string{"cnt"},
@@ -3715,7 +3735,8 @@ func (pl *Pipeline) CountComplianceNotices(noticeKind string) *runtime.RowFuture
 		FlagMask: flagMask,
 	}
 	return runtime.QueueRow(pl.Pipeline, stmtIDCountComplianceNotices, descCountComplianceNotices, in, vk, &pl.q.fastSlots[16], argBuf, expandErr,
-		func(r *sql.Row, dst *int64) error { return scanCountComplianceNoticesRow(r, dst, colMask, p) },
-		func(rs *sql.Rows, dst *int64) error { return scanCountComplianceNoticesRow(rs, dst, colMask, p) },
+		func(rs runtime.RowScanner, dst *int64) error {
+			return scanCountComplianceNoticesRow(rs, dst, colMask, p)
+		},
 	)
 }

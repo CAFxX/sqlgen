@@ -31,13 +31,13 @@ type condVariant struct {
 	mk   func(o condOps) runtime.PipelineCond
 }
 
-func scoreAtLeast(n int64) (string, func(pgq.Item) bool) {
-	return "score >= " + strconv.FormatInt(n, 10), func(it pgq.Item) bool { return it.Score >= n }
+func scoreAtLeast(n int64) string {
+	return "score >= " + strconv.FormatInt(n, 10)
 }
 
 // scoreAtLeastArg is scoreAtLeast with the threshold bound, not written into the SQL.
-func scoreAtLeastArg(n int64) (string, func(pgq.Item) bool, int64) {
-	return "score >= ?", func(it pgq.Item) bool { return it.Score >= n }, n
+func scoreAtLeastArg(n int64) (string, int64) {
+	return "score >= ?", n
 }
 
 var condVariants = []condVariant{
@@ -65,47 +65,65 @@ var condVariants = []condVariant{
 	{"r.Eq2&d.Eq0", func(o condOps) runtime.PipelineCond { return o.r.RowsEq(2).And(o.d.RowsEq(0)) }},
 	// column predicates
 	{"g.WhereCol(true)", func(o condOps) runtime.PipelineCond {
-		sq, gp := scoreAtLeast(30)
-		return o.g.WhereCol(sq, gp)
+		sq := scoreAtLeast(30)
+		return o.g.WhereCol(sq)
 	}},
 	{"g.WhereCol(false)&d.NotFound", func(o condOps) runtime.PipelineCond {
-		sq, gp := scoreAtLeast(31)
-		return o.g.WhereCol(sq, gp).And(o.d.NotFound())
+		sq := scoreAtLeast(31)
+		return o.g.WhereCol(sq).And(o.d.NotFound())
 	}},
 	{"d.NotFound&g.WhereCol(true)", func(o condOps) runtime.PipelineCond {
-		sq, gp := scoreAtLeast(30)
-		return o.d.NotFound().And(o.g.WhereCol(sq, gp))
+		sq := scoreAtLeast(30)
+		return o.d.NotFound().And(o.g.WhereCol(sq))
 	}},
 	{"s.WhereCol(all)&u.Found", func(o condOps) runtime.PipelineCond {
-		sq, gp := scoreAtLeast(10)
-		return o.s.WhereCol(sq, gp).And(o.u.Found())
+		sq := scoreAtLeast(10)
+		return o.s.WhereCol(sq).And(o.u.Found())
 	}},
 	{"!s.WhereCol(some)|d.Found", func(o condOps) runtime.PipelineCond {
-		sq, gp := scoreAtLeast(20)
-		return o.s.WhereCol(sq, gp).Not().Or(o.d.Found())
+		sq := scoreAtLeast(20)
+		return o.s.WhereCol(sq).Not().Or(o.d.Found())
 	}},
 	{"m.WhereCol&g.Found", func(o condOps) runtime.PipelineCond {
-		sq, gp := scoreAtLeast(0)
-		return o.m.WhereCol(sq, gp).And(o.g.Found())
+		sq := scoreAtLeast(0)
+		return o.m.WhereCol(sq).And(o.g.Found())
 	}},
 	// column predicates with bound arguments: on the operation that evaluates the condition, recorded
 	// by an earlier operation, over a slice, and with a string argument next to a '?' inside a literal
 	{"g.WhereCol(arg true)", func(o condOps) runtime.PipelineCond {
-		sq, gp, n := scoreAtLeastArg(30)
-		return o.g.WhereCol(sq, gp, n)
+		sq, n := scoreAtLeastArg(30)
+		return o.g.WhereCol(sq, n)
 	}},
 	{"g.WhereCol(arg false)&s.Found", func(o condOps) runtime.PipelineCond {
-		sq, gp, n := scoreAtLeastArg(31)
-		return o.g.WhereCol(sq, gp, n).And(o.s.Found())
+		sq, n := scoreAtLeastArg(31)
+		return o.g.WhereCol(sq, n).And(o.s.Found())
 	}},
 	{"d.NotFound&s.WhereCol(arg all)", func(o condOps) runtime.PipelineCond {
-		sq, gp, n := scoreAtLeastArg(10)
-		return o.d.NotFound().And(o.s.WhereCol(sq, gp, n))
+		sq, n := scoreAtLeastArg(10)
+		return o.d.NotFound().And(o.s.WhereCol(sq, n))
 	}},
 	{"g.WhereCol(args)|m.Found", func(o condOps) runtime.PipelineCond {
-		return o.g.WhereCol("name <> '?' AND name = ? AND score < ?", func(it pgq.Item) bool {
-			return it.Name == "n3" && it.Score < 31
-		}, "n3", int64(31)).Or(o.m.Found())
+		return o.g.WhereCol("name <> '?' AND name = ? AND score < ?", "n3", int64(31)).Or(o.m.Found())
+	}},
+	// the server evaluates the predicate on every path: NULL is not TRUE (and its negation is), SQL-only
+	// functions, several columns on one future, RETURNING rows
+	{"g.WhereCol(NULL)", func(o condOps) runtime.PipelineCond {
+		return o.g.WhereCol("score > (SELECT MAX(score) FROM sg_items WHERE id < 0)")
+	}},
+	{"!g.WhereCol(NULL)&d.NotFound", func(o condOps) runtime.PipelineCond {
+		return o.g.WhereCol("score > (SELECT MAX(score) FROM sg_items WHERE id < 0)").Not().And(o.d.NotFound())
+	}},
+	{"g.WhereCol&!g.WhereCol", func(o condOps) runtime.PipelineCond {
+		return o.g.WhereCol("score >= ?", int64(30)).And(o.g.WhereCol("score >= ?", int64(31)).Not())
+	}},
+	{"s.WhereCol(fn)&g.Found", func(o condOps) runtime.PipelineCond {
+		return o.s.WhereCol("length(name) = ? AND upper(name) LIKE 'N%'", int64(2)).And(o.g.Found())
+	}},
+	{"r.WhereCol(RETURNING)|m.Found", func(o condOps) runtime.PipelineCond {
+		return o.r.WhereCol("score > ?", int64(14)).Or(o.m.Found())
+	}},
+	{"d.NotFound&r.WhereCol(RETURNING some)", func(o condOps) runtime.PipelineCond {
+		return o.d.NotFound().And(o.r.WhereCol("score > ?", int64(15)))
 	}},
 	// three operations, nested
 	{"(d.NotFound&g.Found)&s.Eq2", func(o condOps) runtime.PipelineCond {

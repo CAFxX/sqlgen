@@ -35,7 +35,7 @@ func fwdPipeline(d Dialect) *Pipeline {
 }
 
 func fwdRow(p *Pipeline, desc *QueryDescriptor, args ...any) *RowFuture[int64] {
-	return QueueRow[int64](p, desc.StmtID, desc, RenderInput{}, MakeVariantKey(desc.StmtID, 0, 0, 0), nil, &args, nil, nil, nil)
+	return QueueRow[int64](p, desc.StmtID, desc, RenderInput{}, MakeVariantKey(desc.StmtID, 0, 0, 0), nil, &args, nil, nil)
 }
 
 func fwdExec(p *Pipeline, desc *QueryDescriptor, args ...any) *ExecFuture {

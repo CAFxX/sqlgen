@@ -17,6 +17,7 @@ import (
 	"regexp"
 	stdruntime "runtime"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -108,8 +109,11 @@ func TestSingleStringsBuilderASTAudit(t *testing.T) {
 	if builderCountByFunc["renderPipelineBatch"] != 1 {
 		t.Fatalf("expected exactly 1 strings.Builder in renderPipelineBatch, got %d", builderCountByFunc["renderPipelineBatch"])
 	}
+	if builderCountByFunc["renderColPredSQL"] != 1 {
+		t.Fatalf("expected exactly 1 strings.Builder in renderColPredSQL, got %d", builderCountByFunc["renderColPredSQL"])
+	}
 	for fn, cnt := range builderCountByFunc {
-		if fn != "BuildComposedSQL" && fn != "renderPipelineBatch" && cnt > 0 {
+		if fn != "BuildComposedSQL" && fn != "renderPipelineBatch" && fn != "renderColPredSQL" && cnt > 0 {
 			t.Fatalf("unexpected strings.Builder (%d) in function %s", cnt, fn)
 		}
 	}
@@ -780,9 +784,10 @@ func TestPropertyEstimateOpBytesStrictUpperBound(t *testing.T) {
 		desc := &QueryDescriptor{
 			StmtID:   uint32(iter%100 + 1),
 			StmtVerb: verb,
-			Segments: []string{"SELECT ", " FROM tbl t WHERE ", "t.id = ", " AND t.s IN (", ") AND t.tup IN (", ")", " AND t.sub IN (", ") AND ", " ORDER BY ", ""},
+			Segments: []string{"SELECT ", "", " FROM tbl t WHERE ", "t.id = ", " AND t.s IN (", ") AND t.tup IN (", ")", " AND t.sub IN (", ") AND ", " ORDER BY ", ""},
 			Slots: []Slot{
 				{Kind: SlotSelectCols},
+				{Kind: SlotColPreds},
 				{Kind: SlotBranchGuardOpen},
 				{Kind: SlotScalar},
 				{Kind: SlotSlice},
@@ -840,6 +845,17 @@ func TestPropertyEstimateOpBytesStrictUpperBound(t *testing.T) {
 			BranchGates: gates,
 		}
 
+		// WhereCol columns, with bound arguments
+		for k := rng.IntN(3); k > 0; k-- {
+			pred := ColPred{SQL: fmt.Sprintf("col_%d > ? AND col_%d <> '?'", k, rng.IntN(100))}
+			for a := rng.IntN(4); a > 0; a-- {
+				pred.SQL += " AND col_x < ?"
+				pred.Args = append(pred.Args, int64(a))
+			}
+			pred.Args = append(pred.Args, int64(42))
+			in.ColPreds = append(in.ColPreds, pred)
+		}
+
 		var dec OpDecorators
 		dec.AssertRows = -1
 		if rng.IntN(3) == 0 {
@@ -850,11 +866,7 @@ func TestPropertyEstimateOpBytesStrictUpperBound(t *testing.T) {
 		}
 		var pCond PipelineCond
 		if rng.IntN(2) == 0 {
-			pCond = PipelineCond{
-				Kind:      CondColPred,
-				Threshold: 1,
-				SQLPred:   "col_0 > 42",
-			}
+			pCond = PipelineCond{Kind: CondColPred, Col: 1}
 			dec.ProduceCond = &pCond
 			dec.CondID = rng.IntN(8)
 		}
@@ -900,7 +912,11 @@ func TestPropertyEstimateOpBytesStrictUpperBound(t *testing.T) {
 		if got := len(ops[0].SQL) + len(ops[0].CheckSQL); got > estDec {
 			t.Fatalf("iter %d: estimateWireOpBytes (%d) < rendered (%d) for decorated op: %s; %s", iter, estDec, got, ops[0].SQL, ops[0].CheckSQL)
 		}
-		if nRefs > 0 && (ops[0].CheckSQL == "" || len(ops[0].Args) != 2-nRefs) {
+		nColArgs := 0
+		for _, cp := range in.ColPreds {
+			nColArgs += len(cp.Args)
+		}
+		if nRefs > 0 && (ops[0].CheckSQL == "" || len(ops[0].Args) != 2-nRefs+nColArgs) {
 			t.Fatalf("iter %d: check %q args %v", iter, ops[0].CheckSQL, ops[0].Args)
 		}
 	}
@@ -1045,9 +1061,10 @@ func FuzzEstimateOpBytesUpperBound(f *testing.F) {
 		desc := &QueryDescriptor{
 			StmtID:   1,
 			StmtVerb: verb,
-			Segments: []string{"SELECT ", " FROM tbl WHERE ", "id IN (", ") AND tup IN (", ") AND ", " ORDER BY ", ""},
+			Segments: []string{"SELECT ", " ", "FROM tbl WHERE ", "id IN (", ") AND tup IN (", ") AND ", " ORDER BY ", ""},
 			Slots: []Slot{
 				{Kind: SlotSelectCols},
+				{Kind: SlotColPreds},
 				{Kind: SlotBranchGuardOpen},
 				{Kind: SlotSlice},
 				{Kind: SlotTupleSlice, Tuple: &TupleDescriptor{Segments: []string{"", ", ", ""}, NumFields: 2}},
@@ -1068,6 +1085,14 @@ func FuzzEstimateOpBytesUpperBound(f *testing.F) {
 			SliceLens:   []int{sLen},
 			TupleLens:   []int{tLen},
 			BranchGates: []BranchGate{{CondID: 0, WantTrue: true}},
+		}
+		for k := 0; k < int(tupleLenRaw%4); k++ { // WhereCol columns
+			pred := ColPred{SQL: "c1 > ? AND c2 <> '?'"}
+			for a := 0; a <= int(sliceLenRaw%5); a++ {
+				pred.SQL += " AND c3 < ?"
+				pred.Args = append(pred.Args, int64(a))
+			}
+			in.ColPreds = append(in.ColPreds, pred)
 		}
 		if assertRows < -1 {
 			assertRows = -1
@@ -1621,10 +1646,15 @@ func TestPipelineWirePipelinerAndSequentialCoverage(t *testing.T) {
 		for i := range ops {
 			op := &ops[i]
 			if op.HasResultCols && op.ScanWireRows != nil {
+				// the row, then one WhereCol column per predicate (all TRUE)
+				cols, row := []string{"id"}, []driver.Value{int64(42)}
+				for k := range op.Input.ColPreds {
+					cols, row = append(cols, "_sqlgen_wc"+strconv.Itoa(k+1)), append(row, int64(1))
+				}
 				dRows := &mockRows{
 					cfg:  cfg,
-					cols: []string{"id"},
-					data: [][]driver.Value{{int64(42)}},
+					cols: cols,
+					data: [][]driver.Value{row},
 				}
 				sqlRows, err := rowsFromDriverRows(ctx, dRows)
 				if err != nil {
@@ -1661,8 +1691,8 @@ func TestPipelineWirePipelinerAndSequentialCoverage(t *testing.T) {
 		StmtID:    1,
 		StmtVerb:  VerbSelect,
 		StaticSQL: "SELECT id FROM items WHERE id = $1",
-		Segments:  []string{"SELECT id FROM items WHERE id = ", ""},
-		Slots:     []Slot{{Kind: SlotScalar}},
+		Segments:  []string{"SELECT id ", "FROM items WHERE id = ", ""},
+		Slots:     []Slot{{Kind: SlotColPreds}, {Kind: SlotScalar}},
 	}
 	updNoWhereDesc := &QueryDescriptor{
 		StmtID:   2,
@@ -1699,24 +1729,23 @@ func TestPipelineWirePipelinerAndSequentialCoverage(t *testing.T) {
 	ab1 := AcquireArgsCap(1)
 	*ab1 = append(*ab1, int64(1))
 	rowFut := QueueRow[int64](p, 1, selDesc, RenderInput{}, vk, nil, ab1, nil,
-		func(r *sql.Row, dst *int64) error { return r.Scan(dst) },
-		func(rs *sql.Rows, dst *int64) error { return rs.Scan(dst) },
+		func(s RowScanner, dst *int64) error { return s.Scan(dst) },
 	).AssertFound().AssertRows(1)
 
 	ab2 := AcquireArgsCap(1)
 	*ab2 = append(*ab2, int64(1))
 	sliceFut := QueueSlice[int64](p, 1, selDesc, RenderInput{}, vk, nil, ab2, nil,
-		func(rs *sql.Rows, dst *int64) error { return rs.Scan(dst) },
+		func(s RowScanner, dst *int64) error { return s.Scan(dst) },
 	).AssertFound().AssertRows(1)
 
 	// Exercise all condition constructors and combinators (.And, .Or, .Not, WhereCol)
 	c1 := rowFut.Found().And(rowFut.RowsEq(1)).And(rowFut.RowsGe(1)).And(rowFut.RowsLe(1))
 	c2 := rowFut.NotFound().Or(rowFut.RowsGt(5)).Or(rowFut.RowsLt(0)).Not()
-	c3 := rowFut.WhereCol("id = 42", func(v int64) bool { return v == 42 }).And(c1).And(c2)
+	c3 := rowFut.WhereCol("id = 42").And(c1).And(c2)
 
 	sc1 := sliceFut.Found().And(sliceFut.RowsEq(1)).And(sliceFut.RowsGe(1)).And(sliceFut.RowsLe(1))
 	sc2 := sliceFut.NotFound().Or(sliceFut.RowsGt(5)).Or(sliceFut.RowsLt(0)).Not()
-	sc3 := sliceFut.WhereCol("id = 42", func(v int64) bool { return v == 42 }).And(sc1).And(sc2)
+	sc3 := sliceFut.WhereCol("id = 42").And(sc1).And(sc2)
 
 	var execFutThen, execFutElse *ExecFuture
 	ifRes := p.If(c3.And(sc3), func() {
@@ -1796,8 +1825,7 @@ func TestPipelineWirePipelinerAndSequentialCoverage(t *testing.T) {
 		ab := AcquireArgsCap(1)
 		*ab = append(*ab, int64(1))
 		rf := QueueRow[int64](pTx, 1, selDesc, RenderInput{}, vk, nil, ab, nil,
-			func(r *sql.Row, dst *int64) error { return r.Scan(dst) },
-			func(rs *sql.Rows, dst *int64) error { return rs.Scan(dst) },
+			func(s RowScanner, dst *int64) error { return s.Scan(dst) },
 		)
 		pTx.If(rf.Found(), func() {
 			abIn := AcquireArgsCap(1)
@@ -1833,8 +1861,8 @@ func TestPipelineWirePipelinerAndSequentialCoverage(t *testing.T) {
 		StmtID:    10,
 		StmtVerb:  VerbSelect,
 		StaticSQL: "SELECT score FROM items WHERE id = ?",
-		Segments:  []string{"SELECT score FROM items WHERE id = ", ""},
-		Slots:     []Slot{{Kind: SlotScalar}},
+		Segments:  []string{"SELECT score ", "FROM items WHERE id = ", ""},
+		Slots:     []Slot{{Kind: SlotColPreds}, {Kind: SlotScalar}},
 	}
 	qUpdDesc := &QueryDescriptor{
 		StmtID:   11,
@@ -1847,31 +1875,29 @@ func TestPipelineWirePipelinerAndSequentialCoverage(t *testing.T) {
 	abSeq1 := AcquireArgsCap(1)
 	*abSeq1 = append(*abSeq1, int64(1))
 	rfSeq := QueueRow[int64](pSeq, 10, qSelDesc, RenderInput{}, MakeVariantKey(10, 0, 0, 0), nil, abSeq1, nil,
-		func(r *sql.Row, dst *int64) error { return r.Scan(dst) },
-		func(rs *sql.Rows, dst *int64) error { return rs.Scan(dst) },
+		func(s RowScanner, dst *int64) error { return s.Scan(dst) },
 	)
 
 	abSeq2 := AcquireArgsCap(1)
 	*abSeq2 = append(*abSeq2, int64(999999)) // non-existent row -> sql.ErrNoRows in ExecSeq
 	rfMissing := QueueRow[int64](pSeq, 10, qSelDesc, RenderInput{}, MakeVariantKey(10, 0, 0, 0), nil, abSeq2, nil,
-		func(r *sql.Row, dst *int64) error { return r.Scan(dst) },
-		func(rs *sql.Rows, dst *int64) error { return rs.Scan(dst) },
+		func(s RowScanner, dst *int64) error { return s.Scan(dst) },
 	)
 
 	abSeq3 := AcquireArgsCap(1)
 	*abSeq3 = append(*abSeq3, int64(2))
 	sfSeq := QueueSlice[int64](pSeq, 10, qSelDesc, RenderInput{}, MakeVariantKey(10, 0, 0, 0), nil, abSeq3, nil,
-		func(rs *sql.Rows, dst *int64) error { return rs.Scan(dst) },
+		func(s RowScanner, dst *int64) error { return s.Scan(dst) },
 	)
 
-	seqCond := rfSeq.WhereCol("score = 10", func(v int64) bool { return v == 10 }).
+	seqCond := rfSeq.WhereCol("score = 10").
 		And(rfSeq.RowsEq(1)).
 		And(rfSeq.RowsGe(1)).
 		And(rfSeq.RowsLe(1)).
 		And(rfSeq.RowsGt(0)).
 		And(rfSeq.RowsLt(2)).
 		And(rfMissing.NotFound()).
-		And(sfSeq.WhereCol("score = 20", func(v int64) bool { return v == 20 }))
+		And(sfSeq.WhereCol("score = 20"))
 
 	var efSeqThen *ExecFuture
 	var nestedSkippedIf *IfResult
@@ -1883,11 +1909,10 @@ func TestPipelineWirePipelinerAndSequentialCoverage(t *testing.T) {
 		efSeqThen = pSeq.QueueExec(11, qUpdDesc, RenderInput{}, MakeVariantKey(11, 0, 0, 0), nil, abUpd, nil).AssertFound()
 	}, func() {
 		rfSkipped = QueueRow[int64](pSeq, 10, qSelDesc, RenderInput{}, MakeVariantKey(10, 0, 0, 0), nil, nil, nil,
-			func(r *sql.Row, dst *int64) error { return r.Scan(dst) },
-			func(rs *sql.Rows, dst *int64) error { return rs.Scan(dst) },
+			func(s RowScanner, dst *int64) error { return s.Scan(dst) },
 		)
 		sfSkipped = QueueSlice[int64](pSeq, 10, qSelDesc, RenderInput{}, MakeVariantKey(10, 0, 0, 0), nil, nil, nil,
-			func(rs *sql.Rows, dst *int64) error { return rs.Scan(dst) },
+			func(s RowScanner, dst *int64) error { return s.Scan(dst) },
 		)
 		nestedSkippedIf = pSeq.If(rfSeq.Found(), func() {}, nil)
 		pSeq.Abort(errors.New("should not abort in untaken else"))
@@ -1938,8 +1963,7 @@ func TestPipelineWirePipelinerAndSequentialCoverage(t *testing.T) {
 	abFail := AcquireArgsCap(1)
 	*abFail = append(*abFail, int64(999999))
 	rfAssertFail := QueueRow[int64](pAssertFail, 10, qSelDesc, RenderInput{}, MakeVariantKey(10, 0, 0, 0), nil, abFail, nil,
-		func(r *sql.Row, dst *int64) error { return r.Scan(dst) },
-		func(rs *sql.Rows, dst *int64) error { return rs.Scan(dst) },
+		func(s RowScanner, dst *int64) error { return s.Scan(dst) },
 	).AssertFound()
 	if err := pAssertFail.Flush(); !errors.Is(err, ErrAssertionFailed) {
 		t.Fatalf("expected ErrAssertionFailed, got %v", err)
@@ -2173,8 +2197,7 @@ func TestPipelineWirePipelinerAndSequentialCoverage(t *testing.T) {
 	abScan1 := AcquireArgsCap(1)
 	*abScan1 = append(*abScan1, int64(1))
 	rfScanErr := QueueRow[int64](pScanErr, 10, qSelDesc, RenderInput{}, hotVK, nil, abScan1, nil,
-		func(r *sql.Row, dst *int64) error { return errors.New("custom row scan err") },
-		func(rs *sql.Rows, dst *int64) error { return errors.New("custom rows scan err") },
+		func(s RowScanner, dst *int64) error { return errors.New("custom rows scan err") },
 	)
 	if err := pScanErr.Flush(); err == nil {
 		t.Fatalf("expected row scan error")
@@ -2185,7 +2208,7 @@ func TestPipelineWirePipelinerAndSequentialCoverage(t *testing.T) {
 	abScan2 := AcquireArgsCap(1)
 	*abScan2 = append(*abScan2, int64(1))
 	sfScanErr := QueueSlice[int64](pSliceScanErr, 10, qSelDesc, RenderInput{}, hotVK, nil, abScan2, nil,
-		func(rs *sql.Rows, dst *int64) error { return errors.New("custom slice scan err") },
+		func(s RowScanner, dst *int64) error { return errors.New("custom slice scan err") },
 	)
 	if err := pSliceScanErr.Flush(); err == nil {
 		t.Fatalf("expected slice scan error")
@@ -2197,8 +2220,7 @@ func TestPipelineWirePipelinerAndSequentialCoverage(t *testing.T) {
 	abMulti := AcquireArgsCap(1)
 	*abMulti = append(*abMulti, int64(1))
 	rfMulti := QueueRow[int64](pMultiIf, 10, qSelDesc, RenderInput{}, hotVK, nil, abMulti, nil,
-		func(r *sql.Row, dst *int64) error { return r.Scan(dst) },
-		func(rs *sql.Rows, dst *int64) error { return rs.Scan(dst) },
+		func(s RowScanner, dst *int64) error { return s.Scan(dst) },
 	)
 	pMultiIf.If(rfMulti.Found(), func() {}, nil)
 	pMultiIf.If(rfMulti.RowsEq(1), func() {}, nil)
@@ -2209,8 +2231,8 @@ func TestPipelineWirePipelinerAndSequentialCoverage(t *testing.T) {
 	// 7. Additional edge-case coverage for PipelineCond, non-exact VariantKey (bySQL),
 	// segmented LRU protected-segment step-down, and pool oversized capacities.
 
-	_ = rfMulti.WhereCol("score > 0", func(v int64) bool { return v > 0 })
-	_ = (*RowFuture[int64])(nil).WhereCol("score > 0", nil)
+	_ = rfMulti.WhereCol("score > 0")
+	_ = (*RowFuture[int64])(nil).WhereCol("score > 0")
 	var nilCond *PipelineCond
 	_ = nilCond.EvalGoFn()
 	_ = (&PipelineCond{Kind: 99}).EvalGoFn()
@@ -2361,25 +2383,23 @@ func TestPipelineWirePipelinerAndSequentialCoverage(t *testing.T) {
 	// QueueRow / QueueSlice expandErr, ScanWireRows error, ExecSeq errors, and RunTxWithRetry context cancellation
 	pRowExpandErr := NewPipeline(ctx, sqliteDB, sqliteCache, nil, true, DialectQuestion)
 	_ = QueueRow[int64](pRowExpandErr, 10, qSelDesc, RenderInput{}, hotVK, nil, nil, ErrEmptySliceParam,
-		func(r *sql.Row, dst *int64) error { return r.Scan(dst) },
-		func(rs *sql.Rows, dst *int64) error { return rs.Scan(dst) },
+		func(s RowScanner, dst *int64) error { return s.Scan(dst) },
 	)
 	_ = QueueSlice[int64](pRowExpandErr, 10, qSelDesc, RenderInput{}, hotVK, nil, nil, ErrEmptySliceParam,
-		func(rs *sql.Rows, dst *int64) error { return rs.Scan(dst) },
+		func(s RowScanner, dst *int64) error { return s.Scan(dst) },
 	)
 	_ = pRowExpandErr.Flush()
 
 	// Wire ScanWireRows errors on RowFuture and SliceFuture
 	pWireScanErr := NewPipeline(ctx, db, cache, nil, true, DialectDollar)
 	_ = QueueRow[int64](pWireScanErr, 1, selDesc, RenderInput{}, vk, nil, nil, nil,
-		func(r *sql.Row, dst *int64) error { return errors.New("row wire scan err") },
-		func(rs *sql.Rows, dst *int64) error { return errors.New("rows wire scan err") },
+		func(s RowScanner, dst *int64) error { return errors.New("rows wire scan err") },
 	)
 	_ = pWireScanErr.Flush()
 
 	pWireSliceScanErr := NewPipeline(ctx, db, cache, nil, true, DialectDollar)
 	_ = QueueSlice[int64](pWireSliceScanErr, 1, selDesc, RenderInput{}, vk, nil, nil, nil,
-		func(rs *sql.Rows, dst *int64) error { return errors.New("slice wire scan err") },
+		func(s RowScanner, dst *int64) error { return errors.New("slice wire scan err") },
 	)
 	_ = pWireSliceScanErr.Flush()
 
@@ -2392,14 +2412,13 @@ func TestPipelineWirePipelinerAndSequentialCoverage(t *testing.T) {
 
 	pSeqRowErr := NewPipeline(ctx, sqliteDB, closedCache, nil, true, DialectQuestion)
 	_ = QueueRow[int64](pSeqRowErr, 10, qSelDesc, RenderInput{}, hotVK, nil, nil, nil,
-		func(r *sql.Row, dst *int64) error { return r.Scan(dst) },
-		func(rs *sql.Rows, dst *int64) error { return rs.Scan(dst) },
+		func(s RowScanner, dst *int64) error { return s.Scan(dst) },
 	)
 	_ = pSeqRowErr.Flush()
 
 	pSeqSliceErr := NewPipeline(ctx, errDB, errCache, nil, false, DialectQuestion)
 	_ = QueueSlice[int64](pSeqSliceErr, 10, qSelDesc, RenderInput{}, hotVK, nil, nil, nil,
-		func(rs *sql.Rows, dst *int64) error { return rs.Scan(dst) },
+		func(s RowScanner, dst *int64) error { return s.Scan(dst) },
 	)
 	_ = pSeqSliceErr.Flush()
 
@@ -2963,14 +2982,14 @@ func TestGatedInsertPlaceholdersAreTypedOnlyForDollar(t *testing.T) {
 // estimateOpBytes must be a strict upper bound for every decorated pipeline-op shape, or the renderer
 // would reallocate its single strings.Builder mid-render (a spec violation).
 func TestEstimateOpBytesCoversEveryPipelineOpShape(t *testing.T) {
-	sel := &QueryDescriptor{StmtVerb: VerbSelect, Segments: []string{"SELECT id FROM t WHERE id = ", ""}, Slots: []Slot{{Kind: SlotScalar}}}
+	sel := &QueryDescriptor{StmtVerb: VerbSelect, Segments: []string{"SELECT id ", "FROM t WHERE id = ", ""}, Slots: []Slot{{Kind: SlotColPreds}, {Kind: SlotScalar}}}
 	upd := &QueryDescriptor{StmtVerb: VerbUpdate, Segments: []string{"UPDATE t SET v = ", ""}, Slots: []Slot{{Kind: SlotScalar}}}
-	updRet := &QueryDescriptor{StmtVerb: VerbUpdate, HasReturning: true, Segments: []string{"UPDATE t SET v = ", " RETURNING id"}, Slots: []Slot{{Kind: SlotScalar}}}
+	updRet := &QueryDescriptor{StmtVerb: VerbUpdate, HasReturning: true, Segments: []string{"UPDATE t SET v = ", " RETURNING id", ""}, Slots: []Slot{{Kind: SlotScalar}, {Kind: SlotColPreds}}}
 	op := &PipelineOp{}
 	conds := map[string]*PipelineCond{
 		"none":     nil,
 		"rows":     {Kind: CondRowsGt, Op: op, Threshold: -9223372036854775807},
-		"col":      {Kind: CondColPred, Op: op, SQLPred: "score >= 100 AND status = 'active'"},
+		"col":      {Kind: CondColPred, Op: op, Col: 2},
 		"recorded": {Kind: CondOr, Left: &PipelineCond{Kind: CondRowsGe, Op: op, Recorded: 2147483647}, Right: &PipelineCond{Kind: CondRowsLt, Op: op, Threshold: -9223372036854775807}},
 		"and":      {Kind: CondAnd, Left: &PipelineCond{Kind: CondRowsLe, Op: op, Threshold: 99}, Right: &PipelineCond{Kind: CondNot, Left: &PipelineCond{Kind: CondRowsEq, Op: op, Threshold: 1}}},
 	}
@@ -2988,7 +3007,7 @@ func TestEstimateOpBytesCoversEveryPipelineOpShape(t *testing.T) {
 							dec.ExtraConds = []ProducedCond{{CondID: 2147483647, Cond: cond}}
 							dec.LeafRecs = []ProducedCond{{CondID: 2147483647, Cond: conds["col"]}, {CondID: 2147483646, Cond: cond}}
 						}
-						in := RenderInput{BranchGates: gates}
+						in := RenderInput{BranchGates: gates, ColPreds: []ColPred{{SQL: "score >= ? AND status = 'active'", Args: []any{int64(100)}}, {SQL: "id <> ?", Args: []any{"x"}}}}
 						sql := renderPipelineOp(t, dialect, desc, in, dec) // fails on estimate < len
 						_ = sql
 						_ = dname + dn + cn

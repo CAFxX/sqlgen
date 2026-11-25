@@ -161,13 +161,12 @@ func (k *kv) Ins(p *runtime.Pipeline, id, v int64) *runtime.ExecFuture {
 
 func (k *kv) Get(p *runtime.Pipeline, id int64) *runtime.RowFuture[row] {
 	return runtime.QueueRow[row](p, 2, k.get, runtime.RenderInput{}, runtime.MakeVariantKey(2, 0, 0, 0), nil, args(id), nil,
-		func(r *sql.Row, d *row) error { return r.Scan(&d.ID, &d.V) },
-		func(r *sql.Rows, d *row) error { return r.Scan(&d.ID, &d.V) })
+		func(s runtime.RowScanner, d *row) error { return s.Scan(&d.ID, &d.V) })
 }
 
 func (k *kv) All(p *runtime.Pipeline) *runtime.SliceFuture[row] {
 	return runtime.QueueSlice[row](p, 4, k.many, runtime.RenderInput{}, runtime.MakeVariantKey(4, 0, 0, 0), nil, args(), nil,
-		func(r *sql.Rows, d *row) error { return r.Scan(&d.ID, &d.V) })
+		func(s runtime.RowScanner, d *row) error { return s.Scan(&d.ID, &d.V) })
 }
 
 func (k *kv) tx(ctx context.Context, db *sql.DB, txOpts *sql.TxOptions, opts []runtime.TxOption, build func(p *runtime.Pipeline) error) error {

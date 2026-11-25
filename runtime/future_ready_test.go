@@ -15,10 +15,9 @@ func TestFuturesReadBeforeFlushReturnErrFutureNotReady(t *testing.T) {
 
 	ex := queueTestExec(p)
 	row := QueueRow[int64](p, 2, wireTxTestDesc, RenderInput{}, MakeVariantKey(2, 0, 0, 0), nil, nil, nil,
-		func(r *sql.Row, dst *int64) error { return r.Scan(dst) },
-		func(rs *sql.Rows, dst *int64) error { return rs.Scan(dst) })
+		func(s RowScanner, dst *int64) error { return s.Scan(dst) })
 	sl := QueueSlice[int64](p, 3, wireTxTestDesc, RenderInput{}, MakeVariantKey(3, 0, 0, 0), nil, nil, nil,
-		func(rs *sql.Rows, dst *int64) error { return rs.Scan(dst) })
+		func(s RowScanner, dst *int64) error { return s.Scan(dst) })
 
 	check := func(stage string) {
 		t.Helper()

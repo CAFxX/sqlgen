@@ -2,7 +2,6 @@ package runtime
 
 import (
 	"context"
-	"database/sql"
 	"errors"
 	"strings"
 	"testing"
@@ -67,8 +66,7 @@ func TestAssertionErrorNamesStatementAndCounts(t *testing.T) {
 	ab2 := AcquireArgsCap(1)
 	*ab2 = append(*ab2, int64(999999))
 	rf := QueueRow[int64](p2, 22, selDesc, RenderInput{}, MakeVariantKey(22, 0, 0, 0), nil, ab2, nil,
-		func(r *sql.Row, dst *int64) error { return r.Scan(dst) },
-		func(rs *sql.Rows, dst *int64) error { return rs.Scan(dst) },
+		func(s RowScanner, dst *int64) error { return s.Scan(dst) },
 	).AssertFound()
 	err = p2.Flush()
 	if !errors.Is(err, ErrAssertionFailed) || !strings.Contains(err.Error(), `statement "ItemByID", operation 0: expected 1 rows affected, got 0`) {
@@ -230,14 +228,13 @@ func TestFuturesOfAFailedPipelineReportTheError(t *testing.T) {
 	cache := NewStmtCache()
 	defer func() { _ = cache.Close() }()
 	updDesc, selDesc := assertTestDescs()
-	scan := func(r *sql.Row, dst *int64) error { return r.Scan(dst) }
-	scanRows := func(rs *sql.Rows, dst *int64) error { return rs.Scan(dst) }
+	scan := func(s RowScanner, dst *int64) error { return s.Scan(dst) }
 
 	p := NewPipeline(ctx, db, cache, nil, true, DialectQuestion)
 	before := p.QueueExec(21, updDesc, RenderInput{}, MakeVariantKey(21, 0, 0, 0), nil, argsOf("cat_0"), nil)
-	get := QueueRow[int64](p, 22, selDesc, RenderInput{}, MakeVariantKey(22, 0, 0, 0), nil, argsOf(int64(1)), nil, scan, scanRows)
+	get := QueueRow[int64](p, 22, selDesc, RenderInput{}, MakeVariantKey(22, 0, 0, 0), nil, argsOf(int64(1)), nil, scan)
 	failing := p.QueueExec(21, updDesc, RenderInput{}, MakeVariantKey(21, 0, 0, 0), nil, argsOf("cat_1"), nil).AssertRows(5)
-	after := QueueSlice[int64](p, 22, selDesc, RenderInput{}, MakeVariantKey(22, 0, 0, 0), nil, argsOf(int64(2)), nil, scanRows)
+	after := QueueSlice[int64](p, 22, selDesc, RenderInput{}, MakeVariantKey(22, 0, 0, 0), nil, argsOf(int64(2)), nil, scan)
 	err := p.Flush()
 	if !errors.Is(err, ErrAssertionFailed) {
 		t.Fatalf("flush: %v", err)
@@ -261,7 +258,7 @@ func TestFuturesOfAFailedPipelineReportTheError(t *testing.T) {
 	// A build error: nothing ran, every future reports it.
 	buildErr := errors.New("bad argument")
 	p = NewPipeline(ctx, db, cache, nil, true, DialectQuestion)
-	get = QueueRow[int64](p, 22, selDesc, RenderInput{}, MakeVariantKey(22, 0, 0, 0), nil, argsOf(int64(1)), nil, scan, scanRows)
+	get = QueueRow[int64](p, 22, selDesc, RenderInput{}, MakeVariantKey(22, 0, 0, 0), nil, argsOf(int64(1)), nil, scan)
 	p.QueueExec(21, updDesc, RenderInput{}, MakeVariantKey(21, 0, 0, 0), nil, argsOf("cat_1"), buildErr)
 	if err := p.Flush(); err != buildErr {
 		t.Fatalf("flush: %v", err)

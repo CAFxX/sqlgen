@@ -1252,9 +1252,10 @@ var descFzSearch = &runtime.QueryDescriptor{
 	Name:     "FzSearch",
 	StmtID:   5,
 	StmtVerb: runtime.VerbSelect,
-	Segments: []string{"SELECT ", "\nFROM fz_rows\nWHERE k1 >= ", "\n  ", "\n  ", "\n  ", "\n  ", "\n  ", "\n  ", "\n  ", "\n  ", "\nORDER BY id"},
+	Segments: []string{"SELECT ", "\n", "FROM fz_rows\nWHERE k1 >= ", "\n  ", "\n  ", "\n  ", "\n  ", "\n  ", "\n  ", "\n  ", "\n  ", "\nORDER BY id"},
 	Slots: []runtime.Slot{
 		{Kind: runtime.SlotSelectCols},
+		{Kind: runtime.SlotColPreds},
 		{Kind: runtime.SlotScalar},
 		{Kind: runtime.SlotOptBlock, FlagBit: 0, Inner: &runtime.QueryDescriptor{
 			Segments: []string{" AND grp = ", ""},
@@ -1601,7 +1602,7 @@ func (pl *Pipeline) FzSearch(p FzSearchParams) *runtime.SliceFuture[FzRow] {
 		TupleLens: tupleLensBuf[:],
 	}
 	return runtime.QueueSlice(pl.Pipeline, stmtIDFzSearch, descFzSearch, in, vk, nil, argBuf, expandErr,
-		func(rs *sql.Rows, dst *FzRow) error { return scanFzSearchRow(rs, dst, colMask, p) },
+		func(rs runtime.RowScanner, dst *FzRow) error { return scanFzSearchRow(rs, dst, colMask, p) },
 	)
 }
 
@@ -1628,9 +1629,10 @@ var descFzNarrow = &runtime.QueryDescriptor{
 	Name:     "FzNarrow",
 	StmtID:   6,
 	StmtVerb: runtime.VerbSelect,
-	Segments: []string{"SELECT ", "\nFROM fz_rows\nWHERE id >= ", "\n  ", "\nORDER BY id"},
+	Segments: []string{"SELECT ", "\n", "FROM fz_rows\nWHERE id >= ", "\n  ", "\nORDER BY id"},
 	Slots: []runtime.Slot{
 		{Kind: runtime.SlotSelectCols},
+		{Kind: runtime.SlotColPreds},
 		{Kind: runtime.SlotScalar},
 		{Kind: runtime.SlotOptBlock, FlagBit: 0, Inner: &runtime.QueryDescriptor{
 			Segments: []string{" AND grp = ", ""},
@@ -1786,7 +1788,7 @@ func (pl *Pipeline) FzNarrow(p FzNarrowParams) *runtime.SliceFuture[FzNarrowRow]
 		FlagMask: flagMask,
 	}
 	return runtime.QueueSlice(pl.Pipeline, stmtIDFzNarrow, descFzNarrow, in, vk, nil, argBuf, expandErr,
-		func(rs *sql.Rows, dst *FzNarrowRow) error { return scanFzNarrowRow(rs, dst, colMask, p) },
+		func(rs runtime.RowScanner, dst *FzNarrowRow) error { return scanFzNarrowRow(rs, dst, colMask, p) },
 	)
 }
 
@@ -1865,9 +1867,10 @@ var descFzPage = &runtime.QueryDescriptor{
 	Name:     "FzPage",
 	StmtID:   7,
 	StmtVerb: runtime.VerbSelect,
-	Segments: []string{"SELECT ", "\nFROM fz_rows\nWHERE k1 >= ", "\n  ", "\n  AND ", "\n  ", "\n  ", "\nORDER BY ", "\nLIMIT ", ""},
+	Segments: []string{"SELECT ", "\n", "FROM fz_rows\nWHERE k1 >= ", "\n  ", "\n  AND ", "\n  ", "\n  ", "\nORDER BY ", "\nLIMIT ", ""},
 	Slots: []runtime.Slot{
 		{Kind: runtime.SlotSelectCols},
+		{Kind: runtime.SlotColPreds},
 		{Kind: runtime.SlotScalar},
 		{Kind: runtime.SlotOptBlock, FlagBit: 0, Inner: &runtime.QueryDescriptor{
 			Segments: []string{" AND grp IN (", ")"},
@@ -2158,7 +2161,7 @@ func (pl *Pipeline) FzPage(p FzPageParams) *runtime.SliceFuture[FzRow] {
 		Subs:      subsBuf[:],
 	}
 	return runtime.QueueSlice(pl.Pipeline, stmtIDFzPage, descFzPage, in, vk, nil, argBuf, expandErr,
-		func(rs *sql.Rows, dst *FzRow) error { return scanFzPageRow(rs, dst, colMask, p) },
+		func(rs runtime.RowScanner, dst *FzRow) error { return scanFzPageRow(rs, dst, colMask, p) },
 	)
 }
 
@@ -2174,8 +2177,9 @@ var descFzSubGrps = &runtime.QueryDescriptor{
 	Name:     "FzSubGrps",
 	StmtID:   8,
 	StmtVerb: runtime.VerbSelect,
-	Segments: []string{"SELECT id FROM fz_rows\nWHERE grp IN (", ")\n  ", ""},
+	Segments: []string{"SELECT id ", "FROM fz_rows\nWHERE grp IN (", ")\n  ", ""},
 	Slots: []runtime.Slot{
+		{Kind: runtime.SlotColPreds},
 		{Kind: runtime.SlotSlice},
 		{Kind: runtime.SlotOptBlock, FlagBit: 0, Inner: &runtime.QueryDescriptor{
 			Segments: []string{" AND k2 >= ", ""},
@@ -2260,8 +2264,9 @@ var descFzSubNote = &runtime.QueryDescriptor{
 	Name:     "FzSubNote",
 	StmtID:   9,
 	StmtVerb: runtime.VerbSelect,
-	Segments: []string{"SELECT id FROM fz_rows\nWHERE note IS NOT NULL AND id IN (", ")\n  ", ""},
+	Segments: []string{"SELECT id ", "FROM fz_rows\nWHERE note IS NOT NULL AND id IN (", ")\n  ", ""},
 	Slots: []runtime.Slot{
+		{Kind: runtime.SlotColPreds},
 		{Kind: runtime.SlotQuery},
 		{Kind: runtime.SlotOptBlock, FlagBit: 0, Inner: &runtime.QueryDescriptor{
 			Segments: []string{" AND k3 <= ", ""},
@@ -2352,10 +2357,11 @@ var descFzAgg = &runtime.QueryDescriptor{
 	Name:     "FzAgg",
 	StmtID:   10,
 	StmtVerb: runtime.VerbSelect,
-	Segments: []string{"WITH picked AS (", ")\nSELECT ", "\nFROM fz_rows\nWHERE id IN (SELECT id FROM picked)\n  ", "\nGROUP BY grp\nORDER BY grp"},
+	Segments: []string{"WITH picked AS (", ")\nSELECT ", "\n", "FROM fz_rows\nWHERE id IN (SELECT id FROM picked)\n  ", "\nGROUP BY grp\nORDER BY grp"},
 	Slots: []runtime.Slot{
 		{Kind: runtime.SlotQuery},
 		{Kind: runtime.SlotSelectCols},
+		{Kind: runtime.SlotColPreds},
 		{Kind: runtime.SlotOptBlock, FlagBit: 0, Inner: &runtime.QueryDescriptor{
 			Segments: []string{" AND tag = ", ""},
 			Slots: []runtime.Slot{
@@ -2519,7 +2525,7 @@ func (pl *Pipeline) FzAgg(p FzAggParams) *runtime.SliceFuture[FzAggRow] {
 		Subs:     subsBuf[:],
 	}
 	return runtime.QueueSlice(pl.Pipeline, stmtIDFzAgg, descFzAgg, in, vk, nil, argBuf, expandErr,
-		func(rs *sql.Rows, dst *FzAggRow) error { return scanFzAggRow(rs, dst, colMask, p) },
+		func(rs runtime.RowScanner, dst *FzAggRow) error { return scanFzAggRow(rs, dst, colMask, p) },
 	)
 }
 
@@ -2551,9 +2557,10 @@ var descFzByKeys = &runtime.QueryDescriptor{
 	Name:     "FzByKeys",
 	StmtID:   11,
 	StmtVerb: runtime.VerbSelect,
-	Segments: []string{"SELECT ", "\nFROM fz_rows\nWHERE (grp, k1) IN (", ")"},
+	Segments: []string{"SELECT ", "\n", "FROM fz_rows\nWHERE (grp, k1) IN (", ")"},
 	Slots: []runtime.Slot{
 		{Kind: runtime.SlotSelectCols},
+		{Kind: runtime.SlotColPreds},
 		{Kind: runtime.SlotTupleSlice, Tuple: &runtime.TupleDescriptor{Segments: []string{"", ", ", ""}, NumFields: 2}},
 	},
 	SelectColExprs: []string{"id", "grp", "k1", "k2", "k3", "k4", "k5", "k6", "k7", "k8", "tag", "tag2", "note"},
@@ -2837,7 +2844,7 @@ func (pl *Pipeline) FzByKeys(keys []FzKey, selectCols ...uint64) *runtime.SliceF
 		TupleLens: tupleLensBuf[:],
 	}
 	return runtime.QueueSlice(pl.Pipeline, stmtIDFzByKeys, descFzByKeys, in, vk, nil, argBuf, expandErr,
-		func(rs *sql.Rows, dst *FzRow) error { return scanFzByKeysRow(rs, dst, colMask, p) },
+		func(rs runtime.RowScanner, dst *FzRow) error { return scanFzByKeysRow(rs, dst, colMask, p) },
 	)
 }
 
@@ -2932,9 +2939,10 @@ var descFzByIDs = &runtime.QueryDescriptor{
 	Name:     "FzByIDs",
 	StmtID:   12,
 	StmtVerb: runtime.VerbSelect,
-	Segments: []string{"SELECT ", "\nFROM fz_rows\nWHERE id IN (", ")"},
+	Segments: []string{"SELECT ", "\n", "FROM fz_rows\nWHERE id IN (", ")"},
 	Slots: []runtime.Slot{
 		{Kind: runtime.SlotSelectCols},
+		{Kind: runtime.SlotColPreds},
 		{Kind: runtime.SlotSlice},
 	},
 	SelectColExprs: []string{"id", "grp", "k1", "k2", "k3", "k4", "k5", "k6", "k7", "k8", "tag", "tag2", "note"},
@@ -3192,7 +3200,7 @@ func (pl *Pipeline) FzByIDs(ids []int64, selectCols ...uint64) *runtime.SliceFut
 		SliceLens: sliceLensBuf[:],
 	}
 	return runtime.QueueSlice(pl.Pipeline, stmtIDFzByIDs, descFzByIDs, in, vk, nil, argBuf, expandErr,
-		func(rs *sql.Rows, dst *FzRow) error { return scanFzByIDsRow(rs, dst, colMask, p) },
+		func(rs runtime.RowScanner, dst *FzRow) error { return scanFzByIDsRow(rs, dst, colMask, p) },
 	)
 }
 
@@ -3730,9 +3738,10 @@ var descFzSubs = &runtime.QueryDescriptor{
 	Name:     "FzSubs",
 	StmtID:   15,
 	StmtVerb: runtime.VerbSelect,
-	Segments: []string{"SELECT ", "\nFROM fz_rows\nWHERE id IN (", ")\n  AND k2 >= ", "\n  ", "\n  ", "\nORDER BY id"},
+	Segments: []string{"SELECT ", "\n", "FROM fz_rows\nWHERE id IN (", ")\n  AND k2 >= ", "\n  ", "\n  ", "\nORDER BY id"},
 	Slots: []runtime.Slot{
 		{Kind: runtime.SlotSelectCols},
+		{Kind: runtime.SlotColPreds},
 		{Kind: runtime.SlotQuery},
 		{Kind: runtime.SlotScalar},
 		{Kind: runtime.SlotOptBlock, FlagBit: 0, Inner: &runtime.QueryDescriptor{
@@ -3983,7 +3992,7 @@ func (pl *Pipeline) FzSubs(p FzSubsParams) *runtime.SliceFuture[FzRow] {
 		Subs:     subsBuf[:],
 	}
 	return runtime.QueueSlice(pl.Pipeline, stmtIDFzSubs, descFzSubs, in, vk, nil, argBuf, expandErr,
-		func(rs *sql.Rows, dst *FzRow) error { return scanFzSubsRow(rs, dst, colMask, p) },
+		func(rs runtime.RowScanner, dst *FzRow) error { return scanFzSubsRow(rs, dst, colMask, p) },
 	)
 }
 
@@ -4009,12 +4018,13 @@ var descFzJoin = &runtime.QueryDescriptor{
 	Name:     "FzJoin",
 	StmtID:   16,
 	StmtVerb: runtime.VerbSelect,
-	Segments: []string{"SELECT ", "\n  ", "\nFROM fz_rows r\n", "\nWHERE r.id >= ", "\n  ", "\nORDER BY r.id"},
+	Segments: []string{"SELECT ", "\n  ", "\n", "FROM fz_rows r\n", "\nWHERE r.id >= ", "\n  ", "\nORDER BY r.id"},
 	Slots: []runtime.Slot{
 		{Kind: runtime.SlotSelectCols},
 		{Kind: runtime.SlotOptBlock, FlagBit: 0, Inner: &runtime.QueryDescriptor{
 			Segments: []string{" , p.id AS peer_id, p.tag AS peer_tag"},
 		}},
+		{Kind: runtime.SlotColPreds},
 		{Kind: runtime.SlotOptBlock, FlagBit: 0, Inner: &runtime.QueryDescriptor{
 			Segments: []string{" JOIN fz_rows p ON p.id = r.k2 + ", ""},
 			Slots: []runtime.Slot{
@@ -4180,7 +4190,7 @@ func (pl *Pipeline) FzJoin(p FzJoinParams) *runtime.SliceFuture[FzJoinRow] {
 		FlagMask: flagMask,
 	}
 	return runtime.QueueSlice(pl.Pipeline, stmtIDFzJoin, descFzJoin, in, vk, nil, argBuf, expandErr,
-		func(rs *sql.Rows, dst *FzJoinRow) error { return scanFzJoinRow(rs, dst, colMask, p) },
+		func(rs runtime.RowScanner, dst *FzJoinRow) error { return scanFzJoinRow(rs, dst, colMask, p) },
 	)
 }
 
@@ -4428,9 +4438,10 @@ var descFzTypedSearch = &runtime.QueryDescriptor{
 	Name:     "FzTypedSearch",
 	StmtID:   18,
 	StmtVerb: runtime.VerbSelect,
-	Segments: []string{"SELECT ", "\nFROM fz_typed\nWHERE f64 >= ", "\n  ", "\n  ", "\n  ", "\n  ", "\n  ", "\nORDER BY id"},
+	Segments: []string{"SELECT ", "\n", "FROM fz_typed\nWHERE f64 >= ", "\n  ", "\n  ", "\n  ", "\n  ", "\n  ", "\nORDER BY id"},
 	Slots: []runtime.Slot{
 		{Kind: runtime.SlotSelectCols},
+		{Kind: runtime.SlotColPreds},
 		{Kind: runtime.SlotScalar},
 		{Kind: runtime.SlotOptBlock, FlagBit: 0, Inner: &runtime.QueryDescriptor{
 			Segments: []string{" AND i32 IN (", ")"},
@@ -4686,7 +4697,7 @@ func (pl *Pipeline) FzTypedSearch(p FzTypedSearchParams) *runtime.SliceFuture[Fz
 		SliceLens: sliceLensBuf[:],
 	}
 	return runtime.QueueSlice(pl.Pipeline, stmtIDFzTypedSearch, descFzTypedSearch, in, vk, nil, argBuf, expandErr,
-		func(rs *sql.Rows, dst *FzTypedRow) error { return scanFzTypedSearchRow(rs, dst, colMask, p) },
+		func(rs runtime.RowScanner, dst *FzTypedRow) error { return scanFzTypedSearchRow(rs, dst, colMask, p) },
 	)
 }
 
@@ -4747,9 +4758,10 @@ var descFzTypedPage = &runtime.QueryDescriptor{
 	Name:     "FzTypedPage",
 	StmtID:   19,
 	StmtVerb: runtime.VerbSelect,
-	Segments: []string{"SELECT ", "\nFROM fz_typed\nWHERE ", "\nORDER BY ", "\nLIMIT ", ""},
+	Segments: []string{"SELECT ", "\n", "FROM fz_typed\nWHERE ", "\nORDER BY ", "\nLIMIT ", ""},
 	Slots: []runtime.Slot{
 		{Kind: runtime.SlotSelectCols},
+		{Kind: runtime.SlotColPreds},
 		{Kind: runtime.SlotSeek},
 		{Kind: runtime.SlotOrder},
 		{Kind: runtime.SlotScalar},
@@ -4937,7 +4949,7 @@ func (pl *Pipeline) FzTypedPage(after runtime.Seek, sort runtime.Order, limit in
 		HasSeek:   p.After.IsActive(),
 	}
 	return runtime.QueueSlice(pl.Pipeline, stmtIDFzTypedPage, descFzTypedPage, in, vk, nil, argBuf, expandErr,
-		func(rs *sql.Rows, dst *FzTypedRow) error { return scanFzTypedPageRow(rs, dst, colMask, p) },
+		func(rs runtime.RowScanner, dst *FzTypedRow) error { return scanFzTypedPageRow(rs, dst, colMask, p) },
 	)
 }
 
@@ -4959,12 +4971,13 @@ var descFzInsertRet = &runtime.QueryDescriptor{
 	StmtID:       20,
 	StmtVerb:     runtime.VerbInsert,
 	HasReturning: true,
-	Segments:     []string{"INSERT INTO fz_rows (id, grp, k1, k2, k3, k4, k5, k6, k7, k8, tag, tag2, note)\n", "", "", "\nRETURNING ", ""},
+	Segments:     []string{"INSERT INTO fz_rows (id, grp, k1, k2, k3, k4, k5, k6, k7, k8, tag, tag2, note)\n", "", "", "\nRETURNING ", "", ""},
 	Slots: []runtime.Slot{
 		{Kind: runtime.SlotInsertTupleValuesOpen},
 		{Kind: runtime.SlotTupleSlice, Tuple: &runtime.TupleDescriptor{Segments: []string{"", ", ", ", ", ", ", ", ", ", ", ", ", ", ", ", ", ", ", ", ", ", ", ", ", ""}, NumFields: 13, Casts: []string{"bigint", "bigint", "bigint", "bigint", "bigint", "bigint", "bigint", "bigint", "bigint", "bigint", "text", "text", "text"}}},
 		{Kind: runtime.SlotInsertTupleValuesClose},
 		{Kind: runtime.SlotSelectCols},
+		{Kind: runtime.SlotColPreds},
 	},
 	SelectColExprs: []string{"id", "k1"},
 	NumTuples:      1,
@@ -5213,7 +5226,7 @@ func (pl *Pipeline) FzInsertRet(rows []FzNew, selectCols ...uint64) *runtime.Sli
 		TupleLens: tupleLensBuf[:],
 	}
 	return runtime.QueueSlice(pl.Pipeline, stmtIDFzInsertRet, descFzInsertRet, in, vk, nil, argBuf, expandErr,
-		func(rs *sql.Rows, dst *FzOut) error { return scanFzInsertRetRow(rs, dst, colMask, p) },
+		func(rs runtime.RowScanner, dst *FzOut) error { return scanFzInsertRetRow(rs, dst, colMask, p) },
 	)
 }
 
@@ -5294,7 +5307,7 @@ var descFzDeleteRet = &runtime.QueryDescriptor{
 	StmtID:       21,
 	StmtVerb:     runtime.VerbDelete,
 	HasReturning: true,
-	Segments:     []string{"DELETE FROM fz_rows\nWHERE ", "id IN (", ")\n  ", "\n", "RETURNING ", ""},
+	Segments:     []string{"DELETE FROM fz_rows\nWHERE ", "id IN (", ")\n  ", "\n", "RETURNING ", "", ""},
 	Slots: []runtime.Slot{
 		{Kind: runtime.SlotBranchGuardOpen},
 		{Kind: runtime.SlotSlice},
@@ -5306,6 +5319,7 @@ var descFzDeleteRet = &runtime.QueryDescriptor{
 		}},
 		{Kind: runtime.SlotBranchGuardClose},
 		{Kind: runtime.SlotSelectCols},
+		{Kind: runtime.SlotColPreds},
 	},
 	SelectColExprs: []string{"id", "k1"},
 	NumSlices:      1,
@@ -5510,7 +5524,7 @@ func (pl *Pipeline) FzDeleteRet(p FzDeleteRetParams) *runtime.SliceFuture[FzOut]
 		SliceLens: sliceLensBuf[:],
 	}
 	return runtime.QueueSlice(pl.Pipeline, stmtIDFzDeleteRet, descFzDeleteRet, in, vk, nil, argBuf, expandErr,
-		func(rs *sql.Rows, dst *FzOut) error { return scanFzDeleteRetRow(rs, dst, colMask, p) },
+		func(rs runtime.RowScanner, dst *FzOut) error { return scanFzDeleteRetRow(rs, dst, colMask, p) },
 	)
 }
 
@@ -5604,7 +5618,7 @@ var descFzBumpRet = &runtime.QueryDescriptor{
 	StmtID:       22,
 	StmtVerb:     runtime.VerbUpdate,
 	HasReturning: true,
-	Segments:     []string{"UPDATE fz_rows SET k1 = k1 + ", ", k2 = k2 - ", "\nWHERE ", "id IN (", ")\n  ", "\n", "RETURNING ", ""},
+	Segments:     []string{"UPDATE fz_rows SET k1 = k1 + ", ", k2 = k2 - ", "\nWHERE ", "id IN (", ")\n  ", "\n", "RETURNING ", "", ""},
 	Slots: []runtime.Slot{
 		{Kind: runtime.SlotScalar},
 		{Kind: runtime.SlotScalar},
@@ -5618,6 +5632,7 @@ var descFzBumpRet = &runtime.QueryDescriptor{
 		}},
 		{Kind: runtime.SlotBranchGuardClose},
 		{Kind: runtime.SlotSelectCols},
+		{Kind: runtime.SlotColPreds},
 	},
 	SelectColExprs: []string{"id", "k1"},
 	NumSlices:      1,
@@ -5826,7 +5841,7 @@ func (pl *Pipeline) FzBumpRet(p FzBumpRetParams) *runtime.SliceFuture[FzOut] {
 		SliceLens: sliceLensBuf[:],
 	}
 	return runtime.QueueSlice(pl.Pipeline, stmtIDFzBumpRet, descFzBumpRet, in, vk, nil, argBuf, expandErr,
-		func(rs *sql.Rows, dst *FzOut) error { return scanFzBumpRetRow(rs, dst, colMask, p) },
+		func(rs runtime.RowScanner, dst *FzOut) error { return scanFzBumpRetRow(rs, dst, colMask, p) },
 	)
 }
 

@@ -35,15 +35,11 @@ type PipelineCond struct {
 	Kind      CondKind
 	Op        *PipelineOp
 	Threshold int64
-	SQLPred   string
-	// PredArgs are the values bound to the '?' placeholders of SQLPred (a CondColPred leaf), in order:
-	// numbered placeholders after the operation's own on the PostgreSQL-protocol path, '?' under
-	// DialectQuestion, literals on the MySQL path (MySQLFlavor.WriteLiteral). Never part of the SQL text
-	// otherwise.
-	PredArgs   []any
-	EvalGoPred func() bool
-	Left       *PipelineCond
-	Right      *PipelineCond
+	// Col is the WhereCol predicate of a CondColPred leaf: the 1-based index into Op.Input.ColPreds,
+	// whose value the operation's statement returns as its column _sqlgen_wc<Col> (0: none, false).
+	Col   int
+	Left  *PipelineCond
+	Right *PipelineCond
 	// Recorded is set only on the leaves of a condition bound by Pipeline.If whose operation is NOT the
 	// operation that evaluates the condition (the latest one of a compound): it is the ID under which
 	// that leaf's own operation recorded the leaf's value server-side (OpDecorators.LeafRecs). The
@@ -112,7 +108,7 @@ func (c *PipelineCond) EvalGoFn() bool {
 	case CondRowsLe:
 		return c.Op != nil && !c.Op.Skipped && c.Op.RowCount <= c.Threshold
 	case CondColPred:
-		return c.Op != nil && !c.Op.Skipped && c.EvalGoPred != nil && c.EvalGoPred()
+		return c.Op != nil && !c.Op.Skipped && c.Op.colPredHolds(c.Col)
 	case CondAnd:
 		return c.Left.EvalGoFn() && c.Right.EvalGoFn()
 	case CondOr:
@@ -160,7 +156,10 @@ type PipelineOp struct {
 	// is a statement the driver must send right before SQL, inside the same batch: it fails with a marked
 	// error (TranslateWireError makes an *ArgError of it) when the operation would run and a forwarded value
 	// is unresolved. Inside a transaction the caller began, take the operation's savepoint before it.
-	CheckSQL      string
+	CheckSQL string
+	// colFail[k] is set when a row the statement returned had a value other than 1 in its WhereCol column
+	// _sqlgen_wc<k+1> (Input.ColPreds[k]); reset whenever the statement's rows are scanned again.
+	colFail       []bool
 	argBuf        *[]any
 	HasResultCols bool
 	IsSingleRow   bool
@@ -353,29 +352,65 @@ func (f *RowFuture[T]) NotFound() PipelineCond {
 	return PipelineCond{Kind: CondRowsEq, Op: f.op, Threshold: 0}
 }
 
-// WhereCol constructs a column-level PipelineCond: true when the operation returned its row and the row
-// satisfies the predicate. sqlPred is a boolean SQL expression over the statement's output columns, with
-// one '?' placeholder (outside quotes) per value in args, which are bound, never written into the SQL
-// text; goPred is the same predicate in Go, evaluated instead of sqlPred on the sequential path.
-func (f *RowFuture[T]) WhereCol(sqlPred string, goPred func(T) bool, args ...any) PipelineCond {
+// WhereCol constructs a column-level PipelineCond: true when the operation returned its row and the
+// predicate is TRUE for it (NULL counts as false). sqlPred is a boolean SQL expression evaluated by the
+// server in the scope of the statement's output column list (as if it were one more output column: it can
+// use the tables, columns and aggregates the list can, but not the list's own aliases), with one '?'
+// placeholder (outside quotes) per value in args, which are bound, never written into the SQL text. The
+// statement returns it as one more (hidden) column on every path, so the condition is decided by the server
+// in the same round trip as the statement itself. The statement needs such a column list: a SELECT
+// (neither DISTINCT nor a UNION / INTERSECT / EXCEPT) or a RETURNING clause; otherwise the pipeline fails
+// with ErrInvalidArgument.
+func (f *RowFuture[T]) WhereCol(sqlPred string, args ...any) PipelineCond {
 	if f == nil {
-		return PipelineCond{Kind: CondColPred, SQLPred: sqlPred, PredArgs: args}
+		return PipelineCond{Kind: CondColPred}
 	}
-	return colPredCond(f.pl, f.op, sqlPred, args, func() bool {
-		return f.found && goPred != nil && goPred(f.val)
-	})
+	return colPredCond(f.pl, f.op, sqlPred, args)
 }
 
-// colPredCond builds a CondColPred leaf; a placeholder count that does not match args fails the
+// colPredCond adds sqlPred as a WhereCol column of op and returns the CondColPred leaf that reads it. A
+// placeholder count that does not match args, or a statement without a place for the column, fails the
 // pipeline's build (ErrInvalidArgument from Flush / PipelineTx).
-func colPredCond(pl *Pipeline, op *PipelineOp, sqlPred string, args []any, eval func() bool) PipelineCond {
+func colPredCond(pl *Pipeline, op *PipelineOp, sqlPred string, args []any) PipelineCond {
 	n := 0
 	forPredMarkers(sqlPred, func(int) { n++ })
 	if n != len(args) && pl != nil {
 		pl.SetBuildError(InvalidArgument("WhereCol: the predicate " + strconv.Quote(sqlPred) + " has " +
 			strconv.Itoa(n) + " '?' placeholders but " + strconv.Itoa(len(args)) + " arguments were given"))
 	}
-	return PipelineCond{Kind: CondColPred, Op: op, SQLPred: sqlPred, PredArgs: args, EvalGoPred: eval}
+	if op == nil || op.NoOp {
+		// A NoOp sends no statement and returns no row: the condition is false, as for any empty result.
+		return PipelineCond{Kind: CondColPred, Op: op}
+	}
+	if !op.Desc.hasColPredSlot() {
+		if pl != nil {
+			pl.SetBuildError(InvalidArgument("WhereCol: statement " + strconv.Quote(op.stmtName()) +
+				" has no output column list a predicate column can be added to (a SELECT that is neither DISTINCT nor a UNION / INTERSECT / EXCEPT, or a RETURNING clause)"))
+		}
+		return PipelineCond{Kind: CondColPred, Op: op}
+	}
+	op.Input.ColPreds = append(op.Input.ColPreds, ColPred{SQL: sqlPred, Args: args})
+	op.colFail = append(op.colFail, false)
+	return PipelineCond{Kind: CondColPred, Op: op, Col: len(op.Input.ColPreds)}
+}
+
+// colPredHolds reports whether the WhereCol column col (1-based) of op was 1 in every row of a non-empty
+// result.
+func (op *PipelineOp) colPredHolds(col int) bool {
+	return col > 0 && col <= len(op.colFail) && op.RowCount > 0 && !op.colFail[col-1]
+}
+
+// hasColPredSlot reports whether the statement has the place WhereCol columns are rendered at.
+func (d *QueryDescriptor) hasColPredSlot() bool {
+	if d == nil {
+		return false
+	}
+	for i := range d.Slots {
+		if d.Slots[i].Kind == SlotColPreds {
+			return true
+		}
+	}
+	return false
 }
 
 // forPredMarkers calls fn with the byte offset of every '?' placeholder of a WhereCol predicate: every '?'
@@ -484,20 +519,14 @@ func (f *SliceFuture[T]) NotFound() PipelineCond {
 	return PipelineCond{Kind: CondRowsEq, Op: f.op, Threshold: 0}
 }
 
-// WhereCol constructs a column-level PipelineCond requiring at least 1 row and all rows to satisfy the
-// predicate; sqlPred, goPred and args are as for RowFuture.WhereCol.
-func (f *SliceFuture[T]) WhereCol(sqlPred string, goPred func(T) bool, args ...any) PipelineCond {
-	return colPredCond(f.pl, f.op, sqlPred, args, func() bool {
-		if len(f.vals) == 0 || goPred == nil {
-			return false
-		}
-		for i := range f.vals {
-			if !goPred(f.vals[i]) {
-				return false
-			}
-		}
-		return true
-	})
+// WhereCol constructs a column-level PipelineCond: true when the operation returned at least one row and
+// the predicate is TRUE for every row (NULL counts as false); sqlPred and args are as for
+// RowFuture.WhereCol.
+func (f *SliceFuture[T]) WhereCol(sqlPred string, args ...any) PipelineCond {
+	if f == nil {
+		return PipelineCond{Kind: CondColPred}
+	}
+	return colPredCond(f.pl, f.op, sqlPred, args)
 }
 
 // Get returns the scanned slice of rows after the pipeline has flushed (ErrFutureNotReady before).
@@ -1181,6 +1210,63 @@ func (p *Pipeline) prepareNoOps() (done bool, err error) {
 	return allPlain, nil
 }
 
+// RowScanner is what a generated scan function reads one row from: *sql.Row, *sql.Rows, or the reader of a
+// row that also carries WhereCol columns.
+type RowScanner interface{ Scan(dest ...any) error }
+
+// colPredScanner reads the rows of a statement with WhereCol columns: the caller's destinations, then one
+// integer per column (Input.ColPreds order), recorded in op.colFail.
+type colPredScanner struct {
+	rows *sql.Rows
+	op   *PipelineOp
+	dest []any
+	vals []sql.NullInt64
+}
+
+// newRowScanner returns the scanner of rows for op: rows itself unless op has WhereCol columns. It resets
+// what the columns recorded (the statement may run again: a retried transaction, a fallback).
+func newRowScanner(rows *sql.Rows, op *PipelineOp) RowScanner {
+	if op == nil || len(op.Input.ColPreds) == 0 {
+		return rows
+	}
+	clear(op.colFail)
+	return &colPredScanner{rows: rows, op: op, vals: make([]sql.NullInt64, len(op.Input.ColPreds))}
+}
+
+func (s *colPredScanner) Scan(dest ...any) error {
+	s.dest = append(s.dest[:0], dest...)
+	for k := range s.vals {
+		s.dest = append(s.dest, &s.vals[k])
+	}
+	if err := s.rows.Scan(s.dest...); err != nil {
+		return err
+	}
+	for k, v := range s.vals {
+		if (!v.Valid || v.Int64 != 1) && k < len(s.op.colFail) {
+			s.op.colFail[k] = true
+		}
+	}
+	return nil
+}
+
+// querySeq runs a query operation on the sequential path. A statement with WhereCol columns is rendered
+// on its own (the predicates and their arguments are not part of the cached variants).
+func (p *Pipeline) querySeq(ctx context.Context, op *PipelineOp) (*sql.Rows, *ManagedStmt, error) {
+	if len(op.Input.ColPreds) == 0 {
+		shapeTag := ComputeBatchShapeTag(op.Input.ColMask, op.Input.FlagMask)
+		return p.cache.Query(ctx, p.db, p.txCache, p.usePrepared, op.Key, op.StmtID, shapeTag, 0, op.FastSlot, p.dialect, op.Desc, &op.Input, op.Args...)
+	}
+	sqlStr, args := renderColPredSQL(p.dialect, op)
+	var rows *sql.Rows
+	var err error
+	if p.txCache != nil {
+		rows, err = p.txCache.tx.QueryContext(ctx, sqlStr, args...)
+	} else {
+		rows, err = p.db.QueryContext(ctx, sqlStr, args...)
+	}
+	return rows, nil, err
+}
+
 // QueueRow queues a single-row ("one") operation on p and returns its *RowFuture[T].
 func QueueRow[T any](
 	p *Pipeline,
@@ -1191,8 +1277,7 @@ func QueueRow[T any](
 	fastSlot *atomic.Pointer[ManagedStmt],
 	argBuf *[]any,
 	expandErr error,
-	scanRowFn func(*sql.Row, *T) error,
-	scanRowsFn func(*sql.Rows, *T) error,
+	scan func(RowScanner, *T) error,
 ) *RowFuture[T] {
 	if expandErr != nil {
 		p.SetBuildError(expandErr)
@@ -1230,9 +1315,10 @@ func QueueRow[T any](
 		},
 		ScanWireRows: func(rows *sql.Rows) (int64, error) {
 			var count int64
+			sc := newRowScanner(rows, fut.op)
 			for rows.Next() {
 				var item T
-				if err := scanRowsFn(rows, &item); err != nil {
+				if err := scan(sc, &item); err != nil {
 					fut.err = err
 					return count, err
 				}
@@ -1247,19 +1333,20 @@ func QueueRow[T any](
 			return count, err
 		},
 		ExecSeq: func(ctx context.Context, pl *Pipeline, op *PipelineOp) error {
-			shapeTag := ComputeBatchShapeTag(op.Input.ColMask, op.Input.FlagMask)
-			if op.countRows {
-				// A producer of a forwarded value: count every row, as the wire paths do.
-				rows, ms, err := pl.cache.Query(ctx, pl.db, pl.txCache, pl.usePrepared, op.Key, op.StmtID, shapeTag, 0, op.FastSlot, pl.dialect, op.Desc, &op.Input, op.Args...)
+			if op.countRows || len(op.Input.ColPreds) > 0 {
+				// A producer of a forwarded value, or a statement with WhereCol columns: count (and read)
+				// every row, as the wire paths do.
+				rows, ms, err := pl.querySeq(ctx, op)
 				if err != nil {
 					fut.err = err
 					op.Err = err
 					return err
 				}
 				var count int64
+				sc := newRowScanner(rows, op)
 				for rows.Next() {
 					var item T
-					if err := scanRowsFn(rows, &item); err != nil {
+					if err := scan(sc, &item); err != nil {
 						closeRows(rows, ms)
 						fut.err = err
 						op.Err = err
@@ -1280,6 +1367,7 @@ func QueueRow[T any](
 				op.RowCount = count
 				return nil
 			}
+			shapeTag := ComputeBatchShapeTag(op.Input.ColMask, op.Input.FlagMask)
 			row, ms, err := pl.cache.QueryRow(ctx, pl.db, pl.txCache, pl.usePrepared, op.Key, op.StmtID, shapeTag, 0, op.FastSlot, pl.dialect, op.Desc, &op.Input, op.Args...)
 			if err != nil {
 				fut.err = err
@@ -1287,7 +1375,7 @@ func QueueRow[T any](
 				return err
 			}
 			var item T
-			scanErr := scanRowFn(row, &item)
+			scanErr := scan(row, &item)
 			_ = ms.Release()
 			if scanErr != nil {
 				if errors.Is(scanErr, sql.ErrNoRows) {
@@ -1319,7 +1407,7 @@ func QueueSlice[T any](
 	fastSlot *atomic.Pointer[ManagedStmt],
 	argBuf *[]any,
 	expandErr error,
-	scanRowsFn func(*sql.Rows, *T) error,
+	scan func(RowScanner, *T) error,
 ) *SliceFuture[T] {
 	if expandErr != nil {
 		p.SetBuildError(expandErr)
@@ -1357,9 +1445,10 @@ func QueueSlice[T any](
 		},
 		ScanWireRows: func(rows *sql.Rows) (int64, error) {
 			var count int64
+			sc := newRowScanner(rows, fut.op)
 			for rows.Next() {
 				var item T
-				if err := scanRowsFn(rows, &item); err != nil {
+				if err := scan(sc, &item); err != nil {
 					fut.err = err
 					return count, err
 				}
@@ -1371,17 +1460,17 @@ func QueueSlice[T any](
 			return count, err
 		},
 		ExecSeq: func(ctx context.Context, pl *Pipeline, op *PipelineOp) error {
-			shapeTag := ComputeBatchShapeTag(op.Input.ColMask, op.Input.FlagMask)
-			rows, ms, err := pl.cache.Query(ctx, pl.db, pl.txCache, pl.usePrepared, op.Key, op.StmtID, shapeTag, 0, op.FastSlot, pl.dialect, op.Desc, &op.Input, op.Args...)
+			rows, ms, err := pl.querySeq(ctx, op)
 			if err != nil {
 				fut.err = err
 				op.Err = err
 				return err
 			}
 			var count int64
+			sc := newRowScanner(rows, op)
 			for rows.Next() {
 				var item T
-				if err := scanRowsFn(rows, &item); err != nil {
+				if err := scan(sc, &item); err != nil {
 					closeRows(rows, ms)
 					fut.err = err
 					op.Err = err
@@ -1494,8 +1583,7 @@ func (p *Pipeline) bindCond(c *PipelineCond, root *PipelineOp) *PipelineCond {
 func (p *Pipeline) recordLeaf(leaf *PipelineCond) int {
 	op := leaf.Op
 	for _, r := range op.Decorators.LeafRecs {
-		if r.Cond.Kind == leaf.Kind && r.Cond.Threshold == leaf.Threshold && r.Cond.SQLPred == leaf.SQLPred &&
-			len(r.Cond.PredArgs) == 0 && len(leaf.PredArgs) == 0 {
+		if r.Cond.Kind == leaf.Kind && r.Cond.Threshold == leaf.Threshold && r.Cond.Col == leaf.Col {
 			return r.CondID
 		}
 	}

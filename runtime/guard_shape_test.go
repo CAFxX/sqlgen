@@ -43,7 +43,7 @@ func TestEveryGuardCTEIsReferencedByTheFinalSelect(t *testing.T) {
 			return rows(CondRowsGt, 0), []ProducedCond{{CondID: 7, Cond: rows(CondRowsEq, 1)}, {CondID: 8, Cond: rows(CondRowsLt, 5)}}
 		},
 		"colpred": func() (*PipelineCond, []ProducedCond) {
-			return &PipelineCond{Kind: CondColPred, SQLPred: "score > 1"}, nil
+			return &PipelineCond{Kind: CondColPred, Col: 1}, nil
 		},
 		"recorded": func() (*PipelineCond, []ProducedCond) {
 			return &PipelineCond{Kind: CondOr, Left: &PipelineCond{Kind: CondRowsEq, Recorded: 30, Op: &PipelineOp{}}, Right: rows(CondRowsGt, 0)}, nil

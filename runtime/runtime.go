@@ -48,6 +48,9 @@ const (
 	SlotInsertValuesClose                      // ")" or " FROM (SELECT 1) AS _sqlgen_dual WHERE " + gates
 	SlotInsertTupleValuesOpen                  // "VALUES " or "WITH _sqlgen_v AS (VALUES "
 	SlotInsertTupleValuesClose                 // "" or ") SELECT * FROM _sqlgen_v WHERE " + gates
+	// SlotColPreds marks the end of the top-level output column list (SELECT or RETURNING) of a statement
+	// whose rows a WhereCol predicate can be added to: one more column per RenderInput.ColPreds entry.
+	SlotColPreds
 )
 
 const (
@@ -613,6 +616,17 @@ type RenderInput struct {
 	TupleLens   []int
 	Subs        []Query
 	BranchGates []BranchGate
+	// ColPreds are the WhereCol predicates of a pipeline operation, rendered at SlotColPreds as extra
+	// output columns "CASE WHEN (<SQL>) THEN 1 ELSE 0 END AS _sqlgen_wc<k>" (k from 1), after the
+	// statement's own columns.
+	ColPreds []ColPred
+}
+
+// ColPred is a WhereCol predicate: a boolean SQL expression evaluated in the scope of the statement's
+// output column list, and the values bound to its '?' placeholders.
+type ColPred struct {
+	SQL  string
+	Args []any
 }
 
 // OpDecorators describes pipeline assertions, condition producers, or aborts attached to an operation.

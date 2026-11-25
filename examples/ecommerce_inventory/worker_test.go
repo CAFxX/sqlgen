@@ -320,7 +320,7 @@ func TestEcommerceInventoryWorkerEndToEnd(t *testing.T) {
 	_ = invQ.Expand(&dummyArgs, runtime.DialectQuestion, &invQ)
 	sfoQ := StreamFulfilledOrdersQuery(cutoffTS)
 	_ = sfoQ.Expand(&dummyArgs, runtime.DialectQuestion, &sfoQ)
-	_ = (&runtime.RowFuture[int]{}).WhereCol("1=1", nil)
+	_ = (&runtime.RowFuture[int]{}).WhereCol("1=1")
 	_ = q.CacheStats()
 	_ = q.WithPrepared(false)
 

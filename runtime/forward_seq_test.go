@@ -26,11 +26,10 @@ func fwdSQLite(t *testing.T) *sql.DB {
 	return db
 }
 
-func scanInt(r *sql.Row, d *int64) error   { return r.Scan(d) }
-func scanInts(r *sql.Rows, d *int64) error { return r.Scan(d) }
+func scanInt(r RowScanner, d *int64) error { return r.Scan(d) }
 
 func qRow(p *Pipeline, desc *QueryDescriptor, args ...any) *RowFuture[int64] {
-	return QueueRow[int64](p, desc.StmtID, desc, RenderInput{}, MakeVariantKey(desc.StmtID, 0, 0, 0), nil, &args, nil, scanInt, scanInts)
+	return QueueRow[int64](p, desc.StmtID, desc, RenderInput{}, MakeVariantKey(desc.StmtID, 0, 0, 0), nil, &args, nil, scanInt)
 }
 
 func TestForwardSequentialRuntime(t *testing.T) {

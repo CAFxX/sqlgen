@@ -1469,7 +1469,8 @@ func (c *parityWireConn) ExecPipeline(ctx context.Context, ops []runtime.Pipelin
 			return runtime.TranslateWireError(op, errors.New("SQLSTATE 22003: integer out of range"))
 		}
 		if op.HasResultCols {
-			// Render clean core statement for mirror SQLite execution
+			// Render clean core statement for mirror SQLite execution, with its WhereCol columns (op.Args
+			// already carries their arguments, at their placeholders' position)
 			coreSQL := runtime.BuildComposedSQL(op.Desc, &runtime.RenderInput{
 				ColMask:   op.Input.ColMask,
 				FlagMask:  op.Input.FlagMask,
@@ -1478,6 +1479,7 @@ func (c *parityWireConn) ExecPipeline(ctx context.Context, ops []runtime.Pipelin
 				SliceLens: op.Input.SliceLens,
 				TupleLens: op.Input.TupleLens,
 				Subs:      op.Input.Subs,
+				ColPreds:  op.Input.ColPreds,
 			}, runtime.DialectQuestion)
 			rows, err := c.sqliteDB.QueryContext(ctx, coreSQL, op.Args...)
 			if err != nil {
@@ -1573,9 +1575,7 @@ func TestPropertyPipelineWireVsSequentialParity(t *testing.T) {
 			var ifRes *runtime.IfResult
 			err := q.PipelineTx(ctx, nil, func(p *Pipeline) error {
 				getFut = p.GetUserByID(targetID)
-				cond := getFut.WhereCol("score >= ?", func(u User) bool {
-					return u.Score >= minScore
-				}, minScore).And(getFut.Found())
+				cond := getFut.WhereCol("score >= ?", minScore).And(getFut.Found())
 
 				ifRes = p.If(cond, func(p *Pipeline) {
 					p.CreateUser(100+int64(trial), 1, "then@p.com", "admin", 99, "ok").AssertRows(1)

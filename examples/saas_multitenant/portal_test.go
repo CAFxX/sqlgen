@@ -429,7 +429,7 @@ func TestSaaSMultitenantPortalEndToEnd(t *testing.T) {
 
 	// Pipeline, PipelineTx, InTx with options, WithPrepared, WithTx, CacheStats
 	_ = q.CacheStats()
-	_ = (&runtime.RowFuture[int]{}).WhereCol("1=1", nil)
+	_ = (&runtime.RowFuture[int]{}).WhereCol("1=1")
 	unprep := q.WithPrepared(false)
 	if _, err := unprep.SearchMembers(ctx, SearchMembersParams{OrgID: 1}); err != nil {
 		t.Fatalf("unprep.SearchMembers: %v", err)

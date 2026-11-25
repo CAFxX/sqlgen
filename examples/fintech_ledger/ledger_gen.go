@@ -176,9 +176,10 @@ var descGetAccount = &runtime.QueryDescriptor{
 	StmtID:    1,
 	StmtVerb:  runtime.VerbSelect,
 	StaticSQL: "SELECT\n  org_id, id, currency, balance_cents, status\nFROM accounts\nWHERE org_id = ? AND id = ?",
-	Segments:  []string{"SELECT\n  ", "\nFROM accounts\nWHERE org_id = ", " AND id = ", ""},
+	Segments:  []string{"SELECT\n  ", "\n", "FROM accounts\nWHERE org_id = ", " AND id = ", ""},
 	Slots: []runtime.Slot{
 		{Kind: runtime.SlotSelectCols},
+		{Kind: runtime.SlotColPreds},
 		{Kind: runtime.SlotScalar},
 		{Kind: runtime.SlotScalar},
 	},
@@ -319,8 +320,7 @@ func (pl *Pipeline) GetAccount(orgID int64, accountID int64, selectCols ...uint6
 		FlagMask: flagMask,
 	}
 	return runtime.QueueRow(pl.Pipeline, stmtIDGetAccount, descGetAccount, in, vk, runtime.FastSlot(colMask, &pl.q.fastSlots[0]), argBuf, expandErr,
-		func(r *sql.Row, dst *Account) error { return scanGetAccountRow(r, dst, colMask, p) },
-		func(rs *sql.Rows, dst *Account) error { return scanGetAccountRow(rs, dst, colMask, p) },
+		func(rs runtime.RowScanner, dst *Account) error { return scanGetAccountRow(rs, dst, colMask, p) },
 	)
 }
 
@@ -335,8 +335,9 @@ var descTotalSupplyByOrg = &runtime.QueryDescriptor{
 	StmtID:    2,
 	StmtVerb:  runtime.VerbSelect,
 	StaticSQL: "SELECT COALESCE(SUM(balance_cents), 0) AS total_cents\nFROM accounts\nWHERE org_id = ?",
-	Segments:  []string{"SELECT COALESCE(SUM(balance_cents), 0) AS total_cents\nFROM accounts\nWHERE org_id = ", ""},
+	Segments:  []string{"SELECT COALESCE(SUM(balance_cents), 0) AS total_cents\n", "FROM accounts\nWHERE org_id = ", ""},
 	Slots: []runtime.Slot{
+		{Kind: runtime.SlotColPreds},
 		{Kind: runtime.SlotScalar},
 	},
 	ResultCols: []string{"total_cents"},
@@ -440,8 +441,7 @@ func (pl *Pipeline) TotalSupplyByOrg(orgID int64) *runtime.RowFuture[int64] {
 		FlagMask: flagMask,
 	}
 	return runtime.QueueRow(pl.Pipeline, stmtIDTotalSupplyByOrg, descTotalSupplyByOrg, in, vk, &pl.q.fastSlots[1], argBuf, expandErr,
-		func(r *sql.Row, dst *int64) error { return scanTotalSupplyByOrgRow(r, dst, colMask, p) },
-		func(rs *sql.Rows, dst *int64) error { return scanTotalSupplyByOrgRow(rs, dst, colMask, p) },
+		func(rs runtime.RowScanner, dst *int64) error { return scanTotalSupplyByOrgRow(rs, dst, colMask, p) },
 	)
 }
 

@@ -34,8 +34,9 @@ type myFut struct {
 	src         fuzzCondSrc
 	assertRows  func(n int64)
 	assertFound func()
-	colPred     func(minScore int64) runtime.PipelineCond // nil: no column predicate (exec and RETURNING futures)
-	desc        func() string                             // what a caller observes after a successful flush
+	colPred     func(minScore int64) runtime.PipelineCond // nil: no column predicate (exec futures)
+	where       func(sqlPred string, args ...any) runtime.PipelineCond
+	desc        func() string // what a caller observes after a successful flush
 }
 
 type myNew struct {
@@ -96,7 +97,7 @@ func myExecFut(f *runtime.ExecFuture) myFut {
 	}
 }
 
-func myRowFut[T any](f *runtime.RowFuture[T], score func(T) int64) myFut {
+func myRowFut[T any](f *runtime.RowFuture[T], hasScore bool) myFut {
 	m := myFut{
 		src:         f,
 		assertRows:  func(n int64) { f.AssertRows(n) },
@@ -106,15 +107,16 @@ func myRowFut[T any](f *runtime.RowFuture[T], score func(T) int64) myFut {
 			return myDescribe(v, err)
 		},
 	}
-	if score != nil {
+	if hasScore {
 		m.colPred = func(min int64) runtime.PipelineCond {
-			return f.WhereCol(fmt.Sprintf("score >= %d", min), func(v T) bool { return score(v) >= min })
+			return f.WhereCol(fmt.Sprintf("score >= %d", min))
 		}
+		m.where = f.WhereCol
 	}
 	return m
 }
 
-func mySliceFut[T any](f *runtime.SliceFuture[T], score func(T) int64) myFut {
+func mySliceFut[T any](f *runtime.SliceFuture[T], hasScore bool) myFut {
 	m := myFut{
 		src:         f,
 		assertRows:  func(n int64) { f.AssertRows(n) },
@@ -124,10 +126,11 @@ func mySliceFut[T any](f *runtime.SliceFuture[T], score func(T) int64) myFut {
 			return myDescribe(v, err)
 		},
 	}
-	if score != nil {
+	if hasScore {
 		m.colPred = func(min int64) runtime.PipelineCond {
-			return f.WhereCol(fmt.Sprintf("score >= %d", min), func(v T) bool { return score(v) >= min })
+			return f.WhereCol(fmt.Sprintf("score >= %d", min))
 		}
+		m.where = f.WhereCol
 	}
 	return m
 }
@@ -137,7 +140,7 @@ func mySliceFut[T any](f *runtime.SliceFuture[T], score func(T) int64) myFut {
 // single-round-trip path wraps a gated SELECT (or a producer of a forwarded value) in, so only the outcome
 // is compared. (With exactly one row, the only case in which the value is forwarded, there is no order.)
 func fwdManyRowsFut(f *runtime.RowFuture[int64]) myFut {
-	m := myRowFut(f, nil)
+	m := myRowFut(f, false)
 	m.desc = func() string {
 		_, err := f.Get()
 		return myDescribe("-", err)
@@ -147,7 +150,7 @@ func fwdManyRowsFut(f *runtime.RowFuture[int64]) myFut {
 
 // fwdSortedFut is mySliceFut comparing the rows as a set, for the same reason.
 func fwdSortedFut(f *runtime.SliceFuture[int64]) myFut {
-	m := mySliceFut(f, nil)
+	m := mySliceFut(f, false)
 	m.desc = func() string {
 		v, err := f.Get()
 		v = slices.Clone(v)
@@ -179,10 +182,10 @@ func (a myqPipe) InsertItems(rows []myNew) myFut   { return myExecFut(a.p.Insert
 func (a myqPipe) DeleteItems(ids []int64) myFut    { return myExecFut(a.p.DeleteItems(ids)) }
 func (a myqPipe) SetAllStatus(status string) myFut { return myExecFut(a.p.SetAllStatus(status)) }
 func (a myqPipe) GetItem(id int64) myFut {
-	return myRowFut(a.p.GetItem(id), func(it myq.Item) int64 { return it.Score })
+	return myRowFut(a.p.GetItem(id), true)
 }
 func (a myqPipe) ItemsByIDs(ids []int64) myFut {
-	return mySliceFut(a.p.ItemsByIDs(ids), func(it myq.Item) int64 { return it.Score })
+	return mySliceFut(a.p.ItemsByIDs(ids), true)
 }
 func (a myqPipe) InsertItemReturning(id, org int64, name string, score int64, status string) myFut {
 	panic("RETURNING does not exist on MySQL")
@@ -194,7 +197,7 @@ func (a myqPipe) Returning() bool                    { return false }
 func (a myqPipe) Abort(err error)                    { a.p.Abort(err) }
 func (a myqPipe) FwdScoreOf(id int64) (myFut, runtime.Arg[int64]) {
 	f := a.p.FwdScoreOf(id)
-	return myRowFut(f, nil), f.Arg()
+	return myRowFut(f, false), f.Arg()
 }
 func (a myqPipe) FwdIDsByStatus(status string) (myFut, runtime.Arg[int64]) {
 	f := a.p.FwdIDsByStatus(status)
@@ -202,7 +205,7 @@ func (a myqPipe) FwdIDsByStatus(status string) (myFut, runtime.Arg[int64]) {
 }
 func (a myqPipe) CountOrgItems(org int64) (myFut, runtime.Arg[int64]) {
 	f := a.p.CountOrgItems(org)
-	return myRowFut(f, nil), f.Arg()
+	return myRowFut(f, false), f.Arg()
 }
 func (a myqPipe) FwdSetScore(score, id runtime.Arg[int64]) myFut {
 	return myExecFut(a.p.FwdSetScore(score, id))
@@ -262,28 +265,28 @@ func (a mdbqPipe) InsertItems(rows []myNew) myFut   { return myExecFut(a.p.Inser
 func (a mdbqPipe) DeleteItems(ids []int64) myFut    { return myExecFut(a.p.DeleteItems(ids)) }
 func (a mdbqPipe) SetAllStatus(status string) myFut { return myExecFut(a.p.SetAllStatus(status)) }
 func (a mdbqPipe) GetItem(id int64) myFut {
-	return myRowFut(a.p.GetItem(id), func(it mdbq.Item) int64 { return it.Score })
+	return myRowFut(a.p.GetItem(id), true)
 }
 func (a mdbqPipe) ItemsByIDs(ids []int64) myFut {
-	return mySliceFut(a.p.ItemsByIDs(ids), func(it mdbq.Item) int64 { return it.Score })
+	return mySliceFut(a.p.ItemsByIDs(ids), true)
 }
 func (a mdbqPipe) InsertItemReturning(id, org int64, name string, score int64, status string) myFut {
-	return myRowFut(a.p.InsertItemReturning(id, org, name, score, status), func(w mdbq.Written) int64 { return w.Score })
+	return myRowFut(a.p.InsertItemReturning(id, org, name, score, status), true)
 }
 func (a mdbqPipe) InsertItemsReturning(rows []myNew) myFut {
-	return mySliceFut(a.p.InsertItemsReturning(mdbqRows(rows)), func(w mdbq.Written) int64 { return w.Score })
+	return mySliceFut(a.p.InsertItemsReturning(mdbqRows(rows)), true)
 }
 func (a mdbqPipe) DeleteReturning(ids []int64) myFut {
-	return mySliceFut(a.p.DeleteReturning(ids), func(w mdbq.Written) int64 { return w.Score })
+	return mySliceFut(a.p.DeleteReturning(ids), true)
 }
 func (a mdbqPipe) DeleteOneReturning(id int64) myFut {
-	return myRowFut(a.p.DeleteOneReturning(id), func(w mdbq.Written) int64 { return w.Score })
+	return myRowFut(a.p.DeleteOneReturning(id), true)
 }
 func (a mdbqPipe) Returning() bool { return true }
 func (a mdbqPipe) Abort(err error) { a.p.Abort(err) }
 func (a mdbqPipe) FwdScoreOf(id int64) (myFut, runtime.Arg[int64]) {
 	f := a.p.FwdScoreOf(id)
-	return myRowFut(f, nil), f.Arg()
+	return myRowFut(f, false), f.Arg()
 }
 func (a mdbqPipe) FwdIDsByStatus(status string) (myFut, runtime.Arg[int64]) {
 	f := a.p.FwdIDsByStatus(status)
@@ -291,7 +294,7 @@ func (a mdbqPipe) FwdIDsByStatus(status string) (myFut, runtime.Arg[int64]) {
 }
 func (a mdbqPipe) CountOrgItems(org int64) (myFut, runtime.Arg[int64]) {
 	f := a.p.CountOrgItems(org)
-	return myRowFut(f, nil), f.Arg()
+	return myRowFut(f, false), f.Arg()
 }
 func (a mdbqPipe) FwdSetScore(score, id runtime.Arg[int64]) myFut {
 	return myExecFut(a.p.FwdSetScore(score, id))
@@ -304,7 +307,7 @@ func (a mdbqPipe) FwdInsertItem(id int64, score runtime.Arg[int64]) myFut {
 }
 func (a mdbqPipe) FwdInsertReturningID(id int64) (myFut, runtime.Arg[int64]) {
 	f := a.p.FwdInsertReturningID(id, 1, "r")
-	return myRowFut(f, nil), f.Arg()
+	return myRowFut(f, false), f.Arg()
 }
 func (a mdbqPipe) If(cond runtime.PipelineCond, thenFn, elseFn func(myPipe)) *runtime.IfResult {
 	var t, e func(*mdbq.Pipeline)

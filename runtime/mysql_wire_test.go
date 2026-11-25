@@ -199,7 +199,7 @@ type shapeDesc struct {
 func shapeDescs() []shapeDesc {
 	return []shapeDesc{
 		{name: "select", hasRes: true, args: 1,
-			desc: &QueryDescriptor{Name: "sel", StmtVerb: VerbSelect, Segments: []string{"SELECT id FROM t WHERE id = ", ""}, Slots: []Slot{{Kind: SlotScalar}}}},
+			desc: &QueryDescriptor{Name: "sel", StmtVerb: VerbSelect, Segments: []string{"SELECT id ", "FROM t WHERE id = ", ""}, Slots: []Slot{{Kind: SlotColPreds}, {Kind: SlotScalar}}}},
 		{name: "update", args: 4, in: RenderInput{SliceLens: []int{2}},
 			desc: &QueryDescriptor{Name: "upd", StmtVerb: VerbUpdate,
 				Segments: []string{"UPDATE t SET score = score + ", "\nWHERE ", "id IN (", ") AND org_id = ", "", ""},
@@ -348,7 +348,9 @@ func TestMySQLShapeMatrix(t *testing.T) {
 			return a, []ProducedCond{{CondID: 7, Cond: b}, {CondID: 8, Cond: c}}
 		}},
 		"colpred": {pred: true, build: func(self *PipelineOp) (*PipelineCond, []ProducedCond) {
-			return &PipelineCond{Kind: CondColPred, Op: self, SQLPred: "score > 1"}, nil
+			self.Input.ColPreds = []ColPred{{SQL: "score > ? AND name <> ?", Args: []any{int64(1), "it's"}}}
+			self.colFail = make([]bool, 1)
+			return &PipelineCond{Kind: CondColPred, Op: self, Col: 1}, nil
 		}},
 		"recorded": {build: func(self *PipelineOp) (*PipelineCond, []ProducedCond) {
 			return &PipelineCond{Kind: CondOr, Left: &PipelineCond{Kind: CondRowsEq, Recorded: 30, Op: &PipelineOp{}}, Right: &PipelineCond{Kind: CondRowsGt, Op: self}}, nil
@@ -602,14 +604,15 @@ func TestMySQLGoldenShapes(t *testing.T) {
 	t.Run("a column condition runs the select a second time", func(t *testing.T) {
 		ops := []PipelineOp{mkOp(descs["select"], []BranchGate{{CondID: 9, WantTrue: true}}, OpDecorators{AssertRows: -1})}
 		ops[0].Args = []any{int64(5)}
-		ops[0].Decorators.ProduceCond = &PipelineCond{Kind: CondColPred, Op: &ops[0], SQLPred: "score > 1"}
+		ops[0].Input.ColPreds = []ColPred{{SQL: "score > ?", Args: []any{int64(1)}}}
+		ops[0].Decorators.ProduceCond = &PipelineCond{Kind: CondColPred, Op: &ops[0], Col: 1}
 		ops[0].Decorators.CondID = 2
 		b, err := RenderMySQLBatch(ops, MySQLRenderOptions{Flavor: fl, InTx: true})
 		if err != nil {
 			t.Fatal(err)
 		}
-		want := "SELECT * FROM (SELECT id FROM t WHERE id = 5) AS _sqlgen_if WHERE @sqlgen_c9=1;SET @sqlgen_n0=FOUND_ROWS();" +
-			"SET @sqlgen_c2=COALESCE(IF(@sqlgen_c9=1,(SELECT COALESCE(COUNT(*)>0 AND MIN(CASE WHEN (score > 1) THEN 1 ELSE 0 END)=1,0) FROM (SELECT id FROM t WHERE id = 5) AS _sqlgen_op),0),0);"
+		want := "SELECT * FROM (SELECT id , CASE WHEN (score > 1) THEN 1 ELSE 0 END AS _sqlgen_wc1 FROM t WHERE id = 5) AS _sqlgen_if WHERE @sqlgen_c9=1;SET @sqlgen_n0=FOUND_ROWS();" +
+			"SET @sqlgen_c2=COALESCE(IF(@sqlgen_c9=1,(SELECT COALESCE(COUNT(*)>0 AND MIN(_sqlgen_wc1)=1,0) FROM (SELECT id , CASE WHEN (score > 1) THEN 1 ELSE 0 END AS _sqlgen_wc1 FROM t WHERE id = 5) AS _sqlgen_op),0),0);"
 		if !strings.Contains(b.SQL, want) {
 			t.Fatalf("got\n%s\nwant it to contain\n%s", b.SQL, want)
 		}
@@ -652,7 +655,8 @@ func TestMySQLReturning(t *testing.T) {
 	})
 	t.Run("a column condition over it is not applicable", func(t *testing.T) {
 		ops := mk(OpDecorators{AssertRows: -1})
-		ops[0].Decorators.ProduceCond = &PipelineCond{Kind: CondColPred, Op: &ops[0], SQLPred: "id > 1"}
+		ops[0].Input.ColPreds = []ColPred{{SQL: "id > 1"}}
+		ops[0].Decorators.ProduceCond = &PipelineCond{Kind: CondColPred, Op: &ops[0], Col: 1}
 		_, err := RenderMySQLBatch(ops, MySQLRenderOptions{Flavor: &MySQLFlavor{Returning: true}, InTx: true})
 		if !errors.Is(err, ErrWireNotApplicable) {
 			t.Fatalf("err = %v", err)
@@ -816,7 +820,12 @@ func FuzzEstimateMySQLOpBytesUpperBound(f *testing.F) {
 			op.Decorators.LeafRecs = []ProducedCond{{CondID: 9, Cond: leaf}}
 		case 3:
 			if sd.desc.StmtVerb == VerbSelect {
-				op.Decorators.ProduceCond, op.Decorators.CondID = &PipelineCond{Kind: CondOr, Left: &PipelineCond{Kind: CondColPred, Op: &op, SQLPred: text}, Right: leaf}, 4
+				// WhereCol columns with inlined arguments (and placeholders in text, which bind NULL)
+				k := int(nArgsRaw)
+				op.Input.ColPreds = []ColPred{{SQL: text + " = ?", Args: []any{pool[k%len(pool)]}}, {SQL: "? <> ?", Args: []any{pool[(k+1)%len(pool)], pool[(k+2)%len(pool)]}}}
+				op.colFail = make([]bool, 2)
+				op.Decorators.ProduceCond, op.Decorators.CondID = &PipelineCond{Kind: CondOr, Left: &PipelineCond{Kind: CondColPred, Op: &op, Col: 1},
+					Right: &PipelineCond{Kind: CondAnd, Left: leaf, Right: &PipelineCond{Kind: CondColPred, Op: &op, Col: 2}}}, 4
 			}
 		}
 		fl := &MySQLFlavor{Charset: []string{"", "gbk", "binary", "utf8mb4"}[charsetRaw%4]}

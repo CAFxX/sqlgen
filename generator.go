@@ -1392,6 +1392,15 @@ type stmtParser struct {
 	needBranchGuardClose bool
 	inSingleInsertValues bool
 
+	// projTop: the output column list being parsed (inProjection) is the statement's own, at the top level
+	// and outside any optional block; colPredSlot: its SlotColPreds was emitted; selDistinct / compound:
+	// the main SELECT is DISTINCT, the statement has a top-level UNION / INTERSECT / EXCEPT (no WhereCol
+	// column can be added to either: the slot is removed again).
+	projTop     bool
+	colPredSlot bool
+	selDistinct bool
+	compound    bool
+
 	projActive        bool
 	projStartSegIdx   int
 	projStartByteIdx  int
@@ -1404,6 +1413,20 @@ type stmtParser struct {
 
 	cs *compiledStmt
 	sd stmtDialect
+}
+
+// removeSlotKind removes every slot of kind from blk (top level), joining the segments around it. Only
+// for slots that consume no argument.
+func removeSlotKind(blk *parsedBlock, kind runtime.SlotKind) {
+	for i := 0; i < len(blk.Slots); i++ {
+		if blk.Slots[i].Kind != kind {
+			continue
+		}
+		blk.Segments[i] += blk.Segments[i+1]
+		blk.Segments = append(blk.Segments[:i+1], blk.Segments[i+2:]...)
+		blk.Slots = append(blk.Slots[:i], blk.Slots[i+1:]...)
+		i--
+	}
 }
 
 // stmtScopedParamName is toGoParamName plus the package-level identifiers generated for statement stmt: a
@@ -1623,6 +1646,19 @@ func (p *stmtParser) scanSpan(span string, blk *parsedBlock, isTopLevel bool) er
 		}
 	}
 
+	// endProjection ends the statement's own output column list where it is (before FROM, or at the end of
+	// a RETURNING clause or of a SELECT without FROM) and emits SlotColPreds there.
+	endProjection := func() {
+		if !p.inProjection {
+			return
+		}
+		p.inProjection = false
+		if p.projTop && isTopLevel && !p.inOptBlock && !p.colPredSlot {
+			p.colPredSlot = true
+			emitSlot(slotRef{Kind: runtime.SlotColPreds, ParamIdx: -1})
+		}
+	}
+
 	flushBranchGuardBeforeEnd := func() {
 		if !isTopLevel || p.inOptBlock {
 			return
@@ -1814,6 +1850,7 @@ func (p *stmtParser) scanSpan(span string, blk *parsedBlock, isTopLevel bool) er
 
 		// Top-level semicolon
 		if ch == ';' && isTopLevel && p.parenDepth == 0 && p.bracketDepth == 0 {
+			endProjection()
 			flushBranchGuardBeforeEnd()
 			seg = append(seg, ch)
 			i++
@@ -1975,8 +2012,12 @@ func (p *stmtParser) scanSpan(span string, blk *parsedBlock, isTopLevel bool) er
 						}
 					}
 
+					if low == "union" || low == "intersect" || low == "except" {
+						p.compound = true
+					}
 					if low == "select" && p.cs.StmtVerb == runtime.VerbSelect && !p.seenMainSel {
 						p.inProjection = true
+						p.projTop = isTopLevel && !p.inOptBlock
 						p.seenMainSel = true
 						seg = append(seg, span[tokenStart:identEnd]...)
 						i = identEnd
@@ -1985,6 +2026,7 @@ func (p *stmtParser) scanSpan(span string, blk *parsedBlock, isTopLevel bool) er
 							i++
 						}
 						if i+8 <= len(span) && strings.EqualFold(span[i:i+8], "distinct") && (i+8 == len(span) || !isIdentContByte(span[i+8])) {
+							p.selDistinct = true
 							seg = append(seg, span[i:i+8]...)
 							i += 8
 							for i < len(span) && isSpaceByte(span[i]) {
@@ -2027,6 +2069,7 @@ func (p *stmtParser) scanSpan(span string, blk *parsedBlock, isTopLevel bool) er
 							flushBranchGuardBeforeEnd()
 						}
 						p.inProjection = true
+						p.projTop = isTopLevel && !p.inOptBlock
 						p.cs.HasReturning = true
 						seg = append(seg, span[tokenStart:identEnd]...)
 						i = identEnd
@@ -2113,7 +2156,7 @@ func (p *stmtParser) scanSpan(span string, blk *parsedBlock, isTopLevel bool) er
 					} else if p.inProjection && projectionTerminators[low] &&
 						!(low == "from" && p.prevWordLow == "distinct") && // IS [NOT] DISTINCT FROM
 						!(tokenStart > 0 && span[tokenStart-1] == '.') { // t.limit, t.offset, ...
-						p.inProjection = false
+						endProjection()
 					}
 				}
 
@@ -2323,6 +2366,7 @@ func (p *stmtParser) scanSpan(span string, blk *parsedBlock, isTopLevel bool) er
 		if p.bracketDepth != 0 {
 			return fmt.Errorf("statement %s: unbalanced brackets in SQL", p.spec.Name)
 		}
+		endProjection()
 		flushBranchGuardBeforeEnd()
 	}
 
@@ -2386,6 +2430,11 @@ func compileStatement(id uint32, spec StatementSpec, sd stmtDialect) (*compiledS
 
 	if err := parser.scanSpan(trimmedSQL, &cs.Root, true); err != nil {
 		return nil, err
+	}
+	if parser.selDistinct || parser.compound {
+		// A WhereCol column would change which rows a DISTINCT keeps, and only the first SELECT of a
+		// compound statement would get it.
+		removeSlotKind(&cs.Root, runtime.SlotColPreds)
 	}
 
 	if kind == KindExec && len(cs.Cols) > 0 {
@@ -3187,6 +3236,8 @@ func emitBlockLiteral(b *bytes.Buffer, cs *compiledStmt, blk *parsedBlock, isRoo
 				b.WriteString("runtime.SlotBranchGuardClose")
 			case runtime.SlotBranchGuardWhere:
 				b.WriteString("runtime.SlotBranchGuardWhere")
+			case runtime.SlotColPreds:
+				b.WriteString("runtime.SlotColPreds")
 			case runtime.SlotInsertValuesOpen:
 				b.WriteString("runtime.SlotInsertValuesOpen")
 			case runtime.SlotInsertValuesClose:
@@ -4016,8 +4067,7 @@ func emitStatementCode(
 		pipeExpand()
 		emitStackRenderInput("\t", "p")
 		fmt.Fprintf(b, "%sruntime.QueueRow(pl.Pipeline, stmtID%s, desc%s, in, vk, %s, argBuf, expandErr,\n", pipeQueue(), cs.Name, cs.Name, pipelineFastSlotExpr)
-		fmt.Fprintf(b, "\t\tfunc(r *sql.Row, dst *%s) error { return scan%sRow(r, dst, colMask, p) },\n", cs.RowTypeName, cs.Name)
-		fmt.Fprintf(b, "\t\tfunc(rs *sql.Rows, dst *%s) error { return scan%sRow(rs, dst, colMask, p) },\n", cs.RowTypeName, cs.Name)
+		fmt.Fprintf(b, "\t\tfunc(rs runtime.RowScanner, dst *%s) error { return scan%sRow(rs, dst, colMask, p) },\n", cs.RowTypeName, cs.Name)
 		b.WriteString("\t)\n")
 		pipeReturn()
 		b.WriteString("}\n\n")
@@ -4100,7 +4150,7 @@ func emitStatementCode(
 	emitPipelineTooLargeGuard(b, cs)
 	emitStackRenderInput("\t", "p")
 	fmt.Fprintf(b, "%sruntime.QueueSlice(pl.Pipeline, stmtID%s, desc%s, in, vk, %s, argBuf, expandErr,\n", pipeQueue(), cs.Name, cs.Name, pipelineFastSlotExpr)
-	fmt.Fprintf(b, "\t\tfunc(rs *sql.Rows, dst *%s) error { return scan%sRow(rs, dst, colMask, p) },\n", cs.RowTypeName, cs.Name)
+	fmt.Fprintf(b, "\t\tfunc(rs runtime.RowScanner, dst *%s) error { return scan%sRow(rs, dst, colMask, p) },\n", cs.RowTypeName, cs.Name)
 	b.WriteString("\t)\n")
 	pipeReturn()
 	b.WriteString("}\n\n")

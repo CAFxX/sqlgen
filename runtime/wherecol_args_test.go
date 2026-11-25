@@ -16,7 +16,7 @@ func TestWhereColArgumentsAreBoundOnTheDollarPath(t *testing.T) {
 	g.op.Args = []any{int64(7)}
 	queueUpd := func() { p.QueueExec(3, upd, RenderInput{}, MakeVariantKey(3, 0, 0, 0), nil, nil, nil) }
 	// g's own leaf, evaluated by g (the latest operation of the condition)
-	p.If(d.NotFound().And(g.WhereCol("id >= ? AND note <> '?' AND id < ?", func(int64) bool { return true }, int64(3), "x")), queueUpd, nil)
+	p.If(d.NotFound().And(g.WhereCol("id >= ? AND note <> '?' AND id < ?", int64(3), "x")), queueUpd, nil)
 	p.syncOpsFromPtrs()
 	renderPipelineBatch(DialectDollar, nil, p.ops)
 	get := p.ops[1]
@@ -46,12 +46,12 @@ func TestWhereColArgumentsAreBoundOnTheDollarPath(t *testing.T) {
 func TestWhereColArgumentsOfARecordedLeaf(t *testing.T) {
 	p, d, g, upd := compoundFixture(t)
 	queueUpd := func() { p.QueueExec(3, upd, RenderInput{}, MakeVariantKey(3, 0, 0, 0), nil, nil, nil) }
-	p.If(g.WhereCol("id = ?", func(int64) bool { return true }, int64(9)).And(d.Found()), queueUpd, nil)
+	p.If(g.WhereCol("id = ?", int64(9)).And(d.Found()), queueUpd, nil)
 	// d was queued before g: the latest operation is g, so g evaluates its own leaf. Queue a later
 	// operation so g's leaf is recorded by g and read by the later one.
 	p2, _, g2, _ := compoundFixture(t)
 	late := p2.QueueExec(1, d.op.Desc, RenderInput{}, MakeVariantKey(1, 0, 0, 0), nil, nil, nil)
-	p2.If(g2.WhereCol("id = ?", func(int64) bool { return true }, int64(9)).And(late.Found()), func() {}, nil)
+	p2.If(g2.WhereCol("id = ?", int64(9)).And(late.Found()), func() {}, nil)
 	for _, pl := range []*Pipeline{p, p2} {
 		pl.syncOpsFromPtrs()
 		renderPipelineBatch(DialectQuestion, nil, pl.ops)
@@ -79,20 +79,20 @@ func TestWhereColPlaceholderCountMismatchFailsTheBuild(t *testing.T) {
 		{`"a?" = 'b?' AND ` + "`c?`" + ` = 1`, []any{1}},
 	} {
 		p, _, g, _ := compoundFixture(t)
-		_ = g.WhereCol(c.pred, nil, c.args...)
+		_ = g.WhereCol(c.pred, c.args...)
 		if !errors.Is(p.buildErr, ErrInvalidArgument) || !strings.Contains(p.buildErr.Error(), "WhereCol") {
 			t.Fatalf("%q with %d args: build error %v", c.pred, len(c.args), p.buildErr)
 		}
 		p2 := NewPipeline(context.Background(), nil, nil, nil, true, DialectDollar)
 		s := QueueSlice[int64](p2, 2, g.op.Desc, RenderInput{}, MakeVariantKey(2, 0, 0, 0), nil, nil, nil,
-			func(rs *sql.Rows, dst *int64) error { return rs.Scan(dst) })
-		_ = s.WhereCol(c.pred, nil, c.args...)
+			func(s RowScanner, dst *int64) error { return s.Scan(dst) })
+		_ = s.WhereCol(c.pred, c.args...)
 		if !errors.Is(p2.buildErr, ErrInvalidArgument) {
 			t.Fatalf("slice %q: build error %v", c.pred, p2.buildErr)
 		}
 	}
 	p, _, g, _ := compoundFixture(t)
-	_ = g.WhereCol(`name = 'it''s ?' AND id = ?`, nil, 1)
+	_ = g.WhereCol(`name = 'it''s ?' AND id = ?`, 1)
 	if p.buildErr != nil {
 		t.Fatalf("a doubled quote inside a literal: %v", p.buildErr)
 	}
@@ -102,8 +102,8 @@ func TestWhereColPlaceholderCountMismatchFailsTheBuild(t *testing.T) {
 func TestWhereColLeavesWithArgumentsAreNotShared(t *testing.T) {
 	p, _, g, upd := compoundFixture(t)
 	late := p.QueueExec(3, upd, RenderInput{}, MakeVariantKey(3, 0, 0, 0), nil, nil, nil)
-	p.If(g.WhereCol("id = ?", nil, 1).And(late.Found()), func() {}, nil)
-	p.If(g.WhereCol("id = ?", nil, 2).And(late.Found()), func() {}, nil)
+	p.If(g.WhereCol("id = ?", 1).And(late.Found()), func() {}, nil)
+	p.If(g.WhereCol("id = ?", 2).And(late.Found()), func() {}, nil)
 	if n := len(g.op.Decorators.LeafRecs); n != 2 {
 		t.Fatalf("leaf records = %d, want 2", n)
 	}
@@ -126,8 +126,8 @@ func TestWhereColArgumentsDroppedOnSequentialFallback(t *testing.T) {
 	p := NewPipeline(context.Background(), db, cache, nil, true, DialectDollar)
 	del := p.QueueExec(1, d.op.Desc, RenderInput{}, MakeVariantKey(1, 0, 0, 0), nil, argsOf(int64(1)), nil)
 	get := QueueRow[int64](p, 2, g.op.Desc, RenderInput{}, MakeVariantKey(2, 0, 0, 0), nil, argsOf(int64(2)), nil,
-		func(r *sql.Row, dst *int64) error { return r.Scan(dst) }, func(rs *sql.Rows, dst *int64) error { return rs.Scan(dst) })
-	p.If(del.Found().And(get.WhereCol("id > ?", func(int64) bool { return true }, int64(0))), func() {
+		func(s RowScanner, dst *int64) error { return s.Scan(dst) })
+	p.If(del.Found().And(get.WhereCol("id > ?", int64(0))), func() {
 		p.QueueExec(3, upd, RenderInput{}, MakeVariantKey(3, 0, 0, 0), nil, argsOf(int64(1), int64(2)), nil)
 	}, nil)
 	_ = p.Flush()
@@ -156,7 +156,8 @@ func TestWhereColArgumentsInlinedOnMySQL(t *testing.T) {
 	}
 	ops := []PipelineOp{mkOp(sel, nil, OpDecorators{AssertRows: -1})}
 	ops[0].Args = []any{int64(5)}
-	ops[0].Decorators.ProduceCond = &PipelineCond{Kind: CondColPred, Op: &ops[0], SQLPred: "score > ? AND name <> ?", PredArgs: []any{int32(1), "o'k"}}
+	ops[0].Input.ColPreds = []ColPred{{SQL: "score > ? AND name <> ?", Args: []any{int32(1), "o'k"}}}
+	ops[0].Decorators.ProduceCond = &PipelineCond{Kind: CondColPred, Op: &ops[0], Col: 1}
 	ops[0].Decorators.CondID = 2
 	b, err := RenderMySQLBatch(ops, MySQLRenderOptions{Flavor: fl, InTx: true})
 	if err != nil {
@@ -166,7 +167,7 @@ func TestWhereColArgumentsInlinedOnMySQL(t *testing.T) {
 		t.Fatalf("got\n%s\nwant it to contain\n%s", b.SQL, want)
 	}
 	// an argument that has no literal form makes the batch not applicable (sequential fallback)
-	ops[0].Decorators.ProduceCond.PredArgs = []any{struct{}{}, "x"}
+	ops[0].Input.ColPreds[0].Args = []any{struct{}{}, "x"}
 	if _, err := RenderMySQLBatch(ops, MySQLRenderOptions{Flavor: fl, InTx: true}); !errors.Is(err, ErrWireNotApplicable) {
 		t.Fatalf("unsupported argument: %v", err)
 	}

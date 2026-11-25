@@ -100,16 +100,10 @@ func (s *LedgerService) Transfer(
 			receiverFut = firstFut
 		}
 
-		eitherFrozenCond := senderFut.WhereCol("status = 'frozen'", func(a Account) bool {
-			return a.Status == "frozen"
-		}).Or(receiverFut.WhereCol("status = 'frozen'", func(a Account) bool {
-			return a.Status == "frozen"
-		}))
+		eitherFrozenCond := senderFut.WhereCol("status = 'frozen'").Or(receiverFut.WhereCol("status = 'frozen'"))
 
 		sufficientCond := senderFut.Found().And(
-			senderFut.WhereCol("balance_cents >= ?", func(a Account) bool {
-				return a.BalanceCents >= amountCents
-			}, amountCents),
+			senderFut.WhereCol("balance_cents >= ?", amountCents),
 		)
 
 		p.If(

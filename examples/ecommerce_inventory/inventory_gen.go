@@ -225,9 +225,10 @@ var descGetInventoryBySKUs = &runtime.QueryDescriptor{
 	Name:     "GetInventoryBySKUs",
 	StmtID:   1,
 	StmtVerb: runtime.VerbSelect,
-	Segments: []string{"SELECT\n  ", "\nFROM inventory\nWHERE (warehouse_id, sku) IN (", ")\nORDER BY warehouse_id ASC, sku ASC"},
+	Segments: []string{"SELECT\n  ", "\n", "FROM inventory\nWHERE (warehouse_id, sku) IN (", ")\nORDER BY warehouse_id ASC, sku ASC"},
 	Slots: []runtime.Slot{
 		{Kind: runtime.SlotSelectCols},
+		{Kind: runtime.SlotColPreds},
 		{Kind: runtime.SlotTupleSlice, Tuple: &runtime.TupleDescriptor{Segments: []string{"", ", ", ""}, NumFields: 2}},
 	},
 	SelectColExprs: []string{"warehouse_id", "sku", "quantity", "updated_at"},
@@ -482,7 +483,9 @@ func (pl *Pipeline) GetInventoryBySKUs(keys []SKUKey, selectCols ...uint64) *run
 		TupleLens: tupleLensBuf[:],
 	}
 	return runtime.QueueSlice(pl.Pipeline, stmtIDGetInventoryBySKUs, descGetInventoryBySKUs, in, vk, nil, argBuf, expandErr,
-		func(rs *sql.Rows, dst *InventoryItem) error { return scanGetInventoryBySKUsRow(rs, dst, colMask, p) },
+		func(rs runtime.RowScanner, dst *InventoryItem) error {
+			return scanGetInventoryBySKUsRow(rs, dst, colMask, p)
+		},
 	)
 }
 
@@ -684,9 +687,10 @@ var descStreamFulfilledOrders = &runtime.QueryDescriptor{
 	StmtID:    3,
 	StmtVerb:  runtime.VerbSelect,
 	StaticSQL: "SELECT\n  id, customer_id, total_cents, fulfilled_at\nFROM orders\nWHERE status = 'fulfilled' AND fulfilled_at <= ?\nORDER BY id ASC",
-	Segments:  []string{"SELECT\n  ", "\nFROM orders\nWHERE status = 'fulfilled' AND fulfilled_at <= ", "\nORDER BY id ASC"},
+	Segments:  []string{"SELECT\n  ", "\n", "FROM orders\nWHERE status = 'fulfilled' AND fulfilled_at <= ", "\nORDER BY id ASC"},
 	Slots: []runtime.Slot{
 		{Kind: runtime.SlotSelectCols},
+		{Kind: runtime.SlotColPreds},
 		{Kind: runtime.SlotScalar},
 	},
 	SelectColExprs: []string{"id", "customer_id", "total_cents", "fulfilled_at"},
@@ -834,7 +838,7 @@ func (pl *Pipeline) StreamFulfilledOrders(cutoffTs int64, selectCols ...uint64) 
 		FlagMask: flagMask,
 	}
 	return runtime.QueueSlice(pl.Pipeline, stmtIDStreamFulfilledOrders, descStreamFulfilledOrders, in, vk, runtime.FastSlot(colMask, &pl.q.fastSlots[0]), argBuf, expandErr,
-		func(rs *sql.Rows, dst *FulfilledOrder) error {
+		func(rs runtime.RowScanner, dst *FulfilledOrder) error {
 			return scanStreamFulfilledOrdersRow(rs, dst, colMask, p)
 		},
 	)

@@ -197,3 +197,42 @@ func TestDocsDoNotMentionRemovedNames(t *testing.T) {
 		}
 	}
 }
+
+// WhereCol takes the SQL predicate and its arguments only: the server evaluates it on every path. The
+// documentation must not show the retired form with a Go predicate (a func literal or a goPred argument).
+func TestDocsWhereColHasNoGoPredicate(t *testing.T) {
+	n := 0
+	for _, f := range []string{"DOCS.md", "README.md", "SPEC.md"} {
+		raw, err := os.ReadFile(f)
+		if err != nil {
+			t.Fatal(err)
+		}
+		s := string(raw)
+		for i := strings.Index(s, "WhereCol("); i >= 0; {
+			n++
+			open := i + len("WhereCol")
+			depth, j := 0, open
+			for ; j < len(s); j++ {
+				if s[j] == '(' {
+					depth++
+				} else if s[j] == ')' {
+					if depth--; depth == 0 {
+						break
+					}
+				}
+			}
+			call := s[i:min(j+1, len(s))]
+			if strings.Contains(call, "func(") || strings.Contains(call, "goPred") {
+				t.Errorf("%s:%d shows WhereCol with a Go predicate: %s", f, strings.Count(s[:i], "\n")+1, call)
+			}
+			k := strings.Index(s[open:], "WhereCol(")
+			if k < 0 {
+				break
+			}
+			i = open + k
+		}
+	}
+	if n == 0 {
+		t.Fatal("no WhereCol call found in the documentation: the scan is broken")
+	}
+}

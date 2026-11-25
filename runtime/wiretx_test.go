@@ -467,7 +467,7 @@ func TestExtraConditionsAreRecordedServerSide(t *testing.T) {
 	}
 	p := NewPipeline(context.Background(), nil, nil, nil, true, DialectDollar)
 	f := QueueRow[int64](p, 2, get, RenderInput{}, MakeVariantKey(2, 0, 0, 0), nil, nil, nil,
-		func(r *sql.Row, dst *int64) error { return r.Scan(dst) }, func(rs *sql.Rows, dst *int64) error { return rs.Scan(dst) })
+		func(s RowScanner, dst *int64) error { return s.Scan(dst) })
 	p.If(f.Found(), func() { p.QueueExec(3, upd, RenderInput{}, MakeVariantKey(3, 0, 0, 0), nil, nil, nil) }, nil)
 	p.If(f.NotFound(), nil, func() { p.QueueExec(3, upd, RenderInput{}, MakeVariantKey(3, 0, 0, 0), nil, nil, nil) })
 	p.If(f.RowsGe(1), nil, nil)
@@ -514,7 +514,7 @@ func TestExtraConditionsAreRecordedServerSide(t *testing.T) {
 	// values read back from the server win over the Go evaluation
 	p2 := NewPipeline(context.Background(), nil, nil, nil, true, DialectDollar)
 	f2 := QueueRow[int64](p2, 2, get, RenderInput{}, MakeVariantKey(2, 0, 0, 0), nil, nil, nil,
-		func(r *sql.Row, dst *int64) error { return r.Scan(dst) }, func(rs *sql.Rows, dst *int64) error { return rs.Scan(dst) })
+		func(s RowScanner, dst *int64) error { return s.Scan(dst) })
 	r1 := p2.If(f2.Found(), nil, nil)
 	r2 := p2.If(f2.NotFound(), nil, nil)
 	p2.syncOpsFromPtrs()

@@ -219,22 +219,14 @@ func (e *ClearingEngine) ExecuteMatchAndClear(ctx context.Context, req MatchRequ
 		openSellsFut := p.ListOpenOrdersForSymbol(req.Symbol, "sell", 5)
 
 		// Condition 1: Either buyer or seller account is not active (e.g. frozen/halted)
-		eitherHaltedCond := buyerFut.WhereCol("status != 'active'", func(a MarginAccount) bool {
-			return a.Status != "active"
-		}).Or(sellerFut.WhereCol("status != 'active'", func(a MarginAccount) bool {
-			return a.Status != "active"
-		}))
+		eitherHaltedCond := buyerFut.WhereCol("status != 'active'").Or(sellerFut.WhereCol("status != 'active'"))
 
 		// Condition 2: Buyer has sufficient collateral AND open sell orders exist with limit_price_cents <= req.PriceCents
 		sufficientMarginCond := buyerFut.Found().And(sellerFut.Found()).And(
-			buyerCollatFut.WhereCol("collateral_cents >= ?", func(c int64) bool {
-				return c >= req.RequiredMarginCents
-			}, req.RequiredMarginCents),
+			buyerCollatFut.WhereCol("collateral_cents >= ?", req.RequiredMarginCents),
 		)
 		bookMatchCond := openSellsFut.Found().And(openSellsFut.RowsGe(1)).And(
-			openSellsFut.WhereCol("limit_price_cents <= ?", func(o OpenOrderRow) bool {
-				return o.LimitPriceCents <= req.PriceCents
-			}, req.PriceCents),
+			openSellsFut.WhereCol("limit_price_cents <= ?", req.PriceCents),
 		)
 		canClearCond := sufficientMarginCond.And(bookMatchCond)
 
@@ -277,9 +269,7 @@ func (e *ClearingEngine) ExecuteMatchAndClear(ctx context.Context, req MatchRequ
 
 						// Level 3 Nested If: Large-trader institutional KYC compliance filing vs. standard audit notice
 						isInstitutionalCond := fillFut.RowsEq(1).And(
-							buyerFut.WhereCol("kyc_verified = 1 AND margin_ratio_bps >= 1500", func(a MarginAccount) bool {
-								return a.KycVerified == 1 && a.MarginRatioBps >= 1500
-							}),
+							buyerFut.WhereCol("kyc_verified = 1 AND margin_ratio_bps >= 1500"),
 						)
 						complianceBranch = clearP.If(
 							isInstitutionalCond,

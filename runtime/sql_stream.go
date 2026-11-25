@@ -14,8 +14,13 @@ type streamCursor struct {
 	sliceIdx int
 	tupleIdx int
 	subIdx   int
-	// condArgs collects the WhereCol arguments whose placeholders were written (nil: none may be).
-	condArgs *[]any
+	// colArgs collects the arguments of the WhereCol columns written at SlotColPreds (nil: they are written
+	// as literals on the MySQL flavor, or not at all). Under DialectDollar they are numbered after the
+	// operation's own colBase arguments (the driver appends them); under DialectQuestion they must be
+	// inserted after the first colAt of the operation's own arguments (the placeholders written before).
+	colArgs *[]any
+	colBase int
+	colAt   int
 	// my is non-nil when rendering for WireFlavorMySQL: placeholders become inlined literals and the
 	// branch gates read session variables (see mysql_wire.go).
 	my *mysqlCursor
@@ -306,7 +311,7 @@ func (c *PipelineCond) estimateBytes(numGates int) int {
 	case CondRowsEq, CondRowsGt, CondRowsGe, CondRowsLt, CondRowsLe:
 		return 80 + gateExtraBytes(numGates)
 	case CondColPred:
-		return 80 + len(c.SQLPred) + 11*len(c.PredArgs) + gateExtraBytes(numGates)
+		return 80 + gateExtraBytes(numGates)
 	case CondAnd:
 		return 9 + c.Left.estimateBytes(numGates) + c.Right.estimateBytes(numGates)
 	case CondOr:
@@ -386,18 +391,13 @@ func (c *PipelineCond) writeLeafSQL(b *strings.Builder, cur *streamCursor, gates
 		b.WriteString("COUNT(*) <= ")
 		b.Write(strconv.AppendInt(cur.numBuf[:0], c.Threshold, 10))
 	case CondColPred:
-		b.WriteString("COUNT(*) > 0 AND MIN(CASE WHEN (")
-		if len(c.PredArgs) == 0 || cur.condArgs == nil {
-			b.WriteString(c.SQLPred)
-		} else {
-			writePred(b, c.SQLPred, func(k int) {
-				if k < len(c.PredArgs) {
-					*cur.condArgs = append(*cur.condArgs, c.PredArgs[k])
-				}
-				cur.writePlaceholder(b)
-			})
+		if c.Col == 0 {
+			b.WriteString("FALSE")
+			break
 		}
-		b.WriteString(") THEN 1 ELSE 0 END) = 1")
+		b.WriteString("COUNT(*) > 0 AND MIN(_sqlgen_wc")
+		b.Write(strconv.AppendInt(cur.numBuf[:0], int64(c.Col), 10))
+		b.WriteString(") = 1")
 	}
 	if len(gates) > 0 {
 		b.WriteString(") ELSE FALSE END")
@@ -502,6 +502,8 @@ func estimateDescriptorBytes(rootDesc, desc *QueryDescriptor, in *RenderInput, c
 			if numGates > 0 {
 				total += 16 + 56*numGates
 			}
+		case SlotColPreds:
+			total += colPredBytes(in.ColPreds)
 		}
 	}
 	return total
@@ -734,11 +736,98 @@ func streamDescriptorSQL(b *strings.Builder, rootDesc, desc *QueryDescriptor, in
 				b.WriteString(" WHERE ")
 				cur.writeBranchGates(b, in.BranchGates)
 			}
+
+		case SlotColPreds:
+			cur.writeColPreds(b, in.ColPreds)
 		}
 	}
 	if len(desc.Segments) > len(desc.Slots) {
 		b.WriteString(desc.Segments[len(desc.Slots)])
 	}
+}
+
+// colPredBytes bounds what writeColPreds writes for preds, their arguments' placeholders included (the
+// literals of the MySQL flavor excluded: estimateMySQLOpBytes adds them).
+func colPredBytes(preds []ColPred) int {
+	n := 0
+	for i := range preds {
+		n += 64 + len(preds[i].SQL) + 12*len(preds[i].Args)
+	}
+	return n
+}
+
+// writeColPreds writes the WhereCol columns: ", CASE WHEN (<pred>) THEN 1 ELSE 0 END AS _sqlgen_wc<k>" per
+// predicate, then a space (the slot may sit right before FROM). The CASE makes the column 1 exactly when
+// the predicate is TRUE, on every engine (a bare boolean is a bool on PostgreSQL, an integer elsewhere).
+func (cur *streamCursor) writeColPreds(b *strings.Builder, preds []ColPred) {
+	if len(preds) == 0 {
+		return
+	}
+	if cur.colArgs != nil && cur.dialect == DialectQuestion {
+		cur.colAt = cur.paramIdx - 1
+	}
+	for k := range preds {
+		pr := &preds[k]
+		var lits []any
+		if cur.my != nil && len(pr.Args) > 0 {
+			var err error
+			if lits, err = cur.my.st.fl.normalize(pr.Args); err != nil && cur.my.st.err == nil {
+				cur.my.st.err = fmt.Errorf("WhereCol: %w", err)
+			}
+		}
+		b.WriteString(", CASE WHEN (")
+		writePred(b, pr.SQL, func(j int) {
+			switch {
+			case cur.my != nil:
+				if j < len(lits) {
+					cur.my.st.fl.WriteLiteral(b, lits[j])
+				} else {
+					b.WriteString("NULL")
+				}
+			case cur.dialect == DialectQuestion:
+				b.WriteByte('?')
+			default:
+				n := cur.colBase + 1
+				if cur.colArgs != nil {
+					n += len(*cur.colArgs)
+				}
+				b.WriteByte('$')
+				b.Write(strconv.AppendInt(cur.numBuf[:0], int64(n), 10))
+			}
+			if cur.my == nil && cur.colArgs != nil && j < len(pr.Args) {
+				*cur.colArgs = append(*cur.colArgs, pr.Args[j])
+			}
+		})
+		b.WriteString(") THEN 1 ELSE 0 END AS _sqlgen_wc")
+		b.Write(strconv.AppendInt(cur.numBuf[:0], int64(k+1), 10))
+	}
+	b.WriteByte(' ')
+}
+
+// spliceColArgs returns the arguments of a statement rendered with WhereCol columns: own (the operation's
+// arguments as sent) with the columns' arguments, appended under DialectDollar, inserted at their
+// placeholders' position under DialectQuestion. It never writes into own.
+func spliceColArgs(dialect Dialect, own, col []any, at int) []any {
+	out := make([]any, 0, len(own)+len(col))
+	if dialect == DialectQuestion {
+		at = min(max(at, 0), len(own))
+		out = append(out, own[:at]...)
+		out = append(out, col...)
+		return append(out, own[at:]...)
+	}
+	out = append(out, own...)
+	return append(out, col...)
+}
+
+// renderColPredSQL renders op (a statement with WhereCol columns) for the sequential path, with its
+// arguments.
+func renderColPredSQL(dialect Dialect, op *PipelineOp) (string, []any) {
+	var b strings.Builder
+	b.Grow(estimateOpBytes(op.Desc, &op.Input, nil))
+	var col []any
+	cur := streamCursor{dialect: dialect, paramIdx: 1, colArgs: &col, colBase: len(op.Args)}
+	streamCoreStatement(&b, &cur, op.Desc, &op.Input)
+	return b.String(), spliceColArgs(dialect, op.Args, col, cur.colAt)
 }
 
 func streamCoreStatement(b *strings.Builder, cur *streamCursor, desc *QueryDescriptor, in *RenderInput) {
@@ -756,9 +845,10 @@ func streamCoreStatement(b *strings.Builder, cur *streamCursor, desc *QueryDescr
 	}
 }
 
-// streamOpSQL writes the SQL of one operation. The arguments of its WhereCol leaves are appended to
-// *condArgs (nil when dec has none) in the order of their placeholders, which follow the operation's own.
-func streamOpSQL(b *strings.Builder, dialect Dialect, desc *QueryDescriptor, in *RenderInput, dec *OpDecorators, condArgs *[]any, refs *refSlots) {
+// streamOpSQL writes the SQL of one operation. The arguments of its WhereCol columns are appended to
+// *colArgs (see streamCursor.colArgs; nil when in has none), numbered after the colBase arguments the
+// operation sends itself; it returns the colAt of the cursor.
+func streamOpSQL(b *strings.Builder, dialect Dialect, desc *QueryDescriptor, in *RenderInput, dec *OpDecorators, colArgs *[]any, colBase int, refs *refSlots) (colAt int) {
 	var emptyIn RenderInput
 	if in == nil {
 		in = &emptyIn
@@ -766,9 +856,11 @@ func streamOpSQL(b *strings.Builder, dialect Dialect, desc *QueryDescriptor, in 
 	cur := streamCursor{
 		dialect:  dialect,
 		paramIdx: 1,
-		condArgs: condArgs,
+		colArgs:  colArgs,
+		colBase:  colBase,
 		refs:     refs,
 	}
+	defer func() { colAt = cur.colAt }()
 	hasGates := len(in.BranchGates) > 0
 	if dec != nil && dec.IsAbort {
 		if hasGates {
@@ -781,7 +873,7 @@ func streamOpSQL(b *strings.Builder, dialect Dialect, desc *QueryDescriptor, in 
 			b.WriteString("SELECT ")
 			writeGuardRaise(b, dialect, wireAbortMarker, "(SELECT COUNT(*))")
 		}
-		return
+		return 0
 	}
 
 	hasAssert := dec != nil && dec.AssertRows >= 0
@@ -794,7 +886,7 @@ func streamOpSQL(b *strings.Builder, dialect Dialect, desc *QueryDescriptor, in 
 	}
 	if !hasAssert && !hasCond && len(leafRecs) == 0 && len(valRecs) == 0 {
 		streamCoreStatement(b, &cur, desc, in)
-		return
+		return 0
 	}
 
 	b.WriteString("WITH _sqlgen_op AS (")
@@ -903,13 +995,14 @@ func streamOpSQL(b *strings.Builder, dialect Dialect, desc *QueryDescriptor, in 
 			b.WriteString(" IS NOT NULL")
 		})
 		b.WriteString(") AS _r")
-		return
+		return 0
 	}
 	// Every guard is read by a scalar subquery in the target list, which a statement can never drop:
 	// an unreferenced CTE (here an assertion whose only trace would be an overflow error, or a
 	// set_config) is pruned by PostgreSQL. The first column is the affected-row count.
 	b.WriteString(" SELECT (SELECT COUNT(*) FROM _sqlgen_op) AS _cnt")
 	guards(writeGuardRead)
+	return 0
 }
 
 // BuildComposedSQL renders desc with in for dialect using a single pre-sized strings.Builder.
@@ -921,7 +1014,7 @@ func BuildComposedSQL(desc *QueryDescriptor, in *RenderInput, dialect Dialect) s
 	if in == nil {
 		in = &emptyIn
 	}
-	if desc.StaticSQL != "" && len(in.BranchGates) == 0 && in.ColMask == 0 && in.FlagMask == 0 {
+	if desc.StaticSQL != "" && len(in.BranchGates) == 0 && in.ColMask == 0 && in.FlagMask == 0 && len(in.ColPreds) == 0 {
 		if len(desc.Slots) == 0 || (dialect == DialectDollar) == strings.Contains(desc.StaticSQL, "$1") {
 			return desc.StaticSQL
 		}
@@ -929,7 +1022,7 @@ func BuildComposedSQL(desc *QueryDescriptor, in *RenderInput, dialect Dialect) s
 	est := estimateOpBytes(desc, in, nil)
 	var b strings.Builder
 	b.Grow(est)
-	streamOpSQL(&b, dialect, desc, in, nil, nil, nil)
+	streamOpSQL(&b, dialect, desc, in, nil, nil, 0, nil)
 	return b.String()
 }
 
@@ -1002,6 +1095,7 @@ func renderPipelineBatch(dialect Dialect, cache *StmtCache, ops []PipelineOp) er
 		plain := !op.Decorators.IsAbort &&
 			!op.Decorators.guarded() &&
 			len(op.Input.BranchGates) == 0 &&
+			len(op.Input.ColPreds) == 0 &&
 			op.nRefs == 0
 		if plain && op.Desc != nil && op.Desc.StaticSQL != "" && op.Input.ColMask == 0 && op.Input.FlagMask == 0 {
 			op.SQL = op.Desc.StaticSQL
@@ -1040,17 +1134,18 @@ func renderPipelineBatch(dialect Dialect, cache *StmtCache, ops []PipelineOp) er
 		}
 		spans[i].start = b.Len()
 		extra = extra[:0]
-		streamOpSQL(&b, dialect, op.Desc, &op.Input, &op.Decorators, &extra, refs)
+		own := len(op.Args) - op.nRefs
+		at := streamOpSQL(&b, dialect, op.Desc, &op.Input, &op.Decorators, &extra, own, refs)
 		if len(extra) > 0 || refs != nil {
 			// never into the pooled argument buffer
-			args := make([]any, 0, len(op.Args)+len(extra))
+			args := make([]any, 0, own)
 			for _, a := range op.Args {
 				if _, isRef := a.(*argRef); !isRef {
 					args = append(args, a)
 				}
 			}
 			op.origArgs, op.argsRewritten = op.Args, true
-			op.Args = append(args, extra...)
+			op.Args = spliceColArgs(dialect, args, extra, at)
 		}
 		op.overflowGuard = dialect != DialectDollar && (op.Decorators.IsAbort || op.Decorators.AssertRows >= 0)
 		spans[i].end = b.Len()

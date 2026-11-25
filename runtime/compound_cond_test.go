@@ -2,7 +2,6 @@ package runtime
 
 import (
 	"context"
-	"database/sql"
 	"strings"
 	"testing"
 )
@@ -11,8 +10,8 @@ func compoundFixture(t *testing.T) (p *Pipeline, d *ExecFuture, g *RowFuture[int
 	t.Helper()
 	get := &QueryDescriptor{
 		Name: "Get", StmtID: 2, StmtVerb: VerbSelect,
-		Segments:       []string{"SELECT ", " FROM t WHERE id = ", ""},
-		Slots:          []Slot{{Kind: SlotSelectCols}, {Kind: SlotScalar}},
+		Segments:       []string{"SELECT ", " ", "FROM t WHERE id = ", ""},
+		Slots:          []Slot{{Kind: SlotSelectCols}, {Kind: SlotColPreds}, {Kind: SlotScalar}},
 		SelectColExprs: []string{"id"},
 	}
 	del := &QueryDescriptor{
@@ -28,7 +27,7 @@ func compoundFixture(t *testing.T) (p *Pipeline, d *ExecFuture, g *RowFuture[int
 	p = NewPipeline(context.Background(), nil, nil, nil, true, DialectDollar)
 	d = p.QueueExec(1, del, RenderInput{}, MakeVariantKey(1, 0, 0, 0), nil, nil, nil)
 	g = QueueRow[int64](p, 2, get, RenderInput{}, MakeVariantKey(2, 0, 0, 0), nil, nil, nil,
-		func(r *sql.Row, dst *int64) error { return r.Scan(dst) }, func(rs *sql.Rows, dst *int64) error { return rs.Scan(dst) })
+		func(s RowScanner, dst *int64) error { return s.Scan(dst) })
 	return p, d, g, upd
 }
 
@@ -81,9 +80,9 @@ func TestCompoundConditionBindingShapes(t *testing.T) {
 	p.If(d.NotFound().Or(g.NotFound()), queueUpd, nil)
 	p.If(d.RowsEq(3).Or(g.Found()), queueUpd, nil)
 	// a WhereCol with a different predicate is a different leaf
-	p.If(g.WhereCol("id > 1", func(int64) bool { return true }).And(d.Found()).Not(), queueUpd, nil)
+	p.If(g.WhereCol("id > 1").And(d.Found()).Not(), queueUpd, nil)
 	// a leaf without an operation is FALSE, as in Go
-	p.If((*RowFuture[int64])(nil).WhereCol("id > 1", nil).Or(g.Found()), queueUpd, nil)
+	p.If((*RowFuture[int64])(nil).WhereCol("id > 1").Or(g.Found()), queueUpd, nil)
 	p.syncOpsFromPtrs()
 	renderPipelineBatch(DialectDollar, nil, p.ops)
 
@@ -94,9 +93,9 @@ func TestCompoundConditionBindingShapes(t *testing.T) {
 	if n := len(get.Decorators.LeafRecs); n != 0 {
 		t.Fatalf("the latest operation records %d leaves, want none", n)
 	}
-	if !strings.Contains(get.SQL, "NOT ((COUNT(*) > 0 AND MIN(CASE WHEN (id > 1) THEN 1 ELSE 0 END) = 1 AND COALESCE(current_setting('sqlgen.l") ||
+	if !strings.Contains(get.SQL, "NOT ((COUNT(*) > 0 AND MIN(_sqlgen_wc1) = 1 AND COALESCE(current_setting('sqlgen.l") ||
 		!strings.Contains(get.SQL, "(FALSE OR COUNT(*) > 0)") ||
-		!strings.Contains(get.SQL, "MIN(CASE WHEN (id > 1) THEN 1 ELSE 0 END) = 1") {
+		!strings.Contains(get.SQL, "SELECT id , CASE WHEN (id > 1) THEN 1 ELSE 0 END AS _sqlgen_wc1 FROM t") {
 		t.Fatalf("unexpected condition SQL:\n%s", get.SQL)
 	}
 	if n := strings.Count(get.SQL, "set_config("); n != 5 {

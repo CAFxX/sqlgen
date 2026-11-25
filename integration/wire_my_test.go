@@ -152,27 +152,25 @@ var myWireScenarios = []myScenario{
 	}},
 	{"WhereCol predicate true -> then", func(p *myq.Pipeline) ([]*runtime.IfResult, func() string) {
 		get := p.GetItem(2) // score 20
-		return []*runtime.IfResult{p.If(get.WhereCol("score >= 20", func(it myq.Item) bool { return it.Score >= 20 }),
+		return []*runtime.IfResult{p.If(get.WhereCol("score >= 20"),
 			func(p *myq.Pipeline) { p.AddScoreOne(1, 2).AssertRows(1) },
 			func(p *myq.Pipeline) { p.AddScoreOne(2, 3).AssertRows(1) })}, nil
 	}},
 	{"WhereCol predicate false -> else", func(p *myq.Pipeline) ([]*runtime.IfResult, func() string) {
 		get := p.GetItem(2)
-		return []*runtime.IfResult{p.If(get.WhereCol("score >= 21", func(it myq.Item) bool { return it.Score >= 21 }),
+		return []*runtime.IfResult{p.If(get.WhereCol("score >= 21"),
 			func(p *myq.Pipeline) { p.AddScoreOne(1, 2).AssertRows(1) },
 			func(p *myq.Pipeline) { p.AddScoreOne(2, 3).AssertRows(1) })}, nil
 	}},
 	{"WhereCol bound arguments true -> then", func(p *myq.Pipeline) ([]*runtime.IfResult, func() string) {
-		get := p.GetItem(2) // name n2, score 20
-		return []*runtime.IfResult{p.If(get.WhereCol("score >= ? AND name = ? AND name <> ? AND status <> '?'", func(it myq.Item) bool {
-			return it.Score >= 20 && it.Name == "n2" && it.Name != "o'k?"
-		}, int64(20), "n2", "o'k?"), // no backslash: TiDB reads its hex literal as a number (sequential fallback)
+		get := p.GetItem(2)                                                                                                               // name n2, score 20
+		return []*runtime.IfResult{p.If(get.WhereCol("score >= ? AND name = ? AND name <> ? AND status <> '?'", int64(20), "n2", "o'k?"), // no backslash: TiDB reads its hex literal as a number (sequential fallback)
 			func(p *myq.Pipeline) { p.AddScoreOne(1, 2).AssertRows(1) },
 			func(p *myq.Pipeline) { p.AddScoreOne(2, 3).AssertRows(1) })}, nil
 	}},
 	{"WhereCol bound arguments false -> else", func(p *myq.Pipeline) ([]*runtime.IfResult, func() string) {
 		get := p.GetItem(2)
-		return []*runtime.IfResult{p.If(get.WhereCol("score >= ?", func(it myq.Item) bool { return it.Score >= 21 }, int32(21)).Or(get.NotFound()),
+		return []*runtime.IfResult{p.If(get.WhereCol("score >= ?", int32(21)).Or(get.NotFound()),
 			func(p *myq.Pipeline) { p.AddScoreOne(1, 2).AssertRows(1) },
 			func(p *myq.Pipeline) { p.AddScoreOne(2, 3).AssertRows(1) })}, nil
 	}},

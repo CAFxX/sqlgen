@@ -126,8 +126,8 @@ func newKV(table string) *kv {
 	k.get = &runtime.QueryDescriptor{
 		Name: "Get", StmtID: 2, StmtVerb: runtime.VerbSelect,
 		StaticSQL:      "SELECT id, v FROM " + table + " WHERE id = ?",
-		Segments:       []string{"SELECT ", " FROM " + table + " WHERE id = ", ""},
-		Slots:          []runtime.Slot{{Kind: runtime.SlotSelectCols}, {Kind: runtime.SlotScalar}},
+		Segments:       []string{"SELECT ", " ", "FROM " + table + " WHERE id = ", ""},
+		Slots:          []runtime.Slot{{Kind: runtime.SlotSelectCols}, {Kind: runtime.SlotColPreds}, {Kind: runtime.SlotScalar}},
 		SelectColExprs: []string{"id", "v"},
 	}
 	k.ins = &runtime.QueryDescriptor{
@@ -179,13 +179,12 @@ func (k *kv) SetTS(p *runtime.Pipeline, ts time.Time, id int64) *runtime.ExecFut
 
 func (k *kv) Get(p *runtime.Pipeline, id int64) *runtime.RowFuture[row] {
 	return runtime.QueueRow[row](p, 2, k.get, runtime.RenderInput{}, runtime.MakeVariantKey(2, 0, 0, 0), nil, args(id), nil,
-		func(r *sql.Row, d *row) error { return r.Scan(&d.ID, &d.V) },
-		func(r *sql.Rows, d *row) error { return r.Scan(&d.ID, &d.V) })
+		func(s runtime.RowScanner, d *row) error { return s.Scan(&d.ID, &d.V) })
 }
 
 func (k *kv) All(p *runtime.Pipeline) *runtime.SliceFuture[row] {
 	return runtime.QueueSlice[row](p, 4, k.many, runtime.RenderInput{}, runtime.MakeVariantKey(4, 0, 0, 0), nil, args(), nil,
-		func(r *sql.Rows, d *row) error { return r.Scan(&d.ID, &d.V) })
+		func(s runtime.RowScanner, d *row) error { return s.Scan(&d.ID, &d.V) })
 }
 
 func (k *kv) tx(ctx context.Context, db *sql.DB, txOpts *sql.TxOptions, opts []runtime.TxOption, build func(p *runtime.Pipeline) error) error {
@@ -451,9 +450,9 @@ func TestAbortAndConditionsOverTheWire(t *testing.T) {
 		var w1, w2, w3 *runtime.IfResult
 		err = k.tx(ctx, db, nil, nil, func(p *runtime.Pipeline) error {
 			a, b := k.Get(p, 1), k.Get(p, 2)
-			w1 = p.If(a.WhereCol("v > 10", func(r row) bool { return r.V > 10 }), func() { k.Upd(p, 100, 1) }, nil)
-			w2 = p.If(a.Found().And(b.WhereCol("v >= 1000", func(r row) bool { return r.V >= 1000 })), func() { k.Upd(p, 1000, 2) }, func() { k.Upd(p, 7, 2) })
-			w3 = p.If(a.NotFound().Or(b.WhereCol("v = 28", func(r row) bool { return r.V == 28 })).Not(), func() { k.Upd(p, 11, 3) }, nil)
+			w1 = p.If(a.WhereCol("v > 10"), func() { k.Upd(p, 100, 1) }, nil)
+			w2 = p.If(a.Found().And(b.WhereCol("v >= 1000")), func() { k.Upd(p, 1000, 2) }, func() { k.Upd(p, 7, 2) })
+			w3 = p.If(a.NotFound().Or(b.WhereCol("v = 28")).Not(), func() { k.Upd(p, 11, 3) }, nil)
 			return nil
 		})
 		if err != nil {
@@ -803,11 +802,9 @@ func TestTransactionOptionsOverTheWire(t *testing.T) {
 				k.Get(p, 1)
 				// innodb_trx is a cache that is refreshed at most every 100ms: let it expire
 				runtime.QueueRow[int64](p, 10, nap, runtime.RenderInput{}, runtime.MakeVariantKey(10, 0, 0, 0), nil, args(), nil,
-					func(r *sql.Row, d *int64) error { return r.Scan(d) },
-					func(r *sql.Rows, d *int64) error { return r.Scan(d) })
+					func(s runtime.RowScanner, d *int64) error { return s.Scan(d) })
 				got = runtime.QueueRow[string](p, 9, iso, runtime.RenderInput{}, runtime.MakeVariantKey(9, 0, 0, 0), nil, args(), nil,
-					func(r *sql.Row, d *string) error { return r.Scan(d) },
-					func(r *sql.Rows, d *string) error { return r.Scan(d) })
+					func(s runtime.RowScanner, d *string) error { return s.Scan(d) })
 				return nil
 			})
 			if err != nil {
@@ -842,8 +839,7 @@ func TestReturningOnMariaDB(t *testing.T) {
 		var got *runtime.RowFuture[row]
 		err := k.tx(ctx, db, nil, nil, func(p *runtime.Pipeline) error {
 			got = runtime.QueueRow[row](p, 8, ret, runtime.RenderInput{}, runtime.MakeVariantKey(8, 0, 0, 0), nil, args(int64(10), int64(100)), nil,
-				func(r *sql.Row, d *row) error { return r.Scan(&d.ID, &d.V) },
-				func(r *sql.Rows, d *row) error { return r.Scan(&d.ID, &d.V) }).AssertRows(1)
+				func(s runtime.RowScanner, d *row) error { return s.Scan(&d.ID, &d.V) }).AssertRows(1)
 			k.Upd(p, 1, 10)
 			return nil
 		})

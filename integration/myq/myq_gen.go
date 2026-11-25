@@ -436,9 +436,10 @@ var descGetItem = &runtime.QueryDescriptor{
 	StmtID:    2,
 	StmtVerb:  runtime.VerbSelect,
 	StaticSQL: "SELECT id, org_id, name, score, status\nFROM sg_items\nWHERE id = ?",
-	Segments:  []string{"SELECT ", "\nFROM sg_items\nWHERE id = ", ""},
+	Segments:  []string{"SELECT ", "\n", "FROM sg_items\nWHERE id = ", ""},
 	Slots: []runtime.Slot{
 		{Kind: runtime.SlotSelectCols},
+		{Kind: runtime.SlotColPreds},
 		{Kind: runtime.SlotScalar},
 	},
 	SelectColExprs: []string{"id", "org_id", "name", "score", "status"},
@@ -574,8 +575,7 @@ func (pl *Pipeline) GetItem(id int64, selectCols ...uint64) *runtime.RowFuture[I
 		FlagMask: flagMask,
 	}
 	return runtime.QueueRow(pl.Pipeline, stmtIDGetItem, descGetItem, in, vk, runtime.FastSlot(colMask, &pl.q.fastSlots[0]), argBuf, expandErr,
-		func(r *sql.Row, dst *Item) error { return scanGetItemRow(r, dst, colMask, p) },
-		func(rs *sql.Rows, dst *Item) error { return scanGetItemRow(rs, dst, colMask, p) },
+		func(rs runtime.RowScanner, dst *Item) error { return scanGetItemRow(rs, dst, colMask, p) },
 	)
 }
 
@@ -599,9 +599,10 @@ var descItemsByIDs = &runtime.QueryDescriptor{
 	Name:     "ItemsByIDs",
 	StmtID:   3,
 	StmtVerb: runtime.VerbSelect,
-	Segments: []string{"SELECT ", "\nFROM sg_items\nWHERE id IN (", ")\nORDER BY id"},
+	Segments: []string{"SELECT ", "\n", "FROM sg_items\nWHERE id IN (", ")\nORDER BY id"},
 	Slots: []runtime.Slot{
 		{Kind: runtime.SlotSelectCols},
+		{Kind: runtime.SlotColPreds},
 		{Kind: runtime.SlotSlice},
 	},
 	SelectColExprs: []string{"id", "org_id", "name", "score", "status"},
@@ -857,7 +858,7 @@ func (pl *Pipeline) ItemsByIDs(ids []int64, selectCols ...uint64) *runtime.Slice
 		SliceLens: sliceLensBuf[:],
 	}
 	return runtime.QueueSlice(pl.Pipeline, stmtIDItemsByIDs, descItemsByIDs, in, vk, nil, argBuf, expandErr,
-		func(rs *sql.Rows, dst *Item) error { return scanItemsByIDsRow(rs, dst, colMask, p) },
+		func(rs runtime.RowScanner, dst *Item) error { return scanItemsByIDsRow(rs, dst, colMask, p) },
 	)
 }
 
@@ -887,9 +888,10 @@ var descSearchItems = &runtime.QueryDescriptor{
 	Name:     "SearchItems",
 	StmtID:   4,
 	StmtVerb: runtime.VerbSelect,
-	Segments: []string{"SELECT ", "\nFROM sg_items\nWHERE score >= ", "\n  ", "\n  ", "\n  ", "\nORDER BY id"},
+	Segments: []string{"SELECT ", "\n", "FROM sg_items\nWHERE score >= ", "\n  ", "\n  ", "\n  ", "\nORDER BY id"},
 	Slots: []runtime.Slot{
 		{Kind: runtime.SlotSelectCols},
+		{Kind: runtime.SlotColPreds},
 		{Kind: runtime.SlotScalar},
 		{Kind: runtime.SlotOptBlock, FlagBit: 0, Inner: &runtime.QueryDescriptor{
 			Segments: []string{" AND org_id = ", ""},
@@ -1097,7 +1099,7 @@ func (pl *Pipeline) SearchItems(p SearchItemsParams) *runtime.SliceFuture[Item] 
 		SliceLens: sliceLensBuf[:],
 	}
 	return runtime.QueueSlice(pl.Pipeline, stmtIDSearchItems, descSearchItems, in, vk, nil, argBuf, expandErr,
-		func(rs *sql.Rows, dst *Item) error { return scanSearchItemsRow(rs, dst, colMask, p) },
+		func(rs runtime.RowScanner, dst *Item) error { return scanSearchItemsRow(rs, dst, colMask, p) },
 	)
 }
 
@@ -1152,9 +1154,10 @@ var descPageItems = &runtime.QueryDescriptor{
 	Name:     "PageItems",
 	StmtID:   5,
 	StmtVerb: runtime.VerbSelect,
-	Segments: []string{"SELECT ", "\nFROM sg_items\nWHERE org_id = ", "\n  AND ", "\nORDER BY ", "\nLIMIT ", ""},
+	Segments: []string{"SELECT ", "\n", "FROM sg_items\nWHERE org_id = ", "\n  AND ", "\nORDER BY ", "\nLIMIT ", ""},
 	Slots: []runtime.Slot{
 		{Kind: runtime.SlotSelectCols},
+		{Kind: runtime.SlotColPreds},
 		{Kind: runtime.SlotScalar},
 		{Kind: runtime.SlotSeek},
 		{Kind: runtime.SlotOrder},
@@ -1322,7 +1325,7 @@ func (pl *Pipeline) PageItems(p PageItemsParams) *runtime.SliceFuture[PagedItem]
 		HasSeek:   p.After.IsActive(),
 	}
 	return runtime.QueueSlice(pl.Pipeline, stmtIDPageItems, descPageItems, in, vk, nil, argBuf, expandErr,
-		func(rs *sql.Rows, dst *PagedItem) error { return scanPageItemsRow(rs, dst, colMask, p) },
+		func(rs runtime.RowScanner, dst *PagedItem) error { return scanPageItemsRow(rs, dst, colMask, p) },
 	)
 }
 
@@ -1393,9 +1396,10 @@ var descWideRows = &runtime.QueryDescriptor{
 	Name:     "WideRows",
 	StmtID:   6,
 	StmtVerb: runtime.VerbSelect,
-	Segments: []string{"SELECT ", "\nFROM sg_wide\nWHERE ", "\nORDER BY ", "\nLIMIT ", ""},
+	Segments: []string{"SELECT ", "\n", "FROM sg_wide\nWHERE ", "\nORDER BY ", "\nLIMIT ", ""},
 	Slots: []runtime.Slot{
 		{Kind: runtime.SlotSelectCols},
+		{Kind: runtime.SlotColPreds},
 		{Kind: runtime.SlotSeek},
 		{Kind: runtime.SlotOrder},
 		{Kind: runtime.SlotScalar},
@@ -1589,7 +1593,7 @@ func (pl *Pipeline) WideRows(p WideRowsParams) *runtime.SliceFuture[Wide] {
 		HasSeek:   p.After.IsActive(),
 	}
 	return runtime.QueueSlice(pl.Pipeline, stmtIDWideRows, descWideRows, in, vk, nil, argBuf, expandErr,
-		func(rs *sql.Rows, dst *Wide) error { return scanWideRowsRow(rs, dst, colMask, p) },
+		func(rs runtime.RowScanner, dst *Wide) error { return scanWideRowsRow(rs, dst, colMask, p) },
 	)
 }
 
@@ -2088,8 +2092,9 @@ var descTopOrgs = &runtime.QueryDescriptor{
 	StmtID:    10,
 	StmtVerb:  runtime.VerbSelect,
 	StaticSQL: "SELECT org_id FROM sg_items GROUP BY org_id HAVING COUNT(*) >= ?",
-	Segments:  []string{"SELECT org_id FROM sg_items GROUP BY org_id HAVING COUNT(*) >= ", ""},
+	Segments:  []string{"SELECT org_id ", "FROM sg_items GROUP BY org_id HAVING COUNT(*) >= ", ""},
 	Slots: []runtime.Slot{
+		{Kind: runtime.SlotColPreds},
 		{Kind: runtime.SlotScalar},
 	},
 }
@@ -2158,10 +2163,11 @@ var descOrgStats = &runtime.QueryDescriptor{
 	Name:     "OrgStats",
 	StmtID:   11,
 	StmtVerb: runtime.VerbSelect,
-	Segments: []string{"WITH picked AS (", ")\nSELECT ", "\nFROM sg_items i\nWHERE i.org_id IN (SELECT org_id FROM picked) AND i.status = ", "\nGROUP BY i.org_id\nORDER BY i.org_id"},
+	Segments: []string{"WITH picked AS (", ")\nSELECT ", "\n", "FROM sg_items i\nWHERE i.org_id IN (SELECT org_id FROM picked) AND i.status = ", "\nGROUP BY i.org_id\nORDER BY i.org_id"},
 	Slots: []runtime.Slot{
 		{Kind: runtime.SlotQuery},
 		{Kind: runtime.SlotSelectCols},
+		{Kind: runtime.SlotColPreds},
 		{Kind: runtime.SlotScalar},
 	},
 	SelectColExprs: []string{"i.org_id", "COUNT(*) AS n", "COALESCE(SUM(i.score), 0) AS total"},
@@ -2330,7 +2336,7 @@ func (pl *Pipeline) OrgStats(orgs runtime.Query, status string, selectCols ...ui
 		Subs:     subsBuf[:],
 	}
 	return runtime.QueueSlice(pl.Pipeline, stmtIDOrgStats, descOrgStats, in, vk, nil, argBuf, expandErr,
-		func(rs *sql.Rows, dst *OrgStat) error { return scanOrgStatsRow(rs, dst, colMask, p) },
+		func(rs runtime.RowScanner, dst *OrgStat) error { return scanOrgStatsRow(rs, dst, colMask, p) },
 	)
 }
 
@@ -2498,8 +2504,9 @@ var descCountOrgItems = &runtime.QueryDescriptor{
 	StmtID:    14,
 	StmtVerb:  runtime.VerbSelect,
 	StaticSQL: "SELECT COUNT(*) AS n FROM sg_items WHERE org_id = ?",
-	Segments:  []string{"SELECT COUNT(*) AS n FROM sg_items WHERE org_id = ", ""},
+	Segments:  []string{"SELECT COUNT(*) AS n ", "FROM sg_items WHERE org_id = ", ""},
 	Slots: []runtime.Slot{
+		{Kind: runtime.SlotColPreds},
 		{Kind: runtime.SlotScalar},
 	},
 	ResultCols: []string{"n"},
@@ -2603,8 +2610,7 @@ func (pl *Pipeline) CountOrgItems(orgID int64) *runtime.RowFuture[int64] {
 		FlagMask: flagMask,
 	}
 	return runtime.QueueRow(pl.Pipeline, stmtIDCountOrgItems, descCountOrgItems, in, vk, &pl.q.fastSlots[4], argBuf, expandErr,
-		func(r *sql.Row, dst *int64) error { return scanCountOrgItemsRow(r, dst, colMask, p) },
-		func(rs *sql.Rows, dst *int64) error { return scanCountOrgItemsRow(rs, dst, colMask, p) },
+		func(rs runtime.RowScanner, dst *int64) error { return scanCountOrgItemsRow(rs, dst, colMask, p) },
 	)
 }
 
@@ -2618,8 +2624,9 @@ var descNamesByIDs = &runtime.QueryDescriptor{
 	Name:     "NamesByIDs",
 	StmtID:   15,
 	StmtVerb: runtime.VerbSelect,
-	Segments: []string{"SELECT name FROM sg_items WHERE id IN (", ") ORDER BY id"},
+	Segments: []string{"SELECT name ", "FROM sg_items WHERE id IN (", ") ORDER BY id"},
 	Slots: []runtime.Slot{
+		{Kind: runtime.SlotColPreds},
 		{Kind: runtime.SlotSlice},
 	},
 	NumSlices: 1,
@@ -2841,7 +2848,7 @@ func (pl *Pipeline) NamesByIDs(ids []int64) *runtime.SliceFuture[string] {
 		SliceLens: sliceLensBuf[:],
 	}
 	return runtime.QueueSlice(pl.Pipeline, stmtIDNamesByIDs, descNamesByIDs, in, vk, nil, argBuf, expandErr,
-		func(rs *sql.Rows, dst *string) error { return scanNamesByIDsRow(rs, dst, colMask, p) },
+		func(rs runtime.RowScanner, dst *string) error { return scanNamesByIDsRow(rs, dst, colMask, p) },
 	)
 }
 
@@ -2856,8 +2863,9 @@ var descFwdScoreOf = &runtime.QueryDescriptor{
 	StmtID:    16,
 	StmtVerb:  runtime.VerbSelect,
 	StaticSQL: "SELECT score AS fwd FROM sg_items WHERE id = ?",
-	Segments:  []string{"SELECT score AS fwd FROM sg_items WHERE id = ", ""},
+	Segments:  []string{"SELECT score AS fwd ", "FROM sg_items WHERE id = ", ""},
 	Slots: []runtime.Slot{
+		{Kind: runtime.SlotColPreds},
 		{Kind: runtime.SlotScalar},
 	},
 	ResultCols: []string{"fwd"},
@@ -2961,8 +2969,7 @@ func (pl *Pipeline) FwdScoreOf(id int64) *runtime.RowFuture[int64] {
 		FlagMask: flagMask,
 	}
 	return runtime.QueueRow(pl.Pipeline, stmtIDFwdScoreOf, descFwdScoreOf, in, vk, &pl.q.fastSlots[5], argBuf, expandErr,
-		func(r *sql.Row, dst *int64) error { return scanFwdScoreOfRow(r, dst, colMask, p) },
-		func(rs *sql.Rows, dst *int64) error { return scanFwdScoreOfRow(rs, dst, colMask, p) },
+		func(rs runtime.RowScanner, dst *int64) error { return scanFwdScoreOfRow(rs, dst, colMask, p) },
 	)
 }
 
@@ -2977,8 +2984,9 @@ var descFwdIDsByStatus = &runtime.QueryDescriptor{
 	StmtID:    17,
 	StmtVerb:  runtime.VerbSelect,
 	StaticSQL: "SELECT id FROM sg_items WHERE status = ? ORDER BY id",
-	Segments:  []string{"SELECT id FROM sg_items WHERE status = ", " ORDER BY id"},
+	Segments:  []string{"SELECT id ", "FROM sg_items WHERE status = ", " ORDER BY id"},
 	Slots: []runtime.Slot{
+		{Kind: runtime.SlotColPreds},
 		{Kind: runtime.SlotScalar},
 	},
 	ResultCols: []string{"id"},
@@ -3082,8 +3090,7 @@ func (pl *Pipeline) FwdIDsByStatus(status string) *runtime.RowFuture[int64] {
 		FlagMask: flagMask,
 	}
 	return runtime.QueueRow(pl.Pipeline, stmtIDFwdIDsByStatus, descFwdIDsByStatus, in, vk, &pl.q.fastSlots[6], argBuf, expandErr,
-		func(r *sql.Row, dst *int64) error { return scanFwdIDsByStatusRow(r, dst, colMask, p) },
-		func(rs *sql.Rows, dst *int64) error { return scanFwdIDsByStatusRow(rs, dst, colMask, p) },
+		func(rs runtime.RowScanner, dst *int64) error { return scanFwdIDsByStatusRow(rs, dst, colMask, p) },
 	)
 }
 
@@ -3263,8 +3270,9 @@ var descFwdItemsAbove = &runtime.QueryDescriptor{
 	StmtID:    20,
 	StmtVerb:  runtime.VerbSelect,
 	StaticSQL: "SELECT id FROM sg_items WHERE score > ? ORDER BY id",
-	Segments:  []string{"SELECT id FROM sg_items WHERE score > ", " ORDER BY id"},
+	Segments:  []string{"SELECT id ", "FROM sg_items WHERE score > ", " ORDER BY id"},
 	Slots: []runtime.Slot{
+		{Kind: runtime.SlotColPreds},
 		{Kind: runtime.SlotScalar},
 	},
 }
@@ -3388,7 +3396,7 @@ func (pl *Pipeline) FwdItemsAbove(minParam runtime.Arg[int64]) *runtime.SliceFut
 		FlagMask: flagMask,
 	}
 	fut := runtime.QueueSlice(pl.Pipeline, stmtIDFwdItemsAbove, descFwdItemsAbove, in, vk, &pl.q.fastSlots[9], argBuf, expandErr,
-		func(rs *sql.Rows, dst *int64) error { return scanFwdItemsAboveRow(rs, dst, colMask, p) },
+		func(rs runtime.RowScanner, dst *int64) error { return scanFwdItemsAboveRow(rs, dst, colMask, p) },
 	)
 	pl.Pipeline.BindForwarded()
 	return fut
@@ -3405,8 +3413,9 @@ var descFwdSrcI8 = &runtime.QueryDescriptor{
 	StmtID:    21,
 	StmtVerb:  runtime.VerbSelect,
 	StaticSQL: "SELECT i8 AS v FROM sg_fwd_src WHERE k = ?",
-	Segments:  []string{"SELECT i8 AS v FROM sg_fwd_src WHERE k = ", ""},
+	Segments:  []string{"SELECT i8 AS v ", "FROM sg_fwd_src WHERE k = ", ""},
 	Slots: []runtime.Slot{
+		{Kind: runtime.SlotColPreds},
 		{Kind: runtime.SlotScalar},
 	},
 	ResultCols: []string{"v"},
@@ -3510,8 +3519,7 @@ func (pl *Pipeline) FwdSrcI8(kParam string) *runtime.RowFuture[int64] {
 		FlagMask: flagMask,
 	}
 	return runtime.QueueRow(pl.Pipeline, stmtIDFwdSrcI8, descFwdSrcI8, in, vk, &pl.q.fastSlots[10], argBuf, expandErr,
-		func(r *sql.Row, dst *int64) error { return scanFwdSrcI8Row(r, dst, colMask, p) },
-		func(rs *sql.Rows, dst *int64) error { return scanFwdSrcI8Row(rs, dst, colMask, p) },
+		func(rs runtime.RowScanner, dst *int64) error { return scanFwdSrcI8Row(rs, dst, colMask, p) },
 	)
 }
 
@@ -3526,8 +3534,9 @@ var descFwdSrcI8N = &runtime.QueryDescriptor{
 	StmtID:    22,
 	StmtVerb:  runtime.VerbSelect,
 	StaticSQL: "SELECT i8n AS v FROM sg_fwd_src WHERE k = ?",
-	Segments:  []string{"SELECT i8n AS v FROM sg_fwd_src WHERE k = ", ""},
+	Segments:  []string{"SELECT i8n AS v ", "FROM sg_fwd_src WHERE k = ", ""},
 	Slots: []runtime.Slot{
+		{Kind: runtime.SlotColPreds},
 		{Kind: runtime.SlotScalar},
 	},
 	ResultCols: []string{"v"},
@@ -3631,8 +3640,7 @@ func (pl *Pipeline) FwdSrcI8N(kParam string) *runtime.RowFuture[*int64] {
 		FlagMask: flagMask,
 	}
 	return runtime.QueueRow(pl.Pipeline, stmtIDFwdSrcI8N, descFwdSrcI8N, in, vk, &pl.q.fastSlots[11], argBuf, expandErr,
-		func(r *sql.Row, dst **int64) error { return scanFwdSrcI8NRow(r, dst, colMask, p) },
-		func(rs *sql.Rows, dst **int64) error { return scanFwdSrcI8NRow(rs, dst, colMask, p) },
+		func(rs runtime.RowScanner, dst **int64) error { return scanFwdSrcI8NRow(rs, dst, colMask, p) },
 	)
 }
 
@@ -3647,8 +3655,9 @@ var descFwdSrcS = &runtime.QueryDescriptor{
 	StmtID:    23,
 	StmtVerb:  runtime.VerbSelect,
 	StaticSQL: "SELECT s AS v FROM sg_fwd_src WHERE k = ?",
-	Segments:  []string{"SELECT s AS v FROM sg_fwd_src WHERE k = ", ""},
+	Segments:  []string{"SELECT s AS v ", "FROM sg_fwd_src WHERE k = ", ""},
 	Slots: []runtime.Slot{
+		{Kind: runtime.SlotColPreds},
 		{Kind: runtime.SlotScalar},
 	},
 	ResultCols: []string{"v"},
@@ -3752,8 +3761,7 @@ func (pl *Pipeline) FwdSrcS(kParam string) *runtime.RowFuture[string] {
 		FlagMask: flagMask,
 	}
 	return runtime.QueueRow(pl.Pipeline, stmtIDFwdSrcS, descFwdSrcS, in, vk, &pl.q.fastSlots[12], argBuf, expandErr,
-		func(r *sql.Row, dst *string) error { return scanFwdSrcSRow(r, dst, colMask, p) },
-		func(rs *sql.Rows, dst *string) error { return scanFwdSrcSRow(rs, dst, colMask, p) },
+		func(rs runtime.RowScanner, dst *string) error { return scanFwdSrcSRow(rs, dst, colMask, p) },
 	)
 }
 
@@ -3768,8 +3776,9 @@ var descFwdSrcTS = &runtime.QueryDescriptor{
 	StmtID:    24,
 	StmtVerb:  runtime.VerbSelect,
 	StaticSQL: "SELECT ts AS v FROM sg_fwd_src WHERE k = ?",
-	Segments:  []string{"SELECT ts AS v FROM sg_fwd_src WHERE k = ", ""},
+	Segments:  []string{"SELECT ts AS v ", "FROM sg_fwd_src WHERE k = ", ""},
 	Slots: []runtime.Slot{
+		{Kind: runtime.SlotColPreds},
 		{Kind: runtime.SlotScalar},
 	},
 	ResultCols: []string{"v"},
@@ -3873,8 +3882,7 @@ func (pl *Pipeline) FwdSrcTS(kParam string) *runtime.RowFuture[time.Time] {
 		FlagMask: flagMask,
 	}
 	return runtime.QueueRow(pl.Pipeline, stmtIDFwdSrcTS, descFwdSrcTS, in, vk, &pl.q.fastSlots[13], argBuf, expandErr,
-		func(r *sql.Row, dst *time.Time) error { return scanFwdSrcTSRow(r, dst, colMask, p) },
-		func(rs *sql.Rows, dst *time.Time) error { return scanFwdSrcTSRow(rs, dst, colMask, p) },
+		func(rs runtime.RowScanner, dst *time.Time) error { return scanFwdSrcTSRow(rs, dst, colMask, p) },
 	)
 }
 
@@ -3889,8 +3897,9 @@ var descFwdSrcTSL = &runtime.QueryDescriptor{
 	StmtID:    25,
 	StmtVerb:  runtime.VerbSelect,
 	StaticSQL: "SELECT tsl AS v FROM sg_fwd_src WHERE k = ?",
-	Segments:  []string{"SELECT tsl AS v FROM sg_fwd_src WHERE k = ", ""},
+	Segments:  []string{"SELECT tsl AS v ", "FROM sg_fwd_src WHERE k = ", ""},
 	Slots: []runtime.Slot{
+		{Kind: runtime.SlotColPreds},
 		{Kind: runtime.SlotScalar},
 	},
 	ResultCols: []string{"v"},
@@ -3994,8 +4003,7 @@ func (pl *Pipeline) FwdSrcTSL(kParam string) *runtime.RowFuture[time.Time] {
 		FlagMask: flagMask,
 	}
 	return runtime.QueueRow(pl.Pipeline, stmtIDFwdSrcTSL, descFwdSrcTSL, in, vk, &pl.q.fastSlots[14], argBuf, expandErr,
-		func(r *sql.Row, dst *time.Time) error { return scanFwdSrcTSLRow(r, dst, colMask, p) },
-		func(rs *sql.Rows, dst *time.Time) error { return scanFwdSrcTSLRow(rs, dst, colMask, p) },
+		func(rs runtime.RowScanner, dst *time.Time) error { return scanFwdSrcTSLRow(rs, dst, colMask, p) },
 	)
 }
 
@@ -4010,8 +4018,9 @@ var descFwdSrcB = &runtime.QueryDescriptor{
 	StmtID:    26,
 	StmtVerb:  runtime.VerbSelect,
 	StaticSQL: "SELECT b AS v FROM sg_fwd_src WHERE k = ?",
-	Segments:  []string{"SELECT b AS v FROM sg_fwd_src WHERE k = ", ""},
+	Segments:  []string{"SELECT b AS v ", "FROM sg_fwd_src WHERE k = ", ""},
 	Slots: []runtime.Slot{
+		{Kind: runtime.SlotColPreds},
 		{Kind: runtime.SlotScalar},
 	},
 	ResultCols: []string{"v"},
@@ -4115,8 +4124,7 @@ func (pl *Pipeline) FwdSrcB(kParam string) *runtime.RowFuture[[]byte] {
 		FlagMask: flagMask,
 	}
 	return runtime.QueueRow(pl.Pipeline, stmtIDFwdSrcB, descFwdSrcB, in, vk, &pl.q.fastSlots[15], argBuf, expandErr,
-		func(r *sql.Row, dst *[]byte) error { return scanFwdSrcBRow(r, dst, colMask, p) },
-		func(rs *sql.Rows, dst *[]byte) error { return scanFwdSrcBRow(rs, dst, colMask, p) },
+		func(rs runtime.RowScanner, dst *[]byte) error { return scanFwdSrcBRow(rs, dst, colMask, p) },
 	)
 }
 
@@ -4131,8 +4139,9 @@ var descFwdSrcBo = &runtime.QueryDescriptor{
 	StmtID:    27,
 	StmtVerb:  runtime.VerbSelect,
 	StaticSQL: "SELECT bo AS v FROM sg_fwd_src WHERE k = ?",
-	Segments:  []string{"SELECT bo AS v FROM sg_fwd_src WHERE k = ", ""},
+	Segments:  []string{"SELECT bo AS v ", "FROM sg_fwd_src WHERE k = ", ""},
 	Slots: []runtime.Slot{
+		{Kind: runtime.SlotColPreds},
 		{Kind: runtime.SlotScalar},
 	},
 	ResultCols: []string{"v"},
@@ -4236,8 +4245,7 @@ func (pl *Pipeline) FwdSrcBo(kParam string) *runtime.RowFuture[bool] {
 		FlagMask: flagMask,
 	}
 	return runtime.QueueRow(pl.Pipeline, stmtIDFwdSrcBo, descFwdSrcBo, in, vk, &pl.q.fastSlots[16], argBuf, expandErr,
-		func(r *sql.Row, dst *bool) error { return scanFwdSrcBoRow(r, dst, colMask, p) },
-		func(rs *sql.Rows, dst *bool) error { return scanFwdSrcBoRow(rs, dst, colMask, p) },
+		func(rs runtime.RowScanner, dst *bool) error { return scanFwdSrcBoRow(rs, dst, colMask, p) },
 	)
 }
 
@@ -4252,8 +4260,9 @@ var descFwdSrcF8 = &runtime.QueryDescriptor{
 	StmtID:    28,
 	StmtVerb:  runtime.VerbSelect,
 	StaticSQL: "SELECT f8 AS v FROM sg_fwd_src WHERE k = ?",
-	Segments:  []string{"SELECT f8 AS v FROM sg_fwd_src WHERE k = ", ""},
+	Segments:  []string{"SELECT f8 AS v ", "FROM sg_fwd_src WHERE k = ", ""},
 	Slots: []runtime.Slot{
+		{Kind: runtime.SlotColPreds},
 		{Kind: runtime.SlotScalar},
 	},
 	ResultCols: []string{"v"},
@@ -4357,8 +4366,7 @@ func (pl *Pipeline) FwdSrcF8(kParam string) *runtime.RowFuture[float64] {
 		FlagMask: flagMask,
 	}
 	return runtime.QueueRow(pl.Pipeline, stmtIDFwdSrcF8, descFwdSrcF8, in, vk, &pl.q.fastSlots[17], argBuf, expandErr,
-		func(r *sql.Row, dst *float64) error { return scanFwdSrcF8Row(r, dst, colMask, p) },
-		func(rs *sql.Rows, dst *float64) error { return scanFwdSrcF8Row(rs, dst, colMask, p) },
+		func(rs runtime.RowScanner, dst *float64) error { return scanFwdSrcF8Row(rs, dst, colMask, p) },
 	)
 }
 
@@ -4373,8 +4381,9 @@ var descFwdSrcU = &runtime.QueryDescriptor{
 	StmtID:    29,
 	StmtVerb:  runtime.VerbSelect,
 	StaticSQL: "SELECT u AS v FROM sg_fwd_src WHERE k = ?",
-	Segments:  []string{"SELECT u AS v FROM sg_fwd_src WHERE k = ", ""},
+	Segments:  []string{"SELECT u AS v ", "FROM sg_fwd_src WHERE k = ", ""},
 	Slots: []runtime.Slot{
+		{Kind: runtime.SlotColPreds},
 		{Kind: runtime.SlotScalar},
 	},
 	ResultCols: []string{"v"},
@@ -4478,8 +4487,7 @@ func (pl *Pipeline) FwdSrcU(kParam string) *runtime.RowFuture[string] {
 		FlagMask: flagMask,
 	}
 	return runtime.QueueRow(pl.Pipeline, stmtIDFwdSrcU, descFwdSrcU, in, vk, &pl.q.fastSlots[18], argBuf, expandErr,
-		func(r *sql.Row, dst *string) error { return scanFwdSrcURow(r, dst, colMask, p) },
-		func(rs *sql.Rows, dst *string) error { return scanFwdSrcURow(rs, dst, colMask, p) },
+		func(rs runtime.RowScanner, dst *string) error { return scanFwdSrcURow(rs, dst, colMask, p) },
 	)
 }
 

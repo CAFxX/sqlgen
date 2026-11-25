@@ -349,26 +349,16 @@ func (r *mysqlBatchRender) writeLeaf(c *PipelineCond, i int, op *PipelineOp) err
 		if op.Desc == nil || op.Desc.StmtVerb != VerbSelect {
 			return fmt.Errorf("a column condition over a statement that is not a SELECT cannot run it twice: %w", ErrWireNotApplicable)
 		}
-		// MySQL cannot aggregate over the rows a statement just returned to the client, so the select runs
-		// a second time, inside the aggregate (same transaction, same arguments).
-		r.b.WriteString("(SELECT COALESCE(COUNT(*)>0 AND MIN(CASE WHEN (")
-		if len(c.PredArgs) == 0 {
-			r.b.WriteString(c.SQLPred)
-		} else {
-			// The arguments are inlined by the rules of the operation's own (MySQLFlavor.WriteLiteral).
-			lits, err := r.o.Flavor.normalize(c.PredArgs)
-			if err != nil {
-				return fmt.Errorf("WhereCol: %w", err)
-			}
-			writePred(&r.b, c.SQLPred, func(k int) {
-				if k < len(lits) {
-					r.o.Flavor.WriteLiteral(&r.b, lits[k])
-				} else {
-					r.b.WriteString("NULL")
-				}
-			})
+		if c.Col == 0 {
+			r.b.WriteByte('0')
+			break
 		}
-		r.b.WriteString(") THEN 1 ELSE 0 END)=1,0) FROM (")
+		// MySQL cannot aggregate over the rows a statement just returned to the client, so the select runs
+		// a second time, inside the aggregate (same transaction, same arguments), with the same WhereCol
+		// columns (their arguments inlined by the rules of the operation's own, MySQLFlavor.WriteLiteral).
+		r.b.WriteString("(SELECT COALESCE(COUNT(*)>0 AND MIN(_sqlgen_wc")
+		r.num(c.Col)
+		r.b.WriteString(")=1,0) FROM (")
 		in := op.Input
 		in.BranchGates = nil
 		cur := r.cursor(i, false)
@@ -427,7 +417,7 @@ func estimateMySQLOpBytes(fl *MySQLFlavor, op *PipelineOp, args []any) int {
 	add := func(c *PipelineCond) {
 		total += 480 + c.estimateBytes(numGates+1)
 		if k := c.countColPred(); k > 0 {
-			total += k * (core + 160 + len(c.sqlPreds()) + c.predArgsBound(fl))
+			total += k * (core + 160)
 		}
 	}
 	if dec.ProduceCond != nil {
@@ -439,6 +429,10 @@ func estimateMySQLOpBytes(fl *MySQLFlavor, op *PipelineOp, args []any) int {
 	for i := range dec.LeafRecs {
 		add(dec.LeafRecs[i].Cond)
 	}
+	// the WhereCol columns' literals, in the statement and in every copy of it a condition runs
+	if n := colPredLitBound(fl, in.ColPreds); n > 0 {
+		total += n * (1 + nColPredCopies(dec))
+	}
 	for i := range dec.ValRecs {
 		total += 160 + len(dec.ValRecs[i].Col) + len(dec.ValRecs[i].Expr)
 	}
@@ -447,40 +441,30 @@ func estimateMySQLOpBytes(fl *MySQLFlavor, op *PipelineOp, args []any) int {
 	return total
 }
 
-// predArgsBound bounds the bytes of the literals of every WhereCol argument of c (for the estimate).
-func (c *PipelineCond) predArgsBound(fl *MySQLFlavor) int {
-	if c == nil {
-		return 0
-	}
-	switch c.Kind {
-	case CondColPred:
-		n := 0
-		if lits, err := fl.normalize(c.PredArgs); err == nil {
+// colPredLitBound bounds the bytes of the literals of every WhereCol argument of preds.
+func colPredLitBound(fl *MySQLFlavor, preds []ColPred) int {
+	n := 0
+	for i := range preds {
+		if lits, err := fl.normalize(preds[i].Args); err == nil {
 			for _, a := range lits {
 				n += fl.literalBound(a)
 			}
 		}
-		return n
-	case CondAnd, CondOr:
-		return c.Left.predArgsBound(fl) + c.Right.predArgsBound(fl)
-	case CondNot:
-		return c.Left.predArgsBound(fl)
 	}
-	return 0
+	return n
 }
 
-// sqlPreds returns the SQL predicates of every leaf of c, concatenated (for the estimate).
-func (c *PipelineCond) sqlPreds() string {
-	if c == nil {
-		return ""
+// nColPredCopies counts the copies of the statement the conditions recorded by an operation run.
+func nColPredCopies(dec *OpDecorators) int {
+	n := 0
+	if dec.ProduceCond != nil {
+		n += dec.ProduceCond.countColPred()
+		for i := range dec.ExtraConds {
+			n += dec.ExtraConds[i].Cond.countColPred()
+		}
 	}
-	switch c.Kind {
-	case CondColPred:
-		return c.SQLPred
-	case CondAnd, CondOr:
-		return c.Left.sqlPreds() + c.Right.sqlPreds()
-	case CondNot:
-		return c.Left.sqlPreds()
+	for i := range dec.LeafRecs {
+		n += dec.LeafRecs[i].Cond.countColPred()
 	}
-	return ""
+	return n
 }

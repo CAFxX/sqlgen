@@ -214,7 +214,7 @@ var myForwardScenarios = []myScenario{
 	{"a value forwarded into a condition's column predicate", func(p *myq.Pipeline) ([]*runtime.IfResult, func() string) {
 		s := p.FwdScoreOf(2)
 		g := p.GetItem(3)
-		r := p.If(g.WhereCol("score > ?", func(it myq.Item) bool { return it.Score > 25 }, int64(25)),
+		r := p.If(g.WhereCol("score > ?", int64(25)),
 			func(p *myq.Pipeline) { p.FwdSetScore(s.Arg(), runtime.Val(int64(4))) }, nil)
 		return []*runtime.IfResult{r}, nil
 	}},
