@@ -229,11 +229,18 @@ func TestPipelineNoOpAssertion(t *testing.T) {
 	before := sent()
 	p = NewPipeline(context.Background(), db, cache, nil, true, DialectDollar)
 	queueTestExec(p)
-	p.QueueExecNoop().AssertFound()
+	failing := p.QueueExecNoop().AssertFound()
 	err := p.Flush()
 	var ae *AssertionError
 	if !errors.As(err, &ae) || !errors.Is(err, ErrAssertionFailed) || ae.Got != 0 || ae.Want != 1 || !ae.GotKnown {
 		t.Fatalf("err = %v, want an assertion error (wanted 1, got 0)", err)
+	}
+	// The failing operation's own future carries the error, as for any other failing operation.
+	if n, ferr := failing.RowsAffected(); ferr != err || n != 0 {
+		t.Fatalf("failing no-op future: %d, %v; want 0, %v", n, ferr, err)
+	}
+	if _, ferr := failing.Result(); ferr != err {
+		t.Fatalf("failing no-op future Result: %v; want %v", ferr, err)
 	}
 	if n := sent() - before; n != 0 {
 		t.Fatalf("a failing no-op assertion used the driver %d times, want 0", n)
@@ -252,6 +259,19 @@ func TestPipelineNoOpAssertion(t *testing.T) {
 	}
 	if cfg.rollbackCalls.Load() != 0 {
 		t.Fatalf("rollbacks = %d, want none", cfg.rollbackCalls.Load())
+	}
+
+	// A failing assertion inside a taken branch (sequential path): the future carries the error too.
+	p = NewPipeline(context.Background(), db, cache, nil, true, DialectDollar)
+	gate = queueTestExec(p)
+	var inBranch *SliceFuture[int]
+	p.If(gate.Found(), func() { inBranch = QueueSliceNoop[int](p).AssertRows(2) }, nil)
+	err = p.Flush()
+	if !errors.As(err, &ae) || ae.Want != 2 || ae.Got != 0 {
+		t.Fatalf("err = %v, want an assertion error (wanted 2, got 0)", err)
+	}
+	if rows, ferr := inBranch.Get(); ferr != err || rows != nil {
+		t.Fatalf("failing no-op slice future: %v, %v; want nil, %v", rows, ferr, err)
 	}
 }
 

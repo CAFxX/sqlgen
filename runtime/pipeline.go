@@ -939,18 +939,20 @@ func (p *Pipeline) QueueExec(
 // If branch it is skipped like any other operation.
 func (p *Pipeline) QueueExecNoop() *ExecFuture {
 	fut := &ExecFuture{pl: p}
-	fut.op = p.queueNoop(func() { fut.skipped = true })
+	fut.op = p.queueNoop(func() { fut.skipped = true }, func(err error) { fut.err = err })
 	return fut
 }
 
 // QueueSliceNoop is QueueExecNoop for a multi-row statement: the SliceFuture resolves to no rows.
 func QueueSliceNoop[T any](p *Pipeline) *SliceFuture[T] {
 	fut := &SliceFuture[T]{pl: p}
-	fut.op = p.queueNoop(func() { fut.skipped = true })
+	fut.op = p.queueNoop(func() { fut.skipped = true }, func(err error) { fut.err = err })
 	return fut
 }
 
-func (p *Pipeline) queueNoop(onSkipped func()) *PipelineOp {
+// queueNoop queues a NoOp. onDone receives the operation's error (a failing assertion on it), so its
+// future reports that error like the future of any other failing operation.
+func (p *Pipeline) queueNoop(onSkipped func(), onDone func(err error)) *PipelineOp {
 	var in RenderInput
 	in.BranchGates = p.cloneGates()
 	p.noOps++
@@ -963,6 +965,7 @@ func (p *Pipeline) queueNoop(onSkipped func()) *PipelineOp {
 			onSkipped()
 			opPtr.Skipped = true
 		},
+		OnDone:  func(_ int64, err error) { onDone(err) },
 		ExecSeq: func(context.Context, *Pipeline, *PipelineOp) error { return nil },
 	})
 	return opPtr
