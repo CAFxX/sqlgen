@@ -2127,7 +2127,7 @@ func TestGeneratorDiagnosticsAreActionable(t *testing.T) {
 			`parameter :x is used before it is declared; declare its type at its first use (:x:int64)`},
 		{"package not imported", "  - name: Q\n    kind: many\n    sql: SELECT id:uuid.UUID FROM t\n",
 			`type "uuid.UUID" uses package "uuid" which is not imported; add its import path to extra_imports`},
-		{"package not imported in a param", "  - name: Q\n    kind: many\n    sql: SELECT id:int64 FROM t WHERE x = :x:[]decimal.Decimal\n",
+		{"package not imported in a param", "  - name: Q\n    kind: many\n    sql: SELECT id:int64 FROM t WHERE x IN (:x:[]decimal.Decimal)\n",
 			`uses package "decimal" which is not imported`},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -2183,6 +2183,14 @@ func TestGeneratorRejectsMisuseAtGenerateTime(t *testing.T) {
 			"tuple slice parameter :a:[]T"},
 		{"tuple slice outside VALUES or IN", "mysql", one("SELECT id:int64 FROM t WHERE x > :a:[]T(A:int64)"),
 			"only valid after VALUES or inside IN (...)"},
+		{"1D slice compared with =", "postgres", one("SELECT id:int64 FROM t WHERE x = :x:[]int64"),
+			"slice parameter :x:[]int64 is only valid as the whole list of IN (...) / NOT IN (...)"},
+		{"1D slice repeated outside IN", "sqlite", one("SELECT id:int64 FROM t WHERE x IN (:x:[]int64) OR y = :x"),
+			"slice parameter :x:[]int64 is only valid as the whole list of IN (...)"},
+		{"1D slice as a function argument", "mysql", one("SELECT id:int64 FROM t WHERE x = GREATEST(:x:[]int64)"),
+			"only valid as the whole list of IN (...)"},
+		{"1D slice sharing an IN list", "postgres", one("SELECT id:int64 FROM t WHERE x IN (:x:[]int64, 7)"),
+			"only valid as the whole list of IN (...)"},
 		{"literal $1 placeholder (postgres)", "postgres", one("SELECT id:int64 FROM t WHERE x = $1"),
 			`literal placeholder "$1"`},
 		{"literal $2 placeholder (cockroachdb)", "cockroachdb", one("SELECT id:int64 FROM t WHERE x = :x:int64 AND y = $2"),

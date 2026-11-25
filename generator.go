@@ -738,7 +738,24 @@ func parseDialect(name string) (runtime.Dialect, error) {
 	return style, nil
 }
 
+var sliceContextRE = regexp.MustCompile(`(?is)\bin\s*\(\s*$`)
+
+// sliceContextOK reports whether a 1D slice parameter may sit between the SQL text seg and span[next:]: it
+// expands to a comma-separated list of placeholders, which only an IN (...) / NOT IN (...) list accepts
+// (`x = :x:[]int64` would render `x = ?, ?`). An empty seg (the previous token was another parameter or
+// block) cannot be judged and is accepted.
+func sliceContextOK(seg []byte, span string, next int) bool {
+	if len(bytes.TrimSpace(seg)) == 0 {
+		return true
+	}
+	return sliceContextRE.Match(seg) && strings.HasPrefix(strings.TrimLeft(span[next:], " \t\r\n"), ")")
+}
+
 var tupleSliceContextRE = regexp.MustCompile(`(?is)(\bin\s*\(|\bvalues)\s*$`)
+
+func sliceContextErr(stmt, ident, goType string) error {
+	return fmt.Errorf("statement %s: slice parameter :%s:%s is only valid as the whole list of IN (...) / NOT IN (...): it expands to a comma-separated list of placeholders (for a single value use a scalar type, e.g. :%s:%s)", stmt, ident, goType, ident, strings.TrimPrefix(goType, "[]"))
+}
 
 // tupleSliceContextOK reports whether a tuple slice parameter may follow the SQL text seg: it expands to a
 // comma-separated list of parenthesised rows, which only VALUES and IN (...) accept. An empty seg (the
@@ -1805,6 +1822,9 @@ func (p *stmtParser) scanSpan(span string, blk *parsedBlock, isTopLevel bool) er
 							}
 							afterIdent = nextAfterSort
 						}
+						if sk == runtime.SlotSlice && !sliceContextOK(seg, span, afterIdent) {
+							return sliceContextErr(p.spec.Name, ident, ep.GoType)
+						}
 						emitSlot(slotRef{Kind: sk, ParamIdx: existingIdx})
 						i = afterIdent
 						continue
@@ -2139,6 +2159,9 @@ func (p *stmtParser) scanSpan(span string, blk *parsedBlock, isTopLevel bool) er
 					hasSort = true
 					desc = d
 					nextPos = afterSort
+				}
+				if !sliceContextOK(seg, span, nextPos) {
+					return sliceContextErr(p.spec.Name, ident, fullType)
 				}
 			}
 			pIdx, err := p.addOrGetParam(ident, pk, fullType, elemType, nil, hasSort, desc)

@@ -186,6 +186,7 @@ statements:
 ```
 
 - **Parameter Deduplication**: If `:actor_id:int64` appears twice in the SQL query, the generated Go function accepts `actorID int64` **once** and binds its value to both SQL placeholders automatically.
+- **Where a 1D slice may appear**: only as the whole list of an `IN (...)` / `NOT IN (...)` (`id IN (:ids:[]int64)`, also when repeated as `:ids`). It expands to comma-separated placeholders, so anywhere else (`x = :x:[]int64`, a function argument, next to other items in the list) is a generate-time error; use a scalar type for a single value.
 - **Byte Slices**: `[]byte` (and `json.RawMessage`) is always treated as a **scalar** binary/JSON parameter, never expanded into comma-separated placeholders.
 - **Empty collections** (the rule is structural: it depends on what the collection is used for, not on the statement kind):
   - An empty 1D slice (`len(userIDs) == 0`) in an active `IN (...)`/`NOT IN (...)`, and an empty tuple slice anywhere but as the row source of an `INSERT`, returns `runtime.ErrEmptySliceParam` before hitting the database: `IN ()` is invalid SQL, and what an empty list *means* (`NOT IN ()` is true for every row) is a decision for the caller, not the generator.
