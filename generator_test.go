@@ -1521,9 +1521,9 @@ func TestPropertyPipelineWireVsSequentialParity(t *testing.T) {
 			var ifRes *runtime.IfResult
 			err := q.PipelineTx(ctx, nil, func(p *Pipeline) error {
 				getFut = p.GetUserByID(targetID)
-				cond := getFut.WhereCol(fmt.Sprintf("score >= %d", minScore), func(u User) bool {
+				cond := getFut.WhereCol("score >= ?", func(u User) bool {
 					return u.Score >= minScore
-				}).And(getFut.Found())
+				}, minScore).And(getFut.Found())
 
 				ifRes = p.If(cond, func(p *Pipeline) {
 					p.CreateUser(100+int64(trial), 1, "then@p.com", "admin", 99, "ok").AssertRows(1)

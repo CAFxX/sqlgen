@@ -13,6 +13,8 @@ type streamCursor struct {
 	sliceIdx int
 	tupleIdx int
 	subIdx   int
+	// condArgs collects the WhereCol arguments whose placeholders were written (nil: none may be).
+	condArgs *[]any
 	// my is non-nil when rendering for WireFlavorMySQL: placeholders become inlined literals and the
 	// branch gates read session variables (see mysql_wire.go).
 	my *mysqlCursor
@@ -216,7 +218,7 @@ func (c *PipelineCond) estimateBytes(numGates int) int {
 	case CondRowsEq, CondRowsGt, CondRowsGe, CondRowsLt, CondRowsLe:
 		return 80 + gateExtraBytes(numGates)
 	case CondColPred:
-		return 80 + len(c.SQLPred) + gateExtraBytes(numGates)
+		return 80 + len(c.SQLPred) + 11*len(c.PredArgs) + gateExtraBytes(numGates)
 	case CondAnd:
 		return 9 + c.Left.estimateBytes(numGates) + c.Right.estimateBytes(numGates)
 	case CondOr:
@@ -297,7 +299,16 @@ func (c *PipelineCond) writeLeafSQL(b *strings.Builder, cur *streamCursor, gates
 		b.Write(strconv.AppendInt(cur.numBuf[:0], c.Threshold, 10))
 	case CondColPred:
 		b.WriteString("COUNT(*) > 0 AND MIN(CASE WHEN (")
-		b.WriteString(c.SQLPred)
+		if len(c.PredArgs) == 0 || cur.condArgs == nil {
+			b.WriteString(c.SQLPred)
+		} else {
+			writePred(b, c.SQLPred, func(k int) {
+				if k < len(c.PredArgs) {
+					*cur.condArgs = append(*cur.condArgs, c.PredArgs[k])
+				}
+				cur.writePlaceholder(b)
+			})
+		}
 		b.WriteString(") THEN 1 ELSE 0 END) = 1")
 	}
 	if len(gates) > 0 {
@@ -639,7 +650,9 @@ func streamCoreStatement(b *strings.Builder, cur *streamCursor, desc *QueryDescr
 	}
 }
 
-func streamOpSQL(b *strings.Builder, dialect Dialect, desc *QueryDescriptor, in *RenderInput, dec *OpDecorators) {
+// streamOpSQL writes the SQL of one operation. The arguments of its WhereCol leaves are appended to
+// *condArgs (nil when dec has none) in the order of their placeholders, which follow the operation's own.
+func streamOpSQL(b *strings.Builder, dialect Dialect, desc *QueryDescriptor, in *RenderInput, dec *OpDecorators, condArgs *[]any) {
 	var emptyIn RenderInput
 	if in == nil {
 		in = &emptyIn
@@ -647,6 +660,7 @@ func streamOpSQL(b *strings.Builder, dialect Dialect, desc *QueryDescriptor, in 
 	cur := streamCursor{
 		dialect:  dialect,
 		paramIdx: 1,
+		condArgs: condArgs,
 	}
 	hasGates := len(in.BranchGates) > 0
 	if dec != nil && dec.IsAbort {
@@ -791,8 +805,19 @@ func BuildComposedSQL(desc *QueryDescriptor, in *RenderInput, dialect Dialect) s
 	est := estimateOpBytes(desc, in, nil)
 	var b strings.Builder
 	b.Grow(est)
-	streamOpSQL(&b, dialect, desc, in, nil)
+	streamOpSQL(&b, dialect, desc, in, nil, nil)
 	return b.String()
+}
+
+// dropCondArgs removes the WhereCol arguments renderPipelineBatch appended to the operations' Args, so
+// that a batch a pipeliner declined (ErrWireNotApplicable) runs sequentially with the statements' own.
+func dropCondArgs(ops []PipelineOp) {
+	for i := range ops {
+		if n := ops[i].nCondArgs; n > 0 {
+			ops[i].Args = ops[i].Args[:len(ops[i].Args)-n]
+			ops[i].nCondArgs = 0
+		}
+	}
 }
 
 // renderPipelineBatch renders all PipelineOp SQL strings for a batch using at most a single strings.Builder.
@@ -816,6 +841,7 @@ func renderPipelineBatch(dialect Dialect, cache *StmtCache, ops []PipelineOp) {
 	totalEst := 0
 	for i := range ops {
 		op := &ops[i]
+		dropCondArgs(ops[i : i+1]) // a batch rendered again (retried) binds them once
 		plain := !op.Decorators.IsAbort &&
 			!op.Decorators.guarded() &&
 			len(op.Input.BranchGates) == 0
@@ -840,13 +866,20 @@ func renderPipelineBatch(dialect Dialect, cache *StmtCache, ops []PipelineOp) {
 	var b strings.Builder
 	b.Grow(totalEst)
 
+	var extra []any
 	for i := range ops {
 		if !spans[i].render {
 			continue
 		}
 		op := &ops[i]
 		spans[i].start = b.Len()
-		streamOpSQL(&b, dialect, op.Desc, &op.Input, &op.Decorators)
+		extra = extra[:0]
+		streamOpSQL(&b, dialect, op.Desc, &op.Input, &op.Decorators, &extra)
+		if len(extra) > 0 {
+			n := len(op.Args)
+			op.Args = append(op.Args[:n:n], extra...) // never into the pooled argument buffer
+			op.nCondArgs = len(extra)
+		}
 		op.overflowGuard = dialect != DialectDollar && (op.Decorators.IsAbort || op.Decorators.AssertRows >= 0)
 		spans[i].end = b.Len()
 	}

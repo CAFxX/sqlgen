@@ -35,6 +35,11 @@ func scoreAtLeast(n int64) (string, func(pgq.Item) bool) {
 	return "score >= " + strconv.FormatInt(n, 10), func(it pgq.Item) bool { return it.Score >= n }
 }
 
+// scoreAtLeastArg is scoreAtLeast with the threshold bound, not written into the SQL.
+func scoreAtLeastArg(n int64) (string, func(pgq.Item) bool, int64) {
+	return "score >= ?", func(it pgq.Item) bool { return it.Score >= n }, n
+}
+
 var condVariants = []condVariant{
 	// single leaves
 	{"d.Found", func(o condOps) runtime.PipelineCond { return o.d.Found() }},
@@ -82,6 +87,25 @@ var condVariants = []condVariant{
 	{"m.WhereCol&g.Found", func(o condOps) runtime.PipelineCond {
 		sq, gp := scoreAtLeast(0)
 		return o.m.WhereCol(sq, gp).And(o.g.Found())
+	}},
+	// column predicates with bound arguments: on the operation that evaluates the condition, recorded
+	// by an earlier operation, over a slice, and with a string argument next to a '?' inside a literal
+	{"g.WhereCol(arg true)", func(o condOps) runtime.PipelineCond {
+		sq, gp, n := scoreAtLeastArg(30)
+		return o.g.WhereCol(sq, gp, n)
+	}},
+	{"g.WhereCol(arg false)&s.Found", func(o condOps) runtime.PipelineCond {
+		sq, gp, n := scoreAtLeastArg(31)
+		return o.g.WhereCol(sq, gp, n).And(o.s.Found())
+	}},
+	{"d.NotFound&s.WhereCol(arg all)", func(o condOps) runtime.PipelineCond {
+		sq, gp, n := scoreAtLeastArg(10)
+		return o.d.NotFound().And(o.s.WhereCol(sq, gp, n))
+	}},
+	{"g.WhereCol(args)|m.Found", func(o condOps) runtime.PipelineCond {
+		return o.g.WhereCol("name <> '?' AND name = ? AND score < ?", func(it pgq.Item) bool {
+			return it.Name == "n3" && it.Score < 31
+		}, "n3", int64(31)).Or(o.m.Found())
 	}},
 	// three operations, nested
 	{"(d.NotFound&g.Found)&s.Eq2", func(o condOps) runtime.PipelineCond {

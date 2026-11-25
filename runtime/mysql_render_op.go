@@ -260,7 +260,22 @@ func (r *mysqlBatchRender) writeLeaf(c *PipelineCond, i int, op *PipelineOp) err
 		// MySQL cannot aggregate over the rows a statement just returned to the client, so the select runs
 		// a second time, inside the aggregate (same transaction, same arguments).
 		r.b.WriteString("(SELECT COALESCE(COUNT(*)>0 AND MIN(CASE WHEN (")
-		r.b.WriteString(c.SQLPred)
+		if len(c.PredArgs) == 0 {
+			r.b.WriteString(c.SQLPred)
+		} else {
+			// The arguments are inlined by the rules of the operation's own (MySQLFlavor.WriteLiteral).
+			lits, err := r.o.Flavor.normalize(c.PredArgs)
+			if err != nil {
+				return fmt.Errorf("WhereCol: %w", err)
+			}
+			writePred(&r.b, c.SQLPred, func(k int) {
+				if k < len(lits) {
+					r.o.Flavor.WriteLiteral(&r.b, lits[k])
+				} else {
+					r.b.WriteString("NULL")
+				}
+			})
+		}
 		r.b.WriteString(") THEN 1 ELSE 0 END)=1,0) FROM (")
 		in := op.Input
 		in.BranchGates = nil
@@ -320,7 +335,7 @@ func estimateMySQLOpBytes(fl *MySQLFlavor, op *PipelineOp, args []any) int {
 	add := func(c *PipelineCond) {
 		total += 480 + c.estimateBytes(numGates+1)
 		if k := c.countColPred(); k > 0 {
-			total += k * (core + 160 + len(c.sqlPreds()))
+			total += k * (core + 160 + len(c.sqlPreds()) + c.predArgsBound(fl))
 		}
 	}
 	if dec.ProduceCond != nil {
@@ -333,6 +348,28 @@ func estimateMySQLOpBytes(fl *MySQLFlavor, op *PipelineOp, args []any) int {
 		add(dec.LeafRecs[i].Cond)
 	}
 	return total
+}
+
+// predArgsBound bounds the bytes of the literals of every WhereCol argument of c (for the estimate).
+func (c *PipelineCond) predArgsBound(fl *MySQLFlavor) int {
+	if c == nil {
+		return 0
+	}
+	switch c.Kind {
+	case CondColPred:
+		n := 0
+		if lits, err := fl.normalize(c.PredArgs); err == nil {
+			for _, a := range lits {
+				n += fl.literalBound(a)
+			}
+		}
+		return n
+	case CondAnd, CondOr:
+		return c.Left.predArgsBound(fl) + c.Right.predArgsBound(fl)
+	case CondNot:
+		return c.Left.predArgsBound(fl)
+	}
+	return 0
 }
 
 // sqlPreds returns the SQL predicates of every leaf of c, concatenated (for the estimate).

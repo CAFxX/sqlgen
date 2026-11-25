@@ -6,7 +6,6 @@ import (
 	"context"
 	"database/sql"
 	"errors"
-	"fmt"
 
 	"github.com/CAFxX/sqlgen/runtime"
 )
@@ -108,9 +107,9 @@ func (s *LedgerService) Transfer(
 		}))
 
 		sufficientCond := senderFut.Found().And(
-			senderFut.WhereCol(fmt.Sprintf("balance_cents >= %d", amountCents), func(a Account) bool {
+			senderFut.WhereCol("balance_cents >= ?", func(a Account) bool {
 				return a.BalanceCents >= amountCents
-			}),
+			}, amountCents),
 		)
 
 		p.If(

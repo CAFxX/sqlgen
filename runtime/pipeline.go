@@ -32,10 +32,15 @@ const (
 // PipelineCond represents a composable boolean condition over a pipelined operation's result.
 // Constructing PipelineCond values never performs string formatting or heap string builder allocations.
 type PipelineCond struct {
-	Kind       CondKind
-	Op         *PipelineOp
-	Threshold  int64
-	SQLPred    string
+	Kind      CondKind
+	Op        *PipelineOp
+	Threshold int64
+	SQLPred   string
+	// PredArgs are the values bound to the '?' placeholders of SQLPred (a CondColPred leaf), in order:
+	// numbered placeholders after the operation's own on the PostgreSQL-protocol path, '?' under
+	// DialectQuestion, literals on the MySQL path (MySQLFlavor.WriteLiteral). Never part of the SQL text
+	// otherwise.
+	PredArgs   []any
 	EvalGoPred func() bool
 	Left       *PipelineCond
 	Right      *PipelineCond
@@ -131,8 +136,10 @@ type ProducedCond struct {
 
 // PipelineOp represents a single queued operation inside a Pipeline or PipelineTx.
 type PipelineOp struct {
-	opIdx         int    // position in the pipeline's queue (AssertionError.Op)
-	label         string // set by the future's Label (AssertionError.Label)
+	opIdx int    // position in the pipeline's queue (AssertionError.Op)
+	label string // set by the future's Label (AssertionError.Label)
+	// nCondArgs is how many WhereCol arguments renderPipelineBatch appended to Args (see dropCondArgs).
+	nCondArgs     int
 	StmtID        uint32
 	Desc          *QueryDescriptor
 	Input         RenderInput
@@ -319,19 +326,60 @@ func (f *RowFuture[T]) NotFound() PipelineCond {
 	return PipelineCond{Kind: CondRowsEq, Op: f.op, Threshold: 0}
 }
 
-// WhereCol constructs a column-level PipelineCond evaluated both in SQL and Go.
-func (f *RowFuture[T]) WhereCol(sqlPred string, goPred func(T) bool) PipelineCond {
+// WhereCol constructs a column-level PipelineCond: true when the operation returned its row and the row
+// satisfies the predicate. sqlPred is a boolean SQL expression over the statement's output columns, with
+// one '?' placeholder (outside quotes) per value in args, which are bound, never written into the SQL
+// text; goPred is the same predicate in Go, evaluated instead of sqlPred on the sequential path.
+func (f *RowFuture[T]) WhereCol(sqlPred string, goPred func(T) bool, args ...any) PipelineCond {
 	if f == nil {
-		return PipelineCond{Kind: CondColPred, SQLPred: sqlPred}
+		return PipelineCond{Kind: CondColPred, SQLPred: sqlPred, PredArgs: args}
 	}
-	return PipelineCond{
-		Kind:    CondColPred,
-		Op:      f.op,
-		SQLPred: sqlPred,
-		EvalGoPred: func() bool {
-			return f.found && goPred != nil && goPred(f.val)
-		},
+	return colPredCond(f.pl, f.op, sqlPred, args, func() bool {
+		return f.found && goPred != nil && goPred(f.val)
+	})
+}
+
+// colPredCond builds a CondColPred leaf; a placeholder count that does not match args fails the
+// pipeline's build (ErrInvalidArgument from Flush / PipelineTx).
+func colPredCond(pl *Pipeline, op *PipelineOp, sqlPred string, args []any, eval func() bool) PipelineCond {
+	n := 0
+	forPredMarkers(sqlPred, func(int) { n++ })
+	if n != len(args) && pl != nil {
+		pl.SetBuildError(InvalidArgument("WhereCol: the predicate " + strconv.Quote(sqlPred) + " has " +
+			strconv.Itoa(n) + " '?' placeholders but " + strconv.Itoa(len(args)) + " arguments were given"))
 	}
+	return PipelineCond{Kind: CondColPred, Op: op, SQLPred: sqlPred, PredArgs: args, EvalGoPred: eval}
+}
+
+// forPredMarkers calls fn with the byte offset of every '?' placeholder of a WhereCol predicate: every '?'
+// outside '...' string literals and "..." / `...` quoted identifiers (a doubled quote inside one closes
+// and reopens it, which keeps the scan right).
+func forPredMarkers(s string, fn func(i int)) {
+	var q byte
+	for i := 0; i < len(s); i++ {
+		switch c := s[i]; {
+		case q != 0:
+			if c == q {
+				q = 0
+			}
+		case c == '\'' || c == '"' || c == '`':
+			q = c
+		case c == '?':
+			fn(i)
+		}
+	}
+}
+
+// writePred writes the predicate s, calling ph for its k-th placeholder instead of writing the '?'.
+func writePred(b *strings.Builder, s string, ph func(k int)) {
+	last, k := 0, 0
+	forPredMarkers(s, func(i int) {
+		b.WriteString(s[last:i])
+		ph(k)
+		k++
+		last = i + 1
+	})
+	b.WriteString(s[last:])
 }
 
 // Get returns the scanned row after the pipeline has flushed (ErrFutureNotReady before, sql.ErrNoRows
@@ -409,24 +457,20 @@ func (f *SliceFuture[T]) NotFound() PipelineCond {
 	return PipelineCond{Kind: CondRowsEq, Op: f.op, Threshold: 0}
 }
 
-// WhereCol constructs a column-level PipelineCond requiring at least 1 row and all rows to satisfy pred.
-func (f *SliceFuture[T]) WhereCol(sqlPred string, goPred func(T) bool) PipelineCond {
-	return PipelineCond{
-		Kind:    CondColPred,
-		Op:      f.op,
-		SQLPred: sqlPred,
-		EvalGoPred: func() bool {
-			if len(f.vals) == 0 || goPred == nil {
+// WhereCol constructs a column-level PipelineCond requiring at least 1 row and all rows to satisfy the
+// predicate; sqlPred, goPred and args are as for RowFuture.WhereCol.
+func (f *SliceFuture[T]) WhereCol(sqlPred string, goPred func(T) bool, args ...any) PipelineCond {
+	return colPredCond(f.pl, f.op, sqlPred, args, func() bool {
+		if len(f.vals) == 0 || goPred == nil {
+			return false
+		}
+		for i := range f.vals {
+			if !goPred(f.vals[i]) {
 				return false
 			}
-			for i := range f.vals {
-				if !goPred(f.vals[i]) {
-					return false
-				}
-			}
-			return true
-		},
-	}
+		}
+		return true
+	})
 }
 
 // Get returns the scanned slice of rows after the pipeline has flushed (ErrFutureNotReady before).
@@ -646,6 +690,7 @@ func (w *pipelineConnWrapper) ExecContext(ctx context.Context, query string, arg
 				if err := wp.ExecPipeline(ctx, payload.ops); err != nil {
 					if errors.Is(err, ErrWireNotApplicable) {
 						// Nothing was sent: the caller runs the operations sequentially.
+						dropCondArgs(payload.ops)
 						payload.handled = false
 						return driver.RowsAffected(0), nil
 					}
@@ -1341,7 +1386,8 @@ func (p *Pipeline) bindCond(c *PipelineCond, root *PipelineOp) *PipelineCond {
 func (p *Pipeline) recordLeaf(leaf *PipelineCond) int {
 	op := leaf.Op
 	for _, r := range op.Decorators.LeafRecs {
-		if r.Cond.Kind == leaf.Kind && r.Cond.Threshold == leaf.Threshold && r.Cond.SQLPred == leaf.SQLPred {
+		if r.Cond.Kind == leaf.Kind && r.Cond.Threshold == leaf.Threshold && r.Cond.SQLPred == leaf.SQLPred &&
+			len(r.Cond.PredArgs) == 0 && len(leaf.PredArgs) == 0 {
 			return r.CondID
 		}
 	}
@@ -1531,6 +1577,8 @@ func (p *Pipeline) flushWireConn(txOpts *sql.TxOptions, allowPlain bool) (handle
 			wireErr = tp.ExecTxPipeline(p.ctx, txOpts, ops)
 			if !errors.Is(wireErr, ErrWireNotApplicable) {
 				restore()
+			} else {
+				dropCondArgs(ops)
 			}
 			return nil
 		}
@@ -1543,6 +1591,8 @@ func (p *Pipeline) flushWireConn(txOpts *sql.TxOptions, allowPlain bool) (handle
 			wireErr = wp.ExecPipeline(p.ctx, ops)
 			if !errors.Is(wireErr, ErrWireNotApplicable) {
 				restore()
+			} else {
+				dropCondArgs(ops)
 			}
 		}
 		return nil

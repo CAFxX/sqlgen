@@ -814,9 +814,9 @@ err := q.PipelineTx(ctx, nil, func(p *Pipeline) error {
     // 2. Branch on the future's result and columns:
     p.If(
         senderFut.Found().And(
-            senderFut.WhereCol(fmt.Sprintf("balance_cents >= %d", transferAmount), func(a Account) bool {
+            senderFut.WhereCol("balance_cents >= ?", func(a Account) bool {
                 return a.BalanceCents >= transferAmount
-            }),
+            }, transferAmount), // bound, never spliced into the SQL
         ),
         func(thenP *Pipeline) {
             // Nested check: abort and roll back if account is frozen!
@@ -857,11 +857,11 @@ err := q.PipelineTx(ctx, nil, func(p *Pipeline) error {
      - `.AssertFound() *RowFuture[T]`: fails the pipeline with an error matching `runtime.ErrAssertionFailed` if the row count is not 1.
      - `.AssertRows(n int64) *RowFuture[T]`: fails the pipeline with an error matching `runtime.ErrAssertionFailed` if row count $\ne n$.
      - `.Found()`, `.NotFound()`, `.RowsEq(n)`, `.RowsGt(n)`, `.RowsGe(n)`, `.RowsLt(n)`, `.RowsLe(n)`: returns a `PipelineCond`.
-     - `.WhereCol(sqlPred string, goPred func(T) bool) PipelineCond`: evaluates `sqlPred` on the wire in `wire.Pipeliner` mode and `goPred(row)` in Go fallback mode.
+     - `.WhereCol(sqlPred string, goPred func(T) bool, args ...any) PipelineCond`: true when the row was found and satisfies the predicate. `sqlPred` is a boolean SQL expression over the statement's output columns; write one `?` per value in `args` (every `?` outside `'...'`, `"..."` and `` `...` `` counts, in every dialect; a count that does not match `args` fails the pipeline with `runtime.ErrInvalidArgument`). The values are bound, never spliced into the SQL text: placeholders numbered after the statement's own on the PostgreSQL-protocol path (`pgxwire`, where the server infers their type from the comparison), literals written by the same rules as the statement's own arguments on `mysqlwire` (an argument that has no literal form sends the pipeline down the sequential path). On the sequential path `goPred(row)` is evaluated instead, so it must express the same predicate over the same values: `f.WhereCol("balance_cents >= ?", func(a Account) bool { return a.BalanceCents >= amt }, amt)`. Never build `sqlPred` with `fmt.Sprintf` from values: bind them. (PostgreSQL's `jsonb` `?` operators need their function forms, for example `jsonb_exists(col, ?)`.)
      - `.Get() (T, error)` (valid after flush).
    - `*runtime.SliceFuture[T]`: returned by `kind: many` pipeline methods.
      - `.AssertRows(n int64) *SliceFuture[T]`, `.AssertFound() *SliceFuture[T]`
-     - `.Found()`, `.NotFound()`, `.RowsEq(n)`, `.RowsGt(n)`, `.RowsGe(n)`, `.RowsLt(n)`, `.RowsLe(n)`, `.WhereCol(sqlPred, goPred func(T) bool)`
+     - `.Found()`, `.NotFound()`, `.RowsEq(n)`, `.RowsGt(n)`, `.RowsGe(n)`, `.RowsLt(n)`, `.RowsLe(n)`, `.WhereCol(sqlPred, goPred func(T) bool, args ...any)` (true when at least one row was returned and every row satisfies the predicate)
      - `.Get() ([]T, error)` (valid after flush; no rows is an empty slice, not an error).
    - Reading any future's result (`Result`, `RowsAffected`, `Get`) before its pipeline has flushed (`Flush`, or the end of `PipelineTx`) returns `runtime.ErrFutureNotReady`, never a result that could be mistaken for a real one; after the flush a `*RowFuture` whose statement matched no row returns `sql.ErrNoRows`.
 2. **Boolean Combinators & Control Flow**:

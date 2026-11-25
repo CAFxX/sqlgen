@@ -6,7 +6,6 @@ import (
 	"context"
 	"database/sql"
 	"errors"
-	"fmt"
 	"iter"
 
 	"github.com/CAFxX/sqlgen/runtime"
@@ -228,14 +227,14 @@ func (e *ClearingEngine) ExecuteMatchAndClear(ctx context.Context, req MatchRequ
 
 		// Condition 2: Buyer has sufficient collateral AND open sell orders exist with limit_price_cents <= req.PriceCents
 		sufficientMarginCond := buyerFut.Found().And(sellerFut.Found()).And(
-			buyerCollatFut.WhereCol(fmt.Sprintf("collateral_cents >= %d", req.RequiredMarginCents), func(c int64) bool {
+			buyerCollatFut.WhereCol("collateral_cents >= ?", func(c int64) bool {
 				return c >= req.RequiredMarginCents
-			}),
+			}, req.RequiredMarginCents),
 		)
 		bookMatchCond := openSellsFut.Found().And(openSellsFut.RowsGe(1)).And(
-			openSellsFut.WhereCol(fmt.Sprintf("limit_price_cents <= %d", req.PriceCents), func(o OpenOrderRow) bool {
+			openSellsFut.WhereCol("limit_price_cents <= ?", func(o OpenOrderRow) bool {
 				return o.LimitPriceCents <= req.PriceCents
-			}),
+			}, req.PriceCents),
 		)
 		canClearCond := sufficientMarginCond.And(bookMatchCond)
 
