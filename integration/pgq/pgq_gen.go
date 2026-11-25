@@ -2484,34 +2484,6 @@ func computeUpsertItemsReturningKey(p paramsUpsertItemsReturning) (runtime.Varia
 	return vk, colMask, flagMask, approxArgs
 }
 
-// UpsertItemsReturningQuery constructs a composable runtime.Query without executing it (stateless: no Queries or DB needed).
-func UpsertItemsReturningQuery(rows []NewItem, selectCols ...uint64) runtime.Query {
-	p := paramsUpsertItemsReturning{
-		Rows:       rows,
-		SelectCols: runtime.OrCols(selectCols),
-	}
-	_, colMask, flagMask, _ := computeUpsertItemsReturningKey(p)
-	var tupleLensBuf [1]int
-	tupleLensBuf[0] = len(p.Rows)
-	in := runtime.RenderInput{
-		ColMask:   colMask,
-		FlagMask:  flagMask,
-		TupleLens: tupleLensBuf[:],
-	}
-	orderKey := runtime.EncodeOrderKey(in.OrderSpec, in.HasSeek)
-	var shapeLens [1]int
-	copy(shapeLens[0:], in.TupleLens)
-	shapeTag := runtime.ComputeSubqueryShape(stmtIDUpsertItemsReturning, colMask, flagMask, orderKey, false, shapeLens[:]...)
-	return runtime.Query{
-		StmtID:   stmtIDUpsertItemsReturning,
-		Desc:     descUpsertItemsReturning,
-		Input:    in,
-		Params:   p,
-		Expand:   expandUpsertItemsReturningArgs,
-		ShapeTag: shapeTag,
-	}
-}
-
 func scanUpsertItemsReturningRow(scanner interface{ Scan(...any) error }, dst *Written, colMask uint64, p paramsUpsertItemsReturning) error {
 	_ = colMask
 	_ = p
@@ -2813,35 +2785,6 @@ func computeBumpScoresReturningKey(p paramsBumpScoresReturning) (runtime.Variant
 	return vk, colMask, flagMask, approxArgs
 }
 
-// BumpScoresReturningQuery constructs a composable runtime.Query without executing it (stateless: no Queries or DB needed).
-func BumpScoresReturningQuery(delta int64, ids []int64, selectCols ...uint64) runtime.Query {
-	p := paramsBumpScoresReturning{
-		Delta:      delta,
-		IDs:        ids,
-		SelectCols: runtime.OrCols(selectCols),
-	}
-	_, colMask, flagMask, _ := computeBumpScoresReturningKey(p)
-	var sliceLensBuf [1]int
-	sliceLensBuf[0] = len(p.IDs)
-	in := runtime.RenderInput{
-		ColMask:   colMask,
-		FlagMask:  flagMask,
-		SliceLens: sliceLensBuf[:],
-	}
-	orderKey := runtime.EncodeOrderKey(in.OrderSpec, in.HasSeek)
-	var shapeLens [1]int
-	copy(shapeLens[:], in.SliceLens)
-	shapeTag := runtime.ComputeSubqueryShape(stmtIDBumpScoresReturning, colMask, flagMask, orderKey, false, shapeLens[:]...)
-	return runtime.Query{
-		StmtID:   stmtIDBumpScoresReturning,
-		Desc:     descBumpScoresReturning,
-		Input:    in,
-		Params:   p,
-		Expand:   expandBumpScoresReturningArgs,
-		ShapeTag: shapeTag,
-	}
-}
-
 func scanBumpScoresReturningRow(scanner interface{ Scan(...any) error }, dst *Written, colMask uint64, p paramsBumpScoresReturning) error {
 	_ = colMask
 	_ = p
@@ -3076,34 +3019,6 @@ func computeDeleteReturningKey(p paramsDeleteReturning) (runtime.VariantKey, uin
 	approxArgs += len(p.IDs)
 	vk := runtime.MakeVariantKey(stmtIDDeleteReturning, colMask, flagMask, orderKey, d0)
 	return vk, colMask, flagMask, approxArgs
-}
-
-// DeleteReturningQuery constructs a composable runtime.Query without executing it (stateless: no Queries or DB needed).
-func DeleteReturningQuery(ids []int64, selectCols ...uint64) runtime.Query {
-	p := paramsDeleteReturning{
-		IDs:        ids,
-		SelectCols: runtime.OrCols(selectCols),
-	}
-	_, colMask, flagMask, _ := computeDeleteReturningKey(p)
-	var sliceLensBuf [1]int
-	sliceLensBuf[0] = len(p.IDs)
-	in := runtime.RenderInput{
-		ColMask:   colMask,
-		FlagMask:  flagMask,
-		SliceLens: sliceLensBuf[:],
-	}
-	orderKey := runtime.EncodeOrderKey(in.OrderSpec, in.HasSeek)
-	var shapeLens [1]int
-	copy(shapeLens[:], in.SliceLens)
-	shapeTag := runtime.ComputeSubqueryShape(stmtIDDeleteReturning, colMask, flagMask, orderKey, false, shapeLens[:]...)
-	return runtime.Query{
-		StmtID:   stmtIDDeleteReturning,
-		Desc:     descDeleteReturning,
-		Input:    in,
-		Params:   p,
-		Expand:   expandDeleteReturningArgs,
-		ShapeTag: shapeTag,
-	}
 }
 
 func scanDeleteReturningRow(scanner interface{ Scan(...any) error }, dst *Written, colMask uint64, p paramsDeleteReturning) error {
@@ -3684,33 +3599,6 @@ func computeInsertedIDsKey(p paramsInsertedIDs) (runtime.VariantKey, uint64, uin
 	approxArgs += len(p.Rows) * 5
 	vk := runtime.MakeVariantKey(stmtIDInsertedIDs, colMask, flagMask, orderKey, d0)
 	return vk, colMask, flagMask, approxArgs
-}
-
-// InsertedIDsQuery constructs a composable runtime.Query without executing it (stateless: no Queries or DB needed).
-func InsertedIDsQuery(rows []NewItem) runtime.Query {
-	p := paramsInsertedIDs{
-		Rows: rows,
-	}
-	_, colMask, flagMask, _ := computeInsertedIDsKey(p)
-	var tupleLensBuf [1]int
-	tupleLensBuf[0] = len(p.Rows)
-	in := runtime.RenderInput{
-		ColMask:   colMask,
-		FlagMask:  flagMask,
-		TupleLens: tupleLensBuf[:],
-	}
-	orderKey := runtime.EncodeOrderKey(in.OrderSpec, in.HasSeek)
-	var shapeLens [1]int
-	copy(shapeLens[0:], in.TupleLens)
-	shapeTag := runtime.ComputeSubqueryShape(stmtIDInsertedIDs, colMask, flagMask, orderKey, false, shapeLens[:]...)
-	return runtime.Query{
-		StmtID:   stmtIDInsertedIDs,
-		Desc:     descInsertedIDs,
-		Input:    in,
-		Params:   p,
-		Expand:   expandInsertedIDsArgs,
-		ShapeTag: shapeTag,
-	}
 }
 
 func scanInsertedIDsRow(scanner interface{ Scan(...any) error }, dst *int64, colMask uint64, p paramsInsertedIDs) error {

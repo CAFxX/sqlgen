@@ -17,7 +17,7 @@ Everything below is the whole surface; each item has one spelling and the sectio
 - **Generated per statement kind** (`q` is a `*Queries`, `p` a `*Pipeline`):
   - `exec`: `q.Name(ctx, ...) (sql.Result, error)`; with a tuple slice also `q.NameStream(ctx, seq, ...)`. A one-collection statement is chunked by the base method.
   - `one`: `q.Name(ctx, ...) (Row, error)`. `many`: `q.Name(ctx, ...) ([]Row, error)` and `q.NameSeq(ctx, ...) iter.Seq2[Row, error]`; with a tuple slice also `NameStream` / `NameStreamSeq`.
-  - every kind except `exec`: package-level `NameQuery(...) runtime.Query` (compose into `:sub:sqlgen.Query` slots); every non-`subquery` kind: `p.Name(...)` returning a future (`ExecFuture`, `RowFuture[T]`, `SliceFuture[T]`).
+  - `subquery` statements and `one` / `many` statements that are a `SELECT` (also `WITH ... SELECT`): package-level `NameQuery(...) runtime.Query` (compose into `:sub:sqlgen.Query` slots; a data-modifying `INSERT`/`UPDATE`/`DELETE ... RETURNING` gets none, engines reject it inside `IN (...)`); every non-`subquery` kind: `p.Name(...)` returning a future (`ExecFuture`, `RowFuture[T]`, `SliceFuture[T]`).
   - types and helpers: `Row` struct, `NameParams` (struct style), `NameCol<X>` / `NameColsAll` projection masks (trailing `selectCols ...uint64`, or a `SelectCols` field; only for statements that have the projection, i.e. two or more unconditional output columns), and per statement with `sqlgen.Order`: `NameOrderBy<Col>.Asc()/.Desc()`, `OrderName(...)`, `SeekName(row)`.
   - on every `*Queries`: `WithTx(tx)`, `InTx(ctx, opts, fn, ...runtime.TxOption)`, `Pipeline(ctx)`, `PipelineTx(ctx, opts, fn, ...)`, `WithPrepared(bool)`, `CacheStats()`, `Close()`; package-level `New(db, ...runtime.CacheOption)`.
 - **Runtime user API** (import `github.com/CAFxX/sqlgen/runtime`; the generated file declares no aliases):
@@ -404,7 +404,7 @@ if len(page1) > 0 {
 
 ### 2.7. Runtime Query Composition (`sqlgen.Query` Currying)
 
-Every `one`, `many`, or `subquery` statement `<Name>` generates a currying constructor `<Name>Query(...) runtime.Query`, a package-level function (there is no `*Queries` method form: it is stateless, composition happens before any DB handle exists, and a method would only ignore its receiver). You can compose curried queries into parent queries using `:sub:sqlgen.Query` slots inside `WITH` CTEs, `FROM (...)`, or `WHERE col IN (:sub:sqlgen.Query)`:
+Every `subquery` statement, and every `one` or `many` statement that is a `SELECT` (including `WITH ... SELECT`), `<Name>` generates a currying constructor `<Name>Query(...) runtime.Query`, a package-level function (there is no `*Queries` method form: it is stateless, composition happens before any DB handle exists, and a method would only ignore its receiver). You can compose curried queries into parent queries using `:sub:sqlgen.Query` slots inside `WITH` CTEs, `FROM (...)`, or `WHERE col IN (:sub:sqlgen.Query)`:
 
 ```yaml
 statements:

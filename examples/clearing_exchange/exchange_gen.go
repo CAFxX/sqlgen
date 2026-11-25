@@ -1163,35 +1163,6 @@ func computeIngestOrdersKey(p paramsIngestOrders) (runtime.VariantKey, uint64, u
 	return vk, colMask, flagMask, approxArgs
 }
 
-// IngestOrdersQuery constructs a composable runtime.Query without executing it (stateless: no Queries or DB needed).
-func IngestOrdersQuery(rows []OrderSubmission, epochSeq int64, selectCols ...uint64) runtime.Query {
-	p := paramsIngestOrders{
-		Rows:       rows,
-		EpochSeq:   epochSeq,
-		SelectCols: runtime.OrCols(selectCols),
-	}
-	_, colMask, flagMask, _ := computeIngestOrdersKey(p)
-	var tupleLensBuf [1]int
-	tupleLensBuf[0] = len(p.Rows)
-	in := runtime.RenderInput{
-		ColMask:   colMask,
-		FlagMask:  flagMask,
-		TupleLens: tupleLensBuf[:],
-	}
-	orderKey := runtime.EncodeOrderKey(in.OrderSpec, in.HasSeek)
-	var shapeLens [1]int
-	copy(shapeLens[0:], in.TupleLens)
-	shapeTag := runtime.ComputeSubqueryShape(stmtIDIngestOrders, colMask, flagMask, orderKey, false, shapeLens[:]...)
-	return runtime.Query{
-		StmtID:   stmtIDIngestOrders,
-		Desc:     descIngestOrders,
-		Input:    in,
-		Params:   p,
-		Expand:   expandIngestOrdersArgs,
-		ShapeTag: shapeTag,
-	}
-}
-
 func scanIngestOrdersRow(scanner interface{ Scan(...any) error }, dst *OrderAck, colMask uint64, p paramsIngestOrders) error {
 	_ = colMask
 	_ = p
@@ -1522,36 +1493,6 @@ func computeCancelOrdersByIDsKey(p paramsCancelOrdersByIDs) (runtime.VariantKey,
 	approxArgs += len(p.OrderIDs)
 	vk := runtime.MakeVariantKey(stmtIDCancelOrdersByIDs, colMask, flagMask, orderKey, d0)
 	return vk, colMask, flagMask, approxArgs
-}
-
-// CancelOrdersByIDsQuery constructs a composable runtime.Query without executing it (stateless: no Queries or DB needed).
-func CancelOrdersByIDsQuery(cancelSeq int64, firmID int64, orderIDs []int64, selectCols ...uint64) runtime.Query {
-	p := paramsCancelOrdersByIDs{
-		CancelSeq:  cancelSeq,
-		FirmID:     firmID,
-		OrderIDs:   orderIDs,
-		SelectCols: runtime.OrCols(selectCols),
-	}
-	_, colMask, flagMask, _ := computeCancelOrdersByIDsKey(p)
-	var sliceLensBuf [1]int
-	sliceLensBuf[0] = len(p.OrderIDs)
-	in := runtime.RenderInput{
-		ColMask:   colMask,
-		FlagMask:  flagMask,
-		SliceLens: sliceLensBuf[:],
-	}
-	orderKey := runtime.EncodeOrderKey(in.OrderSpec, in.HasSeek)
-	var shapeLens [1]int
-	copy(shapeLens[:], in.SliceLens)
-	shapeTag := runtime.ComputeSubqueryShape(stmtIDCancelOrdersByIDs, colMask, flagMask, orderKey, false, shapeLens[:]...)
-	return runtime.Query{
-		StmtID:   stmtIDCancelOrdersByIDs,
-		Desc:     descCancelOrdersByIDs,
-		Input:    in,
-		Params:   p,
-		Expand:   expandCancelOrdersByIDsArgs,
-		ShapeTag: shapeTag,
-	}
 }
 
 func scanCancelOrdersByIDsRow(scanner interface{ Scan(...any) error }, dst *OrderAck, colMask uint64, p paramsCancelOrdersByIDs) error {

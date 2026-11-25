@@ -2308,3 +2308,24 @@ func TestSelectColsConstantsOnlyWithProjection(t *testing.T) {
 		}
 	}
 }
+
+// A <Name>Query constructor exists only for statements a composition slot can embed: a SELECT (also
+// WITH ... SELECT) or a kind: subquery. PostgreSQL rejects INSERT/UPDATE/DELETE ... RETURNING inside
+// IN (...) ("syntax error at or near INTO"), so a data-modifying statement gets none.
+func TestQueryConstructorOnlyForSelect(t *testing.T) {
+	src, err := genYAML("postgres", ""+
+		"  - name: Sel\n    kind: many\n    sql: SELECT id:int64 FROM t WHERE x = :x:int64\n"+
+		"  - name: WithSel\n    kind: one\n    sql: WITH c AS (SELECT 1 AS id) SELECT id:int64 FROM c\n"+
+		"  - name: Sub\n    kind: subquery\n    sql: SELECT id FROM t\n"+
+		"  - name: Ins\n    kind: one\n    sql: INSERT INTO t (x) VALUES (:x:int64) RETURNING id:int64\n"+
+		"  - name: Upd\n    kind: many\n    sql: UPDATE t SET x = :x:int64 RETURNING id:int64\n"+
+		"  - name: Del\n    kind: many\n    sql: DELETE FROM t WHERE x = :x:int64 RETURNING id:int64\n")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for name, want := range map[string]bool{"Sel": true, "WithSel": true, "Sub": true, "Ins": false, "Upd": false, "Del": false} {
+		if got := bytes.Contains(src, []byte("func "+name+"Query(")); got != want {
+			t.Errorf("%sQuery generated = %v, want %v", name, got, want)
+		}
+	}
+}

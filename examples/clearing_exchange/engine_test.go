@@ -905,8 +905,6 @@ func exerciseRemainingExchangeVariants(t *testing.T, ctx context.Context, mode s
 	for _, cq := range []runtime.Query{
 		GetMarginAccountQuery(1, 1),
 		GetAccountCollateralCentsQuery(1, 1),
-		IngestOrdersQuery(smallOrders[:1], 920),
-		CancelOrdersByIDsQuery(920, 1, []int64{1}),
 		ListOpenOrdersForSymbolQuery("SOL-PERP", "buy", 5),
 		QueryRiskPositionsPageQuery(riskParams),
 		TotalExchangeEquityCentsQuery(),

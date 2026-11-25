@@ -1927,34 +1927,6 @@ func computeInsertUsersBatchReturningKey(p paramsInsertUsersBatchReturning) (run
 	return vk, colMask, flagMask, approxArgs
 }
 
-// InsertUsersBatchReturningQuery constructs a composable runtime.Query without executing it (stateless: no Queries or DB needed).
-func InsertUsersBatchReturningQuery(rows []BatchUserInput, selectCols ...uint64) runtime.Query {
-	p := paramsInsertUsersBatchReturning{
-		Rows:       rows,
-		SelectCols: runtime.OrCols(selectCols),
-	}
-	_, colMask, flagMask, _ := computeInsertUsersBatchReturningKey(p)
-	var tupleLensBuf [1]int
-	tupleLensBuf[0] = len(p.Rows)
-	in := runtime.RenderInput{
-		ColMask:   colMask,
-		FlagMask:  flagMask,
-		TupleLens: tupleLensBuf[:],
-	}
-	orderKey := runtime.EncodeOrderKey(in.OrderSpec, in.HasSeek)
-	var shapeLens [1]int
-	copy(shapeLens[0:], in.TupleLens)
-	shapeTag := runtime.ComputeSubqueryShape(stmtIDInsertUsersBatchReturning, colMask, flagMask, orderKey, false, shapeLens[:]...)
-	return runtime.Query{
-		StmtID:   stmtIDInsertUsersBatchReturning,
-		Desc:     descInsertUsersBatchReturning,
-		Input:    in,
-		Params:   p,
-		Expand:   expandInsertUsersBatchReturningArgs,
-		ShapeTag: shapeTag,
-	}
-}
-
 func scanInsertUsersBatchReturningRow(scanner interface{ Scan(...any) error }, dst *InsertUsersBatchReturningRow, colMask uint64, p paramsInsertUsersBatchReturning) error {
 	_ = colMask
 	_ = p

@@ -4820,34 +4820,6 @@ func computeFzInsertRetKey(p paramsFzInsertRet) (runtime.VariantKey, uint64, uin
 	return vk, colMask, flagMask, approxArgs
 }
 
-// FzInsertRetQuery constructs a composable runtime.Query without executing it (stateless: no Queries or DB needed).
-func FzInsertRetQuery(rows []FzNew, selectCols ...uint64) runtime.Query {
-	p := paramsFzInsertRet{
-		Rows:       rows,
-		SelectCols: runtime.OrCols(selectCols),
-	}
-	_, colMask, flagMask, _ := computeFzInsertRetKey(p)
-	var tupleLensBuf [1]int
-	tupleLensBuf[0] = len(p.Rows)
-	in := runtime.RenderInput{
-		ColMask:   colMask,
-		FlagMask:  flagMask,
-		TupleLens: tupleLensBuf[:],
-	}
-	orderKey := runtime.EncodeOrderKey(in.OrderSpec, in.HasSeek)
-	var shapeLens [1]int
-	copy(shapeLens[0:], in.TupleLens)
-	shapeTag := runtime.ComputeSubqueryShape(stmtIDFzInsertRet, colMask, flagMask, orderKey, false, shapeLens[:]...)
-	return runtime.Query{
-		StmtID:   stmtIDFzInsertRet,
-		Desc:     descFzInsertRet,
-		Input:    in,
-		Params:   p,
-		Expand:   expandFzInsertRetArgs,
-		ShapeTag: shapeTag,
-	}
-}
-
 func scanFzInsertRetRow(scanner interface{ Scan(...any) error }, dst *FzOut, colMask uint64, p paramsFzInsertRet) error {
 	_ = colMask
 	_ = p
@@ -5166,30 +5138,6 @@ func computeFzDeleteRetKey(p FzDeleteRetParams) (runtime.VariantKey, uint64, uin
 	approxArgs += len(p.IDs)
 	vk := runtime.MakeVariantKey(stmtIDFzDeleteRet, colMask, flagMask, orderKey, d0)
 	return vk, colMask, flagMask, approxArgs
-}
-
-// FzDeleteRetQuery constructs a composable runtime.Query without executing it (stateless: no Queries or DB needed).
-func FzDeleteRetQuery(p FzDeleteRetParams) runtime.Query {
-	_, colMask, flagMask, _ := computeFzDeleteRetKey(p)
-	var sliceLensBuf [1]int
-	sliceLensBuf[0] = len(p.IDs)
-	in := runtime.RenderInput{
-		ColMask:   colMask,
-		FlagMask:  flagMask,
-		SliceLens: sliceLensBuf[:],
-	}
-	orderKey := runtime.EncodeOrderKey(in.OrderSpec, in.HasSeek)
-	var shapeLens [1]int
-	copy(shapeLens[:], in.SliceLens)
-	shapeTag := runtime.ComputeSubqueryShape(stmtIDFzDeleteRet, colMask, flagMask, orderKey, false, shapeLens[:]...)
-	return runtime.Query{
-		StmtID:   stmtIDFzDeleteRet,
-		Desc:     descFzDeleteRet,
-		Input:    in,
-		Params:   p,
-		Expand:   expandFzDeleteRetArgs,
-		ShapeTag: shapeTag,
-	}
 }
 
 func scanFzDeleteRetRow(scanner interface{ Scan(...any) error }, dst *FzOut, colMask uint64, p FzDeleteRetParams) error {

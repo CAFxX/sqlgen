@@ -3483,8 +3483,10 @@ func emitStatementCode(
 		fmt.Fprintf(b, "%s}\n", indent)
 	}
 
-	// 1. Currying Constructor (<Name>Query) for all kinds except exec
-	if cs.Kind != KindExec {
+	// 1. Currying Constructor (<Name>Query): only for a SELECT (incl. WITH ... SELECT) statement or a kind:
+	// subquery, the only shapes a composition slot (IN (...), a CTE body, a derived table) can embed; a
+	// data-modifying statement (INSERT/UPDATE/DELETE ... RETURNING) is rejected there by the engines.
+	if cs.Kind == KindSubquery || (cs.Kind != KindExec && cs.StmtVerb == runtime.VerbSelect) {
 		fmt.Fprintf(b, "// %sQuery constructs a composable runtime.Query without executing it (stateless: no Queries or DB needed).\n", cs.Name)
 		fmt.Fprintf(b, "func %sQuery(%s) runtime.Query {\n", cs.Name, sigStr)
 		emitArgsInit(b, cs, "\t", paramsStructName)
