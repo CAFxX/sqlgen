@@ -379,6 +379,9 @@ var (
 	ErrFutureNotReady     = errors.New("sqlgen: pipeline future read before the pipeline was flushed")
 	// After a failed flush (Pipeline.failErr, set by run), a future reports its operation's own error or
 	// else the flush error, never a result: futureErr.
+	ErrPipelineRan        = errors.New("sqlgen: operation queued on a pipeline that already ran")
+	// An operation queued after the pipeline ran (appendOp sees flushed) carries a *PipelineRanError that
+	// its future returns; the first one is also returned by every later Flush (lateErr).
 )
 
 // AssertionError is what a failed AssertRows / AssertFound returns. It matches

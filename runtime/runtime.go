@@ -87,6 +87,10 @@ var (
 	// pipeline that queued it has been flushed (Flush, or the end of PipelineTx). It is distinct from
 	// sql.ErrNoRows, which a flushed RowFuture returns for a statement that matched no row.
 	ErrFutureNotReady = errors.New("sqlgen: pipeline future read before the pipeline was flushed")
+	// ErrPipelineRan is matched (errors.Is) by the error of an operation queued on a pipeline that already
+	// ran: after its Flush, or after the PipelineTx callback that received it returned. The operation is
+	// not executed; its future and every later Flush of the pipeline report a *PipelineRanError.
+	ErrPipelineRan = errors.New("sqlgen: operation queued on a pipeline that already ran")
 	// ErrBranchNotTaken is returned when reading a future from an untaken If/Else branch.
 	ErrBranchNotTaken = errors.New("sqlgen: pipeline if/else branch was not taken")
 	// ErrInvalidSeek is returned when a Seek cursor has an invalid column count.
@@ -575,6 +579,20 @@ func (e *AssertionError) Error() string {
 
 // Unwrap makes errors.Is(err, ErrAssertionFailed) true.
 func (e *AssertionError) Unwrap() error { return ErrAssertionFailed }
+
+// PipelineRanError is the error of an operation queued on a pipeline that already ran (ErrPipelineRan).
+type PipelineRanError struct {
+	Statement string // the statement's name ("" for Abort)
+	Op        int    // the operation's position in the pipeline's queue
+}
+
+func (e *PipelineRanError) Error() string {
+	return ErrPipelineRan.Error() + ": statement " + strconv.Quote(e.Statement) + " (operation " + strconv.Itoa(e.Op) +
+		") was queued after Flush or after the PipelineTx callback returned, and was not executed; queue every operation before the pipeline runs"
+}
+
+// Unwrap makes errors.Is(err, ErrPipelineRan) true.
+func (e *PipelineRanError) Unwrap() error { return ErrPipelineRan }
 
 // InvalidArgument returns an error matching ErrInvalidArgument with the given explanation.
 func InvalidArgument(msg string) error {

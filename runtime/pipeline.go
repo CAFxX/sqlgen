@@ -181,6 +181,9 @@ type PipelineOp struct {
 	// cannot carry a marker in an error message, its guard is a constant integer overflow, and
 	// TranslateWireError recognises that overflow instead of a marker.
 	overflowGuard bool
+	// queueErr is set on an operation queued after its pipeline ran (ErrPipelineRan): it never runs and
+	// its future reports this error.
+	queueErr error
 }
 
 // ExecFuture represents the pending result of an exec statement queued in a Pipeline.
@@ -244,10 +247,14 @@ func (f *ExecFuture) NotFound() PipelineCond {
 // flushed and, when the flush failed, the operation's own error or else the pipeline's. A failed pipeline
 // committed nothing, and the single-round-trip paths do not deliver the results of a failed batch, so no
 // future of it reports a result (the same on every path).
-func futureErr(pl *Pipeline, own error) error {
+//
+// An operation queued after its pipeline ran reports its own *PipelineRanError (ErrPipelineRan) instead.
+func futureErr(pl *Pipeline, op *PipelineOp, own error) error {
 	switch {
 	case pl == nil:
 		return nil
+	case op != nil && op.queueErr != nil:
+		return op.queueErr
 	case !pl.flushed:
 		return ErrFutureNotReady
 	case pl.failErr != nil && own != nil:
@@ -258,7 +265,7 @@ func futureErr(pl *Pipeline, own error) error {
 
 // Result returns the sql.Result of the operation after the pipeline has flushed (ErrFutureNotReady before).
 func (f *ExecFuture) Result() (sql.Result, error) {
-	if err := futureErr(f.pl, f.err); err != nil {
+	if err := futureErr(f.pl, f.op, f.err); err != nil {
 		return nil, err
 	}
 	if f.skipped {
@@ -282,7 +289,7 @@ var ErrLastInsertIDNotAvailable = errors.New("sqlgen: LastInsertId is not availa
 // RowsAffected returns the number of rows affected by the operation after the pipeline has flushed
 // (ErrFutureNotReady before).
 func (f *ExecFuture) RowsAffected() (int64, error) {
-	if err := futureErr(f.pl, f.err); err != nil {
+	if err := futureErr(f.pl, f.op, f.err); err != nil {
 		return 0, err
 	}
 	if f.skipped {
@@ -448,7 +455,7 @@ func writePred(b *strings.Builder, s string, ph func(k int)) {
 // when the flushed statement matched no row).
 func (f *RowFuture[T]) Get() (T, error) {
 	var zero T
-	if err := futureErr(f.pl, f.err); err != nil {
+	if err := futureErr(f.pl, f.op, f.err); err != nil {
 		return zero, err
 	}
 	if f.skipped {
@@ -531,7 +538,7 @@ func (f *SliceFuture[T]) WhereCol(sqlPred string, args ...any) PipelineCond {
 
 // Get returns the scanned slice of rows after the pipeline has flushed (ErrFutureNotReady before).
 func (f *SliceFuture[T]) Get() ([]T, error) {
-	if err := futureErr(f.pl, f.err); err != nil {
+	if err := futureErr(f.pl, f.op, f.err); err != nil {
 		return nil, err
 	}
 	if f.skipped {
@@ -990,6 +997,7 @@ type Pipeline struct {
 	noOps       int // number of NoOp operations queued
 	flushed     bool
 	failErr     error // the error of a failed flush (futureErr)
+	lateErr     error // the first operation queued after the pipeline ran (noteLate)
 	ownsTx      bool  // PipelineTx: the runtime begins, commits and (on error) rolls back the transaction
 	txOpts      *sql.TxOptions
 	// noWire is set once a wire pipeliner answered ErrWireNotApplicable: the pipeline then runs entirely on
@@ -1011,6 +1019,22 @@ func NewPipeline(ctx context.Context, db *sql.DB, cache *StmtCache, txCache *TxS
 	}
 }
 
+// noteLate records the first misuse of a pipeline that already ran (an operation or If queued after Flush
+// or after the PipelineTx callback returned): every later Flush returns it.
+func (p *Pipeline) noteLate(err error) {
+	if p.lateErr == nil {
+		p.lateErr = err
+	}
+}
+
+// finish marks a pipeline whose PipelineTx callback failed as done with err: its futures report err and
+// anything queued on it afterwards fails with ErrPipelineRan.
+func (p *Pipeline) finish(err error) {
+	p.flushed = true
+	p.failErr = err
+	p.releaseArgBufs()
+}
+
 // SetBuildError records an argument validation error discovered while queuing an operation.
 func (p *Pipeline) SetBuildError(err error) {
 	if p.buildErr == nil && err != nil {
@@ -1029,6 +1053,10 @@ func (p *Pipeline) cloneGates() []BranchGate {
 
 func (p *Pipeline) appendOp(op PipelineOp) *PipelineOp {
 	op.opIdx = len(p.opPtrs)
+	if p.flushed {
+		op.queueErr = &PipelineRanError{Statement: op.stmtName(), Op: op.opIdx}
+		p.noteLate(op.queueErr)
+	}
 	opPtr := new(PipelineOp)
 	*opPtr = op
 	p.opPtrs = append(p.opPtrs, opPtr)
@@ -1513,6 +1541,9 @@ func (p *Pipeline) Abort(err error) {
 
 // If queues conditional thenFn and optional elseFn branches gated on cond.
 func (p *Pipeline) If(cond PipelineCond, thenFn func(), elseFn func()) *IfResult {
+	if p.flushed {
+		p.noteLate(&PipelineRanError{Statement: "If", Op: len(p.opPtrs)})
+	}
 	p.condSeq++
 	condID := p.condSeq
 	if rootOp := cond.Op; rootOp != nil {
@@ -1705,7 +1736,11 @@ func (p *Pipeline) Flush() error {
 
 func (p *Pipeline) run() (err error) {
 	if p.flushed {
-		return nil
+		// Flush is idempotent: it reports the outcome of the run, unless something was queued after it.
+		if p.lateErr != nil {
+			return p.lateErr
+		}
+		return p.failErr
 	}
 	defer func() { p.failErr = err }()
 	p.flushed = true
@@ -2065,6 +2100,7 @@ func RunPipelineTx(
 	if existingTxCache != nil {
 		p := NewPipeline(ctx, db, cache, existingTxCache, usePrepared, dialect)
 		if err := build(p); err != nil {
+			p.finish(err)
 			return err
 		}
 		return p.Flush()
@@ -2074,7 +2110,7 @@ func RunPipelineTx(
 		p.ownsTx = true
 		p.txOpts = txOpts
 		if err := build(p); err != nil {
-			p.releaseArgBufs()
+			p.finish(err)
 			return false, err
 		}
 		err := p.run()
