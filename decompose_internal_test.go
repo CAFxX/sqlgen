@@ -29,6 +29,8 @@ func TestDecomposabilityClassification(t *testing.T) {
 		{KindMany, `SELECT id:int64 FROM t WHERE name::text IN (:names:[]string)`, true},
 		{KindMany, `SELECT id:int64 FROM t WHERE id IN (:ids:[]int64) -- ORDER BY id`, true}, // comment
 		{KindMany, `SELECT id:int64 FROM t WHERE note = 'GROUP BY' AND id IN (:ids:[]int64)`, true},
+		{KindMany, `SELECT id:int64 FROM t WHERE a IS DISTINCT FROM b AND id IN (:ids:[]int64)`, true},
+		{KindMany, `SELECT id:int64 FROM t WHERE a IS NOT DISTINCT FROM :b:int64 AND id IN (:ids:[]int64)`, true},
 		{KindExec, `DELETE FROM t WHERE id IN (:ids:[]int64)`, true},
 		{KindMany, `DELETE FROM t WHERE id IN (:ids:[]int64) RETURNING id:int64`, true},
 		{KindExec, `UPDATE t SET n = n + 1 WHERE id IN (:ids:[]int64)`, true},

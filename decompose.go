@@ -254,6 +254,9 @@ func decomposable(cs *compiledStmt) (bool, string) {
 			if t.kind != dtWord {
 				continue
 			}
+			if t.text == "distinct" && isDistinctFromPredicate(toks, lvl, k) {
+				continue // a IS [NOT] DISTINCT FROM b: a row-wise comparison
+			}
 			if nonDecomposableWords[t.text] {
 				w := strings.ToUpper(t.text)
 				if w == "GROUP" || w == "ORDER" {
@@ -370,6 +373,9 @@ func decomposable(cs *compiledStmt) (bool, string) {
 			// The first clause keyword before the conjunct must be WHERE.
 			for k := start - 1; k >= 0; k-- {
 				if t := toks[lvl[k]]; t.kind == dtWord && clauseWords[t.text] {
+					if t.text == "from" && k > 0 && toks[lvl[k-1]].text == "distinct" {
+						continue // IS [NOT] DISTINCT FROM
+					}
 					if t.text != "where" {
 						return false, "the collection is not in the WHERE clause"
 					}
@@ -381,4 +387,18 @@ func decomposable(cs *compiledStmt) (bool, string) {
 		from, to = o, match[o]
 	}
 	return true, ""
+}
+
+// isDistinctFromPredicate reports whether the DISTINCT at lvl[k] is part of `IS [NOT] DISTINCT FROM`.
+func isDistinctFromPredicate(toks []dtok, lvl []int, k int) bool {
+	word := func(j int) string {
+		if j < 0 || j >= len(lvl) || toks[lvl[j]].kind != dtWord {
+			return ""
+		}
+		return toks[lvl[j]].text
+	}
+	if word(k+1) != "from" {
+		return false
+	}
+	return word(k-1) == "is" || word(k-1) == "not" && word(k-2) == "is"
 }
