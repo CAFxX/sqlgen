@@ -291,6 +291,9 @@ func myErrKind(err error) string {
 			return fmt.Sprintf("ErrAssertionFailed(%s op=%d label=%q want=%d got=%d known=%v)", ae.Statement, ae.Op, ae.Label, ae.Want, ae.Got, ae.GotKnown)
 		}
 		return "ErrAssertionFailed"
+	case errors.Is(err, runtime.ErrArgUnresolved):
+		k, _ := argErrKind(err)
+		return k
 	case errors.Is(err, myErrStop):
 		return "myErrStop"
 	case errors.As(err, &myErr):

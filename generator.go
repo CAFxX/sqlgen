@@ -587,7 +587,7 @@ var reservedParamNames = func() map[string]bool {
 		offset orderKey orderSpec out p r res row rs scanBuf scanCount scanDest scanSlice shapeLens shapeTag
 		sliceLensBuf sortedIdx sqlRow sqlRows sub subsBuf tFn targetQ tc totalRows tupleLensBuf txCache txQ v vk
 		yield zero
-		ctx q pl fn seq
+		ctx q pl fn seq fut pa
 		sql runtime context iter slices sync atomic time json big netip url driver errors strconv
 		append cap clear close complete copy delete imag len make max min new panic print println real recover
 		any bool byte comparable complex128 complex64 error float32 float64 int int16 int32 int64 int8 rune string
@@ -604,7 +604,7 @@ var reservedParamNames = func() map[string]bool {
 var (
 	reservedTypeNames      = setOf("New", "Pipeline", "Queries")
 	reservedStatementNames = setOf("CacheStats", "Close", "If", "InTx", "Pipeline", "PipelineTx",
-		"WithPrepared", "WithTx", "SetBuildError", "QueueExec", "QueueExecNoop", "Abort", "Flush")
+		"WithPrepared", "WithTx", "SetBuildError", "QueueExec", "QueueExecNoop", "Abort", "Flush", "BindForwarded")
 )
 
 func setOf(names ...string) map[string]bool {
@@ -661,6 +661,9 @@ type paramDef struct {
 	HasSort    bool
 	Desc       bool
 	InOptBlock bool
+	// IsArg: declared :name:Arg[T] (GoType is T). The statement's Pipeline method takes a runtime.Arg[T]
+	// for it, a plain value or one forwarded from an earlier pipeline operation; every other method T.
+	IsArg bool
 }
 
 type colDef struct {
@@ -734,6 +737,10 @@ type compiledStmt struct {
 	// PGCasts is set for INSERT statements under the dollar dialect: their value placeholders get a
 	// type cast in the descriptor so that branch-gated INSERTs (rewritten to INSERT ... SELECT) type-check.
 	PGCasts bool
+	// HasArgs: some parameter is declared :name:Arg[T] (see paramDef.IsArg).
+	HasArgs bool
+	// Dollar: the statement is generated for the $N dialect (an Arg slot then carries its cast).
+	Dollar bool
 
 	Root           parsedBlock
 	SelectColExprs []string
@@ -1310,6 +1317,9 @@ func parseTupleBody(structName, body string) (*tupleStructDef, error) {
 				if !ok || strings.HasPrefix(body[nextPos:], "...") {
 					return nil, fmt.Errorf("invalid tuple field type annotation for %q in %s", ident, structName)
 				}
+				if nextPos < len(body) && body[nextPos] == '[' {
+					return nil, fmt.Errorf("tuple %s field %q: %s[...] is not a tuple field type (Arg[T] is only for a scalar parameter :name:Arg[T])", structName, ident, goType)
+				}
 				if err := validateGoType(goType); err != nil {
 					return nil, fmt.Errorf("tuple %s field %q: %w", structName, ident, err)
 				}
@@ -1409,12 +1419,15 @@ func stmtScopedParamName(stmt, rawName string) string {
 	return n
 }
 
-func (p *stmtParser) addOrGetParam(rawName string, kind paramKind, goType, elemGoType string, tuple *tupleStructDef, hasSort, desc bool) (int, error) {
+func (p *stmtParser) addOrGetParam(rawName string, kind paramKind, goType, elemGoType string, tuple *tupleStructDef, hasSort, desc, isArg bool) (int, error) {
 	canonKey := strings.ToLower(toGoParamName(rawName))
 	if idx, exists := p.paramsByCanon[canonKey]; exists {
 		existing := &p.cs.Params[idx]
 		if existing.Kind != kind || existing.GoType != goType {
 			return -1, fmt.Errorf("statement %s: parameter %q redeclared with conflicting types (%s vs %s)", p.spec.Name, rawName, existing.GoType, goType)
+		}
+		if existing.IsArg != isArg {
+			return -1, fmt.Errorf("statement %s: parameter %q is declared both as Arg[%s] and as a plain %s; declare it :%s:Arg[%s] at every occurrence", p.spec.Name, rawName, goType, goType, rawName, goType)
 		}
 		if existing.HasSort && hasSort && existing.Desc != desc {
 			return -1, fmt.Errorf("statement %s: parameter %q redeclared with conflicting sort directions", p.spec.Name, rawName)
@@ -1450,9 +1463,64 @@ func (p *stmtParser) addOrGetParam(rawName string, kind paramKind, goType, elemG
 		HasSort:    hasSort,
 		Desc:       desc,
 		InOptBlock: p.inOptBlock,
+		IsArg:      isArg,
 	})
 	p.paramsByCanon[canonKey] = idx
 	return idx, nil
+}
+
+// findMatchingBracket returns the index of the ']' that closes the '[' at s[open].
+func findMatchingBracket(s string, open int) (int, error) {
+	depth := 0
+	for i := open; i < len(s); i++ {
+		switch s[i] {
+		case '[':
+			depth++
+		case ']':
+			depth--
+			if depth == 0 {
+				return i, nil
+			}
+		}
+	}
+	return -1, errors.New("unterminated Arg[...]")
+}
+
+// addArgParam declares the forwardable scalar parameter :ident:Arg[inner]; rest is the SQL that follows
+// the annotation. Arg[T] is only for a scalar T (a forwarded value is one value). On the $N dialect a
+// forwarded value travels as text and is cast back by T (pgCastForGoType); a T that maps to text or to no
+// type at all needs an explicit cast in the SQL (::uuid, ::numeric, ::text, ...): without it the server
+// would type the value as text, which a column of another type refuses on the single-round-trip path only.
+func (p *stmtParser) addArgParam(ident, inner, rest string) (int, error) {
+	t, end, ok := scanGoType(inner, 0)
+	if !ok || end != len(inner) {
+		return -1, fmt.Errorf("statement %s: parameter %q: invalid type in Arg[%s]", p.spec.Name, ident, inner)
+	}
+	switch {
+	case t == "Arg" || strings.HasPrefix(t, "sqlgen.") || strings.HasPrefix(t, "runtime."):
+		return -1, fmt.Errorf("statement %s: parameter %q: Arg[%s] is not a forwardable type; Arg[T] takes a scalar Go type such as int64, string or time.Time", p.spec.Name, ident, t)
+	}
+	switch t {
+	case "Query", "Seek", "Order":
+		return -1, fmt.Errorf("statement %s: parameter %q: Arg[%s] is not a forwardable type; Arg[T] takes a scalar Go type such as int64, string or time.Time", p.spec.Name, ident, t)
+	}
+	isSlice, fullType, _, err := normalizeScalarOrSliceType(t)
+	if err != nil {
+		return -1, fmt.Errorf("statement %s param %q: %w", p.spec.Name, ident, err)
+	}
+	if isSlice {
+		return -1, fmt.Errorf("statement %s: parameter %q: Arg[%s]: a forwarded value is one scalar value, not a slice", p.spec.Name, ident, t)
+	}
+	if p.cs.Kind == KindSubquery {
+		return -1, fmt.Errorf("statement %s: parameter %q: Arg[T] parameters are for pipeline methods, and a statement of kind subquery has none; declare it :%s:%s", p.spec.Name, ident, ident, fullType)
+	}
+	if p.sd.known && p.sd.style == runtime.DialectDollar && !strings.HasPrefix(rest, "::") {
+		if c := pgCastForGoType(fullType); c == "" || c == "text" {
+			return -1, fmt.Errorf("statement %s: parameter :%s:Arg[%s] needs an explicit SQL cast right after it on the $N dialect (for example :%s:Arg[%s]::text for a text column, ::uuid, ::numeric, ::jsonb, ...): a forwarded value reaches the statement as text and is cast to the parameter's type, and %s does not say which column type that is", p.spec.Name, ident, fullType, ident, fullType, fullType)
+		}
+	}
+	p.cs.HasArgs = true
+	return p.addOrGetParam(ident, paramScalar, fullType, "", nil, false, false, true)
 }
 
 func (p *stmtParser) addOrGetFlag(rawFlag string) (uint8, error) {
@@ -1859,13 +1927,18 @@ func (p *stmtParser) scanSpan(span string, blk *parsedBlock, isTopLevel bool) er
 						}
 						hasSort, desc, nextAfterSort := scanOptionalSortModifier(span, afterIdent)
 						if hasSort && sk == runtime.SlotSlice {
-							if _, err := p.addOrGetParam(ident, ep.Kind, ep.GoType, ep.ElemGoType, nil, hasSort, desc); err != nil {
+							if _, err := p.addOrGetParam(ident, ep.Kind, ep.GoType, ep.ElemGoType, nil, hasSort, desc, ep.IsArg); err != nil {
 								return err
 							}
 							afterIdent = nextAfterSort
 						}
 						if sk == runtime.SlotSlice && !sliceContextOK(seg, span, afterIdent) {
 							return sliceContextErr(p.spec.Name, ident, ep.GoType)
+						}
+						if ep.IsArg && p.sd.known && p.sd.style == runtime.DialectDollar && !strings.HasPrefix(span[afterIdent:], "::") {
+							if c := pgCastForGoType(ep.GoType); c == "" || c == "text" {
+								return fmt.Errorf("statement %s: the repeated reference :%s to the Arg[%s] parameter needs an explicit SQL cast right after it on the $N dialect, as its declaration does (for example :%s::text)", p.spec.Name, ident, ep.GoType, ident)
+							}
 						}
 						emitSlot(slotRef{Kind: sk, ParamIdx: existingIdx})
 						i = afterIdent
@@ -2023,7 +2096,7 @@ func (p *stmtParser) scanSpan(span string, blk *parsedBlock, isTopLevel bool) er
 										if err != nil {
 											return fmt.Errorf("statement %s: %w", p.spec.Name, err)
 										}
-										pIdx, err := p.addOrGetParam(tIdent, paramTupleSlice, "[]"+structName, structName, td, td.HasSort, false)
+										pIdx, err := p.addOrGetParam(tIdent, paramTupleSlice, "[]"+structName, structName, td, td.HasSort, false, false)
 										if err != nil {
 											return err
 										}
@@ -2098,7 +2171,7 @@ func (p *stmtParser) scanSpan(span string, blk *parsedBlock, isTopLevel bool) er
 				if !tupleSliceContextOK(seg) {
 					return fmt.Errorf("statement %s: tuple slice parameter :%s:[]%s(...) is only valid after VALUES or inside IN (...): it expands to a comma-separated list of parenthesised rows", p.spec.Name, ident, structName)
 				}
-				pIdx, err := p.addOrGetParam(ident, paramTupleSlice, "[]"+structName, structName, td, td.HasSort, false)
+				pIdx, err := p.addOrGetParam(ident, paramTupleSlice, "[]"+structName, structName, td, td.HasSort, false, false)
 				if err != nil {
 					return err
 				}
@@ -2136,7 +2209,7 @@ func (p *stmtParser) scanSpan(span string, blk *parsedBlock, isTopLevel bool) er
 				}
 				p.rawOrderCols = cols
 				p.cs.HasOrder = true
-				pIdx, err := p.addOrGetParam(ident, paramOrder, "runtime.Order", "", nil, false, false)
+				pIdx, err := p.addOrGetParam(ident, paramOrder, "runtime.Order", "", nil, false, false, false)
 				if err != nil {
 					return err
 				}
@@ -2145,6 +2218,27 @@ func (p *stmtParser) scanSpan(span string, blk *parsedBlock, isTopLevel bool) er
 					ParamIdx: pIdx,
 				})
 				i = closeParen + 1
+				continue
+			}
+
+			// Forwardable scalar ":name:Arg[T]": the Pipeline method takes a runtime.Arg[T].
+			if nextPos < len(span) && span[nextPos] == '[' && (goType == "Arg" || strings.HasSuffix(goType, "Arg")) {
+				if goType != "Arg" {
+					return fmt.Errorf("statement %s: parameter %q: Arg[T] forwards one scalar value; write :%s:Arg[T] (not %s[...]), and use a plain slice for a collection", p.spec.Name, ident, ident, goType)
+				}
+				closeBr, err := findMatchingBracket(span, nextPos)
+				if err != nil {
+					return fmt.Errorf("statement %s: parameter %q: %w", p.spec.Name, ident, err)
+				}
+				pIdx, err := p.addArgParam(ident, strings.TrimSpace(span[nextPos+1:closeBr]), span[closeBr+1:])
+				if err != nil {
+					return err
+				}
+				emitSlot(slotRef{
+					Kind:     runtime.SlotScalar,
+					ParamIdx: pIdx,
+				})
+				i = closeBr + 1
 				continue
 			}
 
@@ -2160,7 +2254,7 @@ func (p *stmtParser) scanSpan(span string, blk *parsedBlock, isTopLevel bool) er
 			// Seek directive ":name:sqlgen.Seek".
 			if goType == "sqlgen.Seek" {
 				p.cs.HasSeek = true
-				pIdx, err := p.addOrGetParam(ident, paramSeek, "runtime.Seek", "", nil, false, false)
+				pIdx, err := p.addOrGetParam(ident, paramSeek, "runtime.Seek", "", nil, false, false, false)
 				if err != nil {
 					return err
 				}
@@ -2174,7 +2268,7 @@ func (p *stmtParser) scanSpan(span string, blk *parsedBlock, isTopLevel bool) er
 
 			// Composed query ":name:sqlgen.Query".
 			if goType == "sqlgen.Query" {
-				pIdx, err := p.addOrGetParam(ident, paramSubquery, "runtime.Query", "", nil, false, false)
+				pIdx, err := p.addOrGetParam(ident, paramSubquery, "runtime.Query", "", nil, false, false, false)
 				if err != nil {
 					return err
 				}
@@ -2206,7 +2300,7 @@ func (p *stmtParser) scanSpan(span string, blk *parsedBlock, isTopLevel bool) er
 					return sliceContextErr(p.spec.Name, ident, fullType)
 				}
 			}
-			pIdx, err := p.addOrGetParam(ident, pk, fullType, elemType, nil, hasSort, desc)
+			pIdx, err := p.addOrGetParam(ident, pk, fullType, elemType, nil, hasSort, desc, false)
 			if err != nil {
 				return err
 			}
@@ -2646,6 +2740,23 @@ func buildRuntimeDescriptor(cs *compiledStmt, blk *parsedBlock) *runtime.QueryDe
 	return d
 }
 
+// resultExpr returns the expression of an output column without its alias ("id AS order_id" -> "id",
+// "COUNT(*) n" -> "COUNT(*)"): what a MariaDB RETURNING list can reference to forward the column's value.
+func resultExpr(c colDef) string {
+	e := strings.TrimSpace(c.SQLExpr)
+	if e == "" {
+		return c.RawName
+	}
+	low, name := strings.ToLower(e), strings.ToLower(c.RawName)
+	if strings.HasSuffix(low, " as "+name) {
+		return strings.TrimSpace(e[:len(e)-len(name)-4])
+	}
+	if strings.HasSuffix(low, " "+name) {
+		return strings.TrimSpace(e[:len(e)-len(name)-1])
+	}
+	return e
+}
+
 func sanitizeTypeIdent(t string) string {
 	var buf []byte
 	for i := 0; i < len(t); i++ {
@@ -2710,6 +2821,7 @@ func Generate(cfg Config) ([]byte, error) {
 			return nil, err
 		}
 		cs.PGCasts = dialect == runtime.DialectDollar && cs.StmtVerb == runtime.VerbInsert
+		cs.Dollar = dialect == runtime.DialectDollar
 		if cs.IsStatic {
 			rtDesc := buildRuntimeDescriptor(cs, &cs.Root)
 			cs.StaticSQL = runtime.BuildComposedSQL(rtDesc, &runtime.RenderInput{}, dialect)
@@ -3029,7 +3141,7 @@ func emitBlockLiteral(b *bytes.Buffer, cs *compiledStmt, blk *parsedBlock, isRoo
 			switch sl.Kind {
 			case runtime.SlotScalar:
 				b.WriteString("runtime.SlotScalar")
-				if cs.PGCasts && sl.ParamIdx >= 0 && sl.ParamIdx < len(cs.Params) {
+				if sl.ParamIdx >= 0 && sl.ParamIdx < len(cs.Params) && (cs.PGCasts || (cs.Dollar && cs.Params[sl.ParamIdx].IsArg)) {
 					if c := pgCastForGoType(cs.Params[sl.ParamIdx].GoType); c != "" {
 						fmt.Fprintf(b, ", Cast: %s", strconv.Quote(c))
 					}
@@ -3097,6 +3209,20 @@ func emitBlockLiteral(b *bytes.Buffer, cs *compiledStmt, blk *parsedBlock, isRoo
 			b.WriteString(strconv.Quote(expr))
 		}
 		b.WriteString("},\n")
+	}
+	if isRoot && cs.Kind == KindOne {
+		// what RowFuture.Arg forwards (it needs exactly one column)
+		b.WriteString("\tResultCols: []string{")
+		for i, c := range cs.Cols {
+			if i > 0 {
+				b.WriteString(", ")
+			}
+			b.WriteString(strconv.Quote(c.RawName))
+		}
+		b.WriteString("},\n")
+		if len(cs.Cols) == 1 {
+			fmt.Fprintf(b, "\tResultExpr: %s,\n", strconv.Quote(resultExpr(cs.Cols[0])))
+		}
 	}
 	if isRoot && len(cs.OrderCols) > 0 {
 		b.WriteString("\tOrderCols: []string{")
@@ -3345,6 +3471,53 @@ func emitStatementCode(
 	b.WriteString("\treturn nil\n")
 	b.WriteString("}\n\n")
 
+	// Arg[T] parameters: the Pipeline method takes runtime.Arg[T] for them (a plain value or one forwarded
+	// from an earlier operation) and expands them with Bind; every other method keeps T.
+	var argParams []int
+	for i, prm := range cs.Params {
+		if prm.IsArg {
+			argParams = append(argParams, i)
+		}
+	}
+	pipeParamsStructName := paramsStructName
+	if cs.HasArgs {
+		if cs.StructArgs {
+			pipeParamsStructName = cs.Name + "PipelineParams"
+			fmt.Fprintf(b, "// %s is %sParams for the Pipeline method: an Arg[T] parameter takes a plain value (runtime.Val)\n// or a value forwarded from an earlier operation of the pipeline (a RowFuture's Arg, an ExecFuture's LastInsertIDArg).\n", pipeParamsStructName, cs.Name)
+			fmt.Fprintf(b, "type %s struct {\n", pipeParamsStructName)
+			for _, prm := range cs.Params {
+				if prm.IsArg {
+					fmt.Fprintf(b, "\t%s runtime.Arg[%s]\n", prm.FieldName, prm.GoType)
+				} else {
+					fmt.Fprintf(b, "\t%s %s\n", prm.FieldName, prm.GoType)
+				}
+			}
+			for _, f := range cs.Flags {
+				fmt.Fprintf(b, "\t%s bool\n", f.FieldName)
+			}
+			if cs.SelectCols {
+				b.WriteString("\tSelectCols uint64\n")
+			}
+			b.WriteString("}\n\n")
+		}
+		fmt.Fprintf(b, "func expand%sPipelineParams(dst *[]any, dialect runtime.Dialect, p %s", cs.Name, paramsStructName)
+		for k, pi := range argParams {
+			fmt.Fprintf(b, ", fwd%d runtime.Arg[%s]", k, cs.Params[pi].GoType)
+		}
+		b.WriteString(") error {\n")
+		b.WriteString("\t_ = dialect\n\t_ = p\n")
+		emitSlotArgExpansion(b, cs, &cs.Root, func(prm paramDef) string {
+			for k, pi := range argParams {
+				if cs.Params[pi].RawName == prm.RawName {
+					return fmt.Sprintf("fwd%d.Bind()", k)
+				}
+			}
+			return "p." + prm.FieldName
+		})
+		b.WriteString("\treturn nil\n")
+		b.WriteString("}\n\n")
+	}
+
 	if cs.Kind != KindExec {
 		fmt.Fprintf(b, "func expand%sArgs(dst *[]any, dialect runtime.Dialect, q *runtime.Query) error {\n", cs.Name)
 		if len(cs.Params) > 0 || len(cs.Flags) > 0 {
@@ -3380,6 +3553,26 @@ func emitStatementCode(
 	}
 	sigStr := string(sigParams)
 	callStr := string(callArgs)
+	// The Pipeline method's signature: Arg[T] parameters take runtime.Arg[T].
+	pipeSigStr := sigStr
+	if cs.HasArgs {
+		if cs.StructArgs {
+			pipeSigStr = "pa " + pipeParamsStructName
+		} else {
+			var ps []string
+			for _, prm := range cs.Params {
+				if prm.IsArg {
+					ps = append(ps, prm.ParamName+" runtime.Arg["+prm.GoType+"]")
+				} else {
+					ps = append(ps, prm.ParamName+" "+prm.GoType)
+				}
+			}
+			if cs.SelectCols {
+				ps = append(ps, selectColsSig)
+			}
+			pipeSigStr = strings.Join(ps, ", ")
+		}
+	}
 	sigWithLeadingComma := ""
 	callWithLeadingComma := ""
 	if sigStr != "" {
@@ -3617,6 +3810,71 @@ func emitStatementCode(
 
 	emitLocalParamsInit := func(indent string) { emitArgsInit(b, cs, indent, paramsStructName) }
 
+	// The Pipeline method of a statement with Arg[T] parameters builds the plain params without them (they
+	// only matter to the expansion), expands them with Bind and lets the pipeline check the forwarded ones.
+	pipeHead := func() {
+		if cs.HasArgs && cs.StructArgs {
+			fmt.Fprintf(b, "\tp := %s{\n", paramsStructName)
+			for _, prm := range cs.Params {
+				if !prm.IsArg {
+					fmt.Fprintf(b, "\t\t%s: pa.%s,\n", prm.FieldName, prm.FieldName)
+				}
+			}
+			for _, f := range cs.Flags {
+				fmt.Fprintf(b, "\t\t%s: pa.%s,\n", f.FieldName, f.FieldName)
+			}
+			if cs.SelectCols {
+				b.WriteString("\t\tSelectCols: pa.SelectCols,\n")
+			}
+			b.WriteString("\t}\n")
+		}
+	}
+	pipeLocalInit := func() {
+		if !cs.HasArgs || cs.StructArgs {
+			emitLocalParamsInit("\t")
+			return
+		}
+		fmt.Fprintf(b, "\tp := %s{\n", paramsStructName)
+		for _, prm := range cs.Params {
+			if !prm.IsArg {
+				fmt.Fprintf(b, "\t\t%s: %s,\n", prm.FieldName, prm.ParamName)
+			}
+		}
+		if cs.SelectCols {
+			b.WriteString("\t\tSelectCols: runtime.OrCols(selectCols),\n")
+		}
+		b.WriteString("\t}\n")
+	}
+	pipeExpand := func() {
+		if !cs.HasArgs {
+			fmt.Fprintf(b, "\texpandErr := expand%sParams(argBuf, sqlDialect, p)\n", cs.Name)
+			return
+		}
+		fmt.Fprintf(b, "\texpandErr := expand%sPipelineParams(argBuf, sqlDialect, p", cs.Name)
+		for _, prm := range cs.Params {
+			if !prm.IsArg {
+				continue
+			}
+			if cs.StructArgs {
+				fmt.Fprintf(b, ", pa.%s", prm.FieldName)
+			} else {
+				fmt.Fprintf(b, ", %s", prm.ParamName)
+			}
+		}
+		b.WriteString(")\n")
+	}
+	pipeQueue := func() string {
+		if cs.HasArgs {
+			return "\tfut := "
+		}
+		return "\treturn "
+	}
+	pipeReturn := func() {
+		if cs.HasArgs {
+			b.WriteString("\tpl.Pipeline.BindForwarded()\n\treturn fut\n")
+		}
+	}
+
 	// 2. KindExec methods
 	if cs.Kind == KindExec {
 		fmt.Fprintf(b, "func (q *Queries) %s(ctx context.Context%s) (sql.Result, error) {\n", cs.Name, sigWithLeadingComma)
@@ -3644,17 +3902,19 @@ func emitStatementCode(
 		b.WriteString("}\n\n")
 
 		// Pipeline queuing method for KindExec
-		fmt.Fprintf(b, "func (pl *Pipeline) %s(%s) *runtime.ExecFuture {\n", cs.Name, sigStr)
+		fmt.Fprintf(b, "func (pl *Pipeline) %s(%s) *runtime.ExecFuture {\n", cs.Name, pipeSigStr)
+		pipeHead()
 		if acc := cs.valuesAccess(); acc != "" {
 			fmt.Fprintf(b, "\tif len(%s) == 0 {\n\t\treturn pl.Pipeline.QueueExecNoop()\n\t}\n", acc)
 		}
-		emitLocalParamsInit("\t")
+		pipeLocalInit()
 		fmt.Fprintf(b, "\tvk, colMask, flagMask, approxArgs := compute%sKey(p)\n", cs.Name)
 		b.WriteString("\targBuf := runtime.AcquireArgsCap(approxArgs)\n")
-		fmt.Fprintf(b, "\texpandErr := expand%sParams(argBuf, sqlDialect, p)\n", cs.Name)
+		pipeExpand()
 		emitPipelineTooLargeGuard(b, cs)
 		emitStackRenderInput("\t", "p")
-		fmt.Fprintf(b, "\treturn pl.Pipeline.QueueExec(stmtID%s, desc%s, in, vk, %s, argBuf, expandErr)\n", cs.Name, cs.Name, pipelineFastSlotExpr)
+		fmt.Fprintf(b, "%spl.Pipeline.QueueExec(stmtID%s, desc%s, in, vk, %s, argBuf, expandErr)\n", pipeQueue(), cs.Name, cs.Name, pipelineFastSlotExpr)
+		pipeReturn()
 		b.WriteString("}\n\n")
 
 		if cs.CanStream {
@@ -3748,16 +4008,19 @@ func emitStatementCode(
 		b.WriteString("}\n\n")
 
 		// Pipeline queuing method for KindOne
-		fmt.Fprintf(b, "func (pl *Pipeline) %s(%s) *runtime.RowFuture[%s] {\n", cs.Name, sigStr, cs.RowTypeName)
-		emitLocalParamsInit("\t")
+		fmt.Fprintf(b, "func (pl *Pipeline) %s(%s) *runtime.RowFuture[%s] {\n", cs.Name, pipeSigStr, cs.RowTypeName)
+		pipeHead()
+		pipeLocalInit()
 		fmt.Fprintf(b, "\tvk, colMask, flagMask, approxArgs := compute%sKey(p)\n", cs.Name)
 		b.WriteString("\targBuf := runtime.AcquireArgsCap(approxArgs)\n")
-		fmt.Fprintf(b, "\texpandErr := expand%sParams(argBuf, sqlDialect, p)\n", cs.Name)
+		pipeExpand()
 		emitStackRenderInput("\t", "p")
-		fmt.Fprintf(b, "\treturn runtime.QueueRow(pl.Pipeline, stmtID%s, desc%s, in, vk, %s, argBuf, expandErr,\n", cs.Name, cs.Name, pipelineFastSlotExpr)
+		fmt.Fprintf(b, "%sruntime.QueueRow(pl.Pipeline, stmtID%s, desc%s, in, vk, %s, argBuf, expandErr,\n", pipeQueue(), cs.Name, cs.Name, pipelineFastSlotExpr)
 		fmt.Fprintf(b, "\t\tfunc(r *sql.Row, dst *%s) error { return scan%sRow(r, dst, colMask, p) },\n", cs.RowTypeName, cs.Name)
 		fmt.Fprintf(b, "\t\tfunc(rs *sql.Rows, dst *%s) error { return scan%sRow(rs, dst, colMask, p) },\n", cs.RowTypeName, cs.Name)
-		b.WriteString("\t)\n}\n\n")
+		b.WriteString("\t)\n")
+		pipeReturn()
+		b.WriteString("}\n\n")
 		return
 	}
 
@@ -3825,19 +4088,22 @@ func emitStatementCode(
 	}
 
 	// Pipeline queuing method for KindMany
-	fmt.Fprintf(b, "func (pl *Pipeline) %s(%s) *runtime.SliceFuture[%s] {\n", cs.Name, sigStr, cs.RowTypeName)
+	fmt.Fprintf(b, "func (pl *Pipeline) %s(%s) *runtime.SliceFuture[%s] {\n", cs.Name, pipeSigStr, cs.RowTypeName)
+	pipeHead()
 	if acc := cs.valuesAccess(); acc != "" {
 		fmt.Fprintf(b, "\tif len(%s) == 0 {\n\t\treturn runtime.QueueSliceNoop[%s](pl.Pipeline)\n\t}\n", acc, cs.RowTypeName)
 	}
-	emitLocalParamsInit("\t")
+	pipeLocalInit()
 	fmt.Fprintf(b, "\tvk, colMask, flagMask, approxArgs := compute%sKey(p)\n", cs.Name)
 	b.WriteString("\targBuf := runtime.AcquireArgsCap(approxArgs)\n")
-	fmt.Fprintf(b, "\texpandErr := expand%sParams(argBuf, sqlDialect, p)\n", cs.Name)
+	pipeExpand()
 	emitPipelineTooLargeGuard(b, cs)
 	emitStackRenderInput("\t", "p")
-	fmt.Fprintf(b, "\treturn runtime.QueueSlice(pl.Pipeline, stmtID%s, desc%s, in, vk, %s, argBuf, expandErr,\n", cs.Name, cs.Name, pipelineFastSlotExpr)
+	fmt.Fprintf(b, "%sruntime.QueueSlice(pl.Pipeline, stmtID%s, desc%s, in, vk, %s, argBuf, expandErr,\n", pipeQueue(), cs.Name, cs.Name, pipelineFastSlotExpr)
 	fmt.Fprintf(b, "\t\tfunc(rs *sql.Rows, dst *%s) error { return scan%sRow(rs, dst, colMask, p) },\n", cs.RowTypeName, cs.Name)
-	b.WriteString("\t)\n}\n\n")
+	b.WriteString("\t)\n")
+	pipeReturn()
+	b.WriteString("}\n\n")
 
 	if cs.CanStream {
 		emitManyStream(b, cs, paramsStructName)

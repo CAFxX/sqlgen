@@ -62,6 +62,14 @@ type myPipe interface {
 	Returning() bool
 	If(cond runtime.PipelineCond, thenFn, elseFn func(myPipe)) *runtime.IfResult
 	Abort(err error)
+	// value forwarding: producers return the forwarded value too
+	FwdScoreOf(id int64) (myFut, runtime.Arg[int64])
+	FwdIDsByStatus(status string) (myFut, runtime.Arg[int64])
+	CountOrgItems(org int64) (myFut, runtime.Arg[int64])
+	FwdInsertReturningID(id int64) (myFut, runtime.Arg[int64])
+	FwdSetScore(score, id runtime.Arg[int64]) myFut
+	FwdItemsAbove(min runtime.Arg[int64]) myFut
+	FwdInsertItem(id int64, score runtime.Arg[int64]) myFut
 }
 
 type myQueries interface {
@@ -124,6 +132,31 @@ func mySliceFut[T any](f *runtime.SliceFuture[T], score func(T) int64) myFut {
 	return m
 }
 
+// fwdManyRowsFut is myRowFut for a kind-one statement that may return several rows: which row Get reports
+// then depends on the order of the rows, and MariaDB ignores the ORDER BY of the derived table the
+// single-round-trip path wraps a gated SELECT (or a producer of a forwarded value) in, so only the outcome
+// is compared. (With exactly one row, the only case in which the value is forwarded, there is no order.)
+func fwdManyRowsFut(f *runtime.RowFuture[int64]) myFut {
+	m := myRowFut(f, nil)
+	m.desc = func() string {
+		_, err := f.Get()
+		return myDescribe("-", err)
+	}
+	return m
+}
+
+// fwdSortedFut is mySliceFut comparing the rows as a set, for the same reason.
+func fwdSortedFut(f *runtime.SliceFuture[int64]) myFut {
+	m := mySliceFut(f, nil)
+	m.desc = func() string {
+		v, err := f.Get()
+		v = slices.Clone(v)
+		slices.Sort(v)
+		return myDescribe(v, err)
+	}
+	return m
+}
+
 // myqPipe adapts a myq.Pipeline.
 type myqPipe struct{ p *myq.Pipeline }
 
@@ -159,6 +192,30 @@ func (a myqPipe) DeleteReturning([]int64) myFut      { panic("RETURNING does not
 func (a myqPipe) DeleteOneReturning(int64) myFut     { panic("RETURNING does not exist on MySQL") }
 func (a myqPipe) Returning() bool                    { return false }
 func (a myqPipe) Abort(err error)                    { a.p.Abort(err) }
+func (a myqPipe) FwdScoreOf(id int64) (myFut, runtime.Arg[int64]) {
+	f := a.p.FwdScoreOf(id)
+	return myRowFut(f, nil), f.Arg()
+}
+func (a myqPipe) FwdIDsByStatus(status string) (myFut, runtime.Arg[int64]) {
+	f := a.p.FwdIDsByStatus(status)
+	return fwdManyRowsFut(f), f.Arg()
+}
+func (a myqPipe) CountOrgItems(org int64) (myFut, runtime.Arg[int64]) {
+	f := a.p.CountOrgItems(org)
+	return myRowFut(f, nil), f.Arg()
+}
+func (a myqPipe) FwdSetScore(score, id runtime.Arg[int64]) myFut {
+	return myExecFut(a.p.FwdSetScore(score, id))
+}
+func (a myqPipe) FwdItemsAbove(min runtime.Arg[int64]) myFut {
+	return fwdSortedFut(a.p.FwdItemsAbove(min))
+}
+func (a myqPipe) FwdInsertItem(id int64, score runtime.Arg[int64]) myFut {
+	return myExecFut(a.p.FwdInsertItem(runtime.Val(id), "f", score))
+}
+func (a myqPipe) FwdInsertReturningID(int64) (myFut, runtime.Arg[int64]) {
+	panic("RETURNING does not exist on MySQL")
+}
 func (a myqPipe) If(cond runtime.PipelineCond, thenFn, elseFn func(myPipe)) *runtime.IfResult {
 	var t, e func(*myq.Pipeline)
 	if thenFn != nil {
@@ -224,6 +281,31 @@ func (a mdbqPipe) DeleteOneReturning(id int64) myFut {
 }
 func (a mdbqPipe) Returning() bool { return true }
 func (a mdbqPipe) Abort(err error) { a.p.Abort(err) }
+func (a mdbqPipe) FwdScoreOf(id int64) (myFut, runtime.Arg[int64]) {
+	f := a.p.FwdScoreOf(id)
+	return myRowFut(f, nil), f.Arg()
+}
+func (a mdbqPipe) FwdIDsByStatus(status string) (myFut, runtime.Arg[int64]) {
+	f := a.p.FwdIDsByStatus(status)
+	return fwdManyRowsFut(f), f.Arg()
+}
+func (a mdbqPipe) CountOrgItems(org int64) (myFut, runtime.Arg[int64]) {
+	f := a.p.CountOrgItems(org)
+	return myRowFut(f, nil), f.Arg()
+}
+func (a mdbqPipe) FwdSetScore(score, id runtime.Arg[int64]) myFut {
+	return myExecFut(a.p.FwdSetScore(score, id))
+}
+func (a mdbqPipe) FwdItemsAbove(min runtime.Arg[int64]) myFut {
+	return fwdSortedFut(a.p.FwdItemsAbove(min))
+}
+func (a mdbqPipe) FwdInsertItem(id int64, score runtime.Arg[int64]) myFut {
+	return myExecFut(a.p.FwdInsertItem(runtime.Val(id), "f", score))
+}
+func (a mdbqPipe) FwdInsertReturningID(id int64) (myFut, runtime.Arg[int64]) {
+	f := a.p.FwdInsertReturningID(id, 1, "r")
+	return myRowFut(f, nil), f.Arg()
+}
 func (a mdbqPipe) If(cond runtime.PipelineCond, thenFn, elseFn func(myPipe)) *runtime.IfResult {
 	var t, e func(*mdbq.Pipeline)
 	if thenFn != nil {

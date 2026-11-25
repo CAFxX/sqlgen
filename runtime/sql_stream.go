@@ -1,6 +1,7 @@
 package runtime
 
 import (
+	"fmt"
 	"strconv"
 	"strings"
 )
@@ -18,6 +19,59 @@ type streamCursor struct {
 	// my is non-nil when rendering for WireFlavorMySQL: placeholders become inlined literals and the
 	// branch gates read session variables (see mysql_wire.go).
 	my *mysqlCursor
+	// refs is set (PostgreSQL flavor) when the operation's arguments hold forwarded values: refs.args are
+	// the arguments, and refs.before[k] the number of forwarded values among args[:k]. A forwarded value's
+	// slot reads the producer's record instead of a placeholder, and the later placeholders are numbered
+	// without it (the driver receives the arguments without the forwarded values).
+	refs *refSlots
+}
+
+type refSlots struct {
+	args   []any
+	before []int32
+}
+
+// newRefSlots returns the refSlots of args, or nil when they hold no forwarded value.
+func newRefSlots(args []any) *refSlots {
+	var rs *refSlots
+	for k, a := range args {
+		if _, ok := a.(*argRef); ok && rs == nil {
+			rs = &refSlots{args: args, before: make([]int32, len(args)+1)}
+			for j := k; j < len(args); j++ {
+				rs.before[j+1] = rs.before[j]
+				if _, ok := args[j].(*argRef); ok {
+					rs.before[j+1]++
+				}
+			}
+		}
+	}
+	return rs
+}
+
+// ref returns the forwarded value of the idx-th (1-based) argument, or nil.
+func (rs *refSlots) ref(idx int) *argRef {
+	if rs == nil || idx < 1 || idx > len(rs.args) {
+		return nil
+	}
+	r, _ := rs.args[idx-1].(*argRef)
+	return r
+}
+
+// num returns the $N number of the idx-th (1-based) argument once the forwarded values are removed.
+func (rs *refSlots) num(idx int) int {
+	if rs == nil || idx < 1 {
+		return idx
+	}
+	k := idx - 1
+	if k > len(rs.args) {
+		k = len(rs.args)
+	}
+	return idx - int(rs.before[k])
+}
+
+func (cur *streamCursor) writeDollar(b *strings.Builder, idx int) {
+	b.WriteByte('$')
+	b.Write(strconv.AppendInt(cur.numBuf[:0], int64(cur.refs.num(idx)), 10))
 }
 
 func (cur *streamCursor) writePlaceholder(b *strings.Builder) {
@@ -26,11 +80,45 @@ func (cur *streamCursor) writePlaceholder(b *strings.Builder) {
 	} else if cur.dialect == DialectQuestion {
 		b.WriteByte('?')
 	} else {
-		b.WriteByte('$')
-		b.Write(strconv.AppendInt(cur.numBuf[:0], int64(cur.paramIdx), 10))
+		cur.writeDollar(b, cur.paramIdx)
 	}
 	cur.paramIdx++
 }
+
+// writeScalar writes the placeholder of a scalar slot: on the PostgreSQL flavor a forwarded value reads the
+// producer's record, cast to the parameter's type (cast; an explicit cast in the SQL follows it).
+func (cur *streamCursor) writeScalar(b *strings.Builder, cast string) {
+	r := cur.refs.ref(cur.paramIdx)
+	if r == nil || cur.my != nil {
+		cur.writePlaceholder(b)
+		if cur.castVals && cast != "" {
+			b.WriteString("::")
+			b.WriteString(cast)
+		}
+		return
+	}
+	cur.paramIdx++
+	b.WriteString("(CASE WHEN ")
+	writeValSetting(b, cur.numBuf[:0], r.id)
+	b.WriteString(" LIKE 'v%' THEN substr(")
+	writeValSetting(b, cur.numBuf[:0], r.id)
+	b.WriteString(", 2) END)")
+	if cast != "" {
+		b.WriteString("::")
+		b.WriteString(cast)
+	}
+}
+
+// writeValSetting writes current_setting('sqlgen.v<id>', true): the record a producer made of a forwarded
+// value, 'v<text>' (resolved), 'n' (resolved, NULL), 'x<rows>' (unresolved), NULL or ” (never recorded).
+func writeValSetting(b *strings.Builder, numBuf []byte, id int) {
+	b.WriteString("current_setting('sqlgen.v")
+	b.Write(strconv.AppendInt(numBuf, int64(id), 10))
+	b.WriteString("', true)")
+}
+
+// refSlotBytes bounds what writeScalar writes for a forwarded value, cast excluded.
+const refSlotBytes = 200 // the cast included (pgCastForGoType names at most 16 bytes)
 
 func formatOrderSQL(b *strings.Builder, orderCols []string, orderSpec uint64) {
 	cols, desc, count, _ := expandOrder(orderSpec, len(orderCols))
@@ -59,8 +147,7 @@ func (cur *streamCursor) formatSeekSQL(b *strings.Builder, orderCols []string, o
 		} else if cur.dialect == DialectQuestion {
 			b.WriteByte('?')
 		} else {
-			b.WriteByte('$')
-			b.Write(strconv.AppendInt(cur.numBuf[:0], int64(idx), 10))
+			cur.writeDollar(b, idx)
 		}
 	}
 	if count == 1 {
@@ -177,6 +264,7 @@ func (cur *streamCursor) writeBranchGates(b *strings.Builder, gates []BranchGate
 const (
 	wireAssertMarker = "sqlgen:assert:"
 	wireAbortMarker  = "sqlgen:abort:"
+	wireRefMarker    = "sqlgen:ref:"
 )
 
 // writeGuardRaise writes an expression that raises the guard error for marker when, and only when, it is
@@ -419,6 +507,24 @@ func estimateDescriptorBytes(rootDesc, desc *QueryDescriptor, in *RenderInput, c
 	return total
 }
 
+// valRecBytes bounds the recorder of a forwarded value (the column name excluded); checkRefBytes bounds
+// what writeCheckSQL writes per forwarded value, checkBaseBytes the rest (gates excluded).
+const (
+	valRecBytes    = 520 // the recorder, its read in the final SELECT, and the WITH / LATERAL scaffolding
+	checkRefBytes  = 200
+	checkBaseBytes = 64
+)
+
+// estimateWireOpBytes bounds what renderPipelineBatch writes for op: its SQL and, for an operation that
+// uses forwarded values, the slots that read them and its CheckSQL.
+func estimateWireOpBytes(op *PipelineOp) int {
+	n := estimateOpBytes(op.Desc, &op.Input, &op.Decorators)
+	if op.nRefs > 0 {
+		n += op.nRefs*(refSlotBytes+checkRefBytes) + checkBaseBytes + 56*len(op.Input.BranchGates)
+	}
+	return n
+}
+
 // estimateOpBytes computes a provable mathematical upper bound on the byte length
 // of the SQL string rendered for (desc, in, dec).
 func estimateOpBytes(desc *QueryDescriptor, in *RenderInput, dec *OpDecorators) int {
@@ -447,6 +553,9 @@ func estimateOpBytes(desc *QueryDescriptor, in *RenderInput, dec *OpDecorators) 
 		}
 		for i := range dec.LeafRecs {
 			total += 480 + dec.LeafRecs[i].Cond.estimateBytes(numGates)
+		}
+		for i := range dec.ValRecs {
+			total += valRecBytes + len(dec.ValRecs[i].Col)
 		}
 	}
 	if total < 8 {
@@ -483,11 +592,7 @@ func streamDescriptorSQL(b *strings.Builder, rootDesc, desc *QueryDescriptor, in
 			}
 
 		case SlotScalar:
-			cur.writePlaceholder(b)
-			if cur.castVals && slot.Cast != "" {
-				b.WriteString("::")
-				b.WriteString(slot.Cast)
-			}
+			cur.writeScalar(b, slot.Cast)
 
 		case SlotSlice:
 			n := 0
@@ -556,6 +661,7 @@ func streamDescriptorSQL(b *strings.Builder, rootDesc, desc *QueryDescriptor, in
 					dialect:  cur.dialect,
 					paramIdx: cur.paramIdx,
 					my:       cur.my.forSub(),
+					refs:     cur.refs,
 				}
 				streamDescriptorSQL(b, sub.Desc, sub.Desc, &sub.Input, &subCur)
 				cur.paramIdx = subCur.paramIdx
@@ -652,7 +758,7 @@ func streamCoreStatement(b *strings.Builder, cur *streamCursor, desc *QueryDescr
 
 // streamOpSQL writes the SQL of one operation. The arguments of its WhereCol leaves are appended to
 // *condArgs (nil when dec has none) in the order of their placeholders, which follow the operation's own.
-func streamOpSQL(b *strings.Builder, dialect Dialect, desc *QueryDescriptor, in *RenderInput, dec *OpDecorators, condArgs *[]any) {
+func streamOpSQL(b *strings.Builder, dialect Dialect, desc *QueryDescriptor, in *RenderInput, dec *OpDecorators, condArgs *[]any, refs *refSlots) {
 	var emptyIn RenderInput
 	if in == nil {
 		in = &emptyIn
@@ -661,6 +767,7 @@ func streamOpSQL(b *strings.Builder, dialect Dialect, desc *QueryDescriptor, in 
 		dialect:  dialect,
 		paramIdx: 1,
 		condArgs: condArgs,
+		refs:     refs,
 	}
 	hasGates := len(in.BranchGates) > 0
 	if dec != nil && dec.IsAbort {
@@ -680,10 +787,12 @@ func streamOpSQL(b *strings.Builder, dialect Dialect, desc *QueryDescriptor, in 
 	hasAssert := dec != nil && dec.AssertRows >= 0
 	hasCond := dec != nil && dec.ProduceCond != nil
 	var leafRecs []ProducedCond
+	var valRecs []ValRec
 	if dec != nil {
 		leafRecs = dec.LeafRecs
+		valRecs = dec.ValRecs
 	}
-	if !hasAssert && !hasCond && len(leafRecs) == 0 {
+	if !hasAssert && !hasCond && len(leafRecs) == 0 && len(valRecs) == 0 {
 		streamCoreStatement(b, &cur, desc, in)
 		return
 	}
@@ -739,6 +848,18 @@ func streamOpSQL(b *strings.Builder, dialect Dialect, desc *QueryDescriptor, in 
 	for i := range leafRecs {
 		writeRecorder("_sqlgen_l", 'l', leafRecs[i].CondID, leafRecs[i].Cond, leafRecs[i].CondID)
 	}
+	// A forwarded value is recorded as 'v' || its text when the operation yielded exactly one row ('n' for
+	// NULL), otherwise as 'x' || the row count; the consumer casts the text back (see writeScalar). MIN is
+	// the row itself when there is one, and works for every type through text (bool, json, uuid have no MIN).
+	for i := range valRecs {
+		b.WriteString(", ")
+		writeName("_sqlgen_v", valRecs[i].ID)
+		b.WriteString(" AS (SELECT set_config('sqlgen.v")
+		b.Write(strconv.AppendInt(cur.numBuf[:0], int64(valRecs[i].ID), 10))
+		b.WriteString("', CASE COUNT(*) WHEN 1 THEN COALESCE('v' || MIN((")
+		b.WriteString(valRecs[i].Col)
+		b.WriteString(")::text), 'n') ELSE 'x' || COUNT(*)::text END, true) AS _ok FROM _sqlgen_op)")
+	}
 
 	// The guards, in the order of the CTEs: the alias (the column name in the final SELECT) and the CTE
 	// name are each a base plus the condition ID (0: none).
@@ -754,6 +875,9 @@ func streamOpSQL(b *strings.Builder, dialect Dialect, desc *QueryDescriptor, in 
 		}
 		for i := range leafRecs {
 			yield("_l", "_sqlgen_l", leafRecs[i].CondID)
+		}
+		for i := range valRecs {
+			yield("_v", "_sqlgen_v", valRecs[i].ID)
 		}
 	}
 	writeGuardRead := func(aliasBase, cteBase string, id int) {
@@ -805,25 +929,55 @@ func BuildComposedSQL(desc *QueryDescriptor, in *RenderInput, dialect Dialect) s
 	est := estimateOpBytes(desc, in, nil)
 	var b strings.Builder
 	b.Grow(est)
-	streamOpSQL(&b, dialect, desc, in, nil, nil)
+	streamOpSQL(&b, dialect, desc, in, nil, nil, nil)
 	return b.String()
 }
 
-// dropCondArgs removes the WhereCol arguments renderPipelineBatch appended to the operations' Args, so
-// that a batch a pipeliner declined (ErrWireNotApplicable) runs sequentially with the statements' own.
+// dropCondArgs restores the operations' own Args where renderPipelineBatch rewrote them (WhereCol
+// arguments appended, forwarded values removed), so that a batch a pipeliner declined
+// (ErrWireNotApplicable) runs sequentially with the statements' own arguments.
 func dropCondArgs(ops []PipelineOp) {
 	for i := range ops {
-		if n := ops[i].nCondArgs; n > 0 {
-			ops[i].Args = ops[i].Args[:len(ops[i].Args)-n]
-			ops[i].nCondArgs = 0
+		if ops[i].argsRewritten {
+			ops[i].Args = ops[i].origArgs
+			ops[i].origArgs = nil
+			ops[i].argsRewritten = false
 		}
+		ops[i].CheckSQL = ""
 	}
 }
 
+// writeCheckSQL writes the statement that fails (22P02 with the marker sqlgen:ref:<ID>:<record>) when op's
+// branch gates are open and one of its forwarded values is unresolved: the first in argument order, so
+// that the error names the same producer as on the sequential path.
+func writeCheckSQL(b *strings.Builder, op *PipelineOp) {
+	var numBuf [20]byte
+	b.WriteString("SELECT CASE")
+	if gates := op.Input.BranchGates; len(gates) > 0 {
+		cur := streamCursor{dialect: DialectDollar}
+		b.WriteString(" WHEN (")
+		cur.writeBranchGates(b, gates)
+		b.WriteString(") IS NOT TRUE THEN 1")
+	}
+	op.forEachRef(func(r *argRef) {
+		b.WriteString(" WHEN COALESCE(left(")
+		writeValSetting(b, numBuf[:0], r.id)
+		b.WriteString(", 1), '') NOT IN ('v', 'n') THEN ('")
+		b.WriteString(wireRefMarker)
+		b.Write(strconv.AppendInt(numBuf[:0], int64(r.id), 10))
+		b.WriteString(":' || COALESCE(")
+		writeValSetting(b, numBuf[:0], r.id)
+		b.WriteString(", '?'))::int")
+	})
+	b.WriteString(" ELSE 1 END")
+}
+
 // renderPipelineBatch renders all PipelineOp SQL strings for a batch using at most a single strings.Builder.
-func renderPipelineBatch(dialect Dialect, cache *StmtCache, ops []PipelineOp) {
+// An error (wrapping ErrWireNotApplicable) means the batch cannot be rendered for the PostgreSQL flavor:
+// forwarded values need the $N dialect (set_config / current_setting).
+func renderPipelineBatch(dialect Dialect, cache *StmtCache, ops []PipelineOp) error {
 	if len(ops) == 0 {
-		return
+		return nil
 	}
 	type opSpan struct {
 		start  int
@@ -842,9 +996,13 @@ func renderPipelineBatch(dialect Dialect, cache *StmtCache, ops []PipelineOp) {
 	for i := range ops {
 		op := &ops[i]
 		dropCondArgs(ops[i : i+1]) // a batch rendered again (retried) binds them once
+		if (op.nRefs > 0 || len(op.Decorators.ValRecs) > 0) && dialect != DialectDollar {
+			return fmt.Errorf("%s: forwarded values need the $N dialect on this flavor: %w", opLabel(op), ErrWireNotApplicable)
+		}
 		plain := !op.Decorators.IsAbort &&
 			!op.Decorators.guarded() &&
-			len(op.Input.BranchGates) == 0
+			len(op.Input.BranchGates) == 0 &&
+			op.nRefs == 0
 		if plain && op.Desc != nil && op.Desc.StaticSQL != "" && op.Input.ColMask == 0 && op.Input.FlagMask == 0 {
 			op.SQL = op.Desc.StaticSQL
 			continue
@@ -856,29 +1014,43 @@ func renderPipelineBatch(dialect Dialect, cache *StmtCache, ops []PipelineOp) {
 			}
 		}
 		spans[i].render = true
-		totalEst += estimateOpBytes(op.Desc, &op.Input, &op.Decorators)
+		totalEst += estimateWireOpBytes(op)
 	}
 
 	if totalEst == 0 {
-		return
+		return nil
 	}
 
 	var b strings.Builder
 	b.Grow(totalEst)
 
 	var extra []any
+	var checks []int // per op with forwarded values: start, end of its CheckSQL in the master string
 	for i := range ops {
 		if !spans[i].render {
 			continue
 		}
 		op := &ops[i]
+		var refs *refSlots
+		if op.nRefs > 0 {
+			refs = newRefSlots(op.Args)
+			checks = append(checks, i, b.Len())
+			writeCheckSQL(&b, op)
+			checks = append(checks, b.Len())
+		}
 		spans[i].start = b.Len()
 		extra = extra[:0]
-		streamOpSQL(&b, dialect, op.Desc, &op.Input, &op.Decorators, &extra)
-		if len(extra) > 0 {
-			n := len(op.Args)
-			op.Args = append(op.Args[:n:n], extra...) // never into the pooled argument buffer
-			op.nCondArgs = len(extra)
+		streamOpSQL(&b, dialect, op.Desc, &op.Input, &op.Decorators, &extra, refs)
+		if len(extra) > 0 || refs != nil {
+			// never into the pooled argument buffer
+			args := make([]any, 0, len(op.Args)+len(extra))
+			for _, a := range op.Args {
+				if _, isRef := a.(*argRef); !isRef {
+					args = append(args, a)
+				}
+			}
+			op.origArgs, op.argsRewritten = op.Args, true
+			op.Args = append(args, extra...)
 		}
 		op.overflowGuard = dialect != DialectDollar && (op.Decorators.IsAbort || op.Decorators.AssertRows >= 0)
 		spans[i].end = b.Len()
@@ -890,4 +1062,8 @@ func renderPipelineBatch(dialect Dialect, cache *StmtCache, ops []PipelineOp) {
 			ops[i].SQL = master[spans[i].start:spans[i].end]
 		}
 	}
+	for k := 0; k < len(checks); k += 3 {
+		ops[checks[k]].CheckSQL = master[checks[k+1]:checks[k+2]]
+	}
+	return nil
 }

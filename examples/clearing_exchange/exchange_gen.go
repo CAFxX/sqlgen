@@ -717,6 +717,7 @@ var descGetMarginAccount = &runtime.QueryDescriptor{
 		{Kind: runtime.SlotScalar},
 	},
 	SelectColExprs: []string{"firm_id", "account_id", "status", "collateral_cents", "realized_pnl_cents", "margin_ratio_bps", "kyc_verified", "updated_seq"},
+	ResultCols:     []string{"firm_id", "account_id", "status", "collateral_cents", "realized_pnl_cents", "margin_ratio_bps", "kyc_verified", "updated_seq"},
 }
 
 func expandGetMarginAccountParams(dst *[]any, dialect runtime.Dialect, p paramsGetMarginAccount) error {
@@ -886,6 +887,8 @@ var descGetAccountCollateralCents = &runtime.QueryDescriptor{
 		{Kind: runtime.SlotScalar},
 		{Kind: runtime.SlotScalar},
 	},
+	ResultCols: []string{"collateral_cents"},
+	ResultExpr: "collateral_cents",
 }
 
 func expandGetAccountCollateralCentsParams(dst *[]any, dialect runtime.Dialect, p paramsGetAccountCollateralCents) error {
@@ -3261,11 +3264,13 @@ type paramsTotalExchangeEquityCents struct {
 }
 
 var descTotalExchangeEquityCents = &runtime.QueryDescriptor{
-	Name:      "TotalExchangeEquityCents",
-	StmtID:    21,
-	StmtVerb:  runtime.VerbSelect,
-	StaticSQL: "SELECT COALESCE(SUM(collateral_cents + realized_pnl_cents), 0) AS total_equity\nFROM margin_accounts",
-	Segments:  []string{"SELECT COALESCE(SUM(collateral_cents + realized_pnl_cents), 0) AS total_equity\nFROM margin_accounts"},
+	Name:       "TotalExchangeEquityCents",
+	StmtID:     21,
+	StmtVerb:   runtime.VerbSelect,
+	StaticSQL:  "SELECT COALESCE(SUM(collateral_cents + realized_pnl_cents), 0) AS total_equity\nFROM margin_accounts",
+	Segments:   []string{"SELECT COALESCE(SUM(collateral_cents + realized_pnl_cents), 0) AS total_equity\nFROM margin_accounts"},
+	ResultCols: []string{"total_equity"},
+	ResultExpr: "COALESCE(SUM(collateral_cents + realized_pnl_cents), 0)",
 }
 
 func expandTotalExchangeEquityCentsParams(dst *[]any, dialect runtime.Dialect, p paramsTotalExchangeEquityCents) error {
@@ -3378,6 +3383,8 @@ var descTotalNetPositionBySymbol = &runtime.QueryDescriptor{
 	Slots: []runtime.Slot{
 		{Kind: runtime.SlotScalar},
 	},
+	ResultCols: []string{"net_qty"},
+	ResultExpr: "COALESCE(SUM(net_quantity), 0)",
 }
 
 func expandTotalNetPositionBySymbolParams(dst *[]any, dialect runtime.Dialect, p paramsTotalNetPositionBySymbol) error {
@@ -3488,11 +3495,13 @@ type paramsCountClearingFills struct {
 }
 
 var descCountClearingFills = &runtime.QueryDescriptor{
-	Name:      "CountClearingFills",
-	StmtID:    23,
-	StmtVerb:  runtime.VerbSelect,
-	StaticSQL: "SELECT COUNT(*) AS cnt\nFROM clearing_fills",
-	Segments:  []string{"SELECT COUNT(*) AS cnt\nFROM clearing_fills"},
+	Name:       "CountClearingFills",
+	StmtID:     23,
+	StmtVerb:   runtime.VerbSelect,
+	StaticSQL:  "SELECT COUNT(*) AS cnt\nFROM clearing_fills",
+	Segments:   []string{"SELECT COUNT(*) AS cnt\nFROM clearing_fills"},
+	ResultCols: []string{"cnt"},
+	ResultExpr: "COUNT(*)",
 }
 
 func expandCountClearingFillsParams(dst *[]any, dialect runtime.Dialect, p paramsCountClearingFills) error {
@@ -3605,6 +3614,8 @@ var descCountComplianceNotices = &runtime.QueryDescriptor{
 	Slots: []runtime.Slot{
 		{Kind: runtime.SlotScalar},
 	},
+	ResultCols: []string{"cnt"},
+	ResultExpr: "COUNT(*)",
 }
 
 func expandCountComplianceNoticesParams(dst *[]any, dialect runtime.Dialect, p paramsCountComplianceNotices) error {

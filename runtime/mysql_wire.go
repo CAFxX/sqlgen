@@ -54,6 +54,11 @@ type MySQLFlavor struct {
 	// MariaDB convert the string). A string that would need that form (see WriteLiteral) is then not
 	// inlined: normalize fails with ErrWireNotApplicable and the pipeline runs sequentially.
 	HexLiteralIsNumber bool
+	// Forwarding reports that the server runs what forwarded values (RowFuture.Arg,
+	// ExecFuture.LastInsertIDArg) are made of on this flavor: a user-variable assignment inside an
+	// expression (SELECT ..., (@v:=col); deprecated by MySQL 8.0 but still accepted) and DO
+	// LAST_INSERT_ID(0). Without it a batch with forwarded values is not applicable (it runs sequentially).
+	Forwarding bool
 }
 
 const unsafeBackslashCharsets = "big5 cp932 gb2312 gbk sjis gb18030"
@@ -154,6 +159,9 @@ func resolveMySQLArg(arg any, depth int) (v any, changed bool, err error) {
 func (fl *MySQLFlavor) normalize(args []any) ([]any, error) {
 	out := args
 	for i, a := range args {
+		if _, isRef := a.(*argRef); isRef {
+			continue // written as the producer's session variable (writeArg)
+		}
 		v, changed, err := resolveMySQLArg(a, 0)
 		if err == nil {
 			switch x := v.(type) {
@@ -328,6 +336,8 @@ func (fl *MySQLFlavor) literalBound(arg any) int {
 		return 2*len(x) + len(fl.charset()) + 12
 	case time.Time:
 		return 40
+	case *argRef:
+		return 32
 	}
 	return 0
 }
@@ -368,6 +378,11 @@ func (m *mysqlCursor) writeArg(b *strings.Builder, idx int) {
 			m.st.err = fmt.Errorf("placeholder %d has no argument (%d given): %w", idx, len(m.st.args), ErrWireNotApplicable)
 		}
 		b.WriteString("NULL")
+		return
+	}
+	if r, ok := m.st.args[idx-1].(*argRef); ok {
+		b.WriteString("@sqlgen_v")
+		b.WriteString(strconv.Itoa(r.id))
 		return
 	}
 	m.st.fl.WriteLiteral(b, m.st.args[idx-1])
@@ -417,6 +432,7 @@ const (
 	sumCount                // @sqlgen_n<op>
 	sumCond                 // @sqlgen_c<CondID> of op.Decorators.ProduceCond
 	sumExtra                // @sqlgen_c<CondID> of op.ExtraConds[extra]
+	sumRef                  // @sqlgen_r: the ID of the unresolved forwarded value of a failed consumer
 )
 
 type sumCol struct {
@@ -440,17 +456,28 @@ type MySQLBatch struct {
 }
 
 const (
-	opTrim      uint8 = 1 << iota // the result set has the RETURNING counter as an extra last column
+	opTrim      uint8 = 1 << iota // the result set has the RETURNING counter as an extra column
 	opSavepoint                   // a savepoint is taken right before the operation
+	opTrimVal                     // the result set has a forwarded value's assignment as an extra column
 )
 
 // ResultSetOps returns the indices of the operations whose rows the server returns, in the order of the
 // result sets that carry them. The summary row (if HasSummary) is the result set after the last of them.
 func (m *MySQLBatch) ResultSetOps() []int { return m.sets }
 
-// TrimsLastColumn reports whether the result set of operation i has one more column than the
-// operation's own: the counter that tells how many rows a statement returned. It is the last column.
-func (m *MySQLBatch) TrimsLastColumn(i int) bool { return m.flags[i]&opTrim != 0 }
+// TrimColumns returns how many columns the result set of operation i has beyond the operation's own (the
+// counter that tells how many rows a RETURNING statement returned, the assignment that records a
+// forwarded value). They are the last columns; drop them.
+func (m *MySQLBatch) TrimColumns(i int) int {
+	n := 0
+	if m.flags[i]&opTrim != 0 {
+		n++
+	}
+	if m.flags[i]&opTrimVal != 0 {
+		n++
+	}
+	return n
+}
 
 // HasSummary reports whether the batch ends with the summary row.
 func (m *MySQLBatch) HasSummary() bool { return len(m.sum) > 0 }
@@ -488,12 +515,15 @@ func (m *MySQLBatch) Apply(ops []PipelineOp, row []any) (failed int, err error) 
 		return -1, fmt.Errorf("sqlgen: summary row has %d columns, want %d", len(row), len(m.sum))
 	}
 	failed = -1
+	refID := 0
 	for i, c := range m.sum {
 		v, ok := summaryInt(row[i])
 		if !ok {
 			return -1, fmt.Errorf("sqlgen: summary column %d is %v, want an integer", i, row[i])
 		}
 		switch c.kind {
+		case sumRef:
+			refID = int(v)
 		case sumFail:
 			failed = int(v)
 		case sumCount:
@@ -509,6 +539,27 @@ func (m *MySQLBatch) Apply(ops []PipelineOp, row []any) (failed int, err error) 
 	}
 	if failed < 0 {
 		return -1, nil
+	}
+	if failed >= len(ops) && failed < 2*len(ops) {
+		// A consumer whose forwarded value is unresolved (it did not run): failed is len(ops) + its index.
+		failed -= len(ops)
+		op := &ops[failed]
+		r := op.refByID(refID)
+		if r == nil {
+			return -1, fmt.Errorf("sqlgen: summary names forwarded value %d, which operation %d does not use", refID, failed)
+		}
+		var got int64
+		known := false
+		if j := opIndex(ops, r.op); j >= 0 {
+			for i, c := range m.sum {
+				if c.kind == sumCount && c.op == j {
+					got, known = summaryInt(row[i])
+				}
+			}
+		}
+		aerr := r.argError(op, got, known)
+		op.Err = aerr
+		return failed, aerr
 	}
 	if failed >= len(ops) {
 		return -1, fmt.Errorf("sqlgen: summary names operation %d of %d as failed", failed, len(ops))
@@ -528,6 +579,16 @@ func (m *MySQLBatch) Apply(ops []PipelineOp, row []any) (failed int, err error) 
 	}
 	op.Err = aerr
 	return failed, aerr
+}
+
+// opIndex returns the index in ops of the operation op (a pointer to the pipeline's own copy), or -1.
+func opIndex(ops []PipelineOp, op *PipelineOp) int {
+	for j := range ops {
+		if ops[j].opIdx == op.opIdx {
+			return j
+		}
+	}
+	return -1
 }
 
 func summaryInt(v any) (int64, bool) {
@@ -626,16 +687,26 @@ func RenderMySQLBatch(ops []PipelineOp, o MySQLRenderOptions) (*MySQLBatch, erro
 	}
 	r.b.Grow(est)
 
-	hasFail := false
+	hasFail, hasRefs := false, false
 	for i := range ops {
-		if ops[i].Decorators.IsAbort || ops[i].Decorators.AssertRows >= 0 {
+		if ops[i].Decorators.IsAbort || ops[i].Decorators.AssertRows >= 0 || ops[i].nRefs > 0 {
 			hasFail = true
+		}
+		if ops[i].nRefs > 0 || len(ops[i].Decorators.ValRecs) > 0 {
+			if !o.Flavor.Forwarding {
+				return nil, fmt.Errorf("%s: the server does not run what forwarded values are made of: %w", opLabel(&ops[i]), ErrWireNotApplicable)
+			}
+			hasRefs = hasRefs || ops[i].nRefs > 0
 		}
 	}
 	r.b.WriteString("SET @sqlgen_p=-1;")
 	if hasFail {
 		r.b.WriteString("SET @sqlgen_f=-1;")
 		r.batch.sum = append(r.batch.sum, sumCol{kind: sumFail})
+	}
+	if hasRefs {
+		r.b.WriteString("SET @sqlgen_r=0;")
+		r.batch.sum = append(r.batch.sum, sumCol{kind: sumRef})
 	}
 	if r.batch.own {
 		if err := mysqlBeginSQL(&r.b, o.TxOpts); err != nil {
@@ -646,6 +717,9 @@ func RenderMySQLBatch(ops []PipelineOp, o MySQLRenderOptions) (*MySQLBatch, erro
 	failGate := false
 	for i := range ops {
 		r.spans[2*i] = r.b.Len()
+		if ops[i].nRefs > 0 {
+			failGate = true // the consumer itself is gated on its own check
+		}
 		if err := r.renderOp(i, &ops[i], failGate); err != nil {
 			return nil, fmt.Errorf("%s: %w", opLabel(&ops[i]), err)
 		}
@@ -684,6 +758,8 @@ func RenderMySQLBatch(ops []PipelineOp, o MySQLRenderOptions) (*MySQLBatch, erro
 			case sumExtra:
 				r.b.WriteString("@sqlgen_c")
 				r.num(ops[c.op].ExtraConds[c.extra].CondID)
+			case sumRef:
+				r.b.WriteString("@sqlgen_r")
 			}
 		}
 		r.b.WriteByte(';')

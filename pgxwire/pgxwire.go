@@ -119,6 +119,7 @@ const (
 	roleCommit
 	roleSavepoint // SAVEPOINT before a guarded operation of a user-managed transaction
 	roleRelease   // RELEASE of the first savepoint (and with it every later one)
+	roleCheck     // op.CheckSQL: fails when a forwarded value of the operation is unresolved
 )
 
 type stmtRef struct {
@@ -176,13 +177,18 @@ func (c *conn) exec(ctx context.Context, tx bool, txOpts *sql.TxOptions, ops []r
 			return fmt.Errorf("pgxwire: %s: %w (the single-round-trip path sends arguments without declared types: convert the value yourself or give its placeholder an explicit cast in the SQL, for example $N::text; see DOCS.md section 3.4)", opName(op), err)
 		}
 		ref := stmtRef{role: roleOp, op: op}
-		if userTx && (op.Decorators.AssertRows >= 0 || op.Decorators.IsAbort) {
+		if userTx && (op.Decorators.AssertRows >= 0 || op.Decorators.IsAbort || op.CheckSQL != "") {
 			ref.savepoint = savepointName(i)
 			batch.ExecParams("SAVEPOINT "+ref.savepoint, nil, nil, nil, nil)
 			refs = append(refs, stmtRef{role: roleSavepoint, savepoint: ref.savepoint})
 			if firstSavepoint == "" {
 				firstSavepoint = ref.savepoint
 			}
+		}
+		if op.CheckSQL != "" {
+			// Fails before the operation runs when one of its forwarded values is unresolved.
+			batch.ExecParams(op.CheckSQL, nil, nil, nil, nil)
+			refs = append(refs, stmtRef{role: roleCheck, op: op, savepoint: ref.savepoint})
 		}
 		for _, r := range raws {
 			eqb.ParamFormats[r.idx] = pgx.BinaryFormatCode
@@ -264,6 +270,12 @@ func (c *conn) fail(ctx context.Context, pg *pgconn.PgConn, tx bool, refs []stmt
 		return err
 	}
 	switch ref := refs[failed]; ref.role {
+	case roleCheck:
+		terr := runtime.TranslateWireError(ref.op, err)
+		if ref.savepoint != "" && isGuardError(ref.op, terr) {
+			c.rollbackToSavepoint(ctx, pg, ref.savepoint, refs)
+		}
+		return terr
 	case roleOp:
 		terr := runtime.TranslateWireError(ref.op, err)
 		if ref.savepoint != "" && isGuardError(ref.op, terr) {
@@ -333,7 +345,8 @@ func savepointName(opIndex int) string { return "sqlgen_sp" + strconv.Itoa(opInd
 // isGuardError reports whether err is the assertion / abort error TranslateWireError made of the
 // guard's own failure on op (as opposed to a database error of the caller's statement).
 func isGuardError(op *runtime.PipelineOp, err error) bool {
-	if _, ok := err.(*runtime.AssertionError); ok {
+	switch err.(type) {
+	case *runtime.AssertionError, *runtime.ArgError:
 		return true
 	}
 	return op.Decorators.IsAbort && op.AbortErr != nil && err == op.AbortErr

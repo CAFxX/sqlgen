@@ -159,7 +159,7 @@ func TestRealEngineWirePipelineTxIsOneRoundTrip(t *testing.T) {
 		seedItems(t, db)
 		ctx := ctxT(t)
 
-		loads := []workload{transferN(1), transferN(3), transferN(10), mixedWorkload}
+		loads := []workload{transferN(1), transferN(3), transferN(10), mixedWorkload, forwardWorkload}
 		type result struct{ firstSeen, warmed int64 }
 		results := map[string][2]result{} // [sequential, wire]
 

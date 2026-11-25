@@ -865,18 +865,43 @@ func TestPropertyEstimateOpBytesStrictUpperBound(t *testing.T) {
 			t.Fatalf("iter %d: estimateOpBytes (%d) < len(BuildComposedSQL) (%d) for dialect=%v", iter, estPlain, len(renderedPlain), dialect)
 		}
 
-		// Also verify pipeline decorated rendering via renderPipelineBatch
+		// Also verify pipeline decorated rendering via renderPipelineBatch, with forwarded values on the
+		// $N dialect: a recorded value (producer) and/or the first placeholder reading one (consumer).
+		args := []any{int64(1), int64(2)}
+		nRefs := 0
+		if dialect == DialectDollar && !dec.IsAbort {
+			if rng.IntN(2) == 0 {
+				dec.ValRecs = append(dec.ValRecs, ValRec{ID: rng.IntN(1000) + 1, Col: fmt.Sprintf("col_with_a_long_name_%d", rng.IntN(1000))})
+			}
+			if rng.IntN(2) == 0 {
+				desc.Slots[2].Cast = [...]string{"", "bigint", "double precision"}[rng.IntN(3)]
+				producer := &PipelineOp{}
+				args[0] = &argRef{op: producer, id: rng.IntN(100000) + 1}
+				nRefs = 1
+				if rng.IntN(2) == 0 {
+					args[1] = &argRef{op: producer, id: rng.IntN(100000) + 1}
+					nRefs = 2
+				}
+			}
+		}
 		ops := []PipelineOp{{
 			StmtID:        desc.StmtID,
 			Desc:          desc,
 			Input:         in,
 			Decorators:    dec,
 			HasResultCols: true,
+			Args:          args,
+			nRefs:         nRefs,
 		}}
-		estDec := estimateOpBytes(desc, &in, &dec)
-		renderPipelineBatch(dialect, nil, ops)
-		if len(ops[0].SQL) > estDec {
-			t.Fatalf("iter %d: estimateOpBytes (%d) < len(op.SQL) (%d) for decorated op: %s", iter, estDec, len(ops[0].SQL), ops[0].SQL)
+		estDec := estimateWireOpBytes(&ops[0])
+		if err := renderPipelineBatch(dialect, nil, ops); err != nil {
+			t.Fatal(err)
+		}
+		if got := len(ops[0].SQL) + len(ops[0].CheckSQL); got > estDec {
+			t.Fatalf("iter %d: estimateWireOpBytes (%d) < rendered (%d) for decorated op: %s; %s", iter, estDec, got, ops[0].SQL, ops[0].CheckSQL)
+		}
+		if nRefs > 0 && (ops[0].CheckSQL == "" || len(ops[0].Args) != 2-nRefs) {
+			t.Fatalf("iter %d: check %q args %v", iter, ops[0].CheckSQL, ops[0].Args)
 		}
 	}
 

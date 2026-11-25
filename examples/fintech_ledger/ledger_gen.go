@@ -183,6 +183,7 @@ var descGetAccount = &runtime.QueryDescriptor{
 		{Kind: runtime.SlotScalar},
 	},
 	SelectColExprs: []string{"org_id", "id", "currency", "balance_cents", "status"},
+	ResultCols:     []string{"org_id", "id", "currency", "balance_cents", "status"},
 }
 
 func expandGetAccountParams(dst *[]any, dialect runtime.Dialect, p paramsGetAccount) error {
@@ -338,6 +339,8 @@ var descTotalSupplyByOrg = &runtime.QueryDescriptor{
 	Slots: []runtime.Slot{
 		{Kind: runtime.SlotScalar},
 	},
+	ResultCols: []string{"total_cents"},
+	ResultExpr: "COALESCE(SUM(balance_cents), 0)",
 }
 
 func expandTotalSupplyByOrgParams(dst *[]any, dialect runtime.Dialect, p paramsTotalSupplyByOrg) error {

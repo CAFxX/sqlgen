@@ -115,3 +115,72 @@ statements:
   - name: NamesByIDs
     kind: many
     sql: SELECT name:string FROM sg_items WHERE id IN (:ids:[]int64 ASC) ORDER BY id
+
+  # ---- value forwarding between pipeline operations (wire_forward_test.go) ----
+  - name: FwdScoreOf
+    kind: one
+    sql: SELECT score AS fwd:int64 FROM sg_items WHERE id = :id:int64
+
+  - name: FwdIDsByStatus
+    kind: one
+    sql: SELECT id:int64 FROM sg_items WHERE status = :status:string ORDER BY id
+
+  - name: FwdSetScore
+    kind: exec
+    sql: UPDATE sg_items SET score = :score:Arg[int64] WHERE id = :id:Arg[int64]
+
+  - name: FwdInsertItem
+    kind: exec
+    sql: |
+      INSERT INTO sg_items (id, org_id, name, score, status)
+      VALUES (:id:Arg[int64], 1, :name:string, :score:Arg[int64], 'fwd')
+
+  - name: FwdItemsAbove
+    kind: many
+    sql: SELECT id:int64 FROM sg_items WHERE score > :min:Arg[int64] ORDER BY id
+
+  # one producer per forwarded type, one consumer for all of them (TestRealEngineForwardTypeFidelity)
+  - name: FwdSrcI8
+    kind: one
+    sql: SELECT i8 AS v:int64 FROM sg_fwd_src WHERE k = :k:string
+  - name: FwdSrcI8N
+    kind: one
+    sql: SELECT i8n AS v:*int64 FROM sg_fwd_src WHERE k = :k:string
+  - name: FwdSrcS
+    kind: one
+    sql: SELECT s AS v:string FROM sg_fwd_src WHERE k = :k:string
+  - name: FwdSrcTS
+    kind: one
+    sql: SELECT ts AS v:time.Time FROM sg_fwd_src WHERE k = :k:string
+  - name: FwdSrcTSL
+    kind: one
+    sql: SELECT tsl AS v:time.Time FROM sg_fwd_src WHERE k = :k:string
+  - name: FwdSrcB
+    kind: one
+    sql: SELECT b AS v:[]byte FROM sg_fwd_src WHERE k = :k:string
+  - name: FwdSrcBo
+    kind: one
+    sql: SELECT bo AS v:bool FROM sg_fwd_src WHERE k = :k:string
+  - name: FwdSrcF8
+    kind: one
+    sql: SELECT f8 AS v:float64 FROM sg_fwd_src WHERE k = :k:string
+  - name: FwdSrcU
+    kind: one
+    sql: SELECT u AS v:string FROM sg_fwd_src WHERE k = :k:string
+  - name: FwdDst
+    kind: exec
+    sql: |
+      INSERT INTO sg_fwd_dst (k, i8, i8n, s, ts, tsl, b, bo, f8, u)
+      VALUES (:k:string, :i8:Arg[int64], :i8n:Arg[*int64], :s:Arg[string], :ts:Arg[time.Time], :tsl:Arg[time.Time],
+        :b:Arg[[]byte], :bo:Arg[bool], :f8:Arg[float64], :u:Arg[string])
+
+  # AUTO_INCREMENT ids forwarded with LastInsertIDArg (MySQL family)
+  - name: FwdAutoInsert
+    kind: exec
+    sql: INSERT INTO sg_fwd_auto (v) VALUES (:v:int64)
+  - name: FwdAutoInsertIgnore
+    kind: exec
+    sql: INSERT IGNORE INTO sg_fwd_auto (id, v) VALUES (:id:int64, :v:int64)
+  - name: FwdAutoInsertTwo
+    kind: exec
+    sql: INSERT INTO sg_fwd_auto (v) VALUES (:a:int64), (:b:int64)

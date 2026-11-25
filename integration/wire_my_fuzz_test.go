@@ -26,6 +26,18 @@ type myFuzzGen struct {
 	kinds     []string
 	ifs       []*runtime.IfResult
 	trace     []string
+	// avail are the forwarded values a consumer queued here may use (see fuzzGen.avail)
+	avail []runtime.Arg[int64]
+}
+
+// fwdArg returns a forwarded value in scope, or (sometimes, or when there is none) a plain one.
+func (g *myFuzzGen) fwdArg() (runtime.Arg[int64], string) {
+	if len(g.avail) == 0 || g.rnd.IntN(4) == 0 {
+		v := int64(g.rnd.IntN(70))
+		return runtime.Val(v), fmt.Sprint(v)
+	}
+	k := g.rnd.IntN(len(g.avail))
+	return g.avail[k], fmt.Sprintf("v%d", k)
 }
 
 func (g *myFuzzGen) tr(depth int, f string, a ...any) {
@@ -97,8 +109,8 @@ func (g *myFuzzGen) maybeAssertRows(depth int, f myFut, mod int) {
 func (g *myFuzzGen) gen(p myPipe, depth, n int) {
 	for i := 0; i < n; i++ {
 		id := int64(g.rnd.IntN(5) + 1)
-		k := g.rnd.IntN(13)
-		if !g.returning && k >= 11 {
+		k := g.rnd.IntN(17)
+		if !g.returning && (k == 11 || k == 12) {
 			k -= 11 // no RETURNING on MySQL: more plain writes instead
 		}
 		switch {
@@ -147,8 +159,10 @@ func (g *myFuzzGen) gen(p myPipe, depth, n int) {
 			cond := g.cond()
 			g.tr(depth, "if (%d futures so far)", len(g.futs))
 			hasElse := g.rnd.IntN(2) == 0
+			mark := len(g.avail)
 			r := p.If(cond, func(p myPipe) {
 				g.gen(p, depth+1, 1+g.rnd.IntN(3))
+				g.avail = g.avail[:mark]
 			}, func() func(myPipe) {
 				if !hasElse {
 					return nil
@@ -156,6 +170,7 @@ func (g *myFuzzGen) gen(p myPipe, depth, n int) {
 				return func(p myPipe) {
 					g.tr(depth, "else")
 					g.gen(p, depth+1, 1+g.rnd.IntN(2))
+					g.avail = g.avail[:mark]
 				}
 			}())
 			g.ifs = append(g.ifs, r)
@@ -187,6 +202,53 @@ func (g *myFuzzGen) gen(p myPipe, depth, n int) {
 			}
 			g.maybeAssertRows(depth, f, 3)
 			g.add("delret", f)
+		case k == 13 || k == 14:
+			// a producer of a forwarded value: 0 or 1 rows, several rows, exactly one row, a RETURNING id
+			// (MariaDB). Generated ids (LastInsertIDArg) are TestRealEngineForwardLastInsertID's: their values
+			// depend on the AUTO_INCREMENT counter, which only a (slow) TRUNCATE per run would make repeatable.
+			var f myFut
+			var a runtime.Arg[int64]
+			switch x := g.rnd.IntN(4); {
+			case x == 0:
+				f, a = p.FwdScoreOf(id)
+				g.tr(depth, "v%d = score of %d", len(g.avail), id)
+			case x == 1:
+				st := []string{"new", "active"}[g.rnd.IntN(2)]
+				f, a = p.FwdIDsByStatus(st)
+				g.tr(depth, "v%d = ids with status %s", len(g.avail), st)
+			case x == 2 || !g.returning:
+				f, a = p.CountOrgItems(1)
+				g.tr(depth, "v%d = count", len(g.avail))
+			default:
+				f, a = p.FwdInsertReturningID(id + int64(g.rnd.IntN(2))*30)
+				g.tr(depth, "v%d = insert returning", len(g.avail))
+			}
+			if g.rnd.IntN(6) == 0 {
+				f.assertFound()
+				g.tr(depth, " assertFound")
+			}
+			g.avail = append(g.avail, a)
+			g.add("fwd", f)
+		case k == 15 || k == 16:
+			// a consumer
+			a, as := g.fwdArg()
+			switch g.rnd.IntN(3) {
+			case 0:
+				b, bs := g.fwdArg()
+				f := p.FwdSetScore(a, b)
+				g.tr(depth, "set score=%s where id=%s", as, bs)
+				if g.rnd.IntN(3) == 0 {
+					f.assertRows(1)
+					g.tr(depth, " assert 1")
+				}
+				g.add("fwdset", f)
+			case 1:
+				g.tr(depth, "items above %s", as)
+				g.add("fwdabove", p.FwdItemsAbove(a))
+			default:
+				g.tr(depth, "insert %d score %s", id+40, as)
+				g.add("fwdins", p.FwdInsertItem(id+40, a))
+			}
 		}
 	}
 }
@@ -272,12 +334,18 @@ func TestRealEngineMySQLPipelineDifferentialFuzz(t *testing.T) {
 		dsn := os.Getenv(e.env)
 		setupItems(t, db)
 		pr := openMyPair(t, db, dsn)
-		bad := 0
+		bad, fwd, unresolved := 0, 0, 0
 		for mi, mode := range []string{"PipelineTx", "standalone Flush", "user-managed tx"} {
 			for i := 0; i < perMode; i++ {
 				seed := uint64(1000*(mi+1) + i) // fixed seeds: a failure names the seed and is reproducible
 				w, wtrace := myFuzzRun(t, e, pr, true, seed, mode)
 				s, _ := myFuzzRun(t, e, pr, false, seed, mode)
+				if strings.Contains(wtrace, " = ") {
+					fwd++
+				}
+				if strings.Contains(w, "ErrArgUnresolved") {
+					unresolved++
+				}
 				if w != s {
 					bad++
 					if bad <= 5 {
@@ -286,6 +354,7 @@ func TestRealEngineMySQLPipelineDifferentialFuzz(t *testing.T) {
 				}
 			}
 		}
+		t.Logf("%d of %d pipelines forwarded values, %d failed with ErrArgUnresolved", fwd, 3*perMode, unresolved)
 		if bad > 0 {
 			t.Errorf("%d of %d pipelines diverged", bad, 3*perMode)
 		}

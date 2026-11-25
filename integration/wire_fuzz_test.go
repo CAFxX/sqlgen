@@ -30,6 +30,8 @@ type fuzzFut struct {
 	r    *runtime.RowFuture[pgq.Item]
 	s    *runtime.SliceFuture[pgq.Item]
 	w    *runtime.SliceFuture[pgq.Written]
+	n    *runtime.RowFuture[int64]   // a producer of a forwarded value
+	ns   *runtime.SliceFuture[int64] // FwdItemsAbove
 }
 
 // fuzzCondSrc is what every future offers for building conditions.
@@ -51,6 +53,10 @@ func (f fuzzFut) src() fuzzCondSrc {
 		return f.s
 	case f.w != nil:
 		return f.w
+	case f.n != nil:
+		return f.n
+	case f.ns != nil:
+		return f.ns
 	}
 	return f.e
 }
@@ -60,6 +66,19 @@ type fuzzGen struct {
 	futs  []fuzzFut
 	ifs   []*runtime.IfResult
 	trace []string
+	// avail are the forwarded values a consumer queued here may use: those produced in this If branch or
+	// in an enclosing one (a value from a sibling branch is a build error by design, not fuzzed).
+	avail []runtime.Arg[int64]
+}
+
+// fwdArg returns a forwarded value in scope, or (sometimes, or when there is none) a plain one.
+func (g *fuzzGen) fwdArg() (runtime.Arg[int64], string) {
+	if len(g.avail) == 0 || g.rnd.IntN(4) == 0 {
+		v := int64(g.rnd.IntN(70))
+		return runtime.Val(v), fmt.Sprint(v)
+	}
+	k := g.rnd.IntN(len(g.avail))
+	return g.avail[k], fmt.Sprintf("v%d", k)
 }
 
 func (g *fuzzGen) tr(depth int, f string, a ...any) {
@@ -121,7 +140,7 @@ func (g *fuzzGen) cond() runtime.PipelineCond {
 func (g *fuzzGen) gen(p *pgq.Pipeline, depth, n int) {
 	for i := 0; i < n; i++ {
 		id := int64(g.rnd.IntN(5) + 1)
-		switch k := g.rnd.IntN(13); {
+		switch k := g.rnd.IntN(16); {
 		case k == 0:
 			f := p.InsertItem(id, 1, "n", int64(g.rnd.IntN(100)), "new")
 			g.tr(depth, "insert %d", id)
@@ -175,8 +194,10 @@ func (g *fuzzGen) gen(p *pgq.Pipeline, depth, n int) {
 			cond := g.cond()
 			g.tr(depth, "if (%d futures so far)", len(g.futs))
 			hasElse := g.rnd.IntN(2) == 0
+			mark := len(g.avail)
 			r := p.If(cond, func(p *pgq.Pipeline) {
 				g.gen(p, depth+1, 1+g.rnd.IntN(3))
+				g.avail = g.avail[:mark]
 			}, func() func(*pgq.Pipeline) {
 				if !hasElse {
 					return nil
@@ -184,6 +205,7 @@ func (g *fuzzGen) gen(p *pgq.Pipeline, depth, n int) {
 				return func(p *pgq.Pipeline) {
 					g.tr(depth, "else")
 					g.gen(p, depth+1, 1+g.rnd.IntN(2))
+					g.avail = g.avail[:mark]
 				}
 			}())
 			g.ifs = append(g.ifs, r)
@@ -202,6 +224,50 @@ func (g *fuzzGen) gen(p *pgq.Pipeline, depth, n int) {
 				g.tr(depth, " assertRows %d", x)
 			}
 			g.futs = append(g.futs, fuzzFut{kind: "bump", w: f})
+		case k == 12 || k == 13:
+			// a producer of a forwarded value: 0 or 1 rows, several rows, exactly one row, a RETURNING id
+			var f *runtime.RowFuture[int64]
+			switch g.rnd.IntN(4) {
+			case 0:
+				f = p.FwdScoreOf(id)
+				g.tr(depth, "v%d = score of %d", len(g.avail), id)
+			case 1:
+				st := []string{"new", "active"}[g.rnd.IntN(2)]
+				f = p.FwdIDsByStatus(st)
+				g.tr(depth, "v%d = ids with status %s", len(g.avail), st)
+			case 2:
+				f = p.CountOrgItems(1)
+				g.tr(depth, "v%d = count", len(g.avail))
+			default:
+				f = p.FwdInsertReturningID(id+int64(g.rnd.IntN(2))*30, 1, "r")
+				g.tr(depth, "v%d = insert returning", len(g.avail))
+			}
+			if g.rnd.IntN(6) == 0 {
+				f.AssertFound()
+				g.tr(depth, " assertFound")
+			}
+			g.avail = append(g.avail, f.Arg())
+			g.futs = append(g.futs, fuzzFut{kind: "fwd", n: f})
+		case k == 14 || k == 15:
+			// a consumer
+			a, as := g.fwdArg()
+			switch g.rnd.IntN(3) {
+			case 0:
+				b, bs := g.fwdArg()
+				f := p.FwdSetScore(a, b)
+				g.tr(depth, "set score=%s where id=%s", as, bs)
+				if g.rnd.IntN(3) == 0 {
+					f.AssertRows(1)
+					g.tr(depth, " assert 1")
+				}
+				g.futs = append(g.futs, fuzzFut{kind: "fwdset", e: f})
+			case 1:
+				g.tr(depth, "items above %s", as)
+				g.futs = append(g.futs, fuzzFut{kind: "fwdabove", ns: p.FwdItemsAbove(a)})
+			default:
+				g.tr(depth, "insert %d score %s", id+40, as)
+				g.futs = append(g.futs, fuzzFut{kind: "fwdins", e: p.FwdInsertItem(runtime.Val(id+40), "f", a)})
+			}
 		}
 	}
 }
@@ -213,7 +279,7 @@ func fuzzClassify(err error) string {
 		return "ok"
 	case errors.Is(err, errFuzzAbort):
 		return "abort"
-	case errors.Is(err, runtime.ErrAssertionFailed):
+	case errors.Is(err, runtime.ErrAssertionFailed), errors.Is(err, runtime.ErrArgUnresolved):
 		return errKind(err)
 	case errors.As(err, &pe):
 		return "pg" + pe.Code
@@ -249,6 +315,12 @@ func (g *fuzzGen) describe(err error) string {
 			v = slices.Clone(v)
 			slices.SortFunc(v, func(a, b pgq.Written) int { return cmp.Compare(a.ID, b.ID) })
 			fmt.Fprintf(&sb, " bump[%v,%s,sk=%v]", v, fuzzClassify(e), errors.Is(e, runtime.ErrBranchNotTaken))
+		case f.n != nil:
+			v, e := f.n.Get()
+			fmt.Fprintf(&sb, " fwd[%v,%s,sk=%v]", v, fuzzClassify(e), errors.Is(e, runtime.ErrBranchNotTaken))
+		case f.ns != nil:
+			v, e := f.ns.Get()
+			fmt.Fprintf(&sb, " above[%v,%s,sk=%v]", v, fuzzClassify(e), errors.Is(e, runtime.ErrBranchNotTaken))
 		}
 	}
 	return sb.String()
@@ -304,12 +376,18 @@ func TestRealEnginePipelineDifferentialFuzz(t *testing.T) {
 		dsn := os.Getenv(e.env)
 		setupItems(t, db)
 		wire, plain := openWire(t, dsn, true), openWire(t, dsn, false)
-		bad := 0
+		bad, fwd, unresolved := 0, 0, 0
 		for mi, mode := range []string{"PipelineTx", "standalone Flush", "user-managed tx"} {
 			for i := 0; i < perMode; i++ {
 				seed := uint64(1000*(mi+1) + i) // fixed seeds: a failure names the seed and is reproducible
 				w, wtrace := fuzzRun(t, wire, seed, mode)
 				s, _ := fuzzRun(t, plain, seed, mode)
+				if strings.Contains(wtrace, " = ") {
+					fwd++
+				}
+				if strings.Contains(w, "ErrArgUnresolved") {
+					unresolved++
+				}
 				if w != s {
 					bad++
 					if bad <= 5 {
@@ -318,6 +396,7 @@ func TestRealEnginePipelineDifferentialFuzz(t *testing.T) {
 				}
 			}
 		}
+		t.Logf("%d of %d pipelines forwarded values, %d failed with ErrArgUnresolved", fwd, 3*perMode, unresolved)
 		if bad > 0 {
 			t.Errorf("%d of %d pipelines diverged", bad, 3*perMode)
 		}

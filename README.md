@@ -55,7 +55,8 @@ wire-limit-aware batching and streaming, optional `{?Flag: ...}` blocks, keyset 
 composable sub-queries, deadlock-avoiding presorting, automatic transaction retries, and single-roundtrip
 `Pipeline`/`PipelineTx` with server-side assertions and `If/Then/Else`: with the `pgxwire` driver on PostgreSQL,
 CockroachDB or YugabyteDB, or the `mysqlwire` driver on MySQL, MariaDB or TiDB, a whole transaction (`BEGIN`, every statement,
-`COMMIT`) is one network round-trip, measured, with `CacheStats` counters to verify it. A two-tier adaptive statement cache
+`COMMIT`) is one network round-trip, measured, with `CacheStats` counters to verify it, also when a later statement uses a
+value an earlier one produced (`:order_id:Arg[int64]` fed by `order.Arg()`, the id an `INSERT ... RETURNING` generated). A two-tier adaptive statement cache
 (rendered SQL, then prepared statements) keeps hot statements prepared without any caller bookkeeping.
 
 **Documentation:** [DOCS.md](DOCS.md) is the user manual and DSL cookbook; [SPEC.md](SPEC.md) is the

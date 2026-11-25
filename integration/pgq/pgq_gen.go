@@ -10,6 +10,7 @@ import (
 	"slices"
 	"sync"
 	"sync/atomic"
+	"time"
 )
 
 const sqlDialect = runtime.DialectDollar
@@ -20,7 +21,7 @@ type Queries struct {
 	cache       *runtime.StmtCache
 	txCache     *runtime.TxStmtCache
 	usePrepared bool
-	fastSlots   *[5]atomic.Pointer[runtime.ManagedStmt]
+	fastSlots   *[21]atomic.Pointer[runtime.ManagedStmt]
 }
 
 // New creates a new Queries instance with a dedicated StmtCache configured by opts. The views made by
@@ -30,7 +31,7 @@ func New(db *sql.DB, opts ...runtime.CacheOption) *Queries {
 		db:          db,
 		cache:       runtime.NewStmtCache(opts...),
 		usePrepared: true,
-		fastSlots:   new([5]atomic.Pointer[runtime.ManagedStmt]),
+		fastSlots:   new([21]atomic.Pointer[runtime.ManagedStmt]),
 	}
 }
 
@@ -496,6 +497,7 @@ var descGetItem = &runtime.QueryDescriptor{
 		{Kind: runtime.SlotScalar},
 	},
 	SelectColExprs: []string{"id", "org_id", "name", "score", "status"},
+	ResultCols:     []string{"id", "org_id", "name", "score", "status"},
 }
 
 func expandGetItemParams(dst *[]any, dialect runtime.Dialect, p paramsGetItem) error {
@@ -3467,6 +3469,8 @@ var descCountOrgItems = &runtime.QueryDescriptor{
 	Slots: []runtime.Slot{
 		{Kind: runtime.SlotScalar},
 	},
+	ResultCols: []string{"n"},
+	ResultExpr: "COUNT(*)",
 }
 
 func expandCountOrgItemsParams(dst *[]any, dialect runtime.Dialect, p paramsCountOrgItems) error {
@@ -3808,7 +3812,1878 @@ func (pl *Pipeline) NamesByIDs(ids []int64) *runtime.SliceFuture[string] {
 	)
 }
 
-const stmtIDInsertedIDs uint32 = 19
+const stmtIDFwdScoreOf uint32 = 19
+
+type paramsFwdScoreOf struct {
+	ID int64
+}
+
+var descFwdScoreOf = &runtime.QueryDescriptor{
+	Name:      "FwdScoreOf",
+	StmtID:    19,
+	StmtVerb:  runtime.VerbSelect,
+	StaticSQL: "SELECT score AS fwd FROM sg_items WHERE id = $1",
+	Segments:  []string{"SELECT score AS fwd FROM sg_items WHERE id = ", ""},
+	Slots: []runtime.Slot{
+		{Kind: runtime.SlotScalar},
+	},
+	ResultCols: []string{"fwd"},
+	ResultExpr: "score",
+}
+
+func expandFwdScoreOfParams(dst *[]any, dialect runtime.Dialect, p paramsFwdScoreOf) error {
+	_ = dialect
+	_ = p
+	*dst = append(*dst, p.ID)
+	return nil
+}
+
+func expandFwdScoreOfArgs(dst *[]any, dialect runtime.Dialect, q *runtime.Query) error {
+	return expandFwdScoreOfParams(dst, dialect, q.Params.(paramsFwdScoreOf))
+}
+
+func computeFwdScoreOfKey(p paramsFwdScoreOf) (runtime.VariantKey, uint64, uint64, int) {
+	_ = p
+	var colMask uint64
+	var flagMask uint64
+	var orderSpec runtime.Order
+	var hasSeek bool
+	orderKey := runtime.EncodeOrderKey(orderSpec, hasSeek)
+	approxArgs := 5
+	vk := runtime.MakeVariantKey(stmtIDFwdScoreOf, colMask, flagMask, orderKey)
+	return vk, colMask, flagMask, approxArgs
+}
+
+// FwdScoreOfQuery constructs a composable runtime.Query without executing it (stateless: no Queries or DB needed).
+func FwdScoreOfQuery(id int64) runtime.Query {
+	p := paramsFwdScoreOf{
+		ID: id,
+	}
+	_, colMask, flagMask, _ := computeFwdScoreOfKey(p)
+	in := runtime.RenderInput{
+		ColMask:  colMask,
+		FlagMask: flagMask,
+	}
+	orderKey := runtime.EncodeOrderKey(in.OrderSpec, in.HasSeek)
+	shapeTag := runtime.ComputeSubqueryShape(stmtIDFwdScoreOf, colMask, flagMask, orderKey, false)
+	return runtime.Query{
+		StmtID:   stmtIDFwdScoreOf,
+		Desc:     descFwdScoreOf,
+		Input:    in,
+		Params:   p,
+		Expand:   expandFwdScoreOfArgs,
+		ShapeTag: shapeTag,
+	}
+}
+
+func scanFwdScoreOfRow(scanner interface{ Scan(...any) error }, dst *int64, colMask uint64, p paramsFwdScoreOf) error {
+	_ = colMask
+	_ = p
+	var item int64
+	scanDest := [1]any{&item}
+	scanSlice := scanDest[:1]
+	if err := scanner.Scan(scanSlice...); err != nil {
+		return err
+	}
+	*dst = item
+	return nil
+}
+
+func (q *Queries) FwdScoreOf(ctx context.Context, id int64) (int64, error) {
+	var zero int64
+	p := paramsFwdScoreOf{
+		ID: id,
+	}
+	vk, colMask, flagMask, approxArgs := computeFwdScoreOfKey(p)
+	_ = colMask
+	argBuf := runtime.AcquireArgsCap(approxArgs)
+	defer runtime.ReleaseArgs(argBuf)
+	_ = expandFwdScoreOfParams(argBuf, sqlDialect, p)
+	in := runtime.RenderInput{
+		ColMask:  colMask,
+		FlagMask: flagMask,
+	}
+	sqlRow, ms, err := q.cache.QueryRow(ctx, q.db, q.txCache, q.usePrepared, vk, stmtIDFwdScoreOf, runtime.ComputeBatchShapeTag(colMask, flagMask), 0, &q.fastSlots[5], sqlDialect, descFwdScoreOf, &in, (*argBuf)...)
+	if err != nil {
+		return zero, err
+	}
+	var item int64
+	err = scanFwdScoreOfRow(sqlRow, &item, colMask, p)
+	_ = ms.Release()
+	if err != nil {
+		return zero, err
+	}
+	return item, nil
+}
+
+func (pl *Pipeline) FwdScoreOf(id int64) *runtime.RowFuture[int64] {
+	p := paramsFwdScoreOf{
+		ID: id,
+	}
+	vk, colMask, flagMask, approxArgs := computeFwdScoreOfKey(p)
+	argBuf := runtime.AcquireArgsCap(approxArgs)
+	expandErr := expandFwdScoreOfParams(argBuf, sqlDialect, p)
+	in := runtime.RenderInput{
+		ColMask:  colMask,
+		FlagMask: flagMask,
+	}
+	return runtime.QueueRow(pl.Pipeline, stmtIDFwdScoreOf, descFwdScoreOf, in, vk, &pl.q.fastSlots[5], argBuf, expandErr,
+		func(r *sql.Row, dst *int64) error { return scanFwdScoreOfRow(r, dst, colMask, p) },
+		func(rs *sql.Rows, dst *int64) error { return scanFwdScoreOfRow(rs, dst, colMask, p) },
+	)
+}
+
+const stmtIDFwdIDsByStatus uint32 = 20
+
+type paramsFwdIDsByStatus struct {
+	Status string
+}
+
+var descFwdIDsByStatus = &runtime.QueryDescriptor{
+	Name:      "FwdIDsByStatus",
+	StmtID:    20,
+	StmtVerb:  runtime.VerbSelect,
+	StaticSQL: "SELECT id FROM sg_items WHERE status = $1 ORDER BY id",
+	Segments:  []string{"SELECT id FROM sg_items WHERE status = ", " ORDER BY id"},
+	Slots: []runtime.Slot{
+		{Kind: runtime.SlotScalar},
+	},
+	ResultCols: []string{"id"},
+	ResultExpr: "id",
+}
+
+func expandFwdIDsByStatusParams(dst *[]any, dialect runtime.Dialect, p paramsFwdIDsByStatus) error {
+	_ = dialect
+	_ = p
+	*dst = append(*dst, p.Status)
+	return nil
+}
+
+func expandFwdIDsByStatusArgs(dst *[]any, dialect runtime.Dialect, q *runtime.Query) error {
+	return expandFwdIDsByStatusParams(dst, dialect, q.Params.(paramsFwdIDsByStatus))
+}
+
+func computeFwdIDsByStatusKey(p paramsFwdIDsByStatus) (runtime.VariantKey, uint64, uint64, int) {
+	_ = p
+	var colMask uint64
+	var flagMask uint64
+	var orderSpec runtime.Order
+	var hasSeek bool
+	orderKey := runtime.EncodeOrderKey(orderSpec, hasSeek)
+	approxArgs := 5
+	vk := runtime.MakeVariantKey(stmtIDFwdIDsByStatus, colMask, flagMask, orderKey)
+	return vk, colMask, flagMask, approxArgs
+}
+
+// FwdIDsByStatusQuery constructs a composable runtime.Query without executing it (stateless: no Queries or DB needed).
+func FwdIDsByStatusQuery(status string) runtime.Query {
+	p := paramsFwdIDsByStatus{
+		Status: status,
+	}
+	_, colMask, flagMask, _ := computeFwdIDsByStatusKey(p)
+	in := runtime.RenderInput{
+		ColMask:  colMask,
+		FlagMask: flagMask,
+	}
+	orderKey := runtime.EncodeOrderKey(in.OrderSpec, in.HasSeek)
+	shapeTag := runtime.ComputeSubqueryShape(stmtIDFwdIDsByStatus, colMask, flagMask, orderKey, false)
+	return runtime.Query{
+		StmtID:   stmtIDFwdIDsByStatus,
+		Desc:     descFwdIDsByStatus,
+		Input:    in,
+		Params:   p,
+		Expand:   expandFwdIDsByStatusArgs,
+		ShapeTag: shapeTag,
+	}
+}
+
+func scanFwdIDsByStatusRow(scanner interface{ Scan(...any) error }, dst *int64, colMask uint64, p paramsFwdIDsByStatus) error {
+	_ = colMask
+	_ = p
+	var item int64
+	scanDest := [1]any{&item}
+	scanSlice := scanDest[:1]
+	if err := scanner.Scan(scanSlice...); err != nil {
+		return err
+	}
+	*dst = item
+	return nil
+}
+
+func (q *Queries) FwdIDsByStatus(ctx context.Context, status string) (int64, error) {
+	var zero int64
+	p := paramsFwdIDsByStatus{
+		Status: status,
+	}
+	vk, colMask, flagMask, approxArgs := computeFwdIDsByStatusKey(p)
+	_ = colMask
+	argBuf := runtime.AcquireArgsCap(approxArgs)
+	defer runtime.ReleaseArgs(argBuf)
+	_ = expandFwdIDsByStatusParams(argBuf, sqlDialect, p)
+	in := runtime.RenderInput{
+		ColMask:  colMask,
+		FlagMask: flagMask,
+	}
+	sqlRow, ms, err := q.cache.QueryRow(ctx, q.db, q.txCache, q.usePrepared, vk, stmtIDFwdIDsByStatus, runtime.ComputeBatchShapeTag(colMask, flagMask), 0, &q.fastSlots[6], sqlDialect, descFwdIDsByStatus, &in, (*argBuf)...)
+	if err != nil {
+		return zero, err
+	}
+	var item int64
+	err = scanFwdIDsByStatusRow(sqlRow, &item, colMask, p)
+	_ = ms.Release()
+	if err != nil {
+		return zero, err
+	}
+	return item, nil
+}
+
+func (pl *Pipeline) FwdIDsByStatus(status string) *runtime.RowFuture[int64] {
+	p := paramsFwdIDsByStatus{
+		Status: status,
+	}
+	vk, colMask, flagMask, approxArgs := computeFwdIDsByStatusKey(p)
+	argBuf := runtime.AcquireArgsCap(approxArgs)
+	expandErr := expandFwdIDsByStatusParams(argBuf, sqlDialect, p)
+	in := runtime.RenderInput{
+		ColMask:  colMask,
+		FlagMask: flagMask,
+	}
+	return runtime.QueueRow(pl.Pipeline, stmtIDFwdIDsByStatus, descFwdIDsByStatus, in, vk, &pl.q.fastSlots[6], argBuf, expandErr,
+		func(r *sql.Row, dst *int64) error { return scanFwdIDsByStatusRow(r, dst, colMask, p) },
+		func(rs *sql.Rows, dst *int64) error { return scanFwdIDsByStatusRow(rs, dst, colMask, p) },
+	)
+}
+
+const stmtIDFwdSetScore uint32 = 21
+
+type paramsFwdSetScore struct {
+	Score int64
+	ID    int64
+}
+
+var descFwdSetScore = &runtime.QueryDescriptor{
+	Name:      "FwdSetScore",
+	StmtID:    21,
+	StmtVerb:  runtime.VerbUpdate,
+	StaticSQL: "UPDATE sg_items SET score = $1 WHERE id = $2",
+	Segments:  []string{"UPDATE sg_items SET score = ", " WHERE ", "id = ", "", ""},
+	Slots: []runtime.Slot{
+		{Kind: runtime.SlotScalar, Cast: "bigint"},
+		{Kind: runtime.SlotBranchGuardOpen},
+		{Kind: runtime.SlotScalar, Cast: "bigint"},
+		{Kind: runtime.SlotBranchGuardClose},
+	},
+}
+
+func expandFwdSetScoreParams(dst *[]any, dialect runtime.Dialect, p paramsFwdSetScore) error {
+	_ = dialect
+	_ = p
+	*dst = append(*dst, p.Score)
+	*dst = append(*dst, p.ID)
+	return nil
+}
+
+func expandFwdSetScorePipelineParams(dst *[]any, dialect runtime.Dialect, p paramsFwdSetScore, fwd0 runtime.Arg[int64], fwd1 runtime.Arg[int64]) error {
+	_ = dialect
+	_ = p
+	*dst = append(*dst, fwd0.Bind())
+	*dst = append(*dst, fwd1.Bind())
+	return nil
+}
+
+func computeFwdSetScoreKey(p paramsFwdSetScore) (runtime.VariantKey, uint64, uint64, int) {
+	_ = p
+	var colMask uint64
+	var flagMask uint64
+	var orderSpec runtime.Order
+	var hasSeek bool
+	orderKey := runtime.EncodeOrderKey(orderSpec, hasSeek)
+	approxArgs := 6
+	vk := runtime.MakeVariantKey(stmtIDFwdSetScore, colMask, flagMask, orderKey)
+	return vk, colMask, flagMask, approxArgs
+}
+
+func (q *Queries) FwdSetScore(ctx context.Context, score int64, id int64) (sql.Result, error) {
+	p := paramsFwdSetScore{
+		Score: score,
+		ID:    id,
+	}
+	vk, colMask, flagMask, approxArgs := computeFwdSetScoreKey(p)
+	argBuf := runtime.AcquireArgsCap(approxArgs)
+	defer runtime.ReleaseArgs(argBuf)
+	_ = expandFwdSetScoreParams(argBuf, sqlDialect, p)
+	in := runtime.RenderInput{
+		ColMask:  colMask,
+		FlagMask: flagMask,
+	}
+	return q.cache.Exec(ctx, q.db, q.txCache, q.usePrepared, vk, stmtIDFwdSetScore, runtime.ComputeBatchShapeTag(colMask, flagMask), 0, &q.fastSlots[7], sqlDialect, descFwdSetScore, &in, (*argBuf)...)
+}
+
+func (pl *Pipeline) FwdSetScore(score runtime.Arg[int64], id runtime.Arg[int64]) *runtime.ExecFuture {
+	p := paramsFwdSetScore{}
+	vk, colMask, flagMask, approxArgs := computeFwdSetScoreKey(p)
+	argBuf := runtime.AcquireArgsCap(approxArgs)
+	expandErr := expandFwdSetScorePipelineParams(argBuf, sqlDialect, p, score, id)
+	in := runtime.RenderInput{
+		ColMask:  colMask,
+		FlagMask: flagMask,
+	}
+	fut := pl.Pipeline.QueueExec(stmtIDFwdSetScore, descFwdSetScore, in, vk, &pl.q.fastSlots[7], argBuf, expandErr)
+	pl.Pipeline.BindForwarded()
+	return fut
+}
+
+const stmtIDFwdInsertItem uint32 = 22
+
+type paramsFwdInsertItem struct {
+	ID    int64
+	Name  string
+	Score int64
+}
+
+var descFwdInsertItem = &runtime.QueryDescriptor{
+	Name:      "FwdInsertItem",
+	StmtID:    22,
+	StmtVerb:  runtime.VerbInsert,
+	StaticSQL: "INSERT INTO sg_items (id, org_id, name, score, status)\nVALUES ($1, 1, $2, $3, 'fwd')",
+	Segments:  []string{"INSERT INTO sg_items (id, org_id, name, score, status)\n", "", ", 1, ", ", ", ", 'fwd'", ""},
+	Slots: []runtime.Slot{
+		{Kind: runtime.SlotInsertValuesOpen},
+		{Kind: runtime.SlotScalar, Cast: "bigint"},
+		{Kind: runtime.SlotScalar, Cast: "text"},
+		{Kind: runtime.SlotScalar, Cast: "bigint"},
+		{Kind: runtime.SlotInsertValuesClose},
+	},
+}
+
+func expandFwdInsertItemParams(dst *[]any, dialect runtime.Dialect, p paramsFwdInsertItem) error {
+	_ = dialect
+	_ = p
+	*dst = append(*dst, p.ID)
+	*dst = append(*dst, p.Name)
+	*dst = append(*dst, p.Score)
+	return nil
+}
+
+func expandFwdInsertItemPipelineParams(dst *[]any, dialect runtime.Dialect, p paramsFwdInsertItem, fwd0 runtime.Arg[int64], fwd1 runtime.Arg[int64]) error {
+	_ = dialect
+	_ = p
+	*dst = append(*dst, fwd0.Bind())
+	*dst = append(*dst, p.Name)
+	*dst = append(*dst, fwd1.Bind())
+	return nil
+}
+
+func computeFwdInsertItemKey(p paramsFwdInsertItem) (runtime.VariantKey, uint64, uint64, int) {
+	_ = p
+	var colMask uint64
+	var flagMask uint64
+	var orderSpec runtime.Order
+	var hasSeek bool
+	orderKey := runtime.EncodeOrderKey(orderSpec, hasSeek)
+	approxArgs := 7
+	vk := runtime.MakeVariantKey(stmtIDFwdInsertItem, colMask, flagMask, orderKey)
+	return vk, colMask, flagMask, approxArgs
+}
+
+func (q *Queries) FwdInsertItem(ctx context.Context, id int64, name string, score int64) (sql.Result, error) {
+	p := paramsFwdInsertItem{
+		ID:    id,
+		Name:  name,
+		Score: score,
+	}
+	vk, colMask, flagMask, approxArgs := computeFwdInsertItemKey(p)
+	argBuf := runtime.AcquireArgsCap(approxArgs)
+	defer runtime.ReleaseArgs(argBuf)
+	_ = expandFwdInsertItemParams(argBuf, sqlDialect, p)
+	in := runtime.RenderInput{
+		ColMask:  colMask,
+		FlagMask: flagMask,
+	}
+	return q.cache.Exec(ctx, q.db, q.txCache, q.usePrepared, vk, stmtIDFwdInsertItem, runtime.ComputeBatchShapeTag(colMask, flagMask), 0, &q.fastSlots[8], sqlDialect, descFwdInsertItem, &in, (*argBuf)...)
+}
+
+func (pl *Pipeline) FwdInsertItem(id runtime.Arg[int64], name string, score runtime.Arg[int64]) *runtime.ExecFuture {
+	p := paramsFwdInsertItem{
+		Name: name,
+	}
+	vk, colMask, flagMask, approxArgs := computeFwdInsertItemKey(p)
+	argBuf := runtime.AcquireArgsCap(approxArgs)
+	expandErr := expandFwdInsertItemPipelineParams(argBuf, sqlDialect, p, id, score)
+	in := runtime.RenderInput{
+		ColMask:  colMask,
+		FlagMask: flagMask,
+	}
+	fut := pl.Pipeline.QueueExec(stmtIDFwdInsertItem, descFwdInsertItem, in, vk, &pl.q.fastSlots[8], argBuf, expandErr)
+	pl.Pipeline.BindForwarded()
+	return fut
+}
+
+const stmtIDFwdItemsAbove uint32 = 23
+
+type paramsFwdItemsAbove struct {
+	Min int64
+}
+
+var descFwdItemsAbove = &runtime.QueryDescriptor{
+	Name:      "FwdItemsAbove",
+	StmtID:    23,
+	StmtVerb:  runtime.VerbSelect,
+	StaticSQL: "SELECT id FROM sg_items WHERE score > $1 ORDER BY id",
+	Segments:  []string{"SELECT id FROM sg_items WHERE score > ", " ORDER BY id"},
+	Slots: []runtime.Slot{
+		{Kind: runtime.SlotScalar, Cast: "bigint"},
+	},
+}
+
+func expandFwdItemsAboveParams(dst *[]any, dialect runtime.Dialect, p paramsFwdItemsAbove) error {
+	_ = dialect
+	_ = p
+	*dst = append(*dst, p.Min)
+	return nil
+}
+
+func expandFwdItemsAbovePipelineParams(dst *[]any, dialect runtime.Dialect, p paramsFwdItemsAbove, fwd0 runtime.Arg[int64]) error {
+	_ = dialect
+	_ = p
+	*dst = append(*dst, fwd0.Bind())
+	return nil
+}
+
+func expandFwdItemsAboveArgs(dst *[]any, dialect runtime.Dialect, q *runtime.Query) error {
+	return expandFwdItemsAboveParams(dst, dialect, q.Params.(paramsFwdItemsAbove))
+}
+
+func computeFwdItemsAboveKey(p paramsFwdItemsAbove) (runtime.VariantKey, uint64, uint64, int) {
+	_ = p
+	var colMask uint64
+	var flagMask uint64
+	var orderSpec runtime.Order
+	var hasSeek bool
+	orderKey := runtime.EncodeOrderKey(orderSpec, hasSeek)
+	approxArgs := 5
+	vk := runtime.MakeVariantKey(stmtIDFwdItemsAbove, colMask, flagMask, orderKey)
+	return vk, colMask, flagMask, approxArgs
+}
+
+// FwdItemsAboveQuery constructs a composable runtime.Query without executing it (stateless: no Queries or DB needed).
+func FwdItemsAboveQuery(minParam int64) runtime.Query {
+	p := paramsFwdItemsAbove{
+		Min: minParam,
+	}
+	_, colMask, flagMask, _ := computeFwdItemsAboveKey(p)
+	in := runtime.RenderInput{
+		ColMask:  colMask,
+		FlagMask: flagMask,
+	}
+	orderKey := runtime.EncodeOrderKey(in.OrderSpec, in.HasSeek)
+	shapeTag := runtime.ComputeSubqueryShape(stmtIDFwdItemsAbove, colMask, flagMask, orderKey, false)
+	return runtime.Query{
+		StmtID:   stmtIDFwdItemsAbove,
+		Desc:     descFwdItemsAbove,
+		Input:    in,
+		Params:   p,
+		Expand:   expandFwdItemsAboveArgs,
+		ShapeTag: shapeTag,
+	}
+}
+
+func scanFwdItemsAboveRow(scanner interface{ Scan(...any) error }, dst *int64, colMask uint64, p paramsFwdItemsAbove) error {
+	_ = colMask
+	_ = p
+	var item int64
+	scanDest := [1]any{&item}
+	scanSlice := scanDest[:1]
+	if err := scanner.Scan(scanSlice...); err != nil {
+		return err
+	}
+	*dst = item
+	return nil
+}
+
+func (q *Queries) FwdItemsAbove(ctx context.Context, minParam int64) ([]int64, error) {
+	return runtime.Collect(q.FwdItemsAboveSeq(ctx, minParam))
+}
+
+func (q *Queries) FwdItemsAboveSeq(ctx context.Context, minParam int64) iter.Seq2[int64, error] {
+	return func(yield func(int64, error) bool) {
+		var zero int64
+		p := paramsFwdItemsAbove{
+			Min: minParam,
+		}
+		vk, colMask, flagMask, approxArgs := computeFwdItemsAboveKey(p)
+		_ = colMask
+		argBuf := runtime.AcquireArgsCap(approxArgs)
+		defer runtime.ReleaseArgs(argBuf)
+		_ = expandFwdItemsAboveParams(argBuf, sqlDialect, p)
+		in := runtime.RenderInput{
+			ColMask:  colMask,
+			FlagMask: flagMask,
+		}
+		sqlRows, ms, err := q.cache.Query(ctx, q.db, q.txCache, q.usePrepared, vk, stmtIDFwdItemsAbove, runtime.ComputeBatchShapeTag(colMask, flagMask), 0, &q.fastSlots[9], sqlDialect, descFwdItemsAbove, &in, (*argBuf)...)
+		if err != nil {
+			yield(zero, err)
+			return
+		}
+		defer runtime.ReleaseRows(&sqlRows, &ms)
+		var item int64
+		for sqlRows.Next() {
+			if err := scanFwdItemsAboveRow(sqlRows, &item, colMask, p); err != nil {
+				runtime.ReleaseRows(&sqlRows, &ms)
+				yield(zero, err)
+				return
+			}
+			if !yield(item, nil) {
+				return
+			}
+		}
+		err = sqlRows.Err()
+		runtime.ReleaseRows(&sqlRows, &ms)
+		if err != nil {
+			yield(zero, err)
+		}
+	}
+}
+
+func (pl *Pipeline) FwdItemsAbove(minParam runtime.Arg[int64]) *runtime.SliceFuture[int64] {
+	p := paramsFwdItemsAbove{}
+	vk, colMask, flagMask, approxArgs := computeFwdItemsAboveKey(p)
+	argBuf := runtime.AcquireArgsCap(approxArgs)
+	expandErr := expandFwdItemsAbovePipelineParams(argBuf, sqlDialect, p, minParam)
+	in := runtime.RenderInput{
+		ColMask:  colMask,
+		FlagMask: flagMask,
+	}
+	fut := runtime.QueueSlice(pl.Pipeline, stmtIDFwdItemsAbove, descFwdItemsAbove, in, vk, &pl.q.fastSlots[9], argBuf, expandErr,
+		func(rs *sql.Rows, dst *int64) error { return scanFwdItemsAboveRow(rs, dst, colMask, p) },
+	)
+	pl.Pipeline.BindForwarded()
+	return fut
+}
+
+const stmtIDFwdSrcI8 uint32 = 24
+
+type paramsFwdSrcI8 struct {
+	K string
+}
+
+var descFwdSrcI8 = &runtime.QueryDescriptor{
+	Name:      "FwdSrcI8",
+	StmtID:    24,
+	StmtVerb:  runtime.VerbSelect,
+	StaticSQL: "SELECT i8 AS v FROM sg_fwd_src WHERE k = $1",
+	Segments:  []string{"SELECT i8 AS v FROM sg_fwd_src WHERE k = ", ""},
+	Slots: []runtime.Slot{
+		{Kind: runtime.SlotScalar},
+	},
+	ResultCols: []string{"v"},
+	ResultExpr: "i8",
+}
+
+func expandFwdSrcI8Params(dst *[]any, dialect runtime.Dialect, p paramsFwdSrcI8) error {
+	_ = dialect
+	_ = p
+	*dst = append(*dst, p.K)
+	return nil
+}
+
+func expandFwdSrcI8Args(dst *[]any, dialect runtime.Dialect, q *runtime.Query) error {
+	return expandFwdSrcI8Params(dst, dialect, q.Params.(paramsFwdSrcI8))
+}
+
+func computeFwdSrcI8Key(p paramsFwdSrcI8) (runtime.VariantKey, uint64, uint64, int) {
+	_ = p
+	var colMask uint64
+	var flagMask uint64
+	var orderSpec runtime.Order
+	var hasSeek bool
+	orderKey := runtime.EncodeOrderKey(orderSpec, hasSeek)
+	approxArgs := 5
+	vk := runtime.MakeVariantKey(stmtIDFwdSrcI8, colMask, flagMask, orderKey)
+	return vk, colMask, flagMask, approxArgs
+}
+
+// FwdSrcI8Query constructs a composable runtime.Query without executing it (stateless: no Queries or DB needed).
+func FwdSrcI8Query(kParam string) runtime.Query {
+	p := paramsFwdSrcI8{
+		K: kParam,
+	}
+	_, colMask, flagMask, _ := computeFwdSrcI8Key(p)
+	in := runtime.RenderInput{
+		ColMask:  colMask,
+		FlagMask: flagMask,
+	}
+	orderKey := runtime.EncodeOrderKey(in.OrderSpec, in.HasSeek)
+	shapeTag := runtime.ComputeSubqueryShape(stmtIDFwdSrcI8, colMask, flagMask, orderKey, false)
+	return runtime.Query{
+		StmtID:   stmtIDFwdSrcI8,
+		Desc:     descFwdSrcI8,
+		Input:    in,
+		Params:   p,
+		Expand:   expandFwdSrcI8Args,
+		ShapeTag: shapeTag,
+	}
+}
+
+func scanFwdSrcI8Row(scanner interface{ Scan(...any) error }, dst *int64, colMask uint64, p paramsFwdSrcI8) error {
+	_ = colMask
+	_ = p
+	var item int64
+	scanDest := [1]any{&item}
+	scanSlice := scanDest[:1]
+	if err := scanner.Scan(scanSlice...); err != nil {
+		return err
+	}
+	*dst = item
+	return nil
+}
+
+func (q *Queries) FwdSrcI8(ctx context.Context, kParam string) (int64, error) {
+	var zero int64
+	p := paramsFwdSrcI8{
+		K: kParam,
+	}
+	vk, colMask, flagMask, approxArgs := computeFwdSrcI8Key(p)
+	_ = colMask
+	argBuf := runtime.AcquireArgsCap(approxArgs)
+	defer runtime.ReleaseArgs(argBuf)
+	_ = expandFwdSrcI8Params(argBuf, sqlDialect, p)
+	in := runtime.RenderInput{
+		ColMask:  colMask,
+		FlagMask: flagMask,
+	}
+	sqlRow, ms, err := q.cache.QueryRow(ctx, q.db, q.txCache, q.usePrepared, vk, stmtIDFwdSrcI8, runtime.ComputeBatchShapeTag(colMask, flagMask), 0, &q.fastSlots[10], sqlDialect, descFwdSrcI8, &in, (*argBuf)...)
+	if err != nil {
+		return zero, err
+	}
+	var item int64
+	err = scanFwdSrcI8Row(sqlRow, &item, colMask, p)
+	_ = ms.Release()
+	if err != nil {
+		return zero, err
+	}
+	return item, nil
+}
+
+func (pl *Pipeline) FwdSrcI8(kParam string) *runtime.RowFuture[int64] {
+	p := paramsFwdSrcI8{
+		K: kParam,
+	}
+	vk, colMask, flagMask, approxArgs := computeFwdSrcI8Key(p)
+	argBuf := runtime.AcquireArgsCap(approxArgs)
+	expandErr := expandFwdSrcI8Params(argBuf, sqlDialect, p)
+	in := runtime.RenderInput{
+		ColMask:  colMask,
+		FlagMask: flagMask,
+	}
+	return runtime.QueueRow(pl.Pipeline, stmtIDFwdSrcI8, descFwdSrcI8, in, vk, &pl.q.fastSlots[10], argBuf, expandErr,
+		func(r *sql.Row, dst *int64) error { return scanFwdSrcI8Row(r, dst, colMask, p) },
+		func(rs *sql.Rows, dst *int64) error { return scanFwdSrcI8Row(rs, dst, colMask, p) },
+	)
+}
+
+const stmtIDFwdSrcI8N uint32 = 25
+
+type paramsFwdSrcI8N struct {
+	K string
+}
+
+var descFwdSrcI8N = &runtime.QueryDescriptor{
+	Name:      "FwdSrcI8N",
+	StmtID:    25,
+	StmtVerb:  runtime.VerbSelect,
+	StaticSQL: "SELECT i8n AS v FROM sg_fwd_src WHERE k = $1",
+	Segments:  []string{"SELECT i8n AS v FROM sg_fwd_src WHERE k = ", ""},
+	Slots: []runtime.Slot{
+		{Kind: runtime.SlotScalar},
+	},
+	ResultCols: []string{"v"},
+	ResultExpr: "i8n",
+}
+
+func expandFwdSrcI8NParams(dst *[]any, dialect runtime.Dialect, p paramsFwdSrcI8N) error {
+	_ = dialect
+	_ = p
+	*dst = append(*dst, p.K)
+	return nil
+}
+
+func expandFwdSrcI8NArgs(dst *[]any, dialect runtime.Dialect, q *runtime.Query) error {
+	return expandFwdSrcI8NParams(dst, dialect, q.Params.(paramsFwdSrcI8N))
+}
+
+func computeFwdSrcI8NKey(p paramsFwdSrcI8N) (runtime.VariantKey, uint64, uint64, int) {
+	_ = p
+	var colMask uint64
+	var flagMask uint64
+	var orderSpec runtime.Order
+	var hasSeek bool
+	orderKey := runtime.EncodeOrderKey(orderSpec, hasSeek)
+	approxArgs := 5
+	vk := runtime.MakeVariantKey(stmtIDFwdSrcI8N, colMask, flagMask, orderKey)
+	return vk, colMask, flagMask, approxArgs
+}
+
+// FwdSrcI8NQuery constructs a composable runtime.Query without executing it (stateless: no Queries or DB needed).
+func FwdSrcI8NQuery(kParam string) runtime.Query {
+	p := paramsFwdSrcI8N{
+		K: kParam,
+	}
+	_, colMask, flagMask, _ := computeFwdSrcI8NKey(p)
+	in := runtime.RenderInput{
+		ColMask:  colMask,
+		FlagMask: flagMask,
+	}
+	orderKey := runtime.EncodeOrderKey(in.OrderSpec, in.HasSeek)
+	shapeTag := runtime.ComputeSubqueryShape(stmtIDFwdSrcI8N, colMask, flagMask, orderKey, false)
+	return runtime.Query{
+		StmtID:   stmtIDFwdSrcI8N,
+		Desc:     descFwdSrcI8N,
+		Input:    in,
+		Params:   p,
+		Expand:   expandFwdSrcI8NArgs,
+		ShapeTag: shapeTag,
+	}
+}
+
+func scanFwdSrcI8NRow(scanner interface{ Scan(...any) error }, dst **int64, colMask uint64, p paramsFwdSrcI8N) error {
+	_ = colMask
+	_ = p
+	var item *int64
+	scanDest := [1]any{&item}
+	scanSlice := scanDest[:1]
+	if err := scanner.Scan(scanSlice...); err != nil {
+		return err
+	}
+	*dst = item
+	return nil
+}
+
+func (q *Queries) FwdSrcI8N(ctx context.Context, kParam string) (*int64, error) {
+	var zero *int64
+	p := paramsFwdSrcI8N{
+		K: kParam,
+	}
+	vk, colMask, flagMask, approxArgs := computeFwdSrcI8NKey(p)
+	_ = colMask
+	argBuf := runtime.AcquireArgsCap(approxArgs)
+	defer runtime.ReleaseArgs(argBuf)
+	_ = expandFwdSrcI8NParams(argBuf, sqlDialect, p)
+	in := runtime.RenderInput{
+		ColMask:  colMask,
+		FlagMask: flagMask,
+	}
+	sqlRow, ms, err := q.cache.QueryRow(ctx, q.db, q.txCache, q.usePrepared, vk, stmtIDFwdSrcI8N, runtime.ComputeBatchShapeTag(colMask, flagMask), 0, &q.fastSlots[11], sqlDialect, descFwdSrcI8N, &in, (*argBuf)...)
+	if err != nil {
+		return zero, err
+	}
+	var item *int64
+	err = scanFwdSrcI8NRow(sqlRow, &item, colMask, p)
+	_ = ms.Release()
+	if err != nil {
+		return zero, err
+	}
+	return item, nil
+}
+
+func (pl *Pipeline) FwdSrcI8N(kParam string) *runtime.RowFuture[*int64] {
+	p := paramsFwdSrcI8N{
+		K: kParam,
+	}
+	vk, colMask, flagMask, approxArgs := computeFwdSrcI8NKey(p)
+	argBuf := runtime.AcquireArgsCap(approxArgs)
+	expandErr := expandFwdSrcI8NParams(argBuf, sqlDialect, p)
+	in := runtime.RenderInput{
+		ColMask:  colMask,
+		FlagMask: flagMask,
+	}
+	return runtime.QueueRow(pl.Pipeline, stmtIDFwdSrcI8N, descFwdSrcI8N, in, vk, &pl.q.fastSlots[11], argBuf, expandErr,
+		func(r *sql.Row, dst **int64) error { return scanFwdSrcI8NRow(r, dst, colMask, p) },
+		func(rs *sql.Rows, dst **int64) error { return scanFwdSrcI8NRow(rs, dst, colMask, p) },
+	)
+}
+
+const stmtIDFwdSrcS uint32 = 26
+
+type paramsFwdSrcS struct {
+	K string
+}
+
+var descFwdSrcS = &runtime.QueryDescriptor{
+	Name:      "FwdSrcS",
+	StmtID:    26,
+	StmtVerb:  runtime.VerbSelect,
+	StaticSQL: "SELECT s AS v FROM sg_fwd_src WHERE k = $1",
+	Segments:  []string{"SELECT s AS v FROM sg_fwd_src WHERE k = ", ""},
+	Slots: []runtime.Slot{
+		{Kind: runtime.SlotScalar},
+	},
+	ResultCols: []string{"v"},
+	ResultExpr: "s",
+}
+
+func expandFwdSrcSParams(dst *[]any, dialect runtime.Dialect, p paramsFwdSrcS) error {
+	_ = dialect
+	_ = p
+	*dst = append(*dst, p.K)
+	return nil
+}
+
+func expandFwdSrcSArgs(dst *[]any, dialect runtime.Dialect, q *runtime.Query) error {
+	return expandFwdSrcSParams(dst, dialect, q.Params.(paramsFwdSrcS))
+}
+
+func computeFwdSrcSKey(p paramsFwdSrcS) (runtime.VariantKey, uint64, uint64, int) {
+	_ = p
+	var colMask uint64
+	var flagMask uint64
+	var orderSpec runtime.Order
+	var hasSeek bool
+	orderKey := runtime.EncodeOrderKey(orderSpec, hasSeek)
+	approxArgs := 5
+	vk := runtime.MakeVariantKey(stmtIDFwdSrcS, colMask, flagMask, orderKey)
+	return vk, colMask, flagMask, approxArgs
+}
+
+// FwdSrcSQuery constructs a composable runtime.Query without executing it (stateless: no Queries or DB needed).
+func FwdSrcSQuery(kParam string) runtime.Query {
+	p := paramsFwdSrcS{
+		K: kParam,
+	}
+	_, colMask, flagMask, _ := computeFwdSrcSKey(p)
+	in := runtime.RenderInput{
+		ColMask:  colMask,
+		FlagMask: flagMask,
+	}
+	orderKey := runtime.EncodeOrderKey(in.OrderSpec, in.HasSeek)
+	shapeTag := runtime.ComputeSubqueryShape(stmtIDFwdSrcS, colMask, flagMask, orderKey, false)
+	return runtime.Query{
+		StmtID:   stmtIDFwdSrcS,
+		Desc:     descFwdSrcS,
+		Input:    in,
+		Params:   p,
+		Expand:   expandFwdSrcSArgs,
+		ShapeTag: shapeTag,
+	}
+}
+
+func scanFwdSrcSRow(scanner interface{ Scan(...any) error }, dst *string, colMask uint64, p paramsFwdSrcS) error {
+	_ = colMask
+	_ = p
+	var item string
+	scanDest := [1]any{&item}
+	scanSlice := scanDest[:1]
+	if err := scanner.Scan(scanSlice...); err != nil {
+		return err
+	}
+	*dst = item
+	return nil
+}
+
+func (q *Queries) FwdSrcS(ctx context.Context, kParam string) (string, error) {
+	var zero string
+	p := paramsFwdSrcS{
+		K: kParam,
+	}
+	vk, colMask, flagMask, approxArgs := computeFwdSrcSKey(p)
+	_ = colMask
+	argBuf := runtime.AcquireArgsCap(approxArgs)
+	defer runtime.ReleaseArgs(argBuf)
+	_ = expandFwdSrcSParams(argBuf, sqlDialect, p)
+	in := runtime.RenderInput{
+		ColMask:  colMask,
+		FlagMask: flagMask,
+	}
+	sqlRow, ms, err := q.cache.QueryRow(ctx, q.db, q.txCache, q.usePrepared, vk, stmtIDFwdSrcS, runtime.ComputeBatchShapeTag(colMask, flagMask), 0, &q.fastSlots[12], sqlDialect, descFwdSrcS, &in, (*argBuf)...)
+	if err != nil {
+		return zero, err
+	}
+	var item string
+	err = scanFwdSrcSRow(sqlRow, &item, colMask, p)
+	_ = ms.Release()
+	if err != nil {
+		return zero, err
+	}
+	return item, nil
+}
+
+func (pl *Pipeline) FwdSrcS(kParam string) *runtime.RowFuture[string] {
+	p := paramsFwdSrcS{
+		K: kParam,
+	}
+	vk, colMask, flagMask, approxArgs := computeFwdSrcSKey(p)
+	argBuf := runtime.AcquireArgsCap(approxArgs)
+	expandErr := expandFwdSrcSParams(argBuf, sqlDialect, p)
+	in := runtime.RenderInput{
+		ColMask:  colMask,
+		FlagMask: flagMask,
+	}
+	return runtime.QueueRow(pl.Pipeline, stmtIDFwdSrcS, descFwdSrcS, in, vk, &pl.q.fastSlots[12], argBuf, expandErr,
+		func(r *sql.Row, dst *string) error { return scanFwdSrcSRow(r, dst, colMask, p) },
+		func(rs *sql.Rows, dst *string) error { return scanFwdSrcSRow(rs, dst, colMask, p) },
+	)
+}
+
+const stmtIDFwdSrcTS uint32 = 27
+
+type paramsFwdSrcTS struct {
+	K string
+}
+
+var descFwdSrcTS = &runtime.QueryDescriptor{
+	Name:      "FwdSrcTS",
+	StmtID:    27,
+	StmtVerb:  runtime.VerbSelect,
+	StaticSQL: "SELECT ts AS v FROM sg_fwd_src WHERE k = $1",
+	Segments:  []string{"SELECT ts AS v FROM sg_fwd_src WHERE k = ", ""},
+	Slots: []runtime.Slot{
+		{Kind: runtime.SlotScalar},
+	},
+	ResultCols: []string{"v"},
+	ResultExpr: "ts",
+}
+
+func expandFwdSrcTSParams(dst *[]any, dialect runtime.Dialect, p paramsFwdSrcTS) error {
+	_ = dialect
+	_ = p
+	*dst = append(*dst, p.K)
+	return nil
+}
+
+func expandFwdSrcTSArgs(dst *[]any, dialect runtime.Dialect, q *runtime.Query) error {
+	return expandFwdSrcTSParams(dst, dialect, q.Params.(paramsFwdSrcTS))
+}
+
+func computeFwdSrcTSKey(p paramsFwdSrcTS) (runtime.VariantKey, uint64, uint64, int) {
+	_ = p
+	var colMask uint64
+	var flagMask uint64
+	var orderSpec runtime.Order
+	var hasSeek bool
+	orderKey := runtime.EncodeOrderKey(orderSpec, hasSeek)
+	approxArgs := 5
+	vk := runtime.MakeVariantKey(stmtIDFwdSrcTS, colMask, flagMask, orderKey)
+	return vk, colMask, flagMask, approxArgs
+}
+
+// FwdSrcTSQuery constructs a composable runtime.Query without executing it (stateless: no Queries or DB needed).
+func FwdSrcTSQuery(kParam string) runtime.Query {
+	p := paramsFwdSrcTS{
+		K: kParam,
+	}
+	_, colMask, flagMask, _ := computeFwdSrcTSKey(p)
+	in := runtime.RenderInput{
+		ColMask:  colMask,
+		FlagMask: flagMask,
+	}
+	orderKey := runtime.EncodeOrderKey(in.OrderSpec, in.HasSeek)
+	shapeTag := runtime.ComputeSubqueryShape(stmtIDFwdSrcTS, colMask, flagMask, orderKey, false)
+	return runtime.Query{
+		StmtID:   stmtIDFwdSrcTS,
+		Desc:     descFwdSrcTS,
+		Input:    in,
+		Params:   p,
+		Expand:   expandFwdSrcTSArgs,
+		ShapeTag: shapeTag,
+	}
+}
+
+func scanFwdSrcTSRow(scanner interface{ Scan(...any) error }, dst *time.Time, colMask uint64, p paramsFwdSrcTS) error {
+	_ = colMask
+	_ = p
+	var item time.Time
+	scanDest := [1]any{&item}
+	scanSlice := scanDest[:1]
+	if err := scanner.Scan(scanSlice...); err != nil {
+		return err
+	}
+	*dst = item
+	return nil
+}
+
+func (q *Queries) FwdSrcTS(ctx context.Context, kParam string) (time.Time, error) {
+	var zero time.Time
+	p := paramsFwdSrcTS{
+		K: kParam,
+	}
+	vk, colMask, flagMask, approxArgs := computeFwdSrcTSKey(p)
+	_ = colMask
+	argBuf := runtime.AcquireArgsCap(approxArgs)
+	defer runtime.ReleaseArgs(argBuf)
+	_ = expandFwdSrcTSParams(argBuf, sqlDialect, p)
+	in := runtime.RenderInput{
+		ColMask:  colMask,
+		FlagMask: flagMask,
+	}
+	sqlRow, ms, err := q.cache.QueryRow(ctx, q.db, q.txCache, q.usePrepared, vk, stmtIDFwdSrcTS, runtime.ComputeBatchShapeTag(colMask, flagMask), 0, &q.fastSlots[13], sqlDialect, descFwdSrcTS, &in, (*argBuf)...)
+	if err != nil {
+		return zero, err
+	}
+	var item time.Time
+	err = scanFwdSrcTSRow(sqlRow, &item, colMask, p)
+	_ = ms.Release()
+	if err != nil {
+		return zero, err
+	}
+	return item, nil
+}
+
+func (pl *Pipeline) FwdSrcTS(kParam string) *runtime.RowFuture[time.Time] {
+	p := paramsFwdSrcTS{
+		K: kParam,
+	}
+	vk, colMask, flagMask, approxArgs := computeFwdSrcTSKey(p)
+	argBuf := runtime.AcquireArgsCap(approxArgs)
+	expandErr := expandFwdSrcTSParams(argBuf, sqlDialect, p)
+	in := runtime.RenderInput{
+		ColMask:  colMask,
+		FlagMask: flagMask,
+	}
+	return runtime.QueueRow(pl.Pipeline, stmtIDFwdSrcTS, descFwdSrcTS, in, vk, &pl.q.fastSlots[13], argBuf, expandErr,
+		func(r *sql.Row, dst *time.Time) error { return scanFwdSrcTSRow(r, dst, colMask, p) },
+		func(rs *sql.Rows, dst *time.Time) error { return scanFwdSrcTSRow(rs, dst, colMask, p) },
+	)
+}
+
+const stmtIDFwdSrcTSL uint32 = 28
+
+type paramsFwdSrcTSL struct {
+	K string
+}
+
+var descFwdSrcTSL = &runtime.QueryDescriptor{
+	Name:      "FwdSrcTSL",
+	StmtID:    28,
+	StmtVerb:  runtime.VerbSelect,
+	StaticSQL: "SELECT tsl AS v FROM sg_fwd_src WHERE k = $1",
+	Segments:  []string{"SELECT tsl AS v FROM sg_fwd_src WHERE k = ", ""},
+	Slots: []runtime.Slot{
+		{Kind: runtime.SlotScalar},
+	},
+	ResultCols: []string{"v"},
+	ResultExpr: "tsl",
+}
+
+func expandFwdSrcTSLParams(dst *[]any, dialect runtime.Dialect, p paramsFwdSrcTSL) error {
+	_ = dialect
+	_ = p
+	*dst = append(*dst, p.K)
+	return nil
+}
+
+func expandFwdSrcTSLArgs(dst *[]any, dialect runtime.Dialect, q *runtime.Query) error {
+	return expandFwdSrcTSLParams(dst, dialect, q.Params.(paramsFwdSrcTSL))
+}
+
+func computeFwdSrcTSLKey(p paramsFwdSrcTSL) (runtime.VariantKey, uint64, uint64, int) {
+	_ = p
+	var colMask uint64
+	var flagMask uint64
+	var orderSpec runtime.Order
+	var hasSeek bool
+	orderKey := runtime.EncodeOrderKey(orderSpec, hasSeek)
+	approxArgs := 5
+	vk := runtime.MakeVariantKey(stmtIDFwdSrcTSL, colMask, flagMask, orderKey)
+	return vk, colMask, flagMask, approxArgs
+}
+
+// FwdSrcTSLQuery constructs a composable runtime.Query without executing it (stateless: no Queries or DB needed).
+func FwdSrcTSLQuery(kParam string) runtime.Query {
+	p := paramsFwdSrcTSL{
+		K: kParam,
+	}
+	_, colMask, flagMask, _ := computeFwdSrcTSLKey(p)
+	in := runtime.RenderInput{
+		ColMask:  colMask,
+		FlagMask: flagMask,
+	}
+	orderKey := runtime.EncodeOrderKey(in.OrderSpec, in.HasSeek)
+	shapeTag := runtime.ComputeSubqueryShape(stmtIDFwdSrcTSL, colMask, flagMask, orderKey, false)
+	return runtime.Query{
+		StmtID:   stmtIDFwdSrcTSL,
+		Desc:     descFwdSrcTSL,
+		Input:    in,
+		Params:   p,
+		Expand:   expandFwdSrcTSLArgs,
+		ShapeTag: shapeTag,
+	}
+}
+
+func scanFwdSrcTSLRow(scanner interface{ Scan(...any) error }, dst *time.Time, colMask uint64, p paramsFwdSrcTSL) error {
+	_ = colMask
+	_ = p
+	var item time.Time
+	scanDest := [1]any{&item}
+	scanSlice := scanDest[:1]
+	if err := scanner.Scan(scanSlice...); err != nil {
+		return err
+	}
+	*dst = item
+	return nil
+}
+
+func (q *Queries) FwdSrcTSL(ctx context.Context, kParam string) (time.Time, error) {
+	var zero time.Time
+	p := paramsFwdSrcTSL{
+		K: kParam,
+	}
+	vk, colMask, flagMask, approxArgs := computeFwdSrcTSLKey(p)
+	_ = colMask
+	argBuf := runtime.AcquireArgsCap(approxArgs)
+	defer runtime.ReleaseArgs(argBuf)
+	_ = expandFwdSrcTSLParams(argBuf, sqlDialect, p)
+	in := runtime.RenderInput{
+		ColMask:  colMask,
+		FlagMask: flagMask,
+	}
+	sqlRow, ms, err := q.cache.QueryRow(ctx, q.db, q.txCache, q.usePrepared, vk, stmtIDFwdSrcTSL, runtime.ComputeBatchShapeTag(colMask, flagMask), 0, &q.fastSlots[14], sqlDialect, descFwdSrcTSL, &in, (*argBuf)...)
+	if err != nil {
+		return zero, err
+	}
+	var item time.Time
+	err = scanFwdSrcTSLRow(sqlRow, &item, colMask, p)
+	_ = ms.Release()
+	if err != nil {
+		return zero, err
+	}
+	return item, nil
+}
+
+func (pl *Pipeline) FwdSrcTSL(kParam string) *runtime.RowFuture[time.Time] {
+	p := paramsFwdSrcTSL{
+		K: kParam,
+	}
+	vk, colMask, flagMask, approxArgs := computeFwdSrcTSLKey(p)
+	argBuf := runtime.AcquireArgsCap(approxArgs)
+	expandErr := expandFwdSrcTSLParams(argBuf, sqlDialect, p)
+	in := runtime.RenderInput{
+		ColMask:  colMask,
+		FlagMask: flagMask,
+	}
+	return runtime.QueueRow(pl.Pipeline, stmtIDFwdSrcTSL, descFwdSrcTSL, in, vk, &pl.q.fastSlots[14], argBuf, expandErr,
+		func(r *sql.Row, dst *time.Time) error { return scanFwdSrcTSLRow(r, dst, colMask, p) },
+		func(rs *sql.Rows, dst *time.Time) error { return scanFwdSrcTSLRow(rs, dst, colMask, p) },
+	)
+}
+
+const stmtIDFwdSrcB uint32 = 29
+
+type paramsFwdSrcB struct {
+	K string
+}
+
+var descFwdSrcB = &runtime.QueryDescriptor{
+	Name:      "FwdSrcB",
+	StmtID:    29,
+	StmtVerb:  runtime.VerbSelect,
+	StaticSQL: "SELECT b AS v FROM sg_fwd_src WHERE k = $1",
+	Segments:  []string{"SELECT b AS v FROM sg_fwd_src WHERE k = ", ""},
+	Slots: []runtime.Slot{
+		{Kind: runtime.SlotScalar},
+	},
+	ResultCols: []string{"v"},
+	ResultExpr: "b",
+}
+
+func expandFwdSrcBParams(dst *[]any, dialect runtime.Dialect, p paramsFwdSrcB) error {
+	_ = dialect
+	_ = p
+	*dst = append(*dst, p.K)
+	return nil
+}
+
+func expandFwdSrcBArgs(dst *[]any, dialect runtime.Dialect, q *runtime.Query) error {
+	return expandFwdSrcBParams(dst, dialect, q.Params.(paramsFwdSrcB))
+}
+
+func computeFwdSrcBKey(p paramsFwdSrcB) (runtime.VariantKey, uint64, uint64, int) {
+	_ = p
+	var colMask uint64
+	var flagMask uint64
+	var orderSpec runtime.Order
+	var hasSeek bool
+	orderKey := runtime.EncodeOrderKey(orderSpec, hasSeek)
+	approxArgs := 5
+	vk := runtime.MakeVariantKey(stmtIDFwdSrcB, colMask, flagMask, orderKey)
+	return vk, colMask, flagMask, approxArgs
+}
+
+// FwdSrcBQuery constructs a composable runtime.Query without executing it (stateless: no Queries or DB needed).
+func FwdSrcBQuery(kParam string) runtime.Query {
+	p := paramsFwdSrcB{
+		K: kParam,
+	}
+	_, colMask, flagMask, _ := computeFwdSrcBKey(p)
+	in := runtime.RenderInput{
+		ColMask:  colMask,
+		FlagMask: flagMask,
+	}
+	orderKey := runtime.EncodeOrderKey(in.OrderSpec, in.HasSeek)
+	shapeTag := runtime.ComputeSubqueryShape(stmtIDFwdSrcB, colMask, flagMask, orderKey, false)
+	return runtime.Query{
+		StmtID:   stmtIDFwdSrcB,
+		Desc:     descFwdSrcB,
+		Input:    in,
+		Params:   p,
+		Expand:   expandFwdSrcBArgs,
+		ShapeTag: shapeTag,
+	}
+}
+
+func scanFwdSrcBRow(scanner interface{ Scan(...any) error }, dst *[]byte, colMask uint64, p paramsFwdSrcB) error {
+	_ = colMask
+	_ = p
+	var item []byte
+	scanDest := [1]any{&item}
+	scanSlice := scanDest[:1]
+	if err := scanner.Scan(scanSlice...); err != nil {
+		return err
+	}
+	*dst = item
+	return nil
+}
+
+func (q *Queries) FwdSrcB(ctx context.Context, kParam string) ([]byte, error) {
+	var zero []byte
+	p := paramsFwdSrcB{
+		K: kParam,
+	}
+	vk, colMask, flagMask, approxArgs := computeFwdSrcBKey(p)
+	_ = colMask
+	argBuf := runtime.AcquireArgsCap(approxArgs)
+	defer runtime.ReleaseArgs(argBuf)
+	_ = expandFwdSrcBParams(argBuf, sqlDialect, p)
+	in := runtime.RenderInput{
+		ColMask:  colMask,
+		FlagMask: flagMask,
+	}
+	sqlRow, ms, err := q.cache.QueryRow(ctx, q.db, q.txCache, q.usePrepared, vk, stmtIDFwdSrcB, runtime.ComputeBatchShapeTag(colMask, flagMask), 0, &q.fastSlots[15], sqlDialect, descFwdSrcB, &in, (*argBuf)...)
+	if err != nil {
+		return zero, err
+	}
+	var item []byte
+	err = scanFwdSrcBRow(sqlRow, &item, colMask, p)
+	_ = ms.Release()
+	if err != nil {
+		return zero, err
+	}
+	return item, nil
+}
+
+func (pl *Pipeline) FwdSrcB(kParam string) *runtime.RowFuture[[]byte] {
+	p := paramsFwdSrcB{
+		K: kParam,
+	}
+	vk, colMask, flagMask, approxArgs := computeFwdSrcBKey(p)
+	argBuf := runtime.AcquireArgsCap(approxArgs)
+	expandErr := expandFwdSrcBParams(argBuf, sqlDialect, p)
+	in := runtime.RenderInput{
+		ColMask:  colMask,
+		FlagMask: flagMask,
+	}
+	return runtime.QueueRow(pl.Pipeline, stmtIDFwdSrcB, descFwdSrcB, in, vk, &pl.q.fastSlots[15], argBuf, expandErr,
+		func(r *sql.Row, dst *[]byte) error { return scanFwdSrcBRow(r, dst, colMask, p) },
+		func(rs *sql.Rows, dst *[]byte) error { return scanFwdSrcBRow(rs, dst, colMask, p) },
+	)
+}
+
+const stmtIDFwdSrcBo uint32 = 30
+
+type paramsFwdSrcBo struct {
+	K string
+}
+
+var descFwdSrcBo = &runtime.QueryDescriptor{
+	Name:      "FwdSrcBo",
+	StmtID:    30,
+	StmtVerb:  runtime.VerbSelect,
+	StaticSQL: "SELECT bo AS v FROM sg_fwd_src WHERE k = $1",
+	Segments:  []string{"SELECT bo AS v FROM sg_fwd_src WHERE k = ", ""},
+	Slots: []runtime.Slot{
+		{Kind: runtime.SlotScalar},
+	},
+	ResultCols: []string{"v"},
+	ResultExpr: "bo",
+}
+
+func expandFwdSrcBoParams(dst *[]any, dialect runtime.Dialect, p paramsFwdSrcBo) error {
+	_ = dialect
+	_ = p
+	*dst = append(*dst, p.K)
+	return nil
+}
+
+func expandFwdSrcBoArgs(dst *[]any, dialect runtime.Dialect, q *runtime.Query) error {
+	return expandFwdSrcBoParams(dst, dialect, q.Params.(paramsFwdSrcBo))
+}
+
+func computeFwdSrcBoKey(p paramsFwdSrcBo) (runtime.VariantKey, uint64, uint64, int) {
+	_ = p
+	var colMask uint64
+	var flagMask uint64
+	var orderSpec runtime.Order
+	var hasSeek bool
+	orderKey := runtime.EncodeOrderKey(orderSpec, hasSeek)
+	approxArgs := 5
+	vk := runtime.MakeVariantKey(stmtIDFwdSrcBo, colMask, flagMask, orderKey)
+	return vk, colMask, flagMask, approxArgs
+}
+
+// FwdSrcBoQuery constructs a composable runtime.Query without executing it (stateless: no Queries or DB needed).
+func FwdSrcBoQuery(kParam string) runtime.Query {
+	p := paramsFwdSrcBo{
+		K: kParam,
+	}
+	_, colMask, flagMask, _ := computeFwdSrcBoKey(p)
+	in := runtime.RenderInput{
+		ColMask:  colMask,
+		FlagMask: flagMask,
+	}
+	orderKey := runtime.EncodeOrderKey(in.OrderSpec, in.HasSeek)
+	shapeTag := runtime.ComputeSubqueryShape(stmtIDFwdSrcBo, colMask, flagMask, orderKey, false)
+	return runtime.Query{
+		StmtID:   stmtIDFwdSrcBo,
+		Desc:     descFwdSrcBo,
+		Input:    in,
+		Params:   p,
+		Expand:   expandFwdSrcBoArgs,
+		ShapeTag: shapeTag,
+	}
+}
+
+func scanFwdSrcBoRow(scanner interface{ Scan(...any) error }, dst *bool, colMask uint64, p paramsFwdSrcBo) error {
+	_ = colMask
+	_ = p
+	var item bool
+	scanDest := [1]any{&item}
+	scanSlice := scanDest[:1]
+	if err := scanner.Scan(scanSlice...); err != nil {
+		return err
+	}
+	*dst = item
+	return nil
+}
+
+func (q *Queries) FwdSrcBo(ctx context.Context, kParam string) (bool, error) {
+	var zero bool
+	p := paramsFwdSrcBo{
+		K: kParam,
+	}
+	vk, colMask, flagMask, approxArgs := computeFwdSrcBoKey(p)
+	_ = colMask
+	argBuf := runtime.AcquireArgsCap(approxArgs)
+	defer runtime.ReleaseArgs(argBuf)
+	_ = expandFwdSrcBoParams(argBuf, sqlDialect, p)
+	in := runtime.RenderInput{
+		ColMask:  colMask,
+		FlagMask: flagMask,
+	}
+	sqlRow, ms, err := q.cache.QueryRow(ctx, q.db, q.txCache, q.usePrepared, vk, stmtIDFwdSrcBo, runtime.ComputeBatchShapeTag(colMask, flagMask), 0, &q.fastSlots[16], sqlDialect, descFwdSrcBo, &in, (*argBuf)...)
+	if err != nil {
+		return zero, err
+	}
+	var item bool
+	err = scanFwdSrcBoRow(sqlRow, &item, colMask, p)
+	_ = ms.Release()
+	if err != nil {
+		return zero, err
+	}
+	return item, nil
+}
+
+func (pl *Pipeline) FwdSrcBo(kParam string) *runtime.RowFuture[bool] {
+	p := paramsFwdSrcBo{
+		K: kParam,
+	}
+	vk, colMask, flagMask, approxArgs := computeFwdSrcBoKey(p)
+	argBuf := runtime.AcquireArgsCap(approxArgs)
+	expandErr := expandFwdSrcBoParams(argBuf, sqlDialect, p)
+	in := runtime.RenderInput{
+		ColMask:  colMask,
+		FlagMask: flagMask,
+	}
+	return runtime.QueueRow(pl.Pipeline, stmtIDFwdSrcBo, descFwdSrcBo, in, vk, &pl.q.fastSlots[16], argBuf, expandErr,
+		func(r *sql.Row, dst *bool) error { return scanFwdSrcBoRow(r, dst, colMask, p) },
+		func(rs *sql.Rows, dst *bool) error { return scanFwdSrcBoRow(rs, dst, colMask, p) },
+	)
+}
+
+const stmtIDFwdSrcF8 uint32 = 31
+
+type paramsFwdSrcF8 struct {
+	K string
+}
+
+var descFwdSrcF8 = &runtime.QueryDescriptor{
+	Name:      "FwdSrcF8",
+	StmtID:    31,
+	StmtVerb:  runtime.VerbSelect,
+	StaticSQL: "SELECT f8 AS v FROM sg_fwd_src WHERE k = $1",
+	Segments:  []string{"SELECT f8 AS v FROM sg_fwd_src WHERE k = ", ""},
+	Slots: []runtime.Slot{
+		{Kind: runtime.SlotScalar},
+	},
+	ResultCols: []string{"v"},
+	ResultExpr: "f8",
+}
+
+func expandFwdSrcF8Params(dst *[]any, dialect runtime.Dialect, p paramsFwdSrcF8) error {
+	_ = dialect
+	_ = p
+	*dst = append(*dst, p.K)
+	return nil
+}
+
+func expandFwdSrcF8Args(dst *[]any, dialect runtime.Dialect, q *runtime.Query) error {
+	return expandFwdSrcF8Params(dst, dialect, q.Params.(paramsFwdSrcF8))
+}
+
+func computeFwdSrcF8Key(p paramsFwdSrcF8) (runtime.VariantKey, uint64, uint64, int) {
+	_ = p
+	var colMask uint64
+	var flagMask uint64
+	var orderSpec runtime.Order
+	var hasSeek bool
+	orderKey := runtime.EncodeOrderKey(orderSpec, hasSeek)
+	approxArgs := 5
+	vk := runtime.MakeVariantKey(stmtIDFwdSrcF8, colMask, flagMask, orderKey)
+	return vk, colMask, flagMask, approxArgs
+}
+
+// FwdSrcF8Query constructs a composable runtime.Query without executing it (stateless: no Queries or DB needed).
+func FwdSrcF8Query(kParam string) runtime.Query {
+	p := paramsFwdSrcF8{
+		K: kParam,
+	}
+	_, colMask, flagMask, _ := computeFwdSrcF8Key(p)
+	in := runtime.RenderInput{
+		ColMask:  colMask,
+		FlagMask: flagMask,
+	}
+	orderKey := runtime.EncodeOrderKey(in.OrderSpec, in.HasSeek)
+	shapeTag := runtime.ComputeSubqueryShape(stmtIDFwdSrcF8, colMask, flagMask, orderKey, false)
+	return runtime.Query{
+		StmtID:   stmtIDFwdSrcF8,
+		Desc:     descFwdSrcF8,
+		Input:    in,
+		Params:   p,
+		Expand:   expandFwdSrcF8Args,
+		ShapeTag: shapeTag,
+	}
+}
+
+func scanFwdSrcF8Row(scanner interface{ Scan(...any) error }, dst *float64, colMask uint64, p paramsFwdSrcF8) error {
+	_ = colMask
+	_ = p
+	var item float64
+	scanDest := [1]any{&item}
+	scanSlice := scanDest[:1]
+	if err := scanner.Scan(scanSlice...); err != nil {
+		return err
+	}
+	*dst = item
+	return nil
+}
+
+func (q *Queries) FwdSrcF8(ctx context.Context, kParam string) (float64, error) {
+	var zero float64
+	p := paramsFwdSrcF8{
+		K: kParam,
+	}
+	vk, colMask, flagMask, approxArgs := computeFwdSrcF8Key(p)
+	_ = colMask
+	argBuf := runtime.AcquireArgsCap(approxArgs)
+	defer runtime.ReleaseArgs(argBuf)
+	_ = expandFwdSrcF8Params(argBuf, sqlDialect, p)
+	in := runtime.RenderInput{
+		ColMask:  colMask,
+		FlagMask: flagMask,
+	}
+	sqlRow, ms, err := q.cache.QueryRow(ctx, q.db, q.txCache, q.usePrepared, vk, stmtIDFwdSrcF8, runtime.ComputeBatchShapeTag(colMask, flagMask), 0, &q.fastSlots[17], sqlDialect, descFwdSrcF8, &in, (*argBuf)...)
+	if err != nil {
+		return zero, err
+	}
+	var item float64
+	err = scanFwdSrcF8Row(sqlRow, &item, colMask, p)
+	_ = ms.Release()
+	if err != nil {
+		return zero, err
+	}
+	return item, nil
+}
+
+func (pl *Pipeline) FwdSrcF8(kParam string) *runtime.RowFuture[float64] {
+	p := paramsFwdSrcF8{
+		K: kParam,
+	}
+	vk, colMask, flagMask, approxArgs := computeFwdSrcF8Key(p)
+	argBuf := runtime.AcquireArgsCap(approxArgs)
+	expandErr := expandFwdSrcF8Params(argBuf, sqlDialect, p)
+	in := runtime.RenderInput{
+		ColMask:  colMask,
+		FlagMask: flagMask,
+	}
+	return runtime.QueueRow(pl.Pipeline, stmtIDFwdSrcF8, descFwdSrcF8, in, vk, &pl.q.fastSlots[17], argBuf, expandErr,
+		func(r *sql.Row, dst *float64) error { return scanFwdSrcF8Row(r, dst, colMask, p) },
+		func(rs *sql.Rows, dst *float64) error { return scanFwdSrcF8Row(rs, dst, colMask, p) },
+	)
+}
+
+const stmtIDFwdSrcU uint32 = 32
+
+type paramsFwdSrcU struct {
+	K string
+}
+
+var descFwdSrcU = &runtime.QueryDescriptor{
+	Name:      "FwdSrcU",
+	StmtID:    32,
+	StmtVerb:  runtime.VerbSelect,
+	StaticSQL: "SELECT u AS v FROM sg_fwd_src WHERE k = $1",
+	Segments:  []string{"SELECT u AS v FROM sg_fwd_src WHERE k = ", ""},
+	Slots: []runtime.Slot{
+		{Kind: runtime.SlotScalar},
+	},
+	ResultCols: []string{"v"},
+	ResultExpr: "u",
+}
+
+func expandFwdSrcUParams(dst *[]any, dialect runtime.Dialect, p paramsFwdSrcU) error {
+	_ = dialect
+	_ = p
+	*dst = append(*dst, p.K)
+	return nil
+}
+
+func expandFwdSrcUArgs(dst *[]any, dialect runtime.Dialect, q *runtime.Query) error {
+	return expandFwdSrcUParams(dst, dialect, q.Params.(paramsFwdSrcU))
+}
+
+func computeFwdSrcUKey(p paramsFwdSrcU) (runtime.VariantKey, uint64, uint64, int) {
+	_ = p
+	var colMask uint64
+	var flagMask uint64
+	var orderSpec runtime.Order
+	var hasSeek bool
+	orderKey := runtime.EncodeOrderKey(orderSpec, hasSeek)
+	approxArgs := 5
+	vk := runtime.MakeVariantKey(stmtIDFwdSrcU, colMask, flagMask, orderKey)
+	return vk, colMask, flagMask, approxArgs
+}
+
+// FwdSrcUQuery constructs a composable runtime.Query without executing it (stateless: no Queries or DB needed).
+func FwdSrcUQuery(kParam string) runtime.Query {
+	p := paramsFwdSrcU{
+		K: kParam,
+	}
+	_, colMask, flagMask, _ := computeFwdSrcUKey(p)
+	in := runtime.RenderInput{
+		ColMask:  colMask,
+		FlagMask: flagMask,
+	}
+	orderKey := runtime.EncodeOrderKey(in.OrderSpec, in.HasSeek)
+	shapeTag := runtime.ComputeSubqueryShape(stmtIDFwdSrcU, colMask, flagMask, orderKey, false)
+	return runtime.Query{
+		StmtID:   stmtIDFwdSrcU,
+		Desc:     descFwdSrcU,
+		Input:    in,
+		Params:   p,
+		Expand:   expandFwdSrcUArgs,
+		ShapeTag: shapeTag,
+	}
+}
+
+func scanFwdSrcURow(scanner interface{ Scan(...any) error }, dst *string, colMask uint64, p paramsFwdSrcU) error {
+	_ = colMask
+	_ = p
+	var item string
+	scanDest := [1]any{&item}
+	scanSlice := scanDest[:1]
+	if err := scanner.Scan(scanSlice...); err != nil {
+		return err
+	}
+	*dst = item
+	return nil
+}
+
+func (q *Queries) FwdSrcU(ctx context.Context, kParam string) (string, error) {
+	var zero string
+	p := paramsFwdSrcU{
+		K: kParam,
+	}
+	vk, colMask, flagMask, approxArgs := computeFwdSrcUKey(p)
+	_ = colMask
+	argBuf := runtime.AcquireArgsCap(approxArgs)
+	defer runtime.ReleaseArgs(argBuf)
+	_ = expandFwdSrcUParams(argBuf, sqlDialect, p)
+	in := runtime.RenderInput{
+		ColMask:  colMask,
+		FlagMask: flagMask,
+	}
+	sqlRow, ms, err := q.cache.QueryRow(ctx, q.db, q.txCache, q.usePrepared, vk, stmtIDFwdSrcU, runtime.ComputeBatchShapeTag(colMask, flagMask), 0, &q.fastSlots[18], sqlDialect, descFwdSrcU, &in, (*argBuf)...)
+	if err != nil {
+		return zero, err
+	}
+	var item string
+	err = scanFwdSrcURow(sqlRow, &item, colMask, p)
+	_ = ms.Release()
+	if err != nil {
+		return zero, err
+	}
+	return item, nil
+}
+
+func (pl *Pipeline) FwdSrcU(kParam string) *runtime.RowFuture[string] {
+	p := paramsFwdSrcU{
+		K: kParam,
+	}
+	vk, colMask, flagMask, approxArgs := computeFwdSrcUKey(p)
+	argBuf := runtime.AcquireArgsCap(approxArgs)
+	expandErr := expandFwdSrcUParams(argBuf, sqlDialect, p)
+	in := runtime.RenderInput{
+		ColMask:  colMask,
+		FlagMask: flagMask,
+	}
+	return runtime.QueueRow(pl.Pipeline, stmtIDFwdSrcU, descFwdSrcU, in, vk, &pl.q.fastSlots[18], argBuf, expandErr,
+		func(r *sql.Row, dst *string) error { return scanFwdSrcURow(r, dst, colMask, p) },
+		func(rs *sql.Rows, dst *string) error { return scanFwdSrcURow(rs, dst, colMask, p) },
+	)
+}
+
+const stmtIDFwdDst uint32 = 33
+
+type paramsFwdDst struct {
+	K   string
+	I8  int64
+	I8n *int64
+	S   string
+	Ts  time.Time
+	Tsl time.Time
+	B   []byte
+	Bo  bool
+	F8  float64
+	U   string
+}
+
+var descFwdDst = &runtime.QueryDescriptor{
+	Name:      "FwdDst",
+	StmtID:    33,
+	StmtVerb:  runtime.VerbInsert,
+	StaticSQL: "INSERT INTO sg_fwd_dst (k, i8, i8n, s, ts, tsl, b, bo, f8, u)\nVALUES ($1, $2, $3, $4::text, $5, $6::timestamp,\n  $7, $8, $9, $10::uuid)",
+	Segments:  []string{"INSERT INTO sg_fwd_dst (k, i8, i8n, s, ts, tsl, b, bo, f8, u)\n", "", ", ", ", ", ", ", "::text, ", ", ", "::timestamp,\n  ", ", ", ", ", ", ", "::uuid", ""},
+	Slots: []runtime.Slot{
+		{Kind: runtime.SlotInsertValuesOpen},
+		{Kind: runtime.SlotScalar, Cast: "text"},
+		{Kind: runtime.SlotScalar, Cast: "bigint"},
+		{Kind: runtime.SlotScalar, Cast: "bigint"},
+		{Kind: runtime.SlotScalar, Cast: "text"},
+		{Kind: runtime.SlotScalar, Cast: "timestamptz"},
+		{Kind: runtime.SlotScalar, Cast: "timestamptz"},
+		{Kind: runtime.SlotScalar, Cast: "bytea"},
+		{Kind: runtime.SlotScalar, Cast: "boolean"},
+		{Kind: runtime.SlotScalar, Cast: "double precision"},
+		{Kind: runtime.SlotScalar, Cast: "text"},
+		{Kind: runtime.SlotInsertValuesClose},
+	},
+}
+
+func expandFwdDstParams(dst *[]any, dialect runtime.Dialect, p paramsFwdDst) error {
+	_ = dialect
+	_ = p
+	*dst = append(*dst, p.K)
+	*dst = append(*dst, p.I8)
+	*dst = append(*dst, p.I8n)
+	*dst = append(*dst, p.S)
+	*dst = append(*dst, p.Ts)
+	*dst = append(*dst, p.Tsl)
+	*dst = append(*dst, p.B)
+	*dst = append(*dst, p.Bo)
+	*dst = append(*dst, p.F8)
+	*dst = append(*dst, p.U)
+	return nil
+}
+
+func expandFwdDstPipelineParams(dst *[]any, dialect runtime.Dialect, p paramsFwdDst, fwd0 runtime.Arg[int64], fwd1 runtime.Arg[*int64], fwd2 runtime.Arg[string], fwd3 runtime.Arg[time.Time], fwd4 runtime.Arg[time.Time], fwd5 runtime.Arg[[]byte], fwd6 runtime.Arg[bool], fwd7 runtime.Arg[float64], fwd8 runtime.Arg[string]) error {
+	_ = dialect
+	_ = p
+	*dst = append(*dst, p.K)
+	*dst = append(*dst, fwd0.Bind())
+	*dst = append(*dst, fwd1.Bind())
+	*dst = append(*dst, fwd2.Bind())
+	*dst = append(*dst, fwd3.Bind())
+	*dst = append(*dst, fwd4.Bind())
+	*dst = append(*dst, fwd5.Bind())
+	*dst = append(*dst, fwd6.Bind())
+	*dst = append(*dst, fwd7.Bind())
+	*dst = append(*dst, fwd8.Bind())
+	return nil
+}
+
+func computeFwdDstKey(p paramsFwdDst) (runtime.VariantKey, uint64, uint64, int) {
+	_ = p
+	var colMask uint64
+	var flagMask uint64
+	var orderSpec runtime.Order
+	var hasSeek bool
+	orderKey := runtime.EncodeOrderKey(orderSpec, hasSeek)
+	approxArgs := 14
+	vk := runtime.MakeVariantKey(stmtIDFwdDst, colMask, flagMask, orderKey)
+	return vk, colMask, flagMask, approxArgs
+}
+
+func (q *Queries) FwdDst(ctx context.Context, kParam string, i8 int64, i8n *int64, s string, ts time.Time, tsl time.Time, b []byte, bo bool, f8 float64, u string) (sql.Result, error) {
+	p := paramsFwdDst{
+		K:   kParam,
+		I8:  i8,
+		I8n: i8n,
+		S:   s,
+		Ts:  ts,
+		Tsl: tsl,
+		B:   b,
+		Bo:  bo,
+		F8:  f8,
+		U:   u,
+	}
+	vk, colMask, flagMask, approxArgs := computeFwdDstKey(p)
+	argBuf := runtime.AcquireArgsCap(approxArgs)
+	defer runtime.ReleaseArgs(argBuf)
+	_ = expandFwdDstParams(argBuf, sqlDialect, p)
+	in := runtime.RenderInput{
+		ColMask:  colMask,
+		FlagMask: flagMask,
+	}
+	return q.cache.Exec(ctx, q.db, q.txCache, q.usePrepared, vk, stmtIDFwdDst, runtime.ComputeBatchShapeTag(colMask, flagMask), 0, &q.fastSlots[19], sqlDialect, descFwdDst, &in, (*argBuf)...)
+}
+
+func (pl *Pipeline) FwdDst(kParam string, i8 runtime.Arg[int64], i8n runtime.Arg[*int64], s runtime.Arg[string], ts runtime.Arg[time.Time], tsl runtime.Arg[time.Time], b runtime.Arg[[]byte], bo runtime.Arg[bool], f8 runtime.Arg[float64], u runtime.Arg[string]) *runtime.ExecFuture {
+	p := paramsFwdDst{
+		K: kParam,
+	}
+	vk, colMask, flagMask, approxArgs := computeFwdDstKey(p)
+	argBuf := runtime.AcquireArgsCap(approxArgs)
+	expandErr := expandFwdDstPipelineParams(argBuf, sqlDialect, p, i8, i8n, s, ts, tsl, b, bo, f8, u)
+	in := runtime.RenderInput{
+		ColMask:  colMask,
+		FlagMask: flagMask,
+	}
+	fut := pl.Pipeline.QueueExec(stmtIDFwdDst, descFwdDst, in, vk, &pl.q.fastSlots[19], argBuf, expandErr)
+	pl.Pipeline.BindForwarded()
+	return fut
+}
+
+const stmtIDFwdInsertReturningID uint32 = 34
+
+type paramsFwdInsertReturningID struct {
+	ID    int64
+	OrgID int64
+	Name  string
+}
+
+var descFwdInsertReturningID = &runtime.QueryDescriptor{
+	Name:         "FwdInsertReturningID",
+	StmtID:       34,
+	StmtVerb:     runtime.VerbInsert,
+	HasReturning: true,
+	StaticSQL:    "INSERT INTO sg_items (id, org_id, name, score, status)\nVALUES ($1, $2, $3, 0, 'new')\nRETURNING id AS new_id",
+	Segments:     []string{"INSERT INTO sg_items (id, org_id, name, score, status)\n", "", ", ", ", ", ", 0, 'new'", "\nRETURNING id AS new_id"},
+	Slots: []runtime.Slot{
+		{Kind: runtime.SlotInsertValuesOpen},
+		{Kind: runtime.SlotScalar, Cast: "bigint"},
+		{Kind: runtime.SlotScalar, Cast: "bigint"},
+		{Kind: runtime.SlotScalar, Cast: "text"},
+		{Kind: runtime.SlotInsertValuesClose},
+	},
+	ResultCols: []string{"new_id"},
+	ResultExpr: "id",
+}
+
+func expandFwdInsertReturningIDParams(dst *[]any, dialect runtime.Dialect, p paramsFwdInsertReturningID) error {
+	_ = dialect
+	_ = p
+	*dst = append(*dst, p.ID)
+	*dst = append(*dst, p.OrgID)
+	*dst = append(*dst, p.Name)
+	return nil
+}
+
+func expandFwdInsertReturningIDArgs(dst *[]any, dialect runtime.Dialect, q *runtime.Query) error {
+	return expandFwdInsertReturningIDParams(dst, dialect, q.Params.(paramsFwdInsertReturningID))
+}
+
+func computeFwdInsertReturningIDKey(p paramsFwdInsertReturningID) (runtime.VariantKey, uint64, uint64, int) {
+	_ = p
+	var colMask uint64
+	var flagMask uint64
+	var orderSpec runtime.Order
+	var hasSeek bool
+	orderKey := runtime.EncodeOrderKey(orderSpec, hasSeek)
+	approxArgs := 7
+	vk := runtime.MakeVariantKey(stmtIDFwdInsertReturningID, colMask, flagMask, orderKey)
+	return vk, colMask, flagMask, approxArgs
+}
+
+func scanFwdInsertReturningIDRow(scanner interface{ Scan(...any) error }, dst *int64, colMask uint64, p paramsFwdInsertReturningID) error {
+	_ = colMask
+	_ = p
+	var item int64
+	scanDest := [1]any{&item}
+	scanSlice := scanDest[:1]
+	if err := scanner.Scan(scanSlice...); err != nil {
+		return err
+	}
+	*dst = item
+	return nil
+}
+
+func (q *Queries) FwdInsertReturningID(ctx context.Context, id int64, orgID int64, name string) (int64, error) {
+	var zero int64
+	p := paramsFwdInsertReturningID{
+		ID:    id,
+		OrgID: orgID,
+		Name:  name,
+	}
+	vk, colMask, flagMask, approxArgs := computeFwdInsertReturningIDKey(p)
+	_ = colMask
+	argBuf := runtime.AcquireArgsCap(approxArgs)
+	defer runtime.ReleaseArgs(argBuf)
+	_ = expandFwdInsertReturningIDParams(argBuf, sqlDialect, p)
+	in := runtime.RenderInput{
+		ColMask:  colMask,
+		FlagMask: flagMask,
+	}
+	sqlRow, ms, err := q.cache.QueryRow(ctx, q.db, q.txCache, q.usePrepared, vk, stmtIDFwdInsertReturningID, runtime.ComputeBatchShapeTag(colMask, flagMask), 0, &q.fastSlots[20], sqlDialect, descFwdInsertReturningID, &in, (*argBuf)...)
+	if err != nil {
+		return zero, err
+	}
+	var item int64
+	err = scanFwdInsertReturningIDRow(sqlRow, &item, colMask, p)
+	_ = ms.Release()
+	if err != nil {
+		return zero, err
+	}
+	return item, nil
+}
+
+func (pl *Pipeline) FwdInsertReturningID(id int64, orgID int64, name string) *runtime.RowFuture[int64] {
+	p := paramsFwdInsertReturningID{
+		ID:    id,
+		OrgID: orgID,
+		Name:  name,
+	}
+	vk, colMask, flagMask, approxArgs := computeFwdInsertReturningIDKey(p)
+	argBuf := runtime.AcquireArgsCap(approxArgs)
+	expandErr := expandFwdInsertReturningIDParams(argBuf, sqlDialect, p)
+	in := runtime.RenderInput{
+		ColMask:  colMask,
+		FlagMask: flagMask,
+	}
+	return runtime.QueueRow(pl.Pipeline, stmtIDFwdInsertReturningID, descFwdInsertReturningID, in, vk, &pl.q.fastSlots[20], argBuf, expandErr,
+		func(r *sql.Row, dst *int64) error { return scanFwdInsertReturningIDRow(r, dst, colMask, p) },
+		func(rs *sql.Rows, dst *int64) error { return scanFwdInsertReturningIDRow(rs, dst, colMask, p) },
+	)
+}
+
+const stmtIDInsertedIDs uint32 = 35
 
 type paramsInsertedIDs struct {
 	Rows []NewItem
@@ -3816,7 +5691,7 @@ type paramsInsertedIDs struct {
 
 var descInsertedIDs = &runtime.QueryDescriptor{
 	Name:         "InsertedIDs",
-	StmtID:       19,
+	StmtID:       35,
 	StmtVerb:     runtime.VerbInsert,
 	HasReturning: true,
 	Segments:     []string{"INSERT INTO sg_items (id, org_id, name, score, status)\n", "", "", "\nRETURNING id"},
@@ -4088,7 +5963,7 @@ func (q *Queries) InsertedIDsStream(ctx context.Context, seq iter.Seq2[NewItem, 
 	return runtime.Collect(q.InsertedIDsStreamSeq(ctx, seq))
 }
 
-const stmtIDApplyDeltas uint32 = 20
+const stmtIDApplyDeltas uint32 = 36
 
 type paramsApplyDeltas struct {
 	Rows []ScoreDelta
@@ -4096,7 +5971,7 @@ type paramsApplyDeltas struct {
 
 var descApplyDeltas = &runtime.QueryDescriptor{
 	Name:     "ApplyDeltas",
-	StmtID:   20,
+	StmtID:   36,
 	StmtVerb: runtime.VerbUpdate,
 	Segments: []string{"WITH v(id, delta) AS (VALUES ", ")\nUPDATE sg_items SET score = score + v.delta FROM v WHERE ", "sg_items.id = v.id", ""},
 	Slots: []runtime.Slot{

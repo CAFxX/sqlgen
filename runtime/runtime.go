@@ -518,10 +518,14 @@ type QueryDescriptor struct {
 	Slots          []Slot
 	SelectColExprs []string
 	OrderCols      []string
-	HasReturning   bool
-	NumSlices      int
-	NumTuples      int
-	NumSubs        int
+	// ResultCols are the names of the output columns of a kind-one statement, and ResultExpr the
+	// expression of the column when there is exactly one (what RowFuture.Arg forwards).
+	ResultCols   []string
+	ResultExpr   string
+	HasReturning bool
+	NumSlices    int
+	NumTuples    int
+	NumSubs      int
 }
 
 // AssertionError is the error returned when AssertRows/AssertFound fails. errors.Is(err,
@@ -626,13 +630,16 @@ type OpDecorators struct {
 	// rows and stores it under sqlgen.l<CondID>; the later statement combines the recorded values.
 	// Val and Set of the entries are unused (nobody reads them back).
 	LeafRecs []ProducedCond
+	// ValRecs record, server-side, the values of this operation that later operations use as forwarded
+	// arguments (RowFuture.Arg, ExecFuture.LastInsertIDArg).
+	ValRecs []ValRec
 }
 
 // guarded reports whether the statement of an operation needs the WITH _sqlgen_op guard shape: an
 // assertion, a condition that is recorded server-side, or the record of a leaf of someone else's
 // compound condition. (ExtraConds only ever accompany a ProduceCond.)
 func (d *OpDecorators) guarded() bool {
-	return d.AssertRows >= 0 || d.ProduceCond != nil || len(d.LeafRecs) > 0
+	return d.AssertRows >= 0 || d.ProduceCond != nil || len(d.LeafRecs) > 0 || len(d.ValRecs) > 0
 }
 
 // argsExpander appends a Query's bound arguments into dst.

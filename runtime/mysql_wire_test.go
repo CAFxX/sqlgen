@@ -635,8 +635,8 @@ func TestMySQLReturning(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if b.SQL != "SET @sqlgen_p=-1;SET @sqlgen_p=0;INSERT INTO t (id) VALUES (3) RETURNING id;" || b.TrimsLastColumn(0) {
-			t.Fatalf("got %q trim=%v", b.SQL, b.TrimsLastColumn(0))
+		if b.SQL != "SET @sqlgen_p=-1;SET @sqlgen_p=0;INSERT INTO t (id) VALUES (3) RETURNING id;" || b.TrimColumns(0) != 0 {
+			t.Fatalf("got %q trim=%v", b.SQL, b.TrimColumns(0))
 		}
 	})
 	t.Run("a guard counts the returned rows in a counter column", func(t *testing.T) {
@@ -646,8 +646,8 @@ func TestMySQLReturning(t *testing.T) {
 			t.Fatal(err)
 		}
 		want := "SET @sqlgen_p=0;SAVEPOINT sqlgen_sp0;SET @sqlgen_k=0;INSERT INTO t (id) VALUES (3) RETURNING id, (@sqlgen_k:=@sqlgen_k+1);SET @sqlgen_n0=@sqlgen_k;"
-		if !strings.Contains(b.SQL, want) || !b.TrimsLastColumn(0) {
-			t.Fatalf("got %q trim=%v", b.SQL, b.TrimsLastColumn(0))
+		if !strings.Contains(b.SQL, want) || b.TrimColumns(0) != 1 {
+			t.Fatalf("got %q trim=%v", b.SQL, b.TrimColumns(0))
 		}
 	})
 	t.Run("a column condition over it is not applicable", func(t *testing.T) {

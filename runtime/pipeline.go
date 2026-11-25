@@ -138,17 +138,29 @@ type ProducedCond struct {
 type PipelineOp struct {
 	opIdx int    // position in the pipeline's queue (AssertionError.Op)
 	label string // set by the future's Label (AssertionError.Label)
-	// nCondArgs is how many WhereCol arguments renderPipelineBatch appended to Args (see dropCondArgs).
-	nCondArgs     int
-	StmtID        uint32
-	Desc          *QueryDescriptor
-	Input         RenderInput
-	Decorators    OpDecorators
-	ExtraConds    []ProducedCond
-	Key           VariantKey
-	FastSlot      *atomic.Pointer[ManagedStmt]
-	SQL           string
-	Args          []any
+	// argsRewritten is set when renderPipelineBatch replaced Args for the wire (WhereCol arguments appended,
+	// forwarded values removed); origArgs are the operation's own arguments, restored by dropCondArgs.
+	argsRewritten bool
+	origArgs      []any
+	// nRefs is the number of forwarded values among Args (BindForwarded); countRows is set on a producer
+	// whose value is forwarded (RowFuture.Arg): the sequential path then counts every row it returns, so
+	// that "more than one row" is detected as on the single-round-trip paths.
+	nRefs      int
+	countRows  bool
+	StmtID     uint32
+	Desc       *QueryDescriptor
+	Input      RenderInput
+	Decorators OpDecorators
+	ExtraConds []ProducedCond
+	Key        VariantKey
+	FastSlot   *atomic.Pointer[ManagedStmt]
+	SQL        string
+	Args       []any
+	// CheckSQL, set by renderPipelineBatch (PostgreSQL flavor) on an operation that uses forwarded values,
+	// is a statement the driver must send right before SQL, inside the same batch: it fails with a marked
+	// error (TranslateWireError makes an *ArgError of it) when the operation would run and a forwarded value
+	// is unresolved. Inside a transaction the caller began, take the operation's savepoint before it.
+	CheckSQL      string
 	argBuf        *[]any
 	HasResultCols bool
 	IsSingleRow   bool
@@ -179,6 +191,7 @@ type ExecFuture struct {
 	res     sql.Result
 	skipped bool
 	err     error
+	ref     *argRef // LastInsertIDArg
 }
 
 // AssertRows requires the operation to affect exactly n rows (rows affected for an exec, rows returned for a query), rolling back with ErrAssertionFailed otherwise.
@@ -290,6 +303,7 @@ type RowFuture[T any] struct {
 	found   bool
 	skipped bool
 	err     error
+	ref     *argRef // Arg
 }
 
 // AssertFound requires the query to return 1 row, rolling back with ErrAssertionFailed otherwise.
@@ -697,10 +711,14 @@ func (w *pipelineConnWrapper) ExecContext(ctx context.Context, query string, arg
 		if payload, ok := ctx.Value(pipelineCtxKey{}).(*pipelineCtxPayload); ok && payload != nil {
 			if wp, ok := w.Conn.(wirePipeliner); ok {
 				payload.handled = true
+				var err error
 				if prerenders(wp) {
-					renderPipelineBatch(payload.dialect, payload.cache, payload.ops)
+					err = renderPipelineBatch(payload.dialect, payload.cache, payload.ops)
 				}
-				if err := wp.ExecPipeline(ctx, payload.ops); err != nil {
+				if err == nil {
+					err = wp.ExecPipeline(ctx, payload.ops)
+				}
+				if err != nil {
 					if errors.Is(err, ErrWireNotApplicable) {
 						// Nothing was sent: the caller runs the operations sequentially.
 						dropCondArgs(payload.ops)
@@ -831,6 +849,12 @@ func TranslateWireError(op *PipelineOp, err error) error {
 		return err
 	}
 	msg := err.Error()
+	if op.nRefs > 0 {
+		if aerr := translateRefError(op, msg); aerr != nil {
+			op.Err = aerr
+			return aerr
+		}
+	}
 	if op.Decorators.IsAbort && op.AbortErr != nil && strings.Contains(msg, wireAbortMarker) {
 		op.Err = op.AbortErr
 		return op.AbortErr
@@ -853,6 +877,42 @@ func TranslateWireError(op *PipelineOp, err error) error {
 	}
 	op.Err = err
 	return err
+}
+
+// translateRefError builds the *ArgError of the marker sqlgen:ref:<ID>:<record> that the check of op
+// (CheckSQL) raised, or returns nil when msg carries no such marker. The record is 'x<rows>' for a
+// producer that did not yield exactly one row.
+func translateRefError(op *PipelineOp, msg string) *ArgError {
+	i := strings.Index(msg, wireRefMarker)
+	if i < 0 {
+		return nil
+	}
+	rest := msg[i+len(wireRefMarker):]
+	n := 0
+	for n < len(rest) && rest[n] >= '0' && rest[n] <= '9' {
+		n++
+	}
+	id, err := strconv.Atoi(rest[:n])
+	if err != nil {
+		return nil
+	}
+	r := op.refByID(id)
+	if r == nil {
+		return nil
+	}
+	rest = rest[n:]
+	var got int64
+	known := false
+	if strings.HasPrefix(rest, ":x") {
+		rest = rest[2:]
+		n = 0
+		for n < len(rest) && rest[n] >= '0' && rest[n] <= '9' {
+			n++
+		}
+		got, err = strconv.ParseInt(rest[:n], 10, 64)
+		known = err == nil
+	}
+	return r.argError(op, got, known)
 }
 
 // translateOverflowGuard is TranslateWireError for guards rendered for the question dialect, whose only
@@ -896,6 +956,7 @@ type Pipeline struct {
 	branchStack []BranchGate
 	ifResults   []*IfResult
 	condSeq     int
+	valSeq      int // ValRec IDs
 	buildErr    error
 	noOps       int // number of NoOp operations queued
 	flushed     bool
@@ -1056,7 +1117,8 @@ func (p *Pipeline) queueNoop(onSkipped func(), onDone func(err error)) *Pipeline
 // over it (those need the operation to run, which only the sequential path can do without SQL).
 func (op *PipelineOp) plainNoOp() bool {
 	d := &op.Decorators
-	return op.NoOp && d.AssertRows < 0 && d.ProduceCond == nil && len(d.ExtraConds) == 0 && len(d.LeafRecs) == 0
+	return op.NoOp && d.AssertRows < 0 && d.ProduceCond == nil && len(d.ExtraConds) == 0 && len(d.LeafRecs) == 0 &&
+		len(d.ValRecs) == 0
 }
 
 // wireOps returns the operations a wire driver is handed: p.ops without the NoOp operations (there is no
@@ -1186,6 +1248,38 @@ func QueueRow[T any](
 		},
 		ExecSeq: func(ctx context.Context, pl *Pipeline, op *PipelineOp) error {
 			shapeTag := ComputeBatchShapeTag(op.Input.ColMask, op.Input.FlagMask)
+			if op.countRows {
+				// A producer of a forwarded value: count every row, as the wire paths do.
+				rows, ms, err := pl.cache.Query(ctx, pl.db, pl.txCache, pl.usePrepared, op.Key, op.StmtID, shapeTag, 0, op.FastSlot, pl.dialect, op.Desc, &op.Input, op.Args...)
+				if err != nil {
+					fut.err = err
+					op.Err = err
+					return err
+				}
+				var count int64
+				for rows.Next() {
+					var item T
+					if err := scanRowsFn(rows, &item); err != nil {
+						closeRows(rows, ms)
+						fut.err = err
+						op.Err = err
+						return err
+					}
+					if count == 0 {
+						fut.val, fut.found = item, true
+					}
+					count++
+				}
+				err = rows.Err()
+				closeRows(rows, ms)
+				if err != nil {
+					fut.err = err
+					op.Err = err
+					return err
+				}
+				op.RowCount = count
+				return nil
+			}
 			row, ms, err := pl.cache.QueryRow(ctx, pl.db, pl.txCache, pl.usePrepared, op.Key, op.StmtID, shapeTag, 0, op.FastSlot, pl.dialect, op.Desc, &op.Input, op.Args...)
 			if err != nil {
 				fut.err = err
@@ -1449,6 +1543,16 @@ func (p *Pipeline) executePipelineOps(ctx context.Context, wireMode bool) error 
 		if op.Decorators.IsAbort {
 			return op.AbortErr
 		}
+		if !wireMode && op.nRefs > 0 {
+			if err := resolveRefs(op); err != nil {
+				op.Err = err
+				*p.opPtrs[i] = *op
+				if op.OnDone != nil {
+					op.OnDone(0, err)
+				}
+				return err
+			}
+		}
 		if !wireMode && op.ExecSeq != nil {
 			op.Input.BranchGates = nil
 			if err := op.ExecSeq(ctx, p, op); err != nil {
@@ -1587,9 +1691,11 @@ func (p *Pipeline) flushWireConn(txOpts *sql.TxOptions, allowPlain bool) (handle
 			handled = true
 			ops, restore := p.wireOps()
 			if prerenders(tp) {
-				renderPipelineBatch(p.dialect, p.cache, ops)
+				wireErr = renderPipelineBatch(p.dialect, p.cache, ops)
 			}
-			wireErr = tp.ExecTxPipeline(p.ctx, txOpts, ops)
+			if wireErr == nil {
+				wireErr = tp.ExecTxPipeline(p.ctx, txOpts, ops)
+			}
 			if !errors.Is(wireErr, ErrWireNotApplicable) {
 				restore()
 			} else {
@@ -1601,9 +1707,11 @@ func (p *Pipeline) flushWireConn(txOpts *sql.TxOptions, allowPlain bool) (handle
 			handled = true
 			ops, restore := p.wireOps()
 			if prerenders(wp) {
-				renderPipelineBatch(p.dialect, p.cache, ops)
+				wireErr = renderPipelineBatch(p.dialect, p.cache, ops)
 			}
-			wireErr = wp.ExecPipeline(p.ctx, ops)
+			if wireErr == nil {
+				wireErr = wp.ExecPipeline(p.ctx, ops)
+			}
 			if !errors.Is(wireErr, ErrWireNotApplicable) {
 				restore()
 			} else {

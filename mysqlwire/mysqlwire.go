@@ -102,6 +102,7 @@ type connector struct {
 	state     capState
 	returning bool // the server has INSERT/DELETE ... RETURNING (MariaDB 10.5+)
 	tidb      bool // the server is TiDB (runtime.MySQLFlavor.HexLiteralIsNumber)
+	forward   bool // the server runs forwarded values (runtime.MySQLFlavor.Forwarding)
 }
 
 func (c *connector) Driver() driver.Driver { return c.base.Driver() }
@@ -168,13 +169,37 @@ func (c *connector) probe(ctx context.Context, cn *conn, version string) error {
 	c.state = capYes
 	c.returning = hasReturning(version)
 	c.tidb = isTiDB(version)
+	// Forwarded values assign a user variable inside an expression (deprecated by MySQL 8.0, so a later
+	// server may refuse it) and reset LAST_INSERT_ID with DO. A server that refuses either keeps the
+	// pipelines that forward values on the sequential path; the others are unaffected.
+	const fq = "DO LAST_INSERT_ID(0);SELECT (@sqlgen_probe_v:=2),LAST_INSERT_ID();"
+	if frows, ferr := cn.qc.QueryContext(pctx, fq, nil); ferr == nil {
+		dest := make([]driver.Value, 2)
+		fok := frows.Next(dest) == nil
+		if v, vok := summaryInt(dest[0]); !vok || v != 2 {
+			fok = false
+		}
+		if v, vok := summaryInt(dest[1]); !vok || v != 0 {
+			fok = false
+		}
+		if cerr := frows.Close(); cerr != nil {
+			fok = false
+		}
+		c.forward = fok
+	} else {
+		var me *mysql.MySQLError
+		if !errors.As(ferr, &me) {
+			c.state = capUnknown
+			return ferr // transport problem: not a verdict about the server
+		}
+	}
 	return nil
 }
 
-func (c *connector) capable() (ok, returning, tidb bool) {
+func (c *connector) capable() (ok, returning, tidb, forward bool) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	return c.state == capYes, c.returning, c.tidb
+	return c.state == capYes, c.returning, c.tidb, c.forward
 }
 
 // isTiDB reports whether the server version string names TiDB (e.g. "8.0.11-TiDB-v8.5.8").
@@ -391,14 +416,14 @@ func (c *conn) ExecTxPipeline(ctx context.Context, txOpts *sql.TxOptions, ops []
 }
 
 func (c *conn) exec(ctx context.Context, txOpts *sql.TxOptions, ops []runtime.PipelineOp) error {
-	ok, returning, tidb := c.c.capable()
+	ok, returning, tidb, forward := c.c.capable()
 	if !c.pipelining || !ok {
 		return fmt.Errorf("mysqlwire: the server does not run the pipeline statement sequences: %w", runtime.ErrWireNotApplicable)
 	}
 	if mc, isMy := c.Conn.(interface{ IsValid() bool }); isMy && !mc.IsValid() {
 		return driver.ErrBadConn
 	}
-	flavor := runtime.MySQLFlavor{Loc: c.c.loc, Charset: c.charset, Returning: returning, HexLiteralIsNumber: tidb}
+	flavor := runtime.MySQLFlavor{Loc: c.c.loc, Charset: c.charset, Returning: returning, HexLiteralIsNumber: tidb, Forwarding: forward}
 	batch, err := runtime.RenderMySQLBatch(ops, runtime.MySQLRenderOptions{Flavor: &flavor, InTx: c.inTx, TxOpts: txOpts})
 	if err != nil {
 		return err
@@ -467,7 +492,7 @@ func (c *conn) deliver(ctx context.Context, rows driver.Rows, b *runtime.MySQLBa
 			continue // keep draining
 		}
 		op := &ops[i]
-		view := &setRows{inner: rows, trim: b.TrimsLastColumn(i)}
+		view := &setRows{inner: rows, trim: b.TrimColumns(i)}
 		sqlRows, err := wire.RowsFromDriverRows(ctx, view)
 		if err != nil {
 			firstErr = &scanError{err}
@@ -599,17 +624,18 @@ func (c *conn) rollbackToSavepoint(ctx context.Context, savepoint string) {
 
 // setRows exposes the current result set of a multi-result driver.Rows as a driver.Rows of its own, so
 // that it can be scanned like the result of a single query. Close does not close the underlying rows.
-// With trim, the last column (the row counter appended to a RETURNING statement) is hidden.
+// The last trim columns (the row counter appended to a RETURNING statement, the assignment that records a
+// forwarded value) are hidden.
 type setRows struct {
 	inner driver.Rows
-	trim  bool
+	trim  int
 	buf   []driver.Value
 }
 
 func (r *setRows) Columns() []string {
 	cols := r.inner.Columns()
-	if r.trim && len(cols) > 0 {
-		return cols[:len(cols)-1]
+	if r.trim > 0 && len(cols) >= r.trim {
+		return cols[:len(cols)-r.trim]
 	}
 	return cols
 }
@@ -617,13 +643,13 @@ func (r *setRows) Columns() []string {
 func (r *setRows) Close() error { return nil }
 
 func (r *setRows) Next(dest []driver.Value) error {
-	if !r.trim {
+	if r.trim == 0 {
 		return r.inner.Next(dest)
 	}
-	if cap(r.buf) < len(dest)+1 {
-		r.buf = make([]driver.Value, len(dest)+1)
+	if cap(r.buf) < len(dest)+r.trim {
+		r.buf = make([]driver.Value, len(dest)+r.trim)
 	}
-	buf := r.buf[:len(dest)+1]
+	buf := r.buf[:len(dest)+r.trim]
 	err := r.inner.Next(buf)
 	copy(dest, buf)
 	return err

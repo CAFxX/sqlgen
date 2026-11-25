@@ -881,6 +881,73 @@ err := q.PipelineTx(ctx, nil, func(p *Pipeline) error {
    - `PipelineTx(ctx, opts, fn)` and a standalone `q.Pipeline(ctx)` (which runs in its own implicit transaction): a failed assertion, `Abort`, or any other error rolls the transaction back automatically; nothing the pipeline wrote is committed.
    - A pipeline on a **user-managed transaction** (`q.WithTx(tx).Pipeline(ctx).Flush()`): the pipeline never rolls the transaction back, and a failed assertion or `Abort` leaves it **usable on both paths**. `Flush` returns the error; the writes of the operations *before* the failing one (and everything else done on `tx`) stay in the open transaction; the operations after it never run; the caller then calls `tx.Rollback()` or deliberately `tx.Commit()`. One difference remains, by construction: sequentially the failing operation has already run when its assertion is checked in Go, so its own effect (say an update that touched 2 rows where 1 was asserted) also stays; on the single-round-trip path the guard fails that statement on the server, whose effect is therefore discarded. To keep the transaction alive pgxwire (and mysqlwire, which takes the savepoint only before operations with an assertion and does not release it on success) takes a `SAVEPOINT` before each guarded operation (inside the same batch, so no extra round-trip on success), releases it at the end of the batch, and on a guard failure rolls back to it, which costs one extra round-trip on that error path only. A *database* error raised by one of your own statements (a unique violation, a deadlock, ...) is not a guard failure: on PostgreSQL and CockroachDB it aborts the transaction on both paths (further commands fail with SQLSTATE 25P02 until you roll back), exactly as it does without sqlgen; MySQL, MariaDB and SQLite keep the transaction open.
 
+#### Forwarding values between operations (`Arg[T]`)
+
+A later operation of a pipeline can use, as an argument, a value an earlier operation produces on the server: the id an `INSERT ... RETURNING` generated, a `COUNT(*)`, a MySQL `AUTO_INCREMENT` id. The whole pipeline still travels in **one network round trip** on `pgxwire` and `mysqlwire` (the value never comes back to Go in between), and runs identically on the sequential path. A parameter opts in with the type `Arg[T]`:
+
+```yaml
+package: store
+dialect: postgres
+statements:
+  - name: InsertOrder
+    kind: one
+    sql: INSERT INTO orders (customer_id, total) VALUES (:customer_id:int64, :total:int64) RETURNING id:int64
+
+  - name: InsertOrderLine
+    kind: exec
+    sql: INSERT INTO order_lines (order_id, sku, qty) VALUES (:order_id:Arg[int64], :sku:string, :qty:int32)
+
+  - name: InsertOrderPlain       # MySQL / MariaDB / TiDB / SQLite: an AUTO_INCREMENT id instead of RETURNING
+    kind: exec
+    sql: INSERT INTO orders (customer_id, total) VALUES (:customer_id:int64, :total:int64)
+```
+
+```go
+err := q.PipelineTx(ctx, nil, func(p *store.Pipeline) error {
+    order := p.InsertOrder(cust, total)                  // *runtime.RowFuture[int64]
+    p.InsertOrderLine(order.Arg(), "sku-1", 2).AssertRows(1)
+    p.InsertOrderLine(order.Arg(), "sku-2", 1).AssertRows(1)
+    p.InsertOrderLine(runtime.Val(existingOrderID), "sku-3", 1) // a plain value
+    // MySQL family: id := p.InsertOrderPlain(cust, total).LastInsertIDArg()
+    return nil
+})
+```
+
+**What is generated.** Only the statement's **Pipeline** method changes: `func (pl *Pipeline) InsertOrderLine(orderID runtime.Arg[int64], sku string, qty int32) *runtime.ExecFuture`. The `*Queries` method and `<Name>Query` keep the plain type (`q.InsertOrderLine(ctx, orderID int64, ...)`): there is nothing to forward outside a pipeline. With `args: struct` the Pipeline method takes `<Name>PipelineParams`, which is `<Name>Params` with `runtime.Arg[T]` fields for the `Arg` parameters. A `runtime.Arg[T]` is one of:
+- `runtime.Val(v)`: a plain value (no allocation beyond the usual boxing);
+- `fut.Arg()` on a `*runtime.RowFuture[T]` of a statement with exactly **one output column** (`RETURNING id:int64`, `SELECT COUNT(*) AS n:int64`): that column's value (calling it twice returns the same value; a statement with several columns fails the pipeline with `runtime.ErrInvalidArgument`);
+- `fut.LastInsertIDArg()` on a `*runtime.ExecFuture` (MySQL, MariaDB, TiDB, SQLite): the `AUTO_INCREMENT` id the `INSERT` generated, as an `Arg[int64]`. The `$N` dialect has none (use `RETURNING` and `Arg()`); queuing it there fails the pipeline with `runtime.ErrInvalidArgument`.
+
+`arg.Forwarded()` tells the two apart. The producer's type must be the consumer's `T`: the compiler checks it.
+
+**Semantics** (the same on the sequential and on both single-round-trip paths, asserted by a differential test on every engine):
+
+| Situation | Result |
+| :--- | :--- |
+| The producer returned exactly one row (`Arg`) / affected exactly one row and generated an id (`LastInsertIDArg`) | the consumer runs with that value; a SQL `NULL` forwards as `NULL` (representable when `T` is a pointer or `sql.Null*`) |
+| The producer returned 0 rows or more than one; an `INSERT IGNORE` that inserted nothing; a multi-row `INSERT` (`LastInsertIDArg`) | the consumer fails, when (and only when) it would run, with a `*runtime.ArgError` (`errors.Is(err, runtime.ErrArgUnresolved)`): `Statement`, `Op`, `Label` name the consumer as in an `AssertionError`, `Producer`, `ProducerOp`, `ProducerLabel` the producer, `Got` its row count. The pipeline fails and rolls back like a failed assertion; with several unresolved values the first in argument order is reported |
+| The consumer sits in an `If` branch that is not taken | silent, as for any skipped operation. To skip instead of failing, branch on the producer: `p.If(order.Found(), func(p *Pipeline) { p.InsertOrderLine(order.Arg(), ...) }, nil)` |
+| The producer has an assertion (`AssertFound()`) | the assertion fails first, at the producer; with `AssertFound()` the value is always resolved when the consumer runs |
+| The consumer is queued outside the `If` branch its producer is in (or in the sibling branch) | build error before anything is sent (`runtime.ErrInvalidArgument`): the consumer must be in the producer's branch or in one nested in it, so "the producer did not run" cannot happen |
+| A value from another pipeline (an earlier `Pipeline`, `Flush`, or a `PipelineTx` attempt captured in a closure) | build error (`runtime.ErrInvalidArgument`); a retried `PipelineTx` closure creates new futures and values |
+| A pipeline in a transaction you began (`q.WithTx(tx).Pipeline(ctx)`) | an unresolved value leaves the transaction usable, on every path (the consumer did not run) |
+| An empty `VALUES` operation (section 3.4, "Empty `VALUES` operations") as the producer of `LastInsertIDArg` | unresolved (no id); such a pipeline runs on the sequential path |
+
+**Checked when the code is generated.** `Arg[T]` takes a scalar `T` (any type a scalar parameter takes, `[]byte` included; not a slice, tuple, `sqlgen.*` directive or another `Arg`), in a statement that has a Pipeline method (not `kind: subquery`); a parameter is `Arg` at every occurrence or at none. On the `$N` dialect a forwarded value reaches the statement as text and is cast to the parameter's type (`int64` to `bigint`, `time.Time` to `timestamptz`, `[]byte` to `bytea`, `bool`, `float64`, ... as in "Typed placeholders" above). A `T` that is `string`, or has no such mapping (`sql.NullInt64`, a custom type), **must be followed by an explicit cast** in the SQL, at every occurrence: `:sku:Arg[string]::text` for a text column, `::uuid`, `::numeric`, `::jsonb`, `::interval`, ... (a `text` value is not assignable to those columns, and the server would only say so on the single-round-trip path).
+
+**How it runs.**
+- Sequential path: the producer runs first and its value is bound to the consumer's statement (the same SQL text and prepared statement as a call with a plain value). A `kind: one` producer whose value is forwarded reads every row it returns, so that "more than one row" is detected as on the wire paths.
+- `pgxwire` (PostgreSQL, CockroachDB, YugabyteDB): the producer's statement records `'v' || value::text` (or a marker for "not exactly one row") with the transaction-local `set_config('sqlgen.v<ID>', ..., true)`, in the same CTE shape as the assertion guards; the consumer is preceded, in the same batch, by a one-row check statement that fails with a marked error when its branch gates are open and a value is unresolved (translated to the `*runtime.ArgError`), and its slot reads `current_setting('sqlgen.v<ID>')` cast as above instead of a `$N` placeholder. Inside your transaction the check runs after the operation's savepoint, so a failure leaves the transaction usable (one extra round trip, error path only).
+- `mysqlwire` (MySQL, MariaDB, TiDB): a `SELECT` producer assigns `@sqlgen_v<ID>` while its rows are returned (`SELECT _sqlgen_op.*, (@sqlgen_v<ID>:=_sqlgen_op.col) FROM (<select>) AS _sqlgen_op`; the extra column is hidden), a MariaDB `INSERT ... RETURNING` producer adds the assignment to its `RETURNING` list, a `LastInsertIDArg` producer is preceded by `DO LAST_INSERT_ID(0)` and followed by `SET @sqlgen_v<ID>=LAST_INSERT_ID()`; the consumer is preceded by `SET @sqlgen_f=IF(... NOT <resolved> ...)` (a failure gate like an assertion's, nothing of the consumer runs) and reads the variable where the literal would be.
+
+**Caveats** (each pinned by a test):
+- MySQL deprecates assigning a user variable inside an expression (warning 1287, still accepted by 8.4 and 9.7; MariaDB does not warn). The connector's capability probe checks it, and `DO LAST_INSERT_ID(0)`, once per connector: a server that refuses either keeps the pipelines that forward values on the sequential path (`SequentialPipelines`); every other pipeline is unaffected.
+- `LastInsertIDArg` forwards an id the `INSERT` **generated**. When the `INSERT` sets the `AUTO_INCREMENT` column itself, the sequential path forwards that explicit value (go-sql-driver reports it as the last insert id) while the single-round-trip path reports `ErrArgUnresolved` (the server's `LAST_INSERT_ID()` does not change): you know the value then, pass it with `runtime.Val`.
+- MariaDB ignores the `ORDER BY` of a derived table without `LIMIT`: when a `SELECT` producer returns several rows (a failure for its consumers), which one its own `Get()` reports can differ between the paths. The forwarded value, which needs exactly one row, cannot.
+- PostgreSQL family: the forwarded text is cast back in the same session, so `DateStyle`, `IntervalStyle` and `TimeZone` round-trip; with `extra_float_digits` lowered below its default (some poolers do) a `float8` loses precision on the single-round-trip path, as pgxwire's text-format results already do (section "Argument types"). CockroachDB: a `timestamp` / `timestamptz` of `infinity` / `-infinity` fails to forward under a non-UTC `TimeZone` (a bounds error, not a wrong value).
+- MySQL family: the value travels in a session variable, which keeps the column's collation with implicit coercibility (a literal is coercible), so a comparison with a column of another collation of the same character set can fail with error 1267 where the literal would not; a `TIMESTAMP` in the hour a DST `time_zone` repeats loses which of the two instants it was (the sequential path loses it too when the driver's `loc` is that zone).
+- Not in this version: forwarding one column of a multi-column row (a `ColArg` taking the column and a getter, like `WhereCol`) and an exec's affected-row count (`RowsAffectedArg`); select a single column, or use a condition (`If`) on the row count.
+
 ---
 
 ### 3.5. Cache Tuning & Observability (`StmtCache`)

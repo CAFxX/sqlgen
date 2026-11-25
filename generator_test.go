@@ -187,6 +187,48 @@ statements:
       WHERE :Seek:sqlgen.Seek
       ORDER BY :Order:sqlgen.Order(group_key, priority, created_ts, id)
       LIMIT :Limit:int64
+
+  # Value forwarding between pipeline operations (forward_test.go).
+  - name: FwdInsertOrder
+    kind: one
+    sql: |
+      INSERT INTO fwd_orders (customer, total) VALUES (:Customer:string, :Total:int64) RETURNING id:int64
+
+  - name: FwdInsertOrderPlain
+    kind: exec
+    sql: |
+      INSERT OR IGNORE INTO fwd_orders (id, customer, total) VALUES (:ID:*int64, :Customer:string, :Total:int64)
+
+  - name: FwdInsertOrders
+    kind: exec
+    sql: |
+      INSERT INTO fwd_orders (customer, total) VALUES :Rows:[]FwdOrderRow(Customer:string, Total:int64)
+
+  - name: FwdOrderByCustomer
+    kind: one
+    sql: |
+      SELECT id AS order_id:int64 FROM fwd_orders WHERE customer = :Customer:string ORDER BY id
+
+  - name: FwdInsertLine
+    kind: exec
+    sql: |
+      INSERT INTO fwd_lines (order_id, sku, qty) VALUES (:OrderID:Arg[int64], :Sku:string, :Qty:int64)
+
+  - name: FwdInsertLineStruct
+    kind: exec
+    args: struct
+    sql: |
+      INSERT INTO fwd_lines (order_id, sku, qty) VALUES (:OrderID:Arg[int64], :Sku:Arg[string], :Qty:int64)
+
+  - name: FwdCountLines
+    kind: one
+    sql: |
+      SELECT COUNT(*) AS n:int64 FROM fwd_lines WHERE order_id = :OrderID:Arg[int64] {?WithSku: AND sku = :Sku:string}
+
+  - name: FwdLineSkus
+    kind: many
+    sql: |
+      SELECT sku:string FROM fwd_lines WHERE order_id = :OrderID:Arg[int64] AND qty >= :MinQty:Arg[int64] ORDER BY sku
 `
 
 func TestParserProtectedContexts(t *testing.T) {
@@ -546,6 +588,16 @@ func setupE2EDB(t testing.TB) (*sql.DB, *Queries) {
 			id INTEGER PRIMARY KEY,
 			name TEXT NOT NULL,
 			points INTEGER NOT NULL
+		);
+		CREATE TABLE fwd_orders (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			customer TEXT NOT NULL,
+			total INTEGER NOT NULL
+		);
+		CREATE TABLE fwd_lines (
+			order_id INTEGER,
+			sku TEXT NOT NULL,
+			qty INTEGER NOT NULL
 		);
 		CREATE TABLE quad_items (
 			id INTEGER PRIMARY KEY,

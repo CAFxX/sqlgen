@@ -207,7 +207,7 @@ func TestRealEngineMySQLWirePipelineTxIsOneRoundTrip(t *testing.T) {
 		seedItems(t, db)
 		ctx := ctxT(t)
 
-		loads := []myWorkload{myMixedN(1), myMixedN(3), myMixedN(8), myMixedN(25)}
+		loads := []myWorkload{myMixedN(1), myMixedN(3), myMixedN(8), myMixedN(25), myForwardWorkload}
 		type result struct{ firstSeen, warmed int64 }
 		results := map[string][2]result{} // [sequential, wire]
 		for wi, wire := range []bool{false, true} {

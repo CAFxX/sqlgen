@@ -83,6 +83,11 @@ func (r *mysqlBatchRender) renderOp(i int, op *PipelineOp, failGate bool) error 
 		r.b.WriteByte(';')
 		r.batch.flags[i] |= opSavepoint
 	}
+	if op.nRefs > 0 {
+		if err := r.writeRefChecks(i, op); err != nil {
+			return err
+		}
+	}
 	if counter {
 		r.b.WriteString("SET @sqlgen_k=0;")
 		r.batch.flags[i] |= opTrim
@@ -90,12 +95,51 @@ func (r *mysqlBatchRender) renderOp(i int, op *PipelineOp, failGate bool) error 
 	if hasRes {
 		r.batch.sets = append(r.batch.sets, i)
 	}
+	// Forwarded values this operation produces: a row value is assigned while the row is returned (an
+	// extra, trimmed column), the generated id is read after the statement. Every variable is reset first.
+	var rowRec *ValRec
+	for k := range dec.ValRecs {
+		vr := &dec.ValRecs[k]
+		if vr.LastInsertID {
+			r.b.WriteString("DO LAST_INSERT_ID(0);")
+			continue
+		}
+		if !hasRes || rowRec != nil || vr.Col == "" {
+			return fmt.Errorf("a forwarded value needs a statement with one result column: %w", ErrWireNotApplicable)
+		}
+		rowRec = vr
+		r.b.WriteString("SET @sqlgen_v")
+		r.num(vr.ID)
+		r.b.WriteString("=NULL;")
+		r.batch.flags[i] |= opTrimVal
+	}
 
 	cur := r.cursor(i, failGate)
 	cur.my.keepResultSet = hasRes && desc.StmtVerb == VerbDelete
+	if rowRec != nil && isSelect {
+		// The assignment runs over the rows actually returned: a derived table fixes the evaluation order
+		// relative to ORDER BY / LIMIT (unspecified for a user variable in the select list otherwise).
+		r.b.WriteString("SELECT _sqlgen_op.*,(@sqlgen_v")
+		r.num(rowRec.ID)
+		r.b.WriteString(":=_sqlgen_op.")
+		r.b.WriteString(rowRec.Col)
+		r.b.WriteString(") FROM (")
+	}
 	streamCoreStatement(&r.b, cur, desc, &op.Input)
 	if counter {
 		r.b.WriteString(", (@sqlgen_k:=@sqlgen_k+1)")
+	}
+	if rowRec != nil {
+		if isSelect {
+			r.b.WriteString(") AS _sqlgen_op")
+		} else {
+			// MariaDB INSERT / DELETE ... RETURNING: one more item of the RETURNING list.
+			r.b.WriteString(", (@sqlgen_v")
+			r.num(rowRec.ID)
+			r.b.WriteString(":=")
+			r.b.WriteString(rowRec.Expr)
+			r.b.WriteByte(')')
+		}
 	}
 	if cur.my.st.err != nil {
 		return cur.my.st.err
@@ -113,8 +157,15 @@ func (r *mysqlBatchRender) renderOp(i int, op *PipelineOp, failGate bool) error 
 		default:
 			r.b.WriteString("=ROW_COUNT();")
 		}
-		if !hasRes || dec.AssertRows >= 0 {
+		if !hasRes || dec.AssertRows >= 0 || len(dec.ValRecs) > 0 {
 			r.batch.sum = append(r.batch.sum, sumCol{kind: sumCount, op: i})
+		}
+	}
+	for k := range dec.ValRecs {
+		if vr := &dec.ValRecs[k]; vr.LastInsertID {
+			r.b.WriteString("SET @sqlgen_v")
+			r.num(vr.ID)
+			r.b.WriteString("=LAST_INSERT_ID();")
 		}
 	}
 	if dec.AssertRows >= 0 {
@@ -140,6 +191,47 @@ func (r *mysqlBatchRender) renderOp(i int, op *PipelineOp, failGate bool) error 
 		}
 	}
 	return nil
+}
+
+// writeRefChecks writes, for consumer i, one check per forwarded value it uses (in argument order): when
+// its gates are open, no earlier guard failed and the value is unresolved, it records the value's ID in
+// @sqlgen_r and len(ops)+i in @sqlgen_f, which gates the consumer and everything after it off (nothing of
+// the consumer ran, so no savepoint is needed); MySQLBatch.Apply builds the *ArgError.
+func (r *mysqlBatchRender) writeRefChecks(i int, op *PipelineOp) error {
+	var err error
+	op.forEachRef(func(ref *argRef) {
+		j := opIndex(r.ops, ref.op)
+		if j < 0 || j >= i {
+			if err == nil {
+				err = fmt.Errorf("a forwarded value's producer is not an earlier operation of the batch: %w", ErrWireNotApplicable)
+			}
+			return
+		}
+		for _, v := range [2]byte{'r', 'f'} {
+			r.b.WriteString("SET @sqlgen_")
+			r.b.WriteByte(v)
+			r.b.WriteString("=IF(@sqlgen_f<0 AND (")
+			r.writeOwnGates(op.Input.BranchGates)
+			r.b.WriteString(") AND NOT COALESCE(@sqlgen_n")
+			r.num(j)
+			r.b.WriteString("=1")
+			if ref.lastID {
+				r.b.WriteString(" AND @sqlgen_v")
+				r.num(ref.id)
+				r.b.WriteString("<>0")
+			}
+			r.b.WriteString(",0),")
+			if v == 'r' {
+				r.num(ref.id)
+			} else {
+				r.num(len(r.ops) + i)
+			}
+			r.b.WriteString(",@sqlgen_")
+			r.b.WriteByte(v)
+			r.b.WriteString(");")
+		}
+	})
+	return err
 }
 
 // condsOf lists every condition an operation records.
@@ -347,6 +439,11 @@ func estimateMySQLOpBytes(fl *MySQLFlavor, op *PipelineOp, args []any) int {
 	for i := range dec.LeafRecs {
 		add(dec.LeafRecs[i].Cond)
 	}
+	for i := range dec.ValRecs {
+		total += 160 + len(dec.ValRecs[i].Col) + len(dec.ValRecs[i].Expr)
+	}
+	// per forwarded value of a consumer: the two checks (writeRefChecks)
+	total += op.nRefs * (2*(120+g) + 64)
 	return total
 }
 

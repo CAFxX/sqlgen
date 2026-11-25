@@ -20,7 +20,7 @@ type Queries struct {
 	cache       *runtime.StmtCache
 	txCache     *runtime.TxStmtCache
 	usePrepared bool
-	fastSlots   *[5]atomic.Pointer[runtime.ManagedStmt]
+	fastSlots   *[10]atomic.Pointer[runtime.ManagedStmt]
 }
 
 // New creates a new Queries instance with a dedicated StmtCache configured by opts. The views made by
@@ -30,7 +30,7 @@ func New(db *sql.DB, opts ...runtime.CacheOption) *Queries {
 		db:          db,
 		cache:       runtime.NewStmtCache(opts...),
 		usePrepared: true,
-		fastSlots:   new([5]atomic.Pointer[runtime.ManagedStmt]),
+		fastSlots:   new([10]atomic.Pointer[runtime.ManagedStmt]),
 	}
 }
 
@@ -216,6 +216,18 @@ type QuadKey struct {
 var quadKeyChunkPool = sync.Pool{
 	New: func() any {
 		s := make([]QuadKey, 0, 256)
+		return &s
+	},
+}
+
+type FwdOrderRow struct {
+	Customer string
+	Total    int64
+}
+
+var fwdOrderRowChunkPool = sync.Pool{
+	New: func() any {
+		s := make([]FwdOrderRow, 0, 256)
 		return &s
 	},
 }
@@ -423,6 +435,7 @@ var descGetUserByID = &runtime.QueryDescriptor{
 		{Kind: runtime.SlotScalar},
 	},
 	SelectColExprs: []string{"id", "org_id", "email", "role", "score", "bio"},
+	ResultCols:     []string{"id", "org_id", "email", "role", "score", "bio"},
 }
 
 func expandGetUserByIDParams(dst *[]any, dialect runtime.Dialect, p paramsGetUserByID) error {
@@ -2833,6 +2846,8 @@ var descUserEmailBytes = &runtime.QueryDescriptor{
 	Slots: []runtime.Slot{
 		{Kind: runtime.SlotScalar},
 	},
+	ResultCols: []string{"raw"},
+	ResultExpr: "CAST(email AS BLOB)",
 }
 
 func expandUserEmailBytesParams(dst *[]any, dialect runtime.Dialect, p paramsUserEmailBytes) error {
@@ -3076,6 +3091,8 @@ var descUserEmailOnly = &runtime.QueryDescriptor{
 	Slots: []runtime.Slot{
 		{Kind: runtime.SlotScalar},
 	},
+	ResultCols: []string{"email"},
+	ResultExpr: "email",
 }
 
 func expandUserEmailOnlyParams(dst *[]any, dialect runtime.Dialect, p paramsUserEmailOnly) error {
@@ -4507,4 +4524,957 @@ func (pl *Pipeline) PageQuad(p PageQuadParams) *runtime.SliceFuture[QuadItem] {
 	return runtime.QueueSlice(pl.Pipeline, stmtIDPageQuad, descPageQuad, in, vk, nil, argBuf, expandErr,
 		func(rs *sql.Rows, dst *QuadItem) error { return scanPageQuadRow(rs, dst, colMask, p) },
 	)
+}
+
+const stmtIDFwdInsertOrder uint32 = 23
+
+type paramsFwdInsertOrder struct {
+	Customer string
+	Total    int64
+}
+
+var descFwdInsertOrder = &runtime.QueryDescriptor{
+	Name:         "FwdInsertOrder",
+	StmtID:       23,
+	StmtVerb:     runtime.VerbInsert,
+	HasReturning: true,
+	StaticSQL:    "INSERT INTO fwd_orders (customer, total) VALUES (?, ?) RETURNING id",
+	Segments:     []string{"INSERT INTO fwd_orders (customer, total) ", "", ", ", "", " RETURNING id"},
+	Slots: []runtime.Slot{
+		{Kind: runtime.SlotInsertValuesOpen},
+		{Kind: runtime.SlotScalar},
+		{Kind: runtime.SlotScalar},
+		{Kind: runtime.SlotInsertValuesClose},
+	},
+	ResultCols: []string{"id"},
+	ResultExpr: "id",
+}
+
+func expandFwdInsertOrderParams(dst *[]any, dialect runtime.Dialect, p paramsFwdInsertOrder) error {
+	_ = dialect
+	_ = p
+	*dst = append(*dst, p.Customer)
+	*dst = append(*dst, p.Total)
+	return nil
+}
+
+func expandFwdInsertOrderArgs(dst *[]any, dialect runtime.Dialect, q *runtime.Query) error {
+	return expandFwdInsertOrderParams(dst, dialect, q.Params.(paramsFwdInsertOrder))
+}
+
+func computeFwdInsertOrderKey(p paramsFwdInsertOrder) (runtime.VariantKey, uint64, uint64, int) {
+	_ = p
+	var colMask uint64
+	var flagMask uint64
+	var orderSpec runtime.Order
+	var hasSeek bool
+	orderKey := runtime.EncodeOrderKey(orderSpec, hasSeek)
+	approxArgs := 6
+	vk := runtime.MakeVariantKey(stmtIDFwdInsertOrder, colMask, flagMask, orderKey)
+	return vk, colMask, flagMask, approxArgs
+}
+
+func scanFwdInsertOrderRow(scanner interface{ Scan(...any) error }, dst *int64, colMask uint64, p paramsFwdInsertOrder) error {
+	_ = colMask
+	_ = p
+	var item int64
+	scanDest := [1]any{&item}
+	scanSlice := scanDest[:1]
+	if err := scanner.Scan(scanSlice...); err != nil {
+		return err
+	}
+	*dst = item
+	return nil
+}
+
+func (q *Queries) FwdInsertOrder(ctx context.Context, customer string, total int64) (int64, error) {
+	var zero int64
+	p := paramsFwdInsertOrder{
+		Customer: customer,
+		Total:    total,
+	}
+	vk, colMask, flagMask, approxArgs := computeFwdInsertOrderKey(p)
+	_ = colMask
+	argBuf := runtime.AcquireArgsCap(approxArgs)
+	defer runtime.ReleaseArgs(argBuf)
+	_ = expandFwdInsertOrderParams(argBuf, sqlDialect, p)
+	in := runtime.RenderInput{
+		ColMask:  colMask,
+		FlagMask: flagMask,
+	}
+	sqlRow, ms, err := q.cache.QueryRow(ctx, q.db, q.txCache, q.usePrepared, vk, stmtIDFwdInsertOrder, runtime.ComputeBatchShapeTag(colMask, flagMask), 0, &q.fastSlots[5], sqlDialect, descFwdInsertOrder, &in, (*argBuf)...)
+	if err != nil {
+		return zero, err
+	}
+	var item int64
+	err = scanFwdInsertOrderRow(sqlRow, &item, colMask, p)
+	_ = ms.Release()
+	if err != nil {
+		return zero, err
+	}
+	return item, nil
+}
+
+func (pl *Pipeline) FwdInsertOrder(customer string, total int64) *runtime.RowFuture[int64] {
+	p := paramsFwdInsertOrder{
+		Customer: customer,
+		Total:    total,
+	}
+	vk, colMask, flagMask, approxArgs := computeFwdInsertOrderKey(p)
+	argBuf := runtime.AcquireArgsCap(approxArgs)
+	expandErr := expandFwdInsertOrderParams(argBuf, sqlDialect, p)
+	in := runtime.RenderInput{
+		ColMask:  colMask,
+		FlagMask: flagMask,
+	}
+	return runtime.QueueRow(pl.Pipeline, stmtIDFwdInsertOrder, descFwdInsertOrder, in, vk, &pl.q.fastSlots[5], argBuf, expandErr,
+		func(r *sql.Row, dst *int64) error { return scanFwdInsertOrderRow(r, dst, colMask, p) },
+		func(rs *sql.Rows, dst *int64) error { return scanFwdInsertOrderRow(rs, dst, colMask, p) },
+	)
+}
+
+const stmtIDFwdInsertOrderPlain uint32 = 24
+
+type paramsFwdInsertOrderPlain struct {
+	ID       *int64
+	Customer string
+	Total    int64
+}
+
+var descFwdInsertOrderPlain = &runtime.QueryDescriptor{
+	Name:      "FwdInsertOrderPlain",
+	StmtID:    24,
+	StmtVerb:  runtime.VerbInsert,
+	StaticSQL: "INSERT OR IGNORE INTO fwd_orders (id, customer, total) VALUES (?, ?, ?)",
+	Segments:  []string{"INSERT OR IGNORE INTO fwd_orders (id, customer, total) ", "", ", ", ", ", "", ""},
+	Slots: []runtime.Slot{
+		{Kind: runtime.SlotInsertValuesOpen},
+		{Kind: runtime.SlotScalar},
+		{Kind: runtime.SlotScalar},
+		{Kind: runtime.SlotScalar},
+		{Kind: runtime.SlotInsertValuesClose},
+	},
+}
+
+func expandFwdInsertOrderPlainParams(dst *[]any, dialect runtime.Dialect, p paramsFwdInsertOrderPlain) error {
+	_ = dialect
+	_ = p
+	*dst = append(*dst, p.ID)
+	*dst = append(*dst, p.Customer)
+	*dst = append(*dst, p.Total)
+	return nil
+}
+
+func computeFwdInsertOrderPlainKey(p paramsFwdInsertOrderPlain) (runtime.VariantKey, uint64, uint64, int) {
+	_ = p
+	var colMask uint64
+	var flagMask uint64
+	var orderSpec runtime.Order
+	var hasSeek bool
+	orderKey := runtime.EncodeOrderKey(orderSpec, hasSeek)
+	approxArgs := 7
+	vk := runtime.MakeVariantKey(stmtIDFwdInsertOrderPlain, colMask, flagMask, orderKey)
+	return vk, colMask, flagMask, approxArgs
+}
+
+func (q *Queries) FwdInsertOrderPlain(ctx context.Context, id *int64, customer string, total int64) (sql.Result, error) {
+	p := paramsFwdInsertOrderPlain{
+		ID:       id,
+		Customer: customer,
+		Total:    total,
+	}
+	vk, colMask, flagMask, approxArgs := computeFwdInsertOrderPlainKey(p)
+	argBuf := runtime.AcquireArgsCap(approxArgs)
+	defer runtime.ReleaseArgs(argBuf)
+	_ = expandFwdInsertOrderPlainParams(argBuf, sqlDialect, p)
+	in := runtime.RenderInput{
+		ColMask:  colMask,
+		FlagMask: flagMask,
+	}
+	return q.cache.Exec(ctx, q.db, q.txCache, q.usePrepared, vk, stmtIDFwdInsertOrderPlain, runtime.ComputeBatchShapeTag(colMask, flagMask), 0, &q.fastSlots[6], sqlDialect, descFwdInsertOrderPlain, &in, (*argBuf)...)
+}
+
+func (pl *Pipeline) FwdInsertOrderPlain(id *int64, customer string, total int64) *runtime.ExecFuture {
+	p := paramsFwdInsertOrderPlain{
+		ID:       id,
+		Customer: customer,
+		Total:    total,
+	}
+	vk, colMask, flagMask, approxArgs := computeFwdInsertOrderPlainKey(p)
+	argBuf := runtime.AcquireArgsCap(approxArgs)
+	expandErr := expandFwdInsertOrderPlainParams(argBuf, sqlDialect, p)
+	in := runtime.RenderInput{
+		ColMask:  colMask,
+		FlagMask: flagMask,
+	}
+	return pl.Pipeline.QueueExec(stmtIDFwdInsertOrderPlain, descFwdInsertOrderPlain, in, vk, &pl.q.fastSlots[6], argBuf, expandErr)
+}
+
+const stmtIDFwdInsertOrders uint32 = 25
+
+type paramsFwdInsertOrders struct {
+	Rows []FwdOrderRow
+}
+
+var descFwdInsertOrders = &runtime.QueryDescriptor{
+	Name:     "FwdInsertOrders",
+	StmtID:   25,
+	StmtVerb: runtime.VerbInsert,
+	Segments: []string{"INSERT INTO fwd_orders (customer, total) ", "", "", ""},
+	Slots: []runtime.Slot{
+		{Kind: runtime.SlotInsertTupleValuesOpen},
+		{Kind: runtime.SlotTupleSlice, Tuple: &runtime.TupleDescriptor{Segments: []string{"", ", ", ""}, NumFields: 2}},
+		{Kind: runtime.SlotInsertTupleValuesClose},
+	},
+	NumTuples: 1,
+}
+
+func expandFwdInsertOrdersParams(dst *[]any, dialect runtime.Dialect, p paramsFwdInsertOrders) error {
+	_ = dialect
+	_ = p
+	if len(p.Rows) == 0 {
+		return runtime.ErrEmptySliceParam
+	}
+	for i := range p.Rows {
+		*dst = append(*dst, p.Rows[i].Customer)
+		*dst = append(*dst, p.Rows[i].Total)
+	}
+	return nil
+}
+
+func computeFwdInsertOrdersKey(p paramsFwdInsertOrders) (runtime.VariantKey, uint64, uint64, int) {
+	_ = p
+	var colMask uint64
+	var flagMask uint64
+	var orderSpec runtime.Order
+	var hasSeek bool
+	orderKey := runtime.EncodeOrderKey(orderSpec, hasSeek)
+	approxArgs := 5
+	var d0 uint64
+	d0 = uint64(len(p.Rows))
+	approxArgs += len(p.Rows) * 2
+	vk := runtime.MakeVariantKey(stmtIDFwdInsertOrders, colMask, flagMask, orderKey, d0)
+	return vk, colMask, flagMask, approxArgs
+}
+
+func (q *Queries) FwdInsertOrders(ctx context.Context, rows []FwdOrderRow) (sql.Result, error) {
+	if len(rows) == 0 {
+		return runtime.BatchExecResult{}, nil
+	}
+	totalRows := len(rows)
+	p := paramsFwdInsertOrders{
+		Rows: rows,
+	}
+	_, colMask, flagMask, _ := computeFwdInsertOrdersKey(p)
+	shapeTag := runtime.ComputeBatchShapeTag(colMask, flagMask)
+	maxRows := q.cache.MaxRowsPerBatch(sqlDialect, 0, 2)
+	firstChunk := q.cache.PlanBatchChunk(stmtIDFwdInsertOrders, colMask, flagMask, totalRows, maxRows, true)
+	txCache := q.txCache
+	var autoTx *sql.Tx
+	if txCache == nil && firstChunk < totalRows {
+		var err error
+		autoTx, err = q.db.BeginTx(ctx, nil)
+		if err != nil {
+			return nil, err
+		}
+		txCache = runtime.NewTxStmtCache(autoTx)
+		defer func() { _ = txCache.Close() }()
+	}
+	var batchRes runtime.BatchExecResult
+	for offset := 0; offset < totalRows; {
+		chunkSize := firstChunk
+		if offset > 0 {
+			chunkSize = q.cache.PlanBatchChunk(stmtIDFwdInsertOrders, colMask, flagMask, totalRows-offset, maxRows, false)
+		}
+		chunkRows := rows[offset : offset+chunkSize]
+		chunkP := p
+		chunkP.Rows = chunkRows
+		vk, _, _, approxArgs := computeFwdInsertOrdersKey(chunkP)
+		argBuf := runtime.AcquireArgsCap(approxArgs)
+		_ = expandFwdInsertOrdersParams(argBuf, sqlDialect, chunkP)
+		var tupleLensBuf [1]int
+		tupleLensBuf[0] = len(chunkP.Rows)
+		in := runtime.RenderInput{
+			ColMask:   colMask,
+			FlagMask:  flagMask,
+			TupleLens: tupleLensBuf[:],
+		}
+		res, err := q.cache.Exec(ctx, q.db, txCache, q.usePrepared, vk, stmtIDFwdInsertOrders, shapeTag, chunkSize, nil, sqlDialect, descFwdInsertOrders, &in, (*argBuf)...)
+		runtime.ReleaseArgs(argBuf)
+		if err != nil {
+			if autoTx != nil {
+				_ = autoTx.Rollback()
+			}
+			return nil, err
+		}
+		batchRes.Add(res)
+		offset += chunkSize
+	}
+	if autoTx != nil {
+		if err := autoTx.Commit(); err != nil {
+			return nil, err
+		}
+	}
+	return batchRes, nil
+}
+
+func (pl *Pipeline) FwdInsertOrders(rows []FwdOrderRow) *runtime.ExecFuture {
+	if len(rows) == 0 {
+		return pl.Pipeline.QueueExecNoop()
+	}
+	p := paramsFwdInsertOrders{
+		Rows: rows,
+	}
+	vk, colMask, flagMask, approxArgs := computeFwdInsertOrdersKey(p)
+	argBuf := runtime.AcquireArgsCap(approxArgs)
+	expandErr := expandFwdInsertOrdersParams(argBuf, sqlDialect, p)
+	if len(p.Rows) > runtime.MaxRowsPerStatement(sqlDialect, 0, 2) && expandErr == nil {
+		expandErr = &runtime.CollectionTooLargeError{Statement: "FwdInsertOrders", Items: len(p.Rows), Limit: runtime.MaxRowsPerStatement(sqlDialect, 0, 2), Pipeline: true}
+	}
+	var tupleLensBuf [1]int
+	tupleLensBuf[0] = len(p.Rows)
+	in := runtime.RenderInput{
+		ColMask:   colMask,
+		FlagMask:  flagMask,
+		TupleLens: tupleLensBuf[:],
+	}
+	return pl.Pipeline.QueueExec(stmtIDFwdInsertOrders, descFwdInsertOrders, in, vk, nil, argBuf, expandErr)
+}
+
+// FwdInsertOrdersStream runs FwdInsertOrders over the Rows rows pulled from seq, in chunks, and sums the results.
+// seq provides the rows of the collection parameter.
+// An empty seq inserts nothing (a successful no-op).
+func (q *Queries) FwdInsertOrdersStream(ctx context.Context, seq iter.Seq2[FwdOrderRow, error]) (sql.Result, error) {
+	if seq == nil {
+		return nil, runtime.ErrNilArgument
+	}
+	chunkCap := min(256, q.cache.MaxRowsPerBatch(sqlDialect, 0, 2))
+	bufPtr := fwdOrderRowChunkPool.Get().(*[]FwdOrderRow)
+	chunk := (*bufPtr)[:0]
+	defer func() {
+		clear(chunk[:cap(chunk)])
+		*bufPtr = chunk[:0]
+		fwdOrderRowChunkPool.Put(bufPtr)
+	}()
+	var batchRes runtime.BatchExecResult
+	flushChunk := func() error {
+		if len(chunk) == 0 {
+			return nil
+		}
+		res, err := q.FwdInsertOrders(ctx, chunk)
+		if err != nil {
+			return err
+		}
+		batchRes.Add(res)
+		chunk = chunk[:0]
+		return nil
+	}
+	for item, err := range seq {
+		if err != nil {
+			return nil, err
+		}
+		chunk = append(chunk, item)
+		if len(chunk) >= chunkCap {
+			if err := flushChunk(); err != nil {
+				return nil, err
+			}
+		}
+	}
+	if err := flushChunk(); err != nil {
+		return nil, err
+	}
+	return batchRes, nil
+}
+
+const stmtIDFwdOrderByCustomer uint32 = 26
+
+type paramsFwdOrderByCustomer struct {
+	Customer string
+}
+
+var descFwdOrderByCustomer = &runtime.QueryDescriptor{
+	Name:      "FwdOrderByCustomer",
+	StmtID:    26,
+	StmtVerb:  runtime.VerbSelect,
+	StaticSQL: "SELECT id AS order_id FROM fwd_orders WHERE customer = ? ORDER BY id",
+	Segments:  []string{"SELECT id AS order_id FROM fwd_orders WHERE customer = ", " ORDER BY id"},
+	Slots: []runtime.Slot{
+		{Kind: runtime.SlotScalar},
+	},
+	ResultCols: []string{"order_id"},
+	ResultExpr: "id",
+}
+
+func expandFwdOrderByCustomerParams(dst *[]any, dialect runtime.Dialect, p paramsFwdOrderByCustomer) error {
+	_ = dialect
+	_ = p
+	*dst = append(*dst, p.Customer)
+	return nil
+}
+
+func expandFwdOrderByCustomerArgs(dst *[]any, dialect runtime.Dialect, q *runtime.Query) error {
+	return expandFwdOrderByCustomerParams(dst, dialect, q.Params.(paramsFwdOrderByCustomer))
+}
+
+func computeFwdOrderByCustomerKey(p paramsFwdOrderByCustomer) (runtime.VariantKey, uint64, uint64, int) {
+	_ = p
+	var colMask uint64
+	var flagMask uint64
+	var orderSpec runtime.Order
+	var hasSeek bool
+	orderKey := runtime.EncodeOrderKey(orderSpec, hasSeek)
+	approxArgs := 5
+	vk := runtime.MakeVariantKey(stmtIDFwdOrderByCustomer, colMask, flagMask, orderKey)
+	return vk, colMask, flagMask, approxArgs
+}
+
+// FwdOrderByCustomerQuery constructs a composable runtime.Query without executing it (stateless: no Queries or DB needed).
+func FwdOrderByCustomerQuery(customer string) runtime.Query {
+	p := paramsFwdOrderByCustomer{
+		Customer: customer,
+	}
+	_, colMask, flagMask, _ := computeFwdOrderByCustomerKey(p)
+	in := runtime.RenderInput{
+		ColMask:  colMask,
+		FlagMask: flagMask,
+	}
+	orderKey := runtime.EncodeOrderKey(in.OrderSpec, in.HasSeek)
+	shapeTag := runtime.ComputeSubqueryShape(stmtIDFwdOrderByCustomer, colMask, flagMask, orderKey, false)
+	return runtime.Query{
+		StmtID:   stmtIDFwdOrderByCustomer,
+		Desc:     descFwdOrderByCustomer,
+		Input:    in,
+		Params:   p,
+		Expand:   expandFwdOrderByCustomerArgs,
+		ShapeTag: shapeTag,
+	}
+}
+
+func scanFwdOrderByCustomerRow(scanner interface{ Scan(...any) error }, dst *int64, colMask uint64, p paramsFwdOrderByCustomer) error {
+	_ = colMask
+	_ = p
+	var item int64
+	scanDest := [1]any{&item}
+	scanSlice := scanDest[:1]
+	if err := scanner.Scan(scanSlice...); err != nil {
+		return err
+	}
+	*dst = item
+	return nil
+}
+
+func (q *Queries) FwdOrderByCustomer(ctx context.Context, customer string) (int64, error) {
+	var zero int64
+	p := paramsFwdOrderByCustomer{
+		Customer: customer,
+	}
+	vk, colMask, flagMask, approxArgs := computeFwdOrderByCustomerKey(p)
+	_ = colMask
+	argBuf := runtime.AcquireArgsCap(approxArgs)
+	defer runtime.ReleaseArgs(argBuf)
+	_ = expandFwdOrderByCustomerParams(argBuf, sqlDialect, p)
+	in := runtime.RenderInput{
+		ColMask:  colMask,
+		FlagMask: flagMask,
+	}
+	sqlRow, ms, err := q.cache.QueryRow(ctx, q.db, q.txCache, q.usePrepared, vk, stmtIDFwdOrderByCustomer, runtime.ComputeBatchShapeTag(colMask, flagMask), 0, &q.fastSlots[7], sqlDialect, descFwdOrderByCustomer, &in, (*argBuf)...)
+	if err != nil {
+		return zero, err
+	}
+	var item int64
+	err = scanFwdOrderByCustomerRow(sqlRow, &item, colMask, p)
+	_ = ms.Release()
+	if err != nil {
+		return zero, err
+	}
+	return item, nil
+}
+
+func (pl *Pipeline) FwdOrderByCustomer(customer string) *runtime.RowFuture[int64] {
+	p := paramsFwdOrderByCustomer{
+		Customer: customer,
+	}
+	vk, colMask, flagMask, approxArgs := computeFwdOrderByCustomerKey(p)
+	argBuf := runtime.AcquireArgsCap(approxArgs)
+	expandErr := expandFwdOrderByCustomerParams(argBuf, sqlDialect, p)
+	in := runtime.RenderInput{
+		ColMask:  colMask,
+		FlagMask: flagMask,
+	}
+	return runtime.QueueRow(pl.Pipeline, stmtIDFwdOrderByCustomer, descFwdOrderByCustomer, in, vk, &pl.q.fastSlots[7], argBuf, expandErr,
+		func(r *sql.Row, dst *int64) error { return scanFwdOrderByCustomerRow(r, dst, colMask, p) },
+		func(rs *sql.Rows, dst *int64) error { return scanFwdOrderByCustomerRow(rs, dst, colMask, p) },
+	)
+}
+
+const stmtIDFwdInsertLine uint32 = 27
+
+type paramsFwdInsertLine struct {
+	OrderID int64
+	SKU     string
+	Qty     int64
+}
+
+var descFwdInsertLine = &runtime.QueryDescriptor{
+	Name:      "FwdInsertLine",
+	StmtID:    27,
+	StmtVerb:  runtime.VerbInsert,
+	StaticSQL: "INSERT INTO fwd_lines (order_id, sku, qty) VALUES (?, ?, ?)",
+	Segments:  []string{"INSERT INTO fwd_lines (order_id, sku, qty) ", "", ", ", ", ", "", ""},
+	Slots: []runtime.Slot{
+		{Kind: runtime.SlotInsertValuesOpen},
+		{Kind: runtime.SlotScalar},
+		{Kind: runtime.SlotScalar},
+		{Kind: runtime.SlotScalar},
+		{Kind: runtime.SlotInsertValuesClose},
+	},
+}
+
+func expandFwdInsertLineParams(dst *[]any, dialect runtime.Dialect, p paramsFwdInsertLine) error {
+	_ = dialect
+	_ = p
+	*dst = append(*dst, p.OrderID)
+	*dst = append(*dst, p.SKU)
+	*dst = append(*dst, p.Qty)
+	return nil
+}
+
+func expandFwdInsertLinePipelineParams(dst *[]any, dialect runtime.Dialect, p paramsFwdInsertLine, fwd0 runtime.Arg[int64]) error {
+	_ = dialect
+	_ = p
+	*dst = append(*dst, fwd0.Bind())
+	*dst = append(*dst, p.SKU)
+	*dst = append(*dst, p.Qty)
+	return nil
+}
+
+func computeFwdInsertLineKey(p paramsFwdInsertLine) (runtime.VariantKey, uint64, uint64, int) {
+	_ = p
+	var colMask uint64
+	var flagMask uint64
+	var orderSpec runtime.Order
+	var hasSeek bool
+	orderKey := runtime.EncodeOrderKey(orderSpec, hasSeek)
+	approxArgs := 7
+	vk := runtime.MakeVariantKey(stmtIDFwdInsertLine, colMask, flagMask, orderKey)
+	return vk, colMask, flagMask, approxArgs
+}
+
+func (q *Queries) FwdInsertLine(ctx context.Context, orderID int64, sku string, qty int64) (sql.Result, error) {
+	p := paramsFwdInsertLine{
+		OrderID: orderID,
+		SKU:     sku,
+		Qty:     qty,
+	}
+	vk, colMask, flagMask, approxArgs := computeFwdInsertLineKey(p)
+	argBuf := runtime.AcquireArgsCap(approxArgs)
+	defer runtime.ReleaseArgs(argBuf)
+	_ = expandFwdInsertLineParams(argBuf, sqlDialect, p)
+	in := runtime.RenderInput{
+		ColMask:  colMask,
+		FlagMask: flagMask,
+	}
+	return q.cache.Exec(ctx, q.db, q.txCache, q.usePrepared, vk, stmtIDFwdInsertLine, runtime.ComputeBatchShapeTag(colMask, flagMask), 0, &q.fastSlots[8], sqlDialect, descFwdInsertLine, &in, (*argBuf)...)
+}
+
+func (pl *Pipeline) FwdInsertLine(orderID runtime.Arg[int64], sku string, qty int64) *runtime.ExecFuture {
+	p := paramsFwdInsertLine{
+		SKU: sku,
+		Qty: qty,
+	}
+	vk, colMask, flagMask, approxArgs := computeFwdInsertLineKey(p)
+	argBuf := runtime.AcquireArgsCap(approxArgs)
+	expandErr := expandFwdInsertLinePipelineParams(argBuf, sqlDialect, p, orderID)
+	in := runtime.RenderInput{
+		ColMask:  colMask,
+		FlagMask: flagMask,
+	}
+	fut := pl.Pipeline.QueueExec(stmtIDFwdInsertLine, descFwdInsertLine, in, vk, &pl.q.fastSlots[8], argBuf, expandErr)
+	pl.Pipeline.BindForwarded()
+	return fut
+}
+
+const stmtIDFwdInsertLineStruct uint32 = 28
+
+type FwdInsertLineStructParams struct {
+	OrderID int64
+	SKU     string
+	Qty     int64
+}
+
+var descFwdInsertLineStruct = &runtime.QueryDescriptor{
+	Name:     "FwdInsertLineStruct",
+	StmtID:   28,
+	StmtVerb: runtime.VerbInsert,
+	Segments: []string{"INSERT INTO fwd_lines (order_id, sku, qty) ", "", ", ", ", ", "", ""},
+	Slots: []runtime.Slot{
+		{Kind: runtime.SlotInsertValuesOpen},
+		{Kind: runtime.SlotScalar},
+		{Kind: runtime.SlotScalar},
+		{Kind: runtime.SlotScalar},
+		{Kind: runtime.SlotInsertValuesClose},
+	},
+}
+
+func expandFwdInsertLineStructParams(dst *[]any, dialect runtime.Dialect, p FwdInsertLineStructParams) error {
+	_ = dialect
+	_ = p
+	*dst = append(*dst, p.OrderID)
+	*dst = append(*dst, p.SKU)
+	*dst = append(*dst, p.Qty)
+	return nil
+}
+
+// FwdInsertLineStructPipelineParams is FwdInsertLineStructParams for the Pipeline method: an Arg[T] parameter takes a plain value (runtime.Val)
+// or a value forwarded from an earlier operation of the pipeline (a RowFuture's Arg, an ExecFuture's LastInsertIDArg).
+type FwdInsertLineStructPipelineParams struct {
+	OrderID runtime.Arg[int64]
+	SKU     runtime.Arg[string]
+	Qty     int64
+}
+
+func expandFwdInsertLineStructPipelineParams(dst *[]any, dialect runtime.Dialect, p FwdInsertLineStructParams, fwd0 runtime.Arg[int64], fwd1 runtime.Arg[string]) error {
+	_ = dialect
+	_ = p
+	*dst = append(*dst, fwd0.Bind())
+	*dst = append(*dst, fwd1.Bind())
+	*dst = append(*dst, p.Qty)
+	return nil
+}
+
+func computeFwdInsertLineStructKey(p FwdInsertLineStructParams) (runtime.VariantKey, uint64, uint64, int) {
+	_ = p
+	var colMask uint64
+	var flagMask uint64
+	var orderSpec runtime.Order
+	var hasSeek bool
+	orderKey := runtime.EncodeOrderKey(orderSpec, hasSeek)
+	approxArgs := 7
+	vk := runtime.MakeVariantKey(stmtIDFwdInsertLineStruct, colMask, flagMask, orderKey)
+	return vk, colMask, flagMask, approxArgs
+}
+
+func (q *Queries) FwdInsertLineStruct(ctx context.Context, p FwdInsertLineStructParams) (sql.Result, error) {
+	vk, colMask, flagMask, approxArgs := computeFwdInsertLineStructKey(p)
+	argBuf := runtime.AcquireArgsCap(approxArgs)
+	defer runtime.ReleaseArgs(argBuf)
+	_ = expandFwdInsertLineStructParams(argBuf, sqlDialect, p)
+	in := runtime.RenderInput{
+		ColMask:  colMask,
+		FlagMask: flagMask,
+	}
+	return q.cache.Exec(ctx, q.db, q.txCache, q.usePrepared, vk, stmtIDFwdInsertLineStruct, runtime.ComputeBatchShapeTag(colMask, flagMask), 0, nil, sqlDialect, descFwdInsertLineStruct, &in, (*argBuf)...)
+}
+
+func (pl *Pipeline) FwdInsertLineStruct(pa FwdInsertLineStructPipelineParams) *runtime.ExecFuture {
+	p := FwdInsertLineStructParams{
+		Qty: pa.Qty,
+	}
+	vk, colMask, flagMask, approxArgs := computeFwdInsertLineStructKey(p)
+	argBuf := runtime.AcquireArgsCap(approxArgs)
+	expandErr := expandFwdInsertLineStructPipelineParams(argBuf, sqlDialect, p, pa.OrderID, pa.SKU)
+	in := runtime.RenderInput{
+		ColMask:  colMask,
+		FlagMask: flagMask,
+	}
+	fut := pl.Pipeline.QueueExec(stmtIDFwdInsertLineStruct, descFwdInsertLineStruct, in, vk, nil, argBuf, expandErr)
+	pl.Pipeline.BindForwarded()
+	return fut
+}
+
+const stmtIDFwdCountLines uint32 = 29
+
+type FwdCountLinesParams struct {
+	OrderID int64
+	SKU     string
+	WithSKU bool
+}
+
+var descFwdCountLines = &runtime.QueryDescriptor{
+	Name:     "FwdCountLines",
+	StmtID:   29,
+	StmtVerb: runtime.VerbSelect,
+	Segments: []string{"SELECT COUNT(*) AS n FROM fwd_lines WHERE order_id = ", " ", ""},
+	Slots: []runtime.Slot{
+		{Kind: runtime.SlotScalar},
+		{Kind: runtime.SlotOptBlock, FlagBit: 0, Inner: &runtime.QueryDescriptor{
+			Segments: []string{" AND sku = ", ""},
+			Slots: []runtime.Slot{
+				{Kind: runtime.SlotScalar},
+			},
+		}},
+	},
+	ResultCols: []string{"n"},
+	ResultExpr: "COUNT(*)",
+}
+
+func expandFwdCountLinesParams(dst *[]any, dialect runtime.Dialect, p FwdCountLinesParams) error {
+	_ = dialect
+	_ = p
+	*dst = append(*dst, p.OrderID)
+	if p.WithSKU {
+		*dst = append(*dst, p.SKU)
+	}
+	return nil
+}
+
+// FwdCountLinesPipelineParams is FwdCountLinesParams for the Pipeline method: an Arg[T] parameter takes a plain value (runtime.Val)
+// or a value forwarded from an earlier operation of the pipeline (a RowFuture's Arg, an ExecFuture's LastInsertIDArg).
+type FwdCountLinesPipelineParams struct {
+	OrderID runtime.Arg[int64]
+	SKU     string
+	WithSKU bool
+}
+
+func expandFwdCountLinesPipelineParams(dst *[]any, dialect runtime.Dialect, p FwdCountLinesParams, fwd0 runtime.Arg[int64]) error {
+	_ = dialect
+	_ = p
+	*dst = append(*dst, fwd0.Bind())
+	if p.WithSKU {
+		*dst = append(*dst, p.SKU)
+	}
+	return nil
+}
+
+func expandFwdCountLinesArgs(dst *[]any, dialect runtime.Dialect, q *runtime.Query) error {
+	return expandFwdCountLinesParams(dst, dialect, q.Params.(FwdCountLinesParams))
+}
+
+func computeFwdCountLinesKey(p FwdCountLinesParams) (runtime.VariantKey, uint64, uint64, int) {
+	_ = p
+	var colMask uint64
+	var flagMask uint64
+	if p.WithSKU {
+		flagMask |= 1 << 0
+	}
+	var orderSpec runtime.Order
+	var hasSeek bool
+	orderKey := runtime.EncodeOrderKey(orderSpec, hasSeek)
+	approxArgs := 6
+	vk := runtime.MakeVariantKey(stmtIDFwdCountLines, colMask, flagMask, orderKey)
+	return vk, colMask, flagMask, approxArgs
+}
+
+// FwdCountLinesQuery constructs a composable runtime.Query without executing it (stateless: no Queries or DB needed).
+func FwdCountLinesQuery(p FwdCountLinesParams) runtime.Query {
+	_, colMask, flagMask, _ := computeFwdCountLinesKey(p)
+	in := runtime.RenderInput{
+		ColMask:  colMask,
+		FlagMask: flagMask,
+	}
+	orderKey := runtime.EncodeOrderKey(in.OrderSpec, in.HasSeek)
+	shapeTag := runtime.ComputeSubqueryShape(stmtIDFwdCountLines, colMask, flagMask, orderKey, false)
+	return runtime.Query{
+		StmtID:   stmtIDFwdCountLines,
+		Desc:     descFwdCountLines,
+		Input:    in,
+		Params:   p,
+		Expand:   expandFwdCountLinesArgs,
+		ShapeTag: shapeTag,
+	}
+}
+
+func scanFwdCountLinesRow(scanner interface{ Scan(...any) error }, dst *int64, colMask uint64, p FwdCountLinesParams) error {
+	_ = colMask
+	_ = p
+	var item int64
+	scanDest := [1]any{&item}
+	scanSlice := scanDest[:1]
+	if err := scanner.Scan(scanSlice...); err != nil {
+		return err
+	}
+	*dst = item
+	return nil
+}
+
+func (q *Queries) FwdCountLines(ctx context.Context, p FwdCountLinesParams) (int64, error) {
+	var zero int64
+	vk, colMask, flagMask, approxArgs := computeFwdCountLinesKey(p)
+	_ = colMask
+	argBuf := runtime.AcquireArgsCap(approxArgs)
+	defer runtime.ReleaseArgs(argBuf)
+	_ = expandFwdCountLinesParams(argBuf, sqlDialect, p)
+	in := runtime.RenderInput{
+		ColMask:  colMask,
+		FlagMask: flagMask,
+	}
+	sqlRow, ms, err := q.cache.QueryRow(ctx, q.db, q.txCache, q.usePrepared, vk, stmtIDFwdCountLines, runtime.ComputeBatchShapeTag(colMask, flagMask), 0, nil, sqlDialect, descFwdCountLines, &in, (*argBuf)...)
+	if err != nil {
+		return zero, err
+	}
+	var item int64
+	err = scanFwdCountLinesRow(sqlRow, &item, colMask, p)
+	_ = ms.Release()
+	if err != nil {
+		return zero, err
+	}
+	return item, nil
+}
+
+func (pl *Pipeline) FwdCountLines(pa FwdCountLinesPipelineParams) *runtime.RowFuture[int64] {
+	p := FwdCountLinesParams{
+		SKU:     pa.SKU,
+		WithSKU: pa.WithSKU,
+	}
+	vk, colMask, flagMask, approxArgs := computeFwdCountLinesKey(p)
+	argBuf := runtime.AcquireArgsCap(approxArgs)
+	expandErr := expandFwdCountLinesPipelineParams(argBuf, sqlDialect, p, pa.OrderID)
+	in := runtime.RenderInput{
+		ColMask:  colMask,
+		FlagMask: flagMask,
+	}
+	fut := runtime.QueueRow(pl.Pipeline, stmtIDFwdCountLines, descFwdCountLines, in, vk, nil, argBuf, expandErr,
+		func(r *sql.Row, dst *int64) error { return scanFwdCountLinesRow(r, dst, colMask, p) },
+		func(rs *sql.Rows, dst *int64) error { return scanFwdCountLinesRow(rs, dst, colMask, p) },
+	)
+	pl.Pipeline.BindForwarded()
+	return fut
+}
+
+const stmtIDFwdLineSkus uint32 = 30
+
+type paramsFwdLineSkus struct {
+	OrderID int64
+	MinQty  int64
+}
+
+var descFwdLineSkus = &runtime.QueryDescriptor{
+	Name:      "FwdLineSkus",
+	StmtID:    30,
+	StmtVerb:  runtime.VerbSelect,
+	StaticSQL: "SELECT sku FROM fwd_lines WHERE order_id = ? AND qty >= ? ORDER BY sku",
+	Segments:  []string{"SELECT sku FROM fwd_lines WHERE order_id = ", " AND qty >= ", " ORDER BY sku"},
+	Slots: []runtime.Slot{
+		{Kind: runtime.SlotScalar},
+		{Kind: runtime.SlotScalar},
+	},
+}
+
+func expandFwdLineSkusParams(dst *[]any, dialect runtime.Dialect, p paramsFwdLineSkus) error {
+	_ = dialect
+	_ = p
+	*dst = append(*dst, p.OrderID)
+	*dst = append(*dst, p.MinQty)
+	return nil
+}
+
+func expandFwdLineSkusPipelineParams(dst *[]any, dialect runtime.Dialect, p paramsFwdLineSkus, fwd0 runtime.Arg[int64], fwd1 runtime.Arg[int64]) error {
+	_ = dialect
+	_ = p
+	*dst = append(*dst, fwd0.Bind())
+	*dst = append(*dst, fwd1.Bind())
+	return nil
+}
+
+func expandFwdLineSkusArgs(dst *[]any, dialect runtime.Dialect, q *runtime.Query) error {
+	return expandFwdLineSkusParams(dst, dialect, q.Params.(paramsFwdLineSkus))
+}
+
+func computeFwdLineSkusKey(p paramsFwdLineSkus) (runtime.VariantKey, uint64, uint64, int) {
+	_ = p
+	var colMask uint64
+	var flagMask uint64
+	var orderSpec runtime.Order
+	var hasSeek bool
+	orderKey := runtime.EncodeOrderKey(orderSpec, hasSeek)
+	approxArgs := 6
+	vk := runtime.MakeVariantKey(stmtIDFwdLineSkus, colMask, flagMask, orderKey)
+	return vk, colMask, flagMask, approxArgs
+}
+
+// FwdLineSkusQuery constructs a composable runtime.Query without executing it (stateless: no Queries or DB needed).
+func FwdLineSkusQuery(orderID int64, minQty int64) runtime.Query {
+	p := paramsFwdLineSkus{
+		OrderID: orderID,
+		MinQty:  minQty,
+	}
+	_, colMask, flagMask, _ := computeFwdLineSkusKey(p)
+	in := runtime.RenderInput{
+		ColMask:  colMask,
+		FlagMask: flagMask,
+	}
+	orderKey := runtime.EncodeOrderKey(in.OrderSpec, in.HasSeek)
+	shapeTag := runtime.ComputeSubqueryShape(stmtIDFwdLineSkus, colMask, flagMask, orderKey, false)
+	return runtime.Query{
+		StmtID:   stmtIDFwdLineSkus,
+		Desc:     descFwdLineSkus,
+		Input:    in,
+		Params:   p,
+		Expand:   expandFwdLineSkusArgs,
+		ShapeTag: shapeTag,
+	}
+}
+
+func scanFwdLineSkusRow(scanner interface{ Scan(...any) error }, dst *string, colMask uint64, p paramsFwdLineSkus) error {
+	_ = colMask
+	_ = p
+	var item string
+	scanDest := [1]any{&item}
+	scanSlice := scanDest[:1]
+	if err := scanner.Scan(scanSlice...); err != nil {
+		return err
+	}
+	*dst = item
+	return nil
+}
+
+func (q *Queries) FwdLineSkus(ctx context.Context, orderID int64, minQty int64) ([]string, error) {
+	return runtime.Collect(q.FwdLineSkusSeq(ctx, orderID, minQty))
+}
+
+func (q *Queries) FwdLineSkusSeq(ctx context.Context, orderID int64, minQty int64) iter.Seq2[string, error] {
+	return func(yield func(string, error) bool) {
+		var zero string
+		p := paramsFwdLineSkus{
+			OrderID: orderID,
+			MinQty:  minQty,
+		}
+		vk, colMask, flagMask, approxArgs := computeFwdLineSkusKey(p)
+		_ = colMask
+		argBuf := runtime.AcquireArgsCap(approxArgs)
+		defer runtime.ReleaseArgs(argBuf)
+		_ = expandFwdLineSkusParams(argBuf, sqlDialect, p)
+		in := runtime.RenderInput{
+			ColMask:  colMask,
+			FlagMask: flagMask,
+		}
+		sqlRows, ms, err := q.cache.Query(ctx, q.db, q.txCache, q.usePrepared, vk, stmtIDFwdLineSkus, runtime.ComputeBatchShapeTag(colMask, flagMask), 0, &q.fastSlots[9], sqlDialect, descFwdLineSkus, &in, (*argBuf)...)
+		if err != nil {
+			yield(zero, err)
+			return
+		}
+		defer runtime.ReleaseRows(&sqlRows, &ms)
+		var item string
+		for sqlRows.Next() {
+			if err := scanFwdLineSkusRow(sqlRows, &item, colMask, p); err != nil {
+				runtime.ReleaseRows(&sqlRows, &ms)
+				yield(zero, err)
+				return
+			}
+			if !yield(item, nil) {
+				return
+			}
+		}
+		err = sqlRows.Err()
+		runtime.ReleaseRows(&sqlRows, &ms)
+		if err != nil {
+			yield(zero, err)
+		}
+	}
+}
+
+func (pl *Pipeline) FwdLineSkus(orderID runtime.Arg[int64], minQty runtime.Arg[int64]) *runtime.SliceFuture[string] {
+	p := paramsFwdLineSkus{}
+	vk, colMask, flagMask, approxArgs := computeFwdLineSkusKey(p)
+	argBuf := runtime.AcquireArgsCap(approxArgs)
+	expandErr := expandFwdLineSkusPipelineParams(argBuf, sqlDialect, p, orderID, minQty)
+	in := runtime.RenderInput{
+		ColMask:  colMask,
+		FlagMask: flagMask,
+	}
+	fut := runtime.QueueSlice(pl.Pipeline, stmtIDFwdLineSkus, descFwdLineSkus, in, vk, &pl.q.fastSlots[9], argBuf, expandErr,
+		func(rs *sql.Rows, dst *string) error { return scanFwdLineSkusRow(rs, dst, colMask, p) },
+	)
+	pl.Pipeline.BindForwarded()
+	return fut
 }

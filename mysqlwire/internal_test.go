@@ -89,6 +89,7 @@ type minConn struct {
 	route   func(q string) (driver.Rows, error, bool) // consulted first
 	closed  bool
 	beginE  error
+	fwd     func() (driver.Rows, error) // answers the forwarding probe (default: a capable server)
 }
 
 func (c *minConn) Prepare(string) (driver.Stmt, error) { return nil, errors.New("fake: prepare") }
@@ -103,6 +104,12 @@ func (c *minConn) QueryContext(_ context.Context, q string, _ []driver.NamedValu
 		if r, err, ok := c.route(q); ok {
 			return r, err
 		}
+	}
+	if strings.HasPrefix(q, "DO LAST_INSERT_ID(0);SELECT (@sqlgen_probe_v") {
+		if c.fwd != nil {
+			return c.fwd()
+		}
+		return rowsOf(one(int64(2), int64(0))), nil
 	}
 	if len(c.script) == 0 {
 		return nil, fmt.Errorf("fake: unscripted query %.60q", q)
@@ -368,7 +375,7 @@ func TestProbeVerdicts(t *testing.T) {
 			if (err != nil) != tc.wantErr {
 				t.Fatalf("probe err = %v, want error: %v", err, tc.wantErr)
 			}
-			ok, ret, _ := c.capable()
+			ok, ret, _, _ := c.capable()
 			if c.state != tc.wantState || ok != (tc.wantState == capYes) || ret != tc.returning {
 				t.Fatalf("state = %v capable = %v returning = %v", c.state, ok, ret)
 			}
@@ -409,7 +416,7 @@ func TestProbeIsRunOncePerConnectorUnderConcurrency(t *testing.T) {
 	if n.Load() != 1 {
 		t.Fatalf("the probe ran %d times", n.Load())
 	}
-	if ok, ret, _ := c.capable(); !ok || !ret {
+	if ok, ret, _, _ := c.capable(); !ok || !ret {
 		t.Fatalf("capable = %v, %v", ok, ret)
 	}
 }
@@ -906,7 +913,7 @@ func TestTransportErrorMarksOnlyOwnTransactionsAsCommitErrors(t *testing.T) {
 // The counter column that tells how many rows a RETURNING statement produced is hidden from the scan.
 func TestSetRowsHidesTheRowCounter(t *testing.T) {
 	inner := rowsOf(fset{cols: []string{"id", "v", "k"}, rows: [][]driver.Value{{int64(1), int64(2), int64(1)}, {int64(3), int64(4), int64(2)}}})
-	tr := &setRows{inner: inner, trim: true}
+	tr := &setRows{inner: inner, trim: 1}
 	if got := tr.Columns(); len(got) != 2 {
 		t.Fatalf("Columns = %v", got)
 	}
@@ -928,7 +935,7 @@ func TestSetRowsHidesTheRowCounter(t *testing.T) {
 	if got := plain.Columns(); len(got) != 1 || plain.Next(d1) != nil || d1[0] != int64(9) {
 		t.Fatalf("plain: %v %v", plain.Columns(), d1)
 	}
-	if got := (&setRows{inner: rowsOf(fset{}), trim: true}).Columns(); len(got) != 0 {
+	if got := (&setRows{inner: rowsOf(fset{}), trim: 1}).Columns(); len(got) != 0 {
 		t.Fatalf("Columns = %v", got)
 	}
 }
@@ -962,5 +969,42 @@ func TestReturningStatementTrimsTheCounter(t *testing.T) {
 	cn.c.returning = false
 	if err := cn.ExecTxPipeline(ctx, nil, ops); !errors.Is(err, runtime.ErrWireNotApplicable) {
 		t.Fatalf("err = %v", err)
+	}
+}
+
+// The forwarding probe (assignment inside an expression, DO LAST_INSERT_ID) is a separate verdict: a
+// server that refuses it keeps the base capability; a transport error fails the probe and is not cached.
+func TestProbeForwardingVerdicts(t *testing.T) {
+	ctx := context.Background()
+	for _, tc := range []struct {
+		name             string
+		fwd              func() (driver.Rows, error)
+		wantErr, wantFwd bool
+		wantState        capState
+	}{
+		{"capable", nil, false, true, capYes},
+		{"assignment refused", func() (driver.Rows, error) { return nil, myErr(1064) }, false, false, capYes},
+		{"wrong value", func() (driver.Rows, error) { return rowsOf(one(int64(1), int64(0))), nil }, false, false, capYes},
+		{"stale id", func() (driver.Rows, error) { return rowsOf(one(int64(2), int64(7))), nil }, false, false, capYes},
+		{"no row", func() (driver.Rows, error) { return rowsOf(fset{cols: []string{"a", "b"}}), nil }, false, false, capYes},
+		{"close fails", func() (driver.Rows, error) {
+			r := rowsOf(one(int64(2), int64(0)))
+			r.closeErr = myErr(1064)
+			return r, nil
+		}, false, false, capYes},
+		{"transport error", func() (driver.Rows, error) { return nil, errTransport }, true, false, capUnknown},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			c, cn, mc := probeConn(func() (driver.Rows, error) { return goodProbe(), nil })
+			mc.fwd = tc.fwd
+			err := c.probe(ctx, cn, "8.4.0")
+			if (err != nil) != tc.wantErr {
+				t.Fatalf("probe err = %v, want error: %v", err, tc.wantErr)
+			}
+			ok, _, _, fwd := c.capable()
+			if c.state != tc.wantState || ok != (tc.wantState == capYes) || fwd != tc.wantFwd {
+				t.Fatalf("state = %v capable = %v forward = %v", c.state, ok, fwd)
+			}
+		})
 	}
 }
