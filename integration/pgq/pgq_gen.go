@@ -146,6 +146,13 @@ type ScoreDelta struct {
 	Delta int64
 }
 
+var scoreDeltaChunkPool = sync.Pool{
+	New: func() any {
+		s := make([]ScoreDelta, 0, 256)
+		return &s
+	},
+}
+
 func compareScoreDelta(a, b ScoreDelta) int {
 	if a.ID < b.ID {
 		return -1
@@ -3899,9 +3906,6 @@ func (q *Queries) ApplyDeltas(ctx context.Context, rows []ScoreDelta) (sql.Resul
 	if totalRows == 0 {
 		return nil, runtime.ErrEmptySliceParam
 	}
-	if totalRows > q.cache.MaxRowsPerBatch(sqlDialect, 0, 2) {
-		return nil, &runtime.CollectionTooLargeError{Statement: "ApplyDeltas", Items: totalRows, Limit: q.cache.MaxRowsPerBatch(sqlDialect, 0, 2)}
-	}
 	p := paramsApplyDeltas{
 		Rows: rows,
 	}
@@ -3990,4 +3994,54 @@ func (pl *Pipeline) ApplyDeltas(rows []ScoreDelta) *runtime.ExecFuture {
 		TupleLens: tupleLensBuf[:],
 	}
 	return pl.Pipeline.QueueExec(stmtIDApplyDeltas, descApplyDeltas, in, vk, nil, argBuf, expandErr)
+}
+
+// ApplyDeltasStream runs ApplyDeltas over the rows rows pulled from seq, in chunks, and sums the results.
+// seq provides the rows of the collection parameter.
+// An empty seq is runtime.ErrEmptySliceParam, like an empty IN list.
+func (q *Queries) ApplyDeltasStream(ctx context.Context, seq iter.Seq2[ScoreDelta, error]) (sql.Result, error) {
+	if seq == nil {
+		return nil, runtime.ErrNilArgument
+	}
+	totalRows := 0
+	chunkCap := min(256, q.cache.MaxRowsPerBatch(sqlDialect, 0, 2))
+	bufPtr := scoreDeltaChunkPool.Get().(*[]ScoreDelta)
+	chunk := (*bufPtr)[:0]
+	defer func() {
+		clear(chunk[:cap(chunk)])
+		*bufPtr = chunk[:0]
+		scoreDeltaChunkPool.Put(bufPtr)
+	}()
+	var batchRes runtime.BatchExecResult
+	flushChunk := func() error {
+		if len(chunk) == 0 {
+			return nil
+		}
+		res, err := q.ApplyDeltas(ctx, chunk)
+		if err != nil {
+			return err
+		}
+		batchRes.Add(res)
+		chunk = chunk[:0]
+		return nil
+	}
+	for item, err := range seq {
+		if err != nil {
+			return nil, err
+		}
+		totalRows++
+		chunk = append(chunk, item)
+		if len(chunk) >= chunkCap {
+			if err := flushChunk(); err != nil {
+				return nil, err
+			}
+		}
+	}
+	if totalRows == 0 {
+		return nil, runtime.ErrEmptySliceParam
+	}
+	if err := flushChunk(); err != nil {
+		return nil, err
+	}
+	return batchRes, nil
 }

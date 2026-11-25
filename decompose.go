@@ -286,6 +286,13 @@ func decomposable(cs *compiledStmt) (bool, string) {
 		return false, "the collection is not an IN list of a SELECT, UPDATE or DELETE"
 	}
 	if ci > 0 && toks[ci-1].kind == dtWord && toks[ci-1].text == "values" {
+		if len(stack) == 1 && cs.StmtVerb != runtime.VerbSelect {
+			if ok, why := valuesJoinDecomposable(toks, match, stack[0]); ok {
+				return checkLevel(-1, true)
+			} else if why != "" {
+				return false, why
+			}
+		}
 		return false, "the VALUES list feeds a CTE, sub-query or derived table"
 	}
 	if len(stack) == 0 {
@@ -387,6 +394,159 @@ func decomposable(cs *compiledStmt) (bool, string) {
 		from, to = o, match[o]
 	}
 	return true, ""
+}
+
+// outerJoinWords make a join keep rows that match no row of the VALUES source: every chunk would touch
+// them again.
+var outerJoinWords = setOf("left", "right", "full", "outer", "natural", "lateral")
+
+// valuesJoinDecomposable reports whether the VALUES list in the group opened at o (the statement's only
+// group around the collection) is a row source joined into a top-level UPDATE or DELETE, which is
+// row-wise: each target row is changed by the source rows it matches, so a chunk of the source changes
+// what those rows match. The accepted shapes are
+//
+//	UPDATE t SET ... FROM (VALUES coll) [AS] v[(cols)] WHERE ... t.c = v.c ...
+//	DELETE FROM t USING (VALUES coll) [AS] v[(cols)] WHERE ... t.c = v.c ...
+//	UPDATE t JOIN (VALUES coll) [AS] v[(cols)] ON t.c = v.c SET ...
+//	WITH v[(cols)] AS (VALUES coll) UPDATE ... FROM v WHERE ... t.c = v.c ...   (and DELETE ... USING v)
+//
+// with an equality between a column of v and a column of another table as a conjunct of the top-level
+// WHERE or ON, only inner joins, the CTE the statement's only one and v referenced as a table only by the
+// statement's own FROM / USING / JOIN. The caller checks the top level for aggregates, GROUP BY, DISTINCT,
+// ORDER BY, LIMIT, set operations and OR. why is "" when the VALUES list is not in one of these positions.
+func valuesJoinDecomposable(toks []dtok, match []int, o int) (bool, string) {
+	word := func(i int, w string) bool {
+		return i >= 0 && i < len(toks) && toks[i].kind == dtWord && toks[i].text == w
+	}
+	isWord := func(i int) bool { return i >= 0 && i < len(toks) && toks[i].kind == dtWord }
+	alias, aliasAt, cte := "", -1, false
+	switch {
+	case word(o-1, "from") || word(o-1, "using") || word(o-1, "join") || o > 0 && toks[o-1].kind == dtComma:
+		i := match[o] + 1
+		if word(i, "as") {
+			i++
+		}
+		if !isWord(i) || clauseWords[toks[i].text] || nonDecomposableWords[toks[i].text] {
+			return false, "the VALUES source has no alias"
+		}
+		alias, aliasAt = toks[i].text, i
+	case word(o-1, "as") && word(0, "with"):
+		// WITH v[(cols)] AS (VALUES coll) <UPDATE | DELETE>
+		i := 1
+		if !isWord(i) || toks[i].text == "recursive" {
+			return false, ""
+		}
+		alias, aliasAt = toks[i].text, i
+		i++
+		if i < len(toks) && toks[i].kind == dtOpen {
+			i = match[i] + 1
+		}
+		if i != o-1 {
+			return false, ""
+		}
+		if !(word(match[o]+1, "update") || word(match[o]+1, "delete")) {
+			return false, "the VALUES source is not the statement's only CTE"
+		}
+		cte = true
+	default:
+		return false, ""
+	}
+	depth := 0
+	tableRefs, joinPred := 0, false
+	clause := ""
+	for i := 0; i < len(toks); i++ {
+		t := toks[i]
+		switch t.kind {
+		case dtOpen:
+			depth++
+			continue
+		case dtClose:
+			depth--
+			continue
+		}
+		if t.kind != dtWord {
+			continue
+		}
+		if depth == 0 {
+			if outerJoinWords[t.text] {
+				return false, "the VALUES source is joined with an outer join"
+			}
+			switch t.text {
+			case "where", "on", "set", "from", "using", "join", "returning", "update", "delete":
+				clause = t.text
+			}
+		}
+		if t.text != alias || i == aliasAt {
+			continue
+		}
+		if i+2 < len(toks) && toks[i+1].kind == dtOp && toks[i+1].text == "." && isWord(i+2) {
+			// v.col: a join predicate when it is one side of a top-level equality in WHERE / ON whose other
+			// side is a column of another table
+			if depth == 0 && (clause == "where" || clause == "on") {
+				if joinConjunct(toks, i, alias) {
+					joinPred = true
+				}
+			}
+			i += 2
+			continue
+		}
+		// v as a table: only the statement's own FROM / USING / JOIN may name the CTE
+		if !cte || depth != 0 || !(word(i-1, "from") || word(i-1, "using") || word(i-1, "join") || toks[i-1].kind == dtComma) {
+			return false, "the VALUES source is used outside the join"
+		}
+		tableRefs++
+	}
+	if cte && tableRefs != 1 {
+		return false, "the VALUES source is used outside the join"
+	}
+	if !joinPred {
+		return false, "the VALUES source is not joined by an equality in WHERE / ON"
+	}
+	return true, ""
+}
+
+// colRef returns the token range [from, to] of the column reference (`col` or `tbl.col`) that starts
+// (dir +1) or ends (dir -1) at toks[at], or ok false.
+func colRef(toks []dtok, at, dir int) (from, to int, ok bool) {
+	if at < 0 || at >= len(toks) || toks[at].kind != dtWord {
+		return 0, 0, false
+	}
+	from, to = at, at
+	if dir > 0 && at+2 < len(toks) && toks[at+1].kind == dtOp && toks[at+1].text == "." && toks[at+2].kind == dtWord {
+		to = at + 2
+	} else if dir < 0 && at-2 >= 0 && toks[at-1].kind == dtOp && toks[at-1].text == "." && toks[at-2].kind == dtWord {
+		from = at - 2
+	}
+	return from, to, true
+}
+
+// joinConjunct reports whether alias.col at toks[i:i+3] is one side of an equality with a column of another
+// table that is a whole conjunct (preceded by WHERE / ON / AND, followed by AND, a clause keyword, ";" or
+// the end).
+func joinConjunct(toks []dtok, i int, alias string) bool {
+	isEq := func(k int) bool { return k >= 0 && k < len(toks) && toks[k].kind == dtOp && toks[k].text == "=" }
+	var from, to int
+	switch {
+	case isEq(i + 3):
+		f, t, ok := colRef(toks, i+4, +1)
+		if !ok || toks[f].text == alias {
+			return false
+		}
+		from, to = i, t
+	case isEq(i - 1):
+		f, _, ok := colRef(toks, i-2, -1)
+		if !ok || toks[f].text == alias {
+			return false
+		}
+		from, to = f, i+2
+	default:
+		return false
+	}
+	if p := from - 1; p < 0 || toks[p].kind != dtWord || !(toks[p].text == "where" || toks[p].text == "on" || toks[p].text == "and") {
+		return false
+	}
+	n := to + 1
+	return n >= len(toks) || toks[n].kind == dtWord && (toks[n].text == "and" || clauseWords[toks[n].text]) || toks[n].kind == dtOp && toks[n].text == ";"
 }
 
 // isDistinctFromPredicate reports whether the DISTINCT at lvl[k] is part of `IS [NOT] DISTINCT FROM`.

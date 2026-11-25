@@ -36,6 +36,15 @@ func TestDecomposabilityClassification(t *testing.T) {
 		{KindExec, `UPDATE t SET n = n + 1 WHERE id IN (:ids:[]int64)`, true},
 		{KindExec, `INSERT INTO t (a, b) VALUES :rows:[]R(A:int64, B:int64)`, true},
 		{KindMany, `INSERT INTO t (a, b) VALUES :rows:[]R(A:int64, B:int64) ON CONFLICT (a) DO UPDATE SET b = excluded.b RETURNING a:int64`, true},
+		// A VALUES list joined into a top-level UPDATE / DELETE is row-wise.
+		{KindExec, `WITH v(id, d) AS (VALUES :rows:[]D(ID:int64, D:int64)) UPDATE t SET n = n + v.d FROM v WHERE t.id = v.id`, true},
+		{KindExec, `UPDATE t SET n = v.d FROM (VALUES :rows:[]D(ID:int64, D:int64)) AS v(id, d) WHERE t.id = v.id`, true},
+		{KindMany, `UPDATE t SET n = v.d FROM (VALUES :rows:[]D(ID:int64, D:int64)) v(id, d) WHERE v.id = t.id AND t.org = :org:int64 RETURNING t.id:int64`, true},
+		{KindExec, `UPDATE t SET n = v.d FROM u, (VALUES :rows:[]D(ID:int64, D:int64)) AS v(id, d) WHERE u.id = t.uid AND t.id = v.id`, true},
+		{KindExec, `UPDATE t SET n = (SELECT max(u.x) FROM u WHERE u.k = v.d) FROM (VALUES :rows:[]D(ID:int64, D:int64)) AS v(id, d) WHERE t.id = v.id`, true},
+		{KindExec, `DELETE FROM t USING (VALUES :rows:[]K(ID:int64)) AS v(id) WHERE t.id = v.id`, true},
+		{KindMany, `WITH v(id) AS (VALUES :rows:[]K(ID:int64)) DELETE FROM t USING v WHERE t.id = v.id RETURNING t.id:int64`, true},
+		{KindExec, `UPDATE t JOIN (VALUES :rows:[]D(ID:int64, D:int64)) AS v(id, d) ON t.id = v.id SET t.n = t.n + v.d`, true}, // MySQL shape
 
 		// Not decomposable: the result depends on rows outside one chunk.
 		{KindMany, `SELECT status:string, COUNT(*) AS n:int64 FROM t WHERE id IN (:ids:[]int64) GROUP BY status`, false},
@@ -62,7 +71,27 @@ func TestDecomposabilityClassification(t *testing.T) {
 		{KindMany, `SELECT id:int64 FROM t WHERE id IN (SELECT tid FROM u WHERE u.id IN (:ids:[]int64))`, false}, // sub-query
 		{KindMany, `SELECT n:int64 FROM (SELECT count(*) AS n FROM t WHERE id IN (:ids:[]int64)) s`, false},      // derived table
 		{KindMany, `WITH s AS (SELECT id FROM t WHERE id IN (:ids:[]int64)) SELECT count(*) AS n:int64 FROM s`, false},
-		{KindExec, `WITH v(id, d) AS (VALUES :rows:[]D(ID:int64, D:int64)) UPDATE t SET n = n + v.d FROM v WHERE t.id = v.id`, false},
+		{KindExec, `INSERT INTO t (a) SELECT d FROM (VALUES :rows:[]D(ID:int64, D:int64)) AS v(id, d)`, false},
+		{KindMany, `SELECT t.id:int64 FROM t JOIN (VALUES :rows:[]D(ID:int64, D:int64)) AS v(id, d) ON t.id = v.id`, false}, // only UPDATE / DELETE
+		// VALUES joined into UPDATE / DELETE: only with an equality join conjunct, inner joins, no OR
+		{KindExec, `UPDATE t SET n = v.d FROM (VALUES :rows:[]D(ID:int64, D:int64)) AS v(id, d)`, false},                                            // no join predicate
+		{KindExec, `UPDATE t SET n = v.d FROM (VALUES :rows:[]D(ID:int64, D:int64)) AS v(id, d) WHERE t.x = 1`, false},                              // v only in SET
+		{KindExec, `UPDATE t SET n = v.d FROM (VALUES :rows:[]D(ID:int64, D:int64)) AS v(id, d) WHERE v.id = :x:int64`, false},                      // a filter, not a join
+		{KindExec, `UPDATE t SET n = v.d FROM (VALUES :rows:[]D(ID:int64, D:int64)) AS v(id, d) WHERE v.id = v.d`, false},                           // v with itself
+		{KindExec, `UPDATE t SET n = v.d FROM (VALUES :rows:[]D(ID:int64, D:int64)) AS v(id, d) WHERE t.id = v.id OR t.x = 1`, false},               // OR around the join
+		{KindExec, `UPDATE t SET n = v.d FROM (VALUES :rows:[]D(ID:int64, D:int64)) AS v(id, d) WHERE (t.id = v.id OR t.x = 1)`, false},             // OR in its group
+		{KindExec, `UPDATE t SET n = v.d FROM (VALUES :rows:[]D(ID:int64, D:int64)) AS v(id, d) WHERE NOT t.id = v.id`, false},                      // negated
+		{KindExec, `UPDATE t SET n = v.d FROM (VALUES :rows:[]D(ID:int64, D:int64)) AS v(id, d) WHERE t.id = v.id = TRUE`, false},                   // part of a larger expression
+		{KindExec, `UPDATE t SET n = 1 FROM u LEFT JOIN (VALUES :rows:[]D(ID:int64, D:int64)) AS v(id, d) ON u.id = v.id WHERE t.id = u.id`, false}, // outer join
+		{KindExec, `UPDATE t JOIN (VALUES :rows:[]D(ID:int64, D:int64)) AS v(id, d) ON t.id = v.id SET t.n = v.d ORDER BY t.id LIMIT 5`, false},
+		{KindExec, `UPDATE t SET n = v.d FROM (VALUES :rows:[]D(ID:int64, D:int64)) WHERE t.id = 1`, false},                                          // no alias
+		{KindExec, `WITH v(id, d) AS (VALUES :rows:[]D(ID:int64, D:int64)) UPDATE t SET n = (SELECT sum(d) FROM v) FROM v WHERE t.id = v.id`, false}, // aggregate over v
+		{KindExec, `WITH v(id, d) AS (VALUES :rows:[]D(ID:int64, D:int64)) UPDATE t SET n = 1 FROM v WHERE t.id = v.id AND EXISTS (SELECT 1 FROM v WHERE v.d > 5)`, false},
+		{KindExec, `WITH v(id, d) AS (VALUES :rows:[]D(ID:int64, D:int64)), w AS (SELECT 1) UPDATE t SET n = v.d FROM v WHERE t.id = v.id`, false}, // not the only CTE
+		{KindExec, `WITH RECURSIVE v(id, d) AS (VALUES :rows:[]D(ID:int64, D:int64)) UPDATE t SET n = v.d FROM v WHERE t.id = v.id`, false},
+		{KindExec, `WITH v(id, d) AS (VALUES :rows:[]D(ID:int64, D:int64)) UPDATE t SET n = v.d WHERE t.id IN (SELECT id FROM v)`, false},
+		{KindExec, `WITH updates(id, bonus) AS (VALUES :rows:[]D(ID:int64, D:int64)) UPDATE t SET p = t.p + (SELECT u.bonus FROM updates u WHERE u.id = t.id) WHERE t.id IN (SELECT u.id FROM updates u)`, false},
+		{KindExec, `WITH v(id, d) AS (VALUES :rows:[]D(ID:int64, D:int64)) UPDATE t SET n = v.d FROM v WHERE t.id = v.id GROUP BY t.id`, false},
 		{KindExec, `DELETE FROM t WHERE id NOT IN (:keep:[]int64)`, false},
 		{KindExec, `UPDATE t SET n = 0 WHERE a = 1 OR id IN (:ids:[]int64)`, false},
 		{KindExec, `DELETE FROM t WHERE id IN (:ids:[]int64) ORDER BY id LIMIT 10`, false}, // MySQL
