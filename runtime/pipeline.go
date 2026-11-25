@@ -131,7 +131,8 @@ type ProducedCond struct {
 
 // PipelineOp represents a single queued operation inside a Pipeline or PipelineTx.
 type PipelineOp struct {
-	opIdx         int
+	opIdx         int    // position in the pipeline's queue (AssertionError.Op)
+	label         string // set by the future's Label (AssertionError.Label)
 	StmtID        uint32
 	Desc          *QueryDescriptor
 	Input         RenderInput
@@ -176,6 +177,13 @@ type ExecFuture struct {
 // AssertRows requires the operation to affect exactly n rows (rows affected for an exec, rows returned for a query), rolling back with ErrAssertionFailed otherwise.
 func (f *ExecFuture) AssertRows(n int64) *ExecFuture {
 	f.op.Decorators.AssertRows = n
+	return f
+}
+
+// Label names the operation for error reports: a failed assertion on it returns an *AssertionError whose
+// Label field (and message) carry label, next to the operation's queue position (AssertionError.Op).
+func (f *ExecFuture) Label(label string) *ExecFuture {
+	f.op.label = label
 	return f
 }
 
@@ -276,6 +284,13 @@ func (f *RowFuture[T]) AssertRows(n int64) *RowFuture[T] {
 	return f
 }
 
+// Label names the operation for error reports: a failed assertion on it returns an *AssertionError whose
+// Label field (and message) carry label, next to the operation's queue position (AssertionError.Op).
+func (f *RowFuture[T]) Label(label string) *RowFuture[T] {
+	f.op.label = label
+	return f
+}
+
 func (f *RowFuture[T]) RowsEq(n int64) PipelineCond {
 	return PipelineCond{Kind: CondRowsEq, Op: f.op, Threshold: n}
 }
@@ -356,6 +371,13 @@ func (f *SliceFuture[T]) AssertFound() *SliceFuture[T] {
 // AssertRows requires the query to return exactly n rows.
 func (f *SliceFuture[T]) AssertRows(n int64) *SliceFuture[T] {
 	f.op.Decorators.AssertRows = n
+	return f
+}
+
+// Label names the operation for error reports: a failed assertion on it returns an *AssertionError whose
+// Label field (and message) carry label, next to the operation's queue position (AssertionError.Op).
+func (f *SliceFuture[T]) Label(label string) *SliceFuture[T] {
+	f.op.label = label
 	return f
 }
 
@@ -757,7 +779,7 @@ func TranslateWireError(op *PipelineOp, err error) error {
 	}
 	if op.Decorators.AssertRows >= 0 {
 		if i := strings.Index(msg, wireAssertMarker); i >= 0 {
-			aerr := &AssertionError{Statement: op.stmtName(), Want: op.Decorators.AssertRows}
+			aerr := &AssertionError{Statement: op.stmtName(), Op: op.opIdx, Label: op.label, Want: op.Decorators.AssertRows}
 			// The marker carries the row count the statement produced.
 			rest := msg[i+len(wireAssertMarker):]
 			n := 0
@@ -795,7 +817,7 @@ func translateOverflowGuard(op *PipelineOp, err error) error {
 			return op.AbortErr
 		}
 		if op.Decorators.AssertRows >= 0 {
-			op.Err = &AssertionError{Statement: op.stmtName(), Want: op.Decorators.AssertRows}
+			op.Err = &AssertionError{Statement: op.stmtName(), Op: op.opIdx, Label: op.label, Want: op.Decorators.AssertRows}
 			return op.Err
 		}
 	}
@@ -1018,7 +1040,7 @@ func (p *Pipeline) prepareNoOps() (done bool, err error) {
 		op := &p.ops[i]
 		if op.NoOp && op.Decorators.AssertRows >= 0 && len(op.Input.BranchGates) == 0 {
 			if op.Decorators.AssertRows != 0 {
-				aerr := &AssertionError{Statement: op.stmtName(), Want: op.Decorators.AssertRows, Got: 0, GotKnown: true}
+				aerr := &AssertionError{Statement: op.stmtName(), Op: op.opIdx, Label: op.label, Want: op.Decorators.AssertRows, Got: 0, GotKnown: true}
 				op.Err = aerr
 				*p.opPtrs[i] = *op
 				if op.OnDone != nil {
@@ -1376,7 +1398,7 @@ func (p *Pipeline) executePipelineOps(ctx context.Context, wireMode bool) error 
 		}
 		*p.opPtrs[i] = *op
 		if op.Decorators.AssertRows >= 0 && op.RowCount != op.Decorators.AssertRows {
-			aerr := &AssertionError{Statement: op.stmtName(), Want: op.Decorators.AssertRows, Got: op.RowCount, GotKnown: true}
+			aerr := &AssertionError{Statement: op.stmtName(), Op: op.opIdx, Label: op.label, Want: op.Decorators.AssertRows, Got: op.RowCount, GotKnown: true}
 			op.Err = aerr
 			*p.opPtrs[i] = *op
 			if op.OnDone != nil {

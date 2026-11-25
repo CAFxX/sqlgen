@@ -34,11 +34,15 @@ func TestAssertionErrorNamesStatementAndCounts(t *testing.T) {
 	defer func() { _ = cache.Close() }()
 	updDesc, selDesc := assertTestDescs()
 
-	// cat_1 matches 8 of the 32 seeded rows; the assertion expects 5.
+	// cat_1 matches 8 of the 32 seeded rows; the assertion expects 5. It is the second queued operation
+	// (index 1) and carries a label.
 	p := NewPipeline(ctx, db, cache, nil, true, DialectQuestion)
+	ab0 := AcquireArgsCap(1)
+	*ab0 = append(*ab0, "cat_0")
+	p.QueueExec(21, updDesc, RenderInput{}, MakeVariantKey(21, 0, 0, 0), nil, ab0, nil).AssertRows(8)
 	ab := AcquireArgsCap(1)
 	*ab = append(*ab, "cat_1")
-	fut := p.QueueExec(21, updDesc, RenderInput{}, MakeVariantKey(21, 0, 0, 0), nil, ab, nil).AssertRows(5)
+	fut := p.QueueExec(21, updDesc, RenderInput{}, MakeVariantKey(21, 0, 0, 0), nil, ab, nil).Label("bump cat_1").AssertRows(5)
 	err := p.Flush()
 	if !errors.Is(err, ErrAssertionFailed) {
 		t.Fatalf("errors.Is(ErrAssertionFailed) = false for %v", err)
@@ -47,10 +51,10 @@ func TestAssertionErrorNamesStatementAndCounts(t *testing.T) {
 	if !errors.As(err, &ae) {
 		t.Fatalf("error %v is not an *AssertionError", err)
 	}
-	if ae.Statement != "BumpScores" || ae.Want != 5 || ae.Got != 8 || !ae.GotKnown {
+	if ae.Statement != "BumpScores" || ae.Op != 1 || ae.Label != "bump cat_1" || ae.Want != 5 || ae.Got != 8 || !ae.GotKnown {
 		t.Fatalf("unexpected AssertionError fields: %+v", ae)
 	}
-	want := `sqlgen: pipeline assertion failed on statement "BumpScores": expected 5 rows affected, got 8`
+	want := `sqlgen: pipeline assertion failed on statement "BumpScores", operation 1 ("bump cat_1"): expected 5 rows affected, got 8`
 	if err.Error() != want {
 		t.Fatalf("message = %q, want %q", err.Error(), want)
 	}
@@ -67,7 +71,7 @@ func TestAssertionErrorNamesStatementAndCounts(t *testing.T) {
 		func(rs *sql.Rows, dst *int64) error { return rs.Scan(dst) },
 	).AssertFound()
 	err = p2.Flush()
-	if !errors.Is(err, ErrAssertionFailed) || !strings.Contains(err.Error(), `statement "ItemByID": expected 1 rows affected, got 0`) {
+	if !errors.Is(err, ErrAssertionFailed) || !strings.Contains(err.Error(), `statement "ItemByID", operation 0: expected 1 rows affected, got 0`) {
 		t.Fatalf("unexpected message %v", err)
 	}
 	if _, gerr := rf.Get(); !errors.Is(gerr, ErrAssertionFailed) {
@@ -80,8 +84,10 @@ func TestAssertionErrorFormatting(t *testing.T) {
 		e    *AssertionError
 		want string
 	}{
-		{&AssertionError{Statement: "S", Want: 5}, `sqlgen: pipeline assertion failed on statement "S": expected 5 rows affected`},
-		{&AssertionError{Want: 2, Got: 1, GotKnown: true}, `sqlgen: pipeline assertion failed: expected 2 rows affected, got 1`},
+		{&AssertionError{Statement: "S", Want: 5}, `sqlgen: pipeline assertion failed on statement "S", operation 0: expected 5 rows affected`},
+		{&AssertionError{Op: 2, Want: 2, Got: 1, GotKnown: true}, `sqlgen: pipeline assertion failed on operation 2: expected 2 rows affected, got 1`},
+		{&AssertionError{Statement: "S", Op: 7, Label: `line "3"`, Want: 1, Got: 0, GotKnown: true}, `sqlgen: pipeline assertion failed on statement "S", operation 7 ("line \"3\""): expected 1 rows affected, got 0`},
+		{&AssertionError{Op: 3, Label: "x", Want: 1}, `sqlgen: pipeline assertion failed on operation 3 ("x"): expected 1 rows affected`},
 	}
 	for _, c := range cases {
 		if got := c.e.Error(); got != c.want {
@@ -95,11 +101,13 @@ func TestAssertionErrorFormatting(t *testing.T) {
 
 func TestTranslateWireErrorAssertionNamesStatementAndCarriesTheActualCount(t *testing.T) {
 	op := &PipelineOp{
+		opIdx:      4,
+		label:      "audit",
 		Desc:       &QueryDescriptor{Name: "InsertAudit"},
 		Decorators: OpDecorators{AssertRows: 5},
 	}
 	got := TranslateWireError(op, sqlStateErr{"22P02", `ERROR: invalid input syntax for type integer: "sqlgen:assert:3" (SQLSTATE 22P02)`})
-	want := `sqlgen: pipeline assertion failed on statement "InsertAudit": expected 5 rows affected, got 3`
+	want := `sqlgen: pipeline assertion failed on statement "InsertAudit", operation 4 ("audit"): expected 5 rows affected, got 3`
 	if got == nil || got.Error() != want {
 		t.Fatalf("got %v want %q", got, want)
 	}
@@ -196,5 +204,18 @@ func TestQuestionDialectGuardIsRecognisedAsOverflow(t *testing.T) {
 	renderPipelineBatch(DialectDollar, nil, d)
 	if got := TranslateWireError(&d[0], overflow); got != overflow {
 		t.Errorf("$N dialect: a genuine overflow was translated: %v", got)
+	}
+}
+
+func TestFutureLabelIsChainableOnEveryFuture(t *testing.T) {
+	op1, op2, op3 := &PipelineOp{}, &PipelineOp{}, &PipelineOp{}
+	e := &ExecFuture{op: op1}
+	r := &RowFuture[int]{op: op2}
+	s := &SliceFuture[int]{op: op3}
+	if e.Label("e") != e || r.Label("r") != r || s.Label("s") != s {
+		t.Fatal("Label must return its receiver")
+	}
+	if op1.label != "e" || op2.label != "r" || op3.label != "s" {
+		t.Fatalf("labels = %q %q %q", op1.label, op2.label, op3.label)
 	}
 }

@@ -532,18 +532,28 @@ type QueryDescriptor struct {
 }
 
 // AssertionError is the error returned when AssertRows/AssertFound fails. errors.Is(err,
-// ErrAssertionFailed) is true for it. GotKnown is false only when the actual row count could not be
+// ErrAssertionFailed) is true for it. Op tells which queued operation failed when one pipeline queues
+// the same statement several times. GotKnown is false only when the actual row count could not be
 // determined.
 type AssertionError struct {
 	Statement string // statement name; empty when unknown
+	// Op is the failing operation's 0-based position among the operations queued on the pipeline, in
+	// queue order: every p.<Stmt>(...) call and every p.Abort counts, inside If branches too (taken or
+	// not). It is the same on the single-round-trip and the sequential path.
+	Op        int
+	Label     string // the operation's Label; empty when none was set
 	Want, Got int64
 	GotKnown  bool
 }
 
 func (e *AssertionError) Error() string {
-	msg := "sqlgen: pipeline assertion failed"
+	msg := "sqlgen: pipeline assertion failed on "
 	if e.Statement != "" {
-		msg += " on statement " + strconv.Quote(e.Statement)
+		msg += "statement " + strconv.Quote(e.Statement) + ", "
+	}
+	msg += "operation " + strconv.Itoa(e.Op)
+	if e.Label != "" {
+		msg += " (" + strconv.Quote(e.Label) + ")"
 	}
 	msg += ": expected " + strconv.FormatInt(e.Want, 10) + " rows affected"
 	if e.GotKnown {

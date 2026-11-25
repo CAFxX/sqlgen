@@ -96,7 +96,7 @@ var myWireScenarios = []myScenario{
 	}},
 	{"failed assertion rolls the whole batch back", func(p *myq.Pipeline) ([]*runtime.IfResult, func() string) {
 		p.AddScoreOne(-5, 1).AssertRows(1)
-		p.AddScoreOne(5, 999).AssertRows(1) // no such row
+		p.AddScoreOne(5, 999).Label("line 2").AssertRows(1) // no such row: operation 1, labelled
 		return nil, nil
 	}},
 	{"AssertFound on a row-returning op that finds the row", func(p *myq.Pipeline) ([]*runtime.IfResult, func() string) {
@@ -257,10 +257,11 @@ func myErrKind(err error) string {
 	case err == nil:
 		return ""
 	case errors.Is(err, runtime.ErrAssertionFailed):
-		// the wanted and the actual row count are part of the contract on both paths
+		// the failing operation's position and label, the wanted and the actual row count are part of
+		// the contract on both paths
 		var ae *runtime.AssertionError
 		if errors.As(err, &ae) {
-			return fmt.Sprintf("ErrAssertionFailed(%s want=%d got=%d known=%v)", ae.Statement, ae.Want, ae.Got, ae.GotKnown)
+			return fmt.Sprintf("ErrAssertionFailed(%s op=%d label=%q want=%d got=%d known=%v)", ae.Statement, ae.Op, ae.Label, ae.Want, ae.Got, ae.GotKnown)
 		}
 		return "ErrAssertionFailed"
 	case errors.Is(err, myErrStop):

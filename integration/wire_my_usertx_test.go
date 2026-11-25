@@ -49,7 +49,7 @@ func myUserTxFlows() []myUserTxFlow {
 			p.AddScoreOne(1000, 3)
 		}, func(err error) bool {
 			var ae *runtime.AssertionError
-			return errors.As(err, &ae) && ae.Statement == "AddScoreOne" && ae.Want == 2 && ae.Got == 1 && ae.GotKnown
+			return errors.As(err, &ae) && ae.Statement == "AddScoreOne" && ae.Op == 1 && ae.Want == 2 && ae.Got == 1 && ae.GotKnown
 		}, myUserTxState(11, 20, 30, 40), myUserTxState(11, 25, 30, 40)},
 		{"failed assertion on a read", func(p *myq.Pipeline) {
 			p.AddScoreOne(5, 1)

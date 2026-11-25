@@ -518,7 +518,7 @@ func (m *MySQLBatch) Apply(ops []PipelineOp, row []any) (failed int, err error) 
 		op.Err = op.AbortErr
 		return failed, op.AbortErr
 	}
-	aerr := &AssertionError{Statement: op.stmtName(), Want: op.Decorators.AssertRows}
+	aerr := &AssertionError{Statement: op.stmtName(), Op: op.opIdx, Label: op.label, Want: op.Decorators.AssertRows}
 	for i, c := range m.sum {
 		if c.kind == sumCount && c.op == failed {
 			if n, ok := summaryInt(row[i]); ok {
