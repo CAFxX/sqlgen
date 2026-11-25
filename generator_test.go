@@ -2138,6 +2138,16 @@ func TestGeneratorDiagnosticsAreActionable(t *testing.T) {
 			`parameter :x is used before it is declared; declare its type at its first use (:x:int64)`},
 		{"package not imported", "  - name: Q\n    kind: many\n    sql: SELECT id:uuid.UUID FROM t\n",
 			`type "uuid.UUID" uses package "uuid" which is not imported; add its import path to extra_imports`},
+		{"removed ids... spelling without a colon", "  - name: Q\n    kind: many\n    sql: SELECT id:int64 FROM t WHERE id IN (ids...)\n",
+			`"ids...": the "..." slice spelling is not supported; declare a slice as :ids:[]Type`},
+		{"removed params_struct key", "  - name: Q\n    kind: one\n    params_struct: true\n    sql: SELECT id:int64 FROM t WHERE id = :id:int64\n",
+			"params_struct was removed: use args: struct"},
+		{"shared result_type column count", "  - name: A\n    kind: many\n    result_type: R\n    sql: SELECT id:int64, name:string FROM t\n" +
+			"  - name: B\n    kind: many\n    result_type: R\n    sql: SELECT id:int64 FROM t\n",
+			`result_type "R": statement A declares 2 columns (ID int64, Name string), statement B declares 1 (ID int64)`},
+		{"shared result_type column type", "  - name: A\n    kind: many\n    result_type: R\n    sql: SELECT id:int64, name:string FROM t\n" +
+			"  - name: B\n    kind: many\n    result_type: R\n    sql: SELECT id:int64, name:*string FROM t\n",
+			`result_type "R": column 2 is Name string in statement A but Name *string in statement B`},
 		{"package not imported in a param", "  - name: Q\n    kind: many\n    sql: SELECT id:int64 FROM t WHERE x IN (:x:[]decimal.Decimal)\n",
 			`uses package "decimal" which is not imported`},
 	} {

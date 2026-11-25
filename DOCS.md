@@ -87,7 +87,9 @@ statements:
 
 Statement names are exported Go identifiers: `name: getAccount` is rejected at generate time (`must be an exported Go identifier`), as are names that collide with generated methods. The `out:` directory is created if it does not exist.
 
-> **Strict YAML Validation**: `sqlgen` decodes `sqlgen.yaml` with `KnownFields(true)`. Unknown keys at any level, empty YAML files, or trailing YAML documents produce an immediate compile-time error. Every type is declared inline in the SQL: there are no `params:` / `columns:` lists, and no `version:` or `runtime_import:` keys.
+> **Strict YAML Validation**: `sqlgen` decodes `sqlgen.yaml` with `KnownFields(true)`. Unknown keys at any level, empty YAML files, or trailing YAML documents produce an immediate compile-time error. Every type is declared inline in the SQL: there are no `params:` / `columns:` lists, and no `version:` or `runtime_import:` keys. A removed key is reported together with the key that replaces it.
+
+> **Write `sql:` as a block scalar (`sql: |`).** A plain (unquoted) YAML scalar may not contain `: ` or ` #` and may not start with an indicator (`{`, `[`, `*`, `&`, `!`, `'`, `"`, ...): a `{?Flag: ...}` block contains `: `, ` #` starts a YAML comment that silently truncates the SQL, and a multi-line plain scalar is folded into one line, so a `-- comment` line would swallow the rest of the statement. A one-line plain `sql:` works only when it avoids all of these; `sql: |` (a literal block) passes the text through verbatim.
 
 #### Placeholders are generated, never hand-written
 

@@ -100,6 +100,38 @@ type Config struct {
 	Statements   []StatementSpec `yaml:"statements"`
 }
 
+// colList formats output columns as "Field GoType, ..." for diagnostics.
+func colList(cols []colDef) string {
+	parts := make([]string, len(cols))
+	for i, c := range cols {
+		parts[i] = c.FieldName + " " + c.GoType
+	}
+	return strings.Join(parts, ", ")
+}
+
+// removedYAMLKeys maps configuration keys that no longer exist to what replaces them.
+var removedYAMLKeys = map[string]string{
+	"params_struct": "args: struct",
+}
+
+var unknownFieldRE = regexp.MustCompile(`field (\w+) not found in type`)
+
+// removedKeyHints returns a hint for every removed key the strict decoder reported as unknown, or "".
+func removedKeyHints(msg string) string {
+	var hints []string
+	seen := map[string]bool{}
+	for _, m := range unknownFieldRE.FindAllStringSubmatch(msg, -1) {
+		if repl, ok := removedYAMLKeys[m[1]]; ok && !seen[m[1]] {
+			seen[m[1]] = true
+			hints = append(hints, fmt.Sprintf("%s was removed: use %s", m[1], repl))
+		}
+	}
+	if len(hints) == 0 {
+		return ""
+	}
+	return " (" + strings.Join(hints, "; ") + ")"
+}
+
 // ParseYAML strictly decodes a sqlgen YAML configuration using KnownFields(true).
 func ParseYAML(data []byte) (Config, error) {
 	if len(bytes.TrimSpace(data)) == 0 {
@@ -109,7 +141,7 @@ func ParseYAML(data []byte) (Config, error) {
 	dec.KnownFields(true)
 	var cfg Config
 	if err := dec.Decode(&cfg); err != nil {
-		return Config{}, fmt.Errorf("sqlgen: parse YAML: %w", err)
+		return Config{}, fmt.Errorf("sqlgen: parse YAML: %w%s", err, removedKeyHints(err.Error()))
 	}
 	var trailing any
 	if err := dec.Decode(&trailing); err != io.EOF {
@@ -1794,7 +1826,8 @@ func (p *stmtParser) scanSpan(span string, blk *parsedBlock, isTopLevel bool) er
 			}
 			ident := span[identStart:identEnd]
 			afterIdent := identEnd
-			if strings.HasPrefix(span[afterIdent:], "...") && (hasLeadingColon || (afterIdent+3 < len(span) && span[afterIdent+3] == ':')) {
+			// "ids...", ":ids...", "ids...:T": the removed variadic spelling ("..." is never valid SQL after a name).
+			if strings.HasPrefix(span[afterIdent:], "...") {
 				return fmt.Errorf("statement %s: %q: the \"...\" slice spelling is not supported; declare a slice as :%s:[]Type", p.spec.Name, ident+"...", ident)
 			}
 
@@ -2651,6 +2684,7 @@ func Generate(cfg Config) ([]byte, error) {
 	compiled := make([]*compiledStmt, 0, len(cfg.Statements))
 
 	rowStructs := make(map[string][]colDef)
+	rowStructOwner := make(map[string]string) // the statement that first declared a shared result_type
 	var rowStructOrder []string
 	tupleStructs := make(map[string]*tupleStructDef)
 	var tupleStructOrder []string
@@ -2675,20 +2709,23 @@ func Generate(cfg Config) ([]byte, error) {
 
 		if (cs.Kind == KindOne || cs.Kind == KindMany) && !cs.ScalarResult {
 			if prevCols, exists := rowStructs[cs.RowTypeName]; exists {
+				owner := rowStructOwner[cs.RowTypeName]
 				if len(prevCols) != len(cs.Cols) {
-					return nil, fmt.Errorf("sqlgen: conflicting shared result_type %q in statement %s (column count %d vs %d)", cs.RowTypeName, cs.Name, len(prevCols), len(cs.Cols))
+					return nil, fmt.Errorf("sqlgen: conflicting shared result_type %q: statement %s declares %d columns (%s), statement %s declares %d (%s); a shared result_type needs the same columns in the same order",
+						cs.RowTypeName, owner, len(prevCols), colList(prevCols), cs.Name, len(cs.Cols), colList(cs.Cols))
 				}
 				for cIdx := range prevCols {
 					if prevCols[cIdx].FieldName != cs.Cols[cIdx].FieldName || prevCols[cIdx].GoType != cs.Cols[cIdx].GoType {
-						return nil, fmt.Errorf("sqlgen: conflicting shared result_type %q in statement %s (field %d: %s %s vs %s %s)",
-							cs.RowTypeName, cs.Name, cIdx,
-							prevCols[cIdx].FieldName, prevCols[cIdx].GoType,
-							cs.Cols[cIdx].FieldName, cs.Cols[cIdx].GoType,
+						return nil, fmt.Errorf("sqlgen: conflicting shared result_type %q: column %d is %s %s in statement %s but %s %s in statement %s; a shared result_type needs the same columns in the same order",
+							cs.RowTypeName, cIdx+1,
+							prevCols[cIdx].FieldName, prevCols[cIdx].GoType, owner,
+							cs.Cols[cIdx].FieldName, cs.Cols[cIdx].GoType, cs.Name,
 						)
 					}
 				}
 			} else {
 				rowStructs[cs.RowTypeName] = cs.Cols
+				rowStructOwner[cs.RowTypeName] = cs.Name
 				rowStructOrder = append(rowStructOrder, cs.RowTypeName)
 			}
 		}
