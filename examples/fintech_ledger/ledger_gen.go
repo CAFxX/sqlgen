@@ -1006,6 +1006,9 @@ func (pl *Pipeline) UpsertAccountBalances(items []AccountSettlement) *runtime.Ex
 	return pl.Pipeline.QueueExec(stmtIDUpsertAccountBalances, descUpsertAccountBalances, in, vk, nil, argBuf, expandErr)
 }
 
+// UpsertAccountBalancesStream runs UpsertAccountBalances over the items rows pulled from seq, in chunks, and sums the results.
+// seq provides the rows of the collection parameter.
+// An empty seq inserts nothing (a successful no-op).
 func (q *Queries) UpsertAccountBalancesStream(ctx context.Context, seq iter.Seq2[AccountSettlement, error]) (sql.Result, error) {
 	if seq == nil {
 		return nil, runtime.ErrNilArgument

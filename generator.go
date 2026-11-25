@@ -3970,8 +3970,15 @@ func emitExecStream(b *bytes.Buffer, cs *compiledStmt, paramsStructName string) 
 	sigStream, callBatchArgs := buildStreamSignatures(cs, paramsStructName)
 	poolName := lowerFirstIdent(batchParam.ElemGoType) + "ChunkPool"
 
+	emitStreamDoc(b, cs, cs.Name+"Stream", "and sums the results")
 	fmt.Fprintf(b, "func (q *Queries) %sStream(ctx context.Context%s) (sql.Result, error) {\n", cs.Name, sigStream)
 	b.WriteString("\tif seq == nil {\n\t\treturn nil, runtime.ErrNilArgument\n\t}\n")
+	if cs.StructArgs {
+		fmt.Fprintf(b, "\tif len(p.%s) != 0 {\n\t\treturn nil, %s\n\t}\n", batchParam.FieldName, streamFieldSetErr(cs))
+	}
+	if !cs.batchIsValues() {
+		b.WriteString("\ttotalRows := 0\n")
+	}
 	fmt.Fprintf(b, "\tchunkCap := min(256, q.cache.MaxRowsPerBatch(sqlDialect, %d, %d))\n", cs.ScalarParamCnt, cs.BatchArity)
 	fmt.Fprintf(b, "\tbufPtr := %s.Get().(*[]%s)\n", poolName, batchParam.ElemGoType)
 	b.WriteString("\tchunk := (*bufPtr)[:0]\n")
@@ -3990,10 +3997,17 @@ func emitExecStream(b *bytes.Buffer, cs *compiledStmt, paramsStructName string) 
 	b.WriteString("\t\tchunk = chunk[:0]\n\t\treturn nil\n\t}\n")
 	b.WriteString("\tfor item, err := range seq {\n")
 	b.WriteString("\t\tif err != nil {\n\t\t\treturn nil, err\n\t\t}\n")
+	if !cs.batchIsValues() {
+		b.WriteString("\t\ttotalRows++\n")
+	}
 	b.WriteString("\t\tchunk = append(chunk, item)\n")
 	b.WriteString("\t\tif len(chunk) >= chunkCap {\n")
 	b.WriteString("\t\t\tif err := flushChunk(); err != nil {\n\t\t\t\treturn nil, err\n\t\t\t}\n")
 	b.WriteString("\t\t}\n\t}\n")
+	if !cs.batchIsValues() {
+		// An empty IN list is invalid on every entry point; only an empty INSERT VALUES list is a no-op.
+		b.WriteString("\tif totalRows == 0 {\n\t\treturn nil, runtime.ErrEmptySliceParam\n\t}\n")
+	}
 	b.WriteString("\tif err := flushChunk(); err != nil {\n\t\treturn nil, err\n\t}\n")
 	b.WriteString("\treturn batchRes, nil\n")
 	b.WriteString("}\n\n")
@@ -4106,15 +4120,45 @@ func emitManyChunkedSeq(
 
 // emitManyStream emits <Name>StreamSeq and <Name>Stream of a many statement with a tuple-slice
 // collection: the statement fed from an iterator in pooled chunks, each flushed through <Name>Seq.
+// emitStreamDoc emits the doc comment of a Stream method: which argument provides the rows.
+func emitStreamDoc(b *bytes.Buffer, cs *compiledStmt, method, what string) {
+	f := cs.Params[cs.BatchParamIdx]
+	fmt.Fprintf(b, "// %s runs %s over the %s rows pulled from seq, in chunks, %s.\n", method, cs.Name, f.RawName, what)
+	if cs.StructArgs {
+		fmt.Fprintf(b, "// seq provides the rows: p.%s must be empty (runtime.ErrInvalidArgument otherwise).\n", f.FieldName)
+	} else {
+		b.WriteString("// seq provides the rows of the collection parameter.\n")
+	}
+	if !cs.batchIsValues() {
+		b.WriteString("// An empty seq is runtime.ErrEmptySliceParam, like an empty IN list.\n")
+	} else {
+		b.WriteString("// An empty seq inserts nothing (a successful no-op).\n")
+	}
+}
+
+// streamFieldSetErr is the error a struct-style Stream method returns when the collection field of its
+// params struct is set: the rows come from seq, and silently ignoring the field would hide a mistake.
+func streamFieldSetErr(cs *compiledStmt) string {
+	f := cs.Params[cs.BatchParamIdx].FieldName
+	return fmt.Sprintf("runtime.InvalidArgument(%q)", cs.Name+"Stream: p."+f+" must be empty: the rows come from seq")
+}
+
 func emitManyStream(b *bytes.Buffer, cs *compiledStmt, paramsStructName string) {
 	batchParam := cs.Params[cs.BatchParamIdx]
 	sigStream, callBatchArgs := buildStreamSignatures(cs, paramsStructName)
 	poolName := lowerFirstIdent(batchParam.ElemGoType) + "ChunkPool"
 
+	emitStreamDoc(b, cs, cs.Name+"StreamSeq", "and yields their rows in order")
 	fmt.Fprintf(b, "func (q *Queries) %sStreamSeq(ctx context.Context%s) iter.Seq2[%s, error] {\n", cs.Name, sigStream, cs.RowTypeName)
 	b.WriteString("\treturn func(yield func(" + cs.RowTypeName + ", error) bool) {\n")
 	fmt.Fprintf(b, "\t\tvar zero %s\n", cs.RowTypeName)
 	b.WriteString("\t\tif seq == nil {\n\t\t\tyield(zero, runtime.ErrNilArgument)\n\t\t\treturn\n\t\t}\n")
+	if cs.StructArgs {
+		fmt.Fprintf(b, "\t\tif len(p.%s) != 0 {\n\t\t\tyield(zero, %s)\n\t\t\treturn\n\t\t}\n", batchParam.FieldName, streamFieldSetErr(cs))
+	}
+	if !cs.batchIsValues() {
+		b.WriteString("\t\ttotalRows := 0\n")
+	}
 	fmt.Fprintf(b, "\t\tchunkCap := min(256, q.cache.MaxRowsPerBatch(sqlDialect, %d, %d))\n", cs.ScalarParamCnt, cs.BatchArity)
 	fmt.Fprintf(b, "\t\tbufPtr := %s.Get().(*[]%s)\n", poolName, batchParam.ElemGoType)
 	b.WriteString("\t\tchunk := (*bufPtr)[:0]\n")
@@ -4133,14 +4177,21 @@ func emitManyStream(b *bytes.Buffer, cs *compiledStmt, paramsStructName string) 
 	b.WriteString("\t\t\tchunk = chunk[:0]\n\t\t\treturn true\n\t\t}\n")
 	b.WriteString("\t\tfor item, err := range seq {\n")
 	b.WriteString("\t\t\tif err != nil {\n\t\t\t\tyield(zero, err)\n\t\t\t\treturn\n\t\t\t}\n")
+	if !cs.batchIsValues() {
+		b.WriteString("\t\t\ttotalRows++\n")
+	}
 	b.WriteString("\t\t\tchunk = append(chunk, item)\n")
 	b.WriteString("\t\t\tif len(chunk) >= chunkCap {\n")
 	b.WriteString("\t\t\t\tif !flushChunk() {\n\t\t\t\t\treturn\n\t\t\t\t}\n")
 	b.WriteString("\t\t\t}\n\t\t}\n")
+	if !cs.batchIsValues() {
+		b.WriteString("\t\tif totalRows == 0 {\n\t\t\tyield(zero, runtime.ErrEmptySliceParam)\n\t\t\treturn\n\t\t}\n")
+	}
 	b.WriteString("\t\t_ = flushChunk()\n")
 	b.WriteString("\t}\n")
 	b.WriteString("}\n\n")
 
+	emitStreamDoc(b, cs, cs.Name+"Stream", "and returns their rows in order")
 	fmt.Fprintf(b, "func (q *Queries) %sStream(ctx context.Context%s) ([]%s, error) {\n", cs.Name, sigStream, cs.RowTypeName)
 	var forwardArgs []byte
 	if cs.StructArgs {

@@ -540,6 +540,8 @@ When a statement is chunked (it is decomposable, see above) **and** its collecti
   - `q.<Name>Stream(ctx, ..., seq iter.Seq2[<TupleType>, error], ...) ([]<RowType>, error)`
   - `q.<Name>StreamSeq(ctx, ..., seq iter.Seq2[<TupleType>, error], ...) iter.Seq2[<RowType>, error]`
 
+`seq` is the only source of rows. With the struct argument style (`q.<Name>Stream(ctx, p, seq)`) the collection field of `p` must be empty: setting it returns an error matching `runtime.ErrInvalidArgument` that names the field (it used to be silently ignored). Emptiness follows the same structural rule as the plain method: an empty `seq` for an `INSERT ... VALUES` statement is a successful no-op, for a tuple `IN (...)` list it is `runtime.ErrEmptySliceParam` (nothing is sent).
+
 **Atomicity.** `<Name>` of more than one chunk runs in its own transaction (all or nothing, unless called on a `WithTx`/`InTx` query, which uses the caller's): when a later chunk fails, the earlier ones are rolled back. A stream is not one transaction: every flush (up to `256` items) is atomic, but an error or a cancelled context part-way leaves the earlier flushes committed. Run the stream inside `q.InTx` for all-or-nothing ingestion. An error yielded by `seq` stops the stream and is returned (or yielded) as-is. A nil `seq` (and a nil callback passed to `runtime.Each`, `InTx` or `PipelineTx`) returns `runtime.ErrNilArgument` instead of panicking. A stream of an empty iterator inserts nothing (section 2.3).
 
 **Iterator Adapters in `runtime`** (all return plain `iter.Seq2[T, error]`):

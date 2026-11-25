@@ -630,6 +630,9 @@ func (pl *Pipeline) ApplyMarginSettlements(rows []MarginSettlement) *runtime.Exe
 	return pl.Pipeline.QueueExec(stmtIDApplyMarginSettlements, descApplyMarginSettlements, in, vk, nil, argBuf, expandErr)
 }
 
+// ApplyMarginSettlementsStream runs ApplyMarginSettlements over the Rows rows pulled from seq, in chunks, and sums the results.
+// seq provides the rows of the collection parameter.
+// An empty seq inserts nothing (a successful no-op).
 func (q *Queries) ApplyMarginSettlementsStream(ctx context.Context, seq iter.Seq2[MarginSettlement, error]) (sql.Result, error) {
 	if seq == nil {
 		return nil, runtime.ErrNilArgument
@@ -1385,6 +1388,9 @@ func (pl *Pipeline) IngestOrders(rows []OrderSubmission, epochSeq int64, selectC
 	)
 }
 
+// IngestOrdersStreamSeq runs IngestOrders over the Rows rows pulled from seq, in chunks, and yields their rows in order.
+// seq provides the rows of the collection parameter.
+// An empty seq inserts nothing (a successful no-op).
 func (q *Queries) IngestOrdersStreamSeq(ctx context.Context, seq iter.Seq2[OrderSubmission, error], epochSeq int64, selectCols ...uint64) iter.Seq2[OrderAck, error] {
 	return func(yield func(OrderAck, error) bool) {
 		var zero OrderAck
@@ -1432,6 +1438,9 @@ func (q *Queries) IngestOrdersStreamSeq(ctx context.Context, seq iter.Seq2[Order
 	}
 }
 
+// IngestOrdersStream runs IngestOrders over the Rows rows pulled from seq, in chunks, and returns their rows in order.
+// seq provides the rows of the collection parameter.
+// An empty seq inserts nothing (a successful no-op).
 func (q *Queries) IngestOrdersStream(ctx context.Context, seq iter.Seq2[OrderSubmission, error], epochSeq int64, selectCols ...uint64) ([]OrderAck, error) {
 	return runtime.Collect(q.IngestOrdersStreamSeq(ctx, seq, epochSeq, selectCols...))
 }

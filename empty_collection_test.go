@@ -6,6 +6,7 @@ import (
 	"database/sql/driver"
 	"errors"
 	"slices"
+	"strings"
 	"sync/atomic"
 	"testing"
 
@@ -308,5 +309,43 @@ func TestNoRowsIsANilSliceEverywhere(t *testing.T) {
 	}
 	if rows, err := f.Get(); err != nil || rows != nil {
 		t.Fatalf("pipeline many with no match = %#v, %v; want nil, nil", rows, err)
+	}
+}
+
+// An empty IN list is ErrEmptySliceParam on every entry point, the Stream forms included (an empty INSERT
+// VALUES list stays a no-op); nothing is sent.
+func TestEmptyInListStreamIsAnError(t *testing.T) {
+	q, _, ops := setupCountingDB(t)
+	ctx := context.Background()
+	if _, err := q.DeleteQuadsByKeys(ctx, nil); !errors.Is(err, runtime.ErrEmptySliceParam) {
+		t.Fatalf("DeleteQuadsByKeys(nil): err = %v", err)
+	}
+	if _, err := q.DeleteQuadsByKeysStream(ctx, func(func(QuadDelKey, error) bool) {}); !errors.Is(err, runtime.ErrEmptySliceParam) {
+		t.Fatalf("DeleteQuadsByKeysStream(empty): err = %v, want ErrEmptySliceParam", err)
+	}
+	if rows, err := q.QuadIDsByKeysStream(ctx, QuadIDsByKeysParams{}, func(func(QuadKey, error) bool) {}); rows != nil || !errors.Is(err, runtime.ErrEmptySliceParam) {
+		t.Fatalf("QuadIDsByKeysStream(empty) = %v, %v; want ErrEmptySliceParam", rows, err)
+	}
+	if n := ops.Load(); n != 0 {
+		t.Fatalf("%d driver operations, want none", n)
+	}
+	// A non-empty stream works.
+	if rows, err := q.QuadIDsByKeysStream(ctx, QuadIDsByKeysParams{}, runtime.FromSlice([]QuadKey{{GroupKey: "g", ID: 1}})); err != nil || len(rows) != 0 {
+		t.Fatalf("QuadIDsByKeysStream = %v, %v", rows, err)
+	}
+}
+
+// A struct-style Stream takes its rows from seq: a non-empty collection field in the params struct is an
+// error naming the field instead of being silently ignored.
+func TestStructStreamRejectsCollectionField(t *testing.T) {
+	q, _, ops := setupCountingDB(t)
+	ctx := context.Background()
+	p := QuadIDsByKeysParams{Keys: []QuadKey{{GroupKey: "g", ID: 1}}}
+	_, err := q.QuadIDsByKeysStream(ctx, p, runtime.FromSlice([]QuadKey{{GroupKey: "g", ID: 2}}))
+	if !errors.Is(err, runtime.ErrInvalidArgument) || !strings.Contains(err.Error(), "p.Keys must be empty") {
+		t.Fatalf("err = %v, want ErrInvalidArgument naming p.Keys", err)
+	}
+	if n := ops.Load(); n != 0 {
+		t.Fatalf("%d driver operations, want none", n)
 	}
 }

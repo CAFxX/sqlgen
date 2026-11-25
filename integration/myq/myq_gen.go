@@ -359,6 +359,9 @@ func (pl *Pipeline) InsertItems(rows []NewItem) *runtime.ExecFuture {
 	return pl.Pipeline.QueueExec(stmtIDInsertItems, descInsertItems, in, vk, nil, argBuf, expandErr)
 }
 
+// InsertItemsStream runs InsertItems over the rows rows pulled from seq, in chunks, and sums the results.
+// seq provides the rows of the collection parameter.
+// An empty seq inserts nothing (a successful no-op).
 func (q *Queries) InsertItemsStream(ctx context.Context, seq iter.Seq2[NewItem, error]) (sql.Result, error) {
 	if seq == nil {
 		return nil, runtime.ErrNilArgument

@@ -383,6 +383,9 @@ func (pl *Pipeline) InsertItems(rows []NewItem) *runtime.ExecFuture {
 	return pl.Pipeline.QueueExec(stmtIDInsertItems, descInsertItems, in, vk, nil, argBuf, expandErr)
 }
 
+// InsertItemsStream runs InsertItems over the rows rows pulled from seq, in chunks, and sums the results.
+// seq provides the rows of the collection parameter.
+// An empty seq inserts nothing (a successful no-op).
 func (q *Queries) InsertItemsStream(ctx context.Context, seq iter.Seq2[NewItem, error]) (sql.Result, error) {
 	if seq == nil {
 		return nil, runtime.ErrNilArgument
@@ -2827,6 +2830,9 @@ func (pl *Pipeline) InsertItemsReturning(rows []NewItem, selectCols ...uint64) *
 	)
 }
 
+// InsertItemsReturningStreamSeq runs InsertItemsReturning over the rows rows pulled from seq, in chunks, and yields their rows in order.
+// seq provides the rows of the collection parameter.
+// An empty seq inserts nothing (a successful no-op).
 func (q *Queries) InsertItemsReturningStreamSeq(ctx context.Context, seq iter.Seq2[NewItem, error], selectCols ...uint64) iter.Seq2[Written, error] {
 	return func(yield func(Written, error) bool) {
 		var zero Written
@@ -2874,6 +2880,9 @@ func (q *Queries) InsertItemsReturningStreamSeq(ctx context.Context, seq iter.Se
 	}
 }
 
+// InsertItemsReturningStream runs InsertItemsReturning over the rows rows pulled from seq, in chunks, and returns their rows in order.
+// seq provides the rows of the collection parameter.
+// An empty seq inserts nothing (a successful no-op).
 func (q *Queries) InsertItemsReturningStream(ctx context.Context, seq iter.Seq2[NewItem, error], selectCols ...uint64) ([]Written, error) {
 	return runtime.Collect(q.InsertItemsReturningStreamSeq(ctx, seq, selectCols...))
 }
@@ -3904,6 +3913,9 @@ func (pl *Pipeline) InsertedIDs(rows []NewItem) *runtime.SliceFuture[int64] {
 	)
 }
 
+// InsertedIDsStreamSeq runs InsertedIDs over the rows rows pulled from seq, in chunks, and yields their rows in order.
+// seq provides the rows of the collection parameter.
+// An empty seq inserts nothing (a successful no-op).
 func (q *Queries) InsertedIDsStreamSeq(ctx context.Context, seq iter.Seq2[NewItem, error]) iter.Seq2[int64, error] {
 	return func(yield func(int64, error) bool) {
 		var zero int64
@@ -3951,6 +3963,9 @@ func (q *Queries) InsertedIDsStreamSeq(ctx context.Context, seq iter.Seq2[NewIte
 	}
 }
 
+// InsertedIDsStream runs InsertedIDs over the rows rows pulled from seq, in chunks, and returns their rows in order.
+// seq provides the rows of the collection parameter.
+// An empty seq inserts nothing (a successful no-op).
 func (q *Queries) InsertedIDsStream(ctx context.Context, seq iter.Seq2[NewItem, error]) ([]int64, error) {
 	return runtime.Collect(q.InsertedIDsStreamSeq(ctx, seq))
 }

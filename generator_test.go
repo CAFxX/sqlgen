@@ -166,6 +166,17 @@ statements:
     sql: |
       UPDATE batch_users SET points = points + :Bonus:int64 WHERE id IN (:IDs:[]int64 ASC)
 
+  - name: DeleteQuadsByKeys
+    kind: exec
+    sql: |
+      DELETE FROM quad_items WHERE (group_key, id) IN (:Keys:[]QuadDelKey(GroupKey:string, ID:int64))
+
+  - name: QuadIDsByKeys
+    kind: many
+    args: struct
+    sql: |
+      SELECT id:int64 FROM quad_items WHERE (group_key, id) IN (:Keys:[]QuadKey(GroupKey:string, ID:int64))
+
   - name: PageQuad
     kind: many
     args: struct

@@ -606,6 +606,9 @@ func (pl *Pipeline) InsertOrderItems(items []NewOrderItem) *runtime.ExecFuture {
 	return pl.Pipeline.QueueExec(stmtIDInsertOrderItems, descInsertOrderItems, in, vk, nil, argBuf, expandErr)
 }
 
+// InsertOrderItemsStream runs InsertOrderItems over the items rows pulled from seq, in chunks, and sums the results.
+// seq provides the rows of the collection parameter.
+// An empty seq inserts nothing (a successful no-op).
 func (q *Queries) InsertOrderItemsStream(ctx context.Context, seq iter.Seq2[NewOrderItem, error]) (sql.Result, error) {
 	if seq == nil {
 		return nil, runtime.ErrNilArgument
@@ -955,6 +958,9 @@ func (pl *Pipeline) InsertArchivedOrders(rows []ArchivedOrderRow) *runtime.ExecF
 	return pl.Pipeline.QueueExec(stmtIDInsertArchivedOrders, descInsertArchivedOrders, in, vk, nil, argBuf, expandErr)
 }
 
+// InsertArchivedOrdersStream runs InsertArchivedOrders over the rows rows pulled from seq, in chunks, and sums the results.
+// seq provides the rows of the collection parameter.
+// An empty seq inserts nothing (a successful no-op).
 func (q *Queries) InsertArchivedOrdersStream(ctx context.Context, seq iter.Seq2[ArchivedOrderRow, error]) (sql.Result, error) {
 	if seq == nil {
 		return nil, runtime.ErrNilArgument

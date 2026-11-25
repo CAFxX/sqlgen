@@ -196,6 +196,30 @@ func isQuadInputSorted(rows []QuadInput) bool {
 	return true
 }
 
+type QuadDelKey struct {
+	GroupKey string
+	ID       int64
+}
+
+var quadDelKeyChunkPool = sync.Pool{
+	New: func() any {
+		s := make([]QuadDelKey, 0, 256)
+		return &s
+	},
+}
+
+type QuadKey struct {
+	GroupKey string
+	ID       int64
+}
+
+var quadKeyChunkPool = sync.Pool{
+	New: func() any {
+		s := make([]QuadKey, 0, 256)
+		return &s
+	},
+}
+
 func compareint64Asc(a, b int64) int {
 	if a < b {
 		return -1
@@ -2102,6 +2126,9 @@ func (pl *Pipeline) InsertUsersBatchReturning(rows []BatchUserInput, selectCols 
 	)
 }
 
+// InsertUsersBatchReturningStreamSeq runs InsertUsersBatchReturning over the Rows rows pulled from seq, in chunks, and yields their rows in order.
+// seq provides the rows of the collection parameter.
+// An empty seq inserts nothing (a successful no-op).
 func (q *Queries) InsertUsersBatchReturningStreamSeq(ctx context.Context, seq iter.Seq2[BatchUserInput, error], selectCols ...uint64) iter.Seq2[InsertUsersBatchReturningRow, error] {
 	return func(yield func(InsertUsersBatchReturningRow, error) bool) {
 		var zero InsertUsersBatchReturningRow
@@ -2149,6 +2176,9 @@ func (q *Queries) InsertUsersBatchReturningStreamSeq(ctx context.Context, seq it
 	}
 }
 
+// InsertUsersBatchReturningStream runs InsertUsersBatchReturning over the Rows rows pulled from seq, in chunks, and returns their rows in order.
+// seq provides the rows of the collection parameter.
+// An empty seq inserts nothing (a successful no-op).
 func (q *Queries) InsertUsersBatchReturningStream(ctx context.Context, seq iter.Seq2[BatchUserInput, error], selectCols ...uint64) ([]InsertUsersBatchReturningRow, error) {
 	return runtime.Collect(q.InsertUsersBatchReturningStreamSeq(ctx, seq, selectCols...))
 }
@@ -2465,6 +2495,9 @@ func (pl *Pipeline) InsertQuadBatch(rows []QuadInput) *runtime.ExecFuture {
 	return pl.Pipeline.QueueExec(stmtIDInsertQuadBatch, descInsertQuadBatch, in, vk, nil, argBuf, expandErr)
 }
 
+// InsertQuadBatchStream runs InsertQuadBatch over the Rows rows pulled from seq, in chunks, and sums the results.
+// seq provides the rows of the collection parameter.
+// An empty seq inserts nothing (a successful no-op).
 func (q *Queries) InsertQuadBatchStream(ctx context.Context, seq iter.Seq2[QuadInput, error]) (sql.Result, error) {
 	if seq == nil {
 		return nil, runtime.ErrNilArgument
@@ -3717,7 +3750,449 @@ func (pl *Pipeline) BumpUsersByIDs(bonus int64, ids []int64) *runtime.ExecFuture
 	return pl.Pipeline.QueueExec(stmtIDBumpUsersByIDs, descBumpUsersByIDs, in, vk, nil, argBuf, expandErr)
 }
 
-const stmtIDPageQuad uint32 = 20
+const stmtIDDeleteQuadsByKeys uint32 = 20
+
+type paramsDeleteQuadsByKeys struct {
+	Keys []QuadDelKey
+}
+
+var descDeleteQuadsByKeys = &runtime.QueryDescriptor{
+	Name:     "DeleteQuadsByKeys",
+	StmtID:   20,
+	StmtVerb: runtime.VerbDelete,
+	Segments: []string{"DELETE FROM quad_items WHERE ", "(group_key, id) IN (", ")", ""},
+	Slots: []runtime.Slot{
+		{Kind: runtime.SlotBranchGuardOpen},
+		{Kind: runtime.SlotTupleSlice, Tuple: &runtime.TupleDescriptor{Segments: []string{"", ", ", ""}, NumFields: 2}},
+		{Kind: runtime.SlotBranchGuardClose},
+	},
+	NumTuples: 1,
+}
+
+func expandDeleteQuadsByKeysParams(dst *[]any, dialect runtime.Dialect, p paramsDeleteQuadsByKeys) error {
+	_ = dialect
+	_ = p
+	if len(p.Keys) == 0 {
+		return runtime.ErrEmptySliceParam
+	}
+	for i := range p.Keys {
+		*dst = append(*dst, p.Keys[i].GroupKey)
+		*dst = append(*dst, p.Keys[i].ID)
+	}
+	return nil
+}
+
+func computeDeleteQuadsByKeysKey(p paramsDeleteQuadsByKeys) (runtime.VariantKey, uint64, uint64, int) {
+	_ = p
+	var colMask uint64
+	var flagMask uint64
+	var orderSpec runtime.Order
+	var hasSeek bool
+	orderKey := runtime.EncodeOrderKey(orderSpec, hasSeek)
+	approxArgs := 5
+	var d0 uint64
+	d0 = uint64(len(p.Keys))
+	approxArgs += len(p.Keys) * 2
+	vk := runtime.MakeVariantKey(stmtIDDeleteQuadsByKeys, colMask, flagMask, orderKey, d0)
+	return vk, colMask, flagMask, approxArgs
+}
+
+func (q *Queries) DeleteQuadsByKeys(ctx context.Context, keys []QuadDelKey) (sql.Result, error) {
+	totalRows := len(keys)
+	if totalRows == 0 {
+		return nil, runtime.ErrEmptySliceParam
+	}
+	p := paramsDeleteQuadsByKeys{
+		Keys: keys,
+	}
+	_, colMask, flagMask, _ := computeDeleteQuadsByKeysKey(p)
+	shapeTag := runtime.ComputeBatchShapeTag(colMask, flagMask)
+	maxRows := q.cache.MaxRowsPerBatch(sqlDialect, 0, 2)
+	firstChunk := q.cache.PlanBatchChunk(stmtIDDeleteQuadsByKeys, colMask, flagMask, totalRows, maxRows, true)
+	txCache := q.txCache
+	var autoTx *sql.Tx
+	if txCache == nil && firstChunk < totalRows {
+		var err error
+		autoTx, err = q.db.BeginTx(ctx, nil)
+		if err != nil {
+			return nil, err
+		}
+		txCache = runtime.NewTxStmtCache(autoTx)
+		defer func() { _ = txCache.Close() }()
+	}
+	var batchRes runtime.BatchExecResult
+	for offset := 0; offset < totalRows; {
+		chunkSize := firstChunk
+		if offset > 0 {
+			chunkSize = q.cache.PlanBatchChunk(stmtIDDeleteQuadsByKeys, colMask, flagMask, totalRows-offset, maxRows, false)
+		}
+		chunkRows := keys[offset : offset+chunkSize]
+		chunkP := p
+		chunkP.Keys = chunkRows
+		vk, _, _, approxArgs := computeDeleteQuadsByKeysKey(chunkP)
+		argBuf := runtime.AcquireArgsCap(approxArgs)
+		_ = expandDeleteQuadsByKeysParams(argBuf, sqlDialect, chunkP)
+		var tupleLensBuf [1]int
+		tupleLensBuf[0] = len(chunkP.Keys)
+		in := runtime.RenderInput{
+			ColMask:   colMask,
+			FlagMask:  flagMask,
+			TupleLens: tupleLensBuf[:],
+		}
+		res, err := q.cache.Exec(ctx, q.db, txCache, q.usePrepared, vk, stmtIDDeleteQuadsByKeys, shapeTag, chunkSize, nil, sqlDialect, descDeleteQuadsByKeys, &in, (*argBuf)...)
+		runtime.ReleaseArgs(argBuf)
+		if err != nil {
+			if autoTx != nil {
+				_ = autoTx.Rollback()
+			}
+			return nil, err
+		}
+		batchRes.Add(res)
+		offset += chunkSize
+	}
+	if autoTx != nil {
+		if err := autoTx.Commit(); err != nil {
+			return nil, err
+		}
+	}
+	return batchRes, nil
+}
+
+func (pl *Pipeline) DeleteQuadsByKeys(keys []QuadDelKey) *runtime.ExecFuture {
+	p := paramsDeleteQuadsByKeys{
+		Keys: keys,
+	}
+	vk, colMask, flagMask, approxArgs := computeDeleteQuadsByKeysKey(p)
+	argBuf := runtime.AcquireArgsCap(approxArgs)
+	expandErr := expandDeleteQuadsByKeysParams(argBuf, sqlDialect, p)
+	var tupleLensBuf [1]int
+	tupleLensBuf[0] = len(p.Keys)
+	in := runtime.RenderInput{
+		ColMask:   colMask,
+		FlagMask:  flagMask,
+		TupleLens: tupleLensBuf[:],
+	}
+	return pl.Pipeline.QueueExec(stmtIDDeleteQuadsByKeys, descDeleteQuadsByKeys, in, vk, nil, argBuf, expandErr)
+}
+
+// DeleteQuadsByKeysStream runs DeleteQuadsByKeys over the Keys rows pulled from seq, in chunks, and sums the results.
+// seq provides the rows of the collection parameter.
+// An empty seq is runtime.ErrEmptySliceParam, like an empty IN list.
+func (q *Queries) DeleteQuadsByKeysStream(ctx context.Context, seq iter.Seq2[QuadDelKey, error]) (sql.Result, error) {
+	if seq == nil {
+		return nil, runtime.ErrNilArgument
+	}
+	totalRows := 0
+	chunkCap := min(256, q.cache.MaxRowsPerBatch(sqlDialect, 0, 2))
+	bufPtr := quadDelKeyChunkPool.Get().(*[]QuadDelKey)
+	chunk := (*bufPtr)[:0]
+	defer func() {
+		clear(chunk[:cap(chunk)])
+		*bufPtr = chunk[:0]
+		quadDelKeyChunkPool.Put(bufPtr)
+	}()
+	var batchRes runtime.BatchExecResult
+	flushChunk := func() error {
+		if len(chunk) == 0 {
+			return nil
+		}
+		res, err := q.DeleteQuadsByKeys(ctx, chunk)
+		if err != nil {
+			return err
+		}
+		batchRes.Add(res)
+		chunk = chunk[:0]
+		return nil
+	}
+	for item, err := range seq {
+		if err != nil {
+			return nil, err
+		}
+		totalRows++
+		chunk = append(chunk, item)
+		if len(chunk) >= chunkCap {
+			if err := flushChunk(); err != nil {
+				return nil, err
+			}
+		}
+	}
+	if totalRows == 0 {
+		return nil, runtime.ErrEmptySliceParam
+	}
+	if err := flushChunk(); err != nil {
+		return nil, err
+	}
+	return batchRes, nil
+}
+
+const stmtIDQuadIDsByKeys uint32 = 21
+
+const (
+	QuadIDsByKeysColID   uint64 = 1 << 0
+	QuadIDsByKeysColsAll uint64 = (1 << 1) - 1
+)
+
+type QuadIDsByKeysParams struct {
+	Keys []QuadKey
+}
+
+var descQuadIDsByKeys = &runtime.QueryDescriptor{
+	Name:     "QuadIDsByKeys",
+	StmtID:   21,
+	StmtVerb: runtime.VerbSelect,
+	Segments: []string{"SELECT id FROM quad_items WHERE (group_key, id) IN (", ")"},
+	Slots: []runtime.Slot{
+		{Kind: runtime.SlotTupleSlice, Tuple: &runtime.TupleDescriptor{Segments: []string{"", ", ", ""}, NumFields: 2}},
+	},
+	NumTuples: 1,
+}
+
+func expandQuadIDsByKeysParams(dst *[]any, dialect runtime.Dialect, p QuadIDsByKeysParams) error {
+	_ = dialect
+	_ = p
+	if len(p.Keys) == 0 {
+		return runtime.ErrEmptySliceParam
+	}
+	for i := range p.Keys {
+		*dst = append(*dst, p.Keys[i].GroupKey)
+		*dst = append(*dst, p.Keys[i].ID)
+	}
+	return nil
+}
+
+func expandQuadIDsByKeysArgs(dst *[]any, dialect runtime.Dialect, q *runtime.Query) error {
+	return expandQuadIDsByKeysParams(dst, dialect, q.Params.(QuadIDsByKeysParams))
+}
+
+func computeQuadIDsByKeysKey(p QuadIDsByKeysParams) (runtime.VariantKey, uint64, uint64, int) {
+	_ = p
+	var colMask uint64
+	var flagMask uint64
+	var orderSpec runtime.Order
+	var hasSeek bool
+	orderKey := runtime.EncodeOrderKey(orderSpec, hasSeek)
+	approxArgs := 5
+	var d0 uint64
+	d0 = uint64(len(p.Keys))
+	approxArgs += len(p.Keys) * 2
+	vk := runtime.MakeVariantKey(stmtIDQuadIDsByKeys, colMask, flagMask, orderKey, d0)
+	return vk, colMask, flagMask, approxArgs
+}
+
+// QuadIDsByKeysQuery constructs a composable runtime.Query without executing it (stateless: no Queries or DB needed).
+func QuadIDsByKeysQuery(p QuadIDsByKeysParams) runtime.Query {
+	_, colMask, flagMask, _ := computeQuadIDsByKeysKey(p)
+	var tupleLensBuf [1]int
+	tupleLensBuf[0] = len(p.Keys)
+	in := runtime.RenderInput{
+		ColMask:   colMask,
+		FlagMask:  flagMask,
+		TupleLens: tupleLensBuf[:],
+	}
+	orderKey := runtime.EncodeOrderKey(in.OrderSpec, in.HasSeek)
+	var shapeLens [1]int
+	copy(shapeLens[0:], in.TupleLens)
+	shapeTag := runtime.ComputeSubqueryShape(stmtIDQuadIDsByKeys, colMask, flagMask, orderKey, false, shapeLens[:]...)
+	return runtime.Query{
+		StmtID:   stmtIDQuadIDsByKeys,
+		Desc:     descQuadIDsByKeys,
+		Input:    in,
+		Params:   p,
+		Expand:   expandQuadIDsByKeysArgs,
+		ShapeTag: shapeTag,
+	}
+}
+
+func scanQuadIDsByKeysRow(scanner interface{ Scan(...any) error }, dst *int64, colMask uint64, p QuadIDsByKeysParams) error {
+	_ = colMask
+	_ = p
+	var item int64
+	scanDest := [1]any{&item}
+	scanSlice := scanDest[:1]
+	if err := scanner.Scan(scanSlice...); err != nil {
+		return err
+	}
+	*dst = item
+	return nil
+}
+
+func (q *Queries) QuadIDsByKeys(ctx context.Context, p QuadIDsByKeysParams) ([]int64, error) {
+	totalRows := len(p.Keys)
+	_, colMask, flagMask, _ := computeQuadIDsByKeysKey(p)
+	maxRows := q.cache.MaxRowsPerBatch(sqlDialect, 0, 2)
+	firstChunk := q.cache.PlanBatchChunk(stmtIDQuadIDsByKeys, colMask, flagMask, totalRows, maxRows, false)
+	targetQ := q
+	var autoTx *sql.Tx
+	if q.txCache == nil && firstChunk < totalRows {
+		var err error
+		autoTx, err = q.db.BeginTx(ctx, nil)
+		if err != nil {
+			return nil, err
+		}
+		targetQ = q.WithTx(autoTx)
+		defer func() { _ = targetQ.Close() }()
+	}
+	out, err := runtime.Collect(targetQ.QuadIDsByKeysSeq(ctx, p))
+	if autoTx != nil {
+		if err != nil {
+			_ = autoTx.Rollback()
+			return nil, err
+		}
+		if err := autoTx.Commit(); err != nil {
+			return nil, err
+		}
+	}
+	return out, err
+}
+
+func (q *Queries) QuadIDsByKeysSeq(ctx context.Context, p QuadIDsByKeysParams) iter.Seq2[int64, error] {
+	return func(yield func(int64, error) bool) {
+		var zero int64
+		totalRows := len(p.Keys)
+		if totalRows == 0 {
+			yield(zero, runtime.ErrEmptySliceParam)
+			return
+		}
+		_, colMask, flagMask, _ := computeQuadIDsByKeysKey(p)
+		shapeTag := runtime.ComputeBatchShapeTag(colMask, flagMask)
+		maxRows := q.cache.MaxRowsPerBatch(sqlDialect, 0, 2)
+		firstChunk := q.cache.PlanBatchChunk(stmtIDQuadIDsByKeys, colMask, flagMask, totalRows, maxRows, true)
+		var sqlRows *sql.Rows
+		var ms *runtime.ManagedStmt
+		defer runtime.ReleaseRows(&sqlRows, &ms)
+		for offset := 0; offset < totalRows; {
+			chunkSize := firstChunk
+			if offset > 0 {
+				chunkSize = q.cache.PlanBatchChunk(stmtIDQuadIDsByKeys, colMask, flagMask, totalRows-offset, maxRows, false)
+			}
+			chunkRows := p.Keys[offset : offset+chunkSize]
+			chunkP := p
+			chunkP.Keys = chunkRows
+			vk, _, _, approxArgs := computeQuadIDsByKeysKey(chunkP)
+			argBuf := runtime.AcquireArgsCap(approxArgs)
+			_ = expandQuadIDsByKeysParams(argBuf, sqlDialect, chunkP)
+			var tupleLensBuf [1]int
+			tupleLensBuf[0] = len(chunkP.Keys)
+			in := runtime.RenderInput{
+				ColMask:   colMask,
+				FlagMask:  flagMask,
+				TupleLens: tupleLensBuf[:],
+			}
+			var err error
+			sqlRows, ms, err = q.cache.Query(ctx, q.db, q.txCache, q.usePrepared, vk, stmtIDQuadIDsByKeys, shapeTag, chunkSize, nil, sqlDialect, descQuadIDsByKeys, &in, (*argBuf)...)
+			runtime.ReleaseArgs(argBuf)
+			if err != nil {
+				yield(zero, err)
+				return
+			}
+			var item int64
+			for sqlRows.Next() {
+				if err := scanQuadIDsByKeysRow(sqlRows, &item, colMask, chunkP); err != nil {
+					runtime.ReleaseRows(&sqlRows, &ms)
+					yield(zero, err)
+					return
+				}
+				if !yield(item, nil) {
+					return
+				}
+			}
+			err = sqlRows.Err()
+			runtime.ReleaseRows(&sqlRows, &ms)
+			if err != nil {
+				yield(zero, err)
+				return
+			}
+			offset += chunkSize
+		}
+	}
+}
+
+func (pl *Pipeline) QuadIDsByKeys(p QuadIDsByKeysParams) *runtime.SliceFuture[int64] {
+	vk, colMask, flagMask, approxArgs := computeQuadIDsByKeysKey(p)
+	argBuf := runtime.AcquireArgsCap(approxArgs)
+	expandErr := expandQuadIDsByKeysParams(argBuf, sqlDialect, p)
+	var tupleLensBuf [1]int
+	tupleLensBuf[0] = len(p.Keys)
+	in := runtime.RenderInput{
+		ColMask:   colMask,
+		FlagMask:  flagMask,
+		TupleLens: tupleLensBuf[:],
+	}
+	return runtime.QueueSlice(pl.Pipeline, stmtIDQuadIDsByKeys, descQuadIDsByKeys, in, vk, nil, argBuf, expandErr,
+		func(rs *sql.Rows, dst *int64) error { return scanQuadIDsByKeysRow(rs, dst, colMask, p) },
+	)
+}
+
+// QuadIDsByKeysStreamSeq runs QuadIDsByKeys over the Keys rows pulled from seq, in chunks, and yields their rows in order.
+// seq provides the rows: p.Keys must be empty (runtime.ErrInvalidArgument otherwise).
+// An empty seq is runtime.ErrEmptySliceParam, like an empty IN list.
+func (q *Queries) QuadIDsByKeysStreamSeq(ctx context.Context, p QuadIDsByKeysParams, seq iter.Seq2[QuadKey, error]) iter.Seq2[int64, error] {
+	return func(yield func(int64, error) bool) {
+		var zero int64
+		if seq == nil {
+			yield(zero, runtime.ErrNilArgument)
+			return
+		}
+		if len(p.Keys) != 0 {
+			yield(zero, runtime.InvalidArgument("QuadIDsByKeysStream: p.Keys must be empty: the rows come from seq"))
+			return
+		}
+		totalRows := 0
+		chunkCap := min(256, q.cache.MaxRowsPerBatch(sqlDialect, 0, 2))
+		bufPtr := quadKeyChunkPool.Get().(*[]QuadKey)
+		chunk := (*bufPtr)[:0]
+		defer func() {
+			clear(chunk[:cap(chunk)])
+			*bufPtr = chunk[:0]
+			quadKeyChunkPool.Put(bufPtr)
+		}()
+		flushChunk := func() bool {
+			if len(chunk) == 0 {
+				return true
+			}
+			chunkP := p
+			chunkP.Keys = chunk
+			for r, err := range q.QuadIDsByKeysSeq(ctx, chunkP) {
+				if err != nil {
+					yield(zero, err)
+					return false
+				}
+				if !yield(r, nil) {
+					return false
+				}
+			}
+			chunk = chunk[:0]
+			return true
+		}
+		for item, err := range seq {
+			if err != nil {
+				yield(zero, err)
+				return
+			}
+			totalRows++
+			chunk = append(chunk, item)
+			if len(chunk) >= chunkCap {
+				if !flushChunk() {
+					return
+				}
+			}
+		}
+		if totalRows == 0 {
+			yield(zero, runtime.ErrEmptySliceParam)
+			return
+		}
+		_ = flushChunk()
+	}
+}
+
+// QuadIDsByKeysStream runs QuadIDsByKeys over the Keys rows pulled from seq, in chunks, and returns their rows in order.
+// seq provides the rows: p.Keys must be empty (runtime.ErrInvalidArgument otherwise).
+// An empty seq is runtime.ErrEmptySliceParam, like an empty IN list.
+func (q *Queries) QuadIDsByKeysStream(ctx context.Context, p QuadIDsByKeysParams, seq iter.Seq2[QuadKey, error]) ([]int64, error) {
+	return runtime.Collect(q.QuadIDsByKeysStreamSeq(ctx, p, seq))
+}
+
+const stmtIDPageQuad uint32 = 22
 
 const (
 	PageQuadColID        uint64 = 1 << 0
@@ -3760,7 +4235,7 @@ type PageQuadParams struct {
 
 var descPageQuad = &runtime.QueryDescriptor{
 	Name:     "PageQuad",
-	StmtID:   20,
+	StmtID:   22,
 	StmtVerb: runtime.VerbSelect,
 	Segments: []string{"SELECT ", "\nFROM quad_items\nWHERE ", "\nORDER BY ", "\nLIMIT ", ""},
 	Slots: []runtime.Slot{

@@ -527,6 +527,9 @@ func (pl *Pipeline) FzInsertAsc(rows []FzNew) *runtime.ExecFuture {
 	return pl.Pipeline.QueueExec(stmtIDFzInsertAsc, descFzInsertAsc, in, vk, nil, argBuf, expandErr)
 }
 
+// FzInsertAscStream runs FzInsertAsc over the rows rows pulled from seq, in chunks, and sums the results.
+// seq provides the rows of the collection parameter.
+// An empty seq inserts nothing (a successful no-op).
 func (q *Queries) FzInsertAscStream(ctx context.Context, seq iter.Seq2[FzNew, error]) (sql.Result, error) {
 	if seq == nil {
 		return nil, runtime.ErrNilArgument
@@ -755,6 +758,9 @@ func (pl *Pipeline) FzInsertDesc(rows []FzNew) *runtime.ExecFuture {
 	return pl.Pipeline.QueueExec(stmtIDFzInsertDesc, descFzInsertDesc, in, vk, nil, argBuf, expandErr)
 }
 
+// FzInsertDescStream runs FzInsertDesc over the rows rows pulled from seq, in chunks, and sums the results.
+// seq provides the rows of the collection parameter.
+// An empty seq inserts nothing (a successful no-op).
 func (q *Queries) FzInsertDescStream(ctx context.Context, seq iter.Seq2[FzNew, error]) (sql.Result, error) {
 	if seq == nil {
 		return nil, runtime.ErrNilArgument
@@ -936,6 +942,9 @@ func (pl *Pipeline) FzInsertRaw(rows []FzNew) *runtime.ExecFuture {
 	return pl.Pipeline.QueueExec(stmtIDFzInsertRaw, descFzInsertRaw, in, vk, nil, argBuf, expandErr)
 }
 
+// FzInsertRawStream runs FzInsertRaw over the rows rows pulled from seq, in chunks, and sums the results.
+// seq provides the rows of the collection parameter.
+// An empty seq inserts nothing (a successful no-op).
 func (q *Queries) FzInsertRawStream(ctx context.Context, seq iter.Seq2[FzNew, error]) (sql.Result, error) {
 	if seq == nil {
 		return nil, runtime.ErrNilArgument
@@ -1137,6 +1146,9 @@ func (pl *Pipeline) FzInsertLit(rows []FzLit) *runtime.ExecFuture {
 	return pl.Pipeline.QueueExec(stmtIDFzInsertLit, descFzInsertLit, in, vk, nil, argBuf, expandErr)
 }
 
+// FzInsertLitStream runs FzInsertLit over the rows rows pulled from seq, in chunks, and sums the results.
+// seq provides the rows of the collection parameter.
+// An empty seq inserts nothing (a successful no-op).
 func (q *Queries) FzInsertLitStream(ctx context.Context, seq iter.Seq2[FzLit, error]) (sql.Result, error) {
 	if seq == nil {
 		return nil, runtime.ErrNilArgument
@@ -2801,6 +2813,9 @@ func (pl *Pipeline) FzByKeys(keys []FzKey, selectCols ...uint64) *runtime.SliceF
 	)
 }
 
+// FzByKeysStreamSeq runs FzByKeys over the keys rows pulled from seq, in chunks, and yields their rows in order.
+// seq provides the rows of the collection parameter.
+// An empty seq is runtime.ErrEmptySliceParam, like an empty IN list.
 func (q *Queries) FzByKeysStreamSeq(ctx context.Context, seq iter.Seq2[FzKey, error], selectCols ...uint64) iter.Seq2[FzRow, error] {
 	return func(yield func(FzRow, error) bool) {
 		var zero FzRow
@@ -2808,6 +2823,7 @@ func (q *Queries) FzByKeysStreamSeq(ctx context.Context, seq iter.Seq2[FzKey, er
 			yield(zero, runtime.ErrNilArgument)
 			return
 		}
+		totalRows := 0
 		chunkCap := min(256, q.cache.MaxRowsPerBatch(sqlDialect, 0, 2))
 		bufPtr := fzKeyChunkPool.Get().(*[]FzKey)
 		chunk := (*bufPtr)[:0]
@@ -2837,6 +2853,7 @@ func (q *Queries) FzByKeysStreamSeq(ctx context.Context, seq iter.Seq2[FzKey, er
 				yield(zero, err)
 				return
 			}
+			totalRows++
 			chunk = append(chunk, item)
 			if len(chunk) >= chunkCap {
 				if !flushChunk() {
@@ -2844,10 +2861,17 @@ func (q *Queries) FzByKeysStreamSeq(ctx context.Context, seq iter.Seq2[FzKey, er
 				}
 			}
 		}
+		if totalRows == 0 {
+			yield(zero, runtime.ErrEmptySliceParam)
+			return
+		}
 		_ = flushChunk()
 	}
 }
 
+// FzByKeysStream runs FzByKeys over the keys rows pulled from seq, in chunks, and returns their rows in order.
+// seq provides the rows of the collection parameter.
+// An empty seq is runtime.ErrEmptySliceParam, like an empty IN list.
 func (q *Queries) FzByKeysStream(ctx context.Context, seq iter.Seq2[FzKey, error], selectCols ...uint64) ([]FzRow, error) {
 	return runtime.Collect(q.FzByKeysStreamSeq(ctx, seq, selectCols...))
 }
@@ -4115,6 +4139,9 @@ func (pl *Pipeline) FzTypedInsert(rows []FzTypedNew) *runtime.ExecFuture {
 	return pl.Pipeline.QueueExec(stmtIDFzTypedInsert, descFzTypedInsert, in, vk, nil, argBuf, expandErr)
 }
 
+// FzTypedInsertStream runs FzTypedInsert over the rows rows pulled from seq, in chunks, and sums the results.
+// seq provides the rows of the collection parameter.
+// An empty seq inserts nothing (a successful no-op).
 func (q *Queries) FzTypedInsertStream(ctx context.Context, seq iter.Seq2[FzTypedNew, error]) (sql.Result, error) {
 	if seq == nil {
 		return nil, runtime.ErrNilArgument
@@ -4996,6 +5023,9 @@ func (pl *Pipeline) FzInsertRet(rows []FzNew, selectCols ...uint64) *runtime.Sli
 	)
 }
 
+// FzInsertRetStreamSeq runs FzInsertRet over the rows rows pulled from seq, in chunks, and yields their rows in order.
+// seq provides the rows of the collection parameter.
+// An empty seq inserts nothing (a successful no-op).
 func (q *Queries) FzInsertRetStreamSeq(ctx context.Context, seq iter.Seq2[FzNew, error], selectCols ...uint64) iter.Seq2[FzOut, error] {
 	return func(yield func(FzOut, error) bool) {
 		var zero FzOut
@@ -5043,6 +5073,9 @@ func (q *Queries) FzInsertRetStreamSeq(ctx context.Context, seq iter.Seq2[FzNew,
 	}
 }
 
+// FzInsertRetStream runs FzInsertRet over the rows rows pulled from seq, in chunks, and returns their rows in order.
+// seq provides the rows of the collection parameter.
+// An empty seq inserts nothing (a successful no-op).
 func (q *Queries) FzInsertRetStream(ctx context.Context, seq iter.Seq2[FzNew, error], selectCols ...uint64) ([]FzOut, error) {
 	return runtime.Collect(q.FzInsertRetStreamSeq(ctx, seq, selectCols...))
 }

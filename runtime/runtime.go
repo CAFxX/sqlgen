@@ -81,6 +81,9 @@ var (
 	ErrInvalidSeek = errors.New("sqlgen: invalid seek cursor")
 	// ErrInvalidOrder is returned when an Order specification is invalid.
 	ErrInvalidOrder = errors.New("sqlgen: invalid order specification")
+	// ErrInvalidArgument is matched (errors.Is) by the errors of generated methods called with arguments
+	// that contradict each other, such as a <Name>Stream whose params struct also carries the collection.
+	ErrInvalidArgument = errors.New("sqlgen: invalid argument")
 	// ErrCollectionTooLarge is matched (errors.Is) by the error a statement whose result cannot be split
 	// into chunks (an aggregate, GROUP BY, DISTINCT, ORDER BY, LIMIT, ... over its collection, see DOCS
 	// section 3.2) returns when its collection does not fit one statement. Nothing is sent. The returned
@@ -551,6 +554,16 @@ func (e *AssertionError) Error() string {
 
 // Unwrap makes errors.Is(err, ErrAssertionFailed) true.
 func (e *AssertionError) Unwrap() error { return ErrAssertionFailed }
+
+// InvalidArgument returns an error matching ErrInvalidArgument with the given explanation.
+func InvalidArgument(msg string) error {
+	return &invalidArgumentError{msg}
+}
+
+type invalidArgumentError struct{ msg string }
+
+func (e *invalidArgumentError) Error() string { return ErrInvalidArgument.Error() + ": " + e.msg }
+func (e *invalidArgumentError) Unwrap() error { return ErrInvalidArgument }
 
 // CollectionTooLargeError is the error a non-decomposable statement (one whose result is not the
 // concatenation of the results of its chunks) returns when its collection holds more items than one
