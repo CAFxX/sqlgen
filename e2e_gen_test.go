@@ -1427,6 +1427,9 @@ func computePageUsersKey(p PageUsersParams) (runtime.VariantKey, uint64, uint64,
 	_ = p
 	var colMask uint64
 	colMask = p.SelectCols & PageUsersColsAll
+	if colMask != 0 {
+		colMask |= 0x7
+	}
 	if colMask == PageUsersColsAll {
 		colMask = 0
 	}
@@ -3794,6 +3797,9 @@ func computePageQuadKey(p PageQuadParams) (runtime.VariantKey, uint64, uint64, i
 	_ = p
 	var colMask uint64
 	colMask = p.SelectCols & PageQuadColsAll
+	if colMask != 0 {
+		colMask |= 0xf
+	}
 	if colMask == PageQuadColsAll {
 		colMask = 0
 	}

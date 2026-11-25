@@ -764,31 +764,41 @@ func TestE2EKeysetPaginationUniformAndMixedOrders(t *testing.T) {
 				t.Fatalf("full fetch failed: len=%d err=%v", len(expectedAll), err)
 			}
 
-			var collected []PageUsersRow
-			var seek runtime.Seek
-			for page := 0; page < 10; page++ {
-				pageRows, err := q.PageUsers(ctx, PageUsersParams{
-					Seek:  seek,
-					Order: tc.order,
-					Limit: 4,
-				})
-				if err != nil {
-					t.Fatalf("page %d failed: %v", page, err)
+			// The sort/cursor columns (role, score, id) are always selected, so a SelectCols mask that leaves
+			// them out still paginates: SeekPageUsers(lastRow) used to build the cursor from zeroed fields
+			// (ASC looped forever, DESC stopped after page 1).
+			for _, mask := range []uint64{0, PageUsersColEmail, PageUsersColScore} {
+				var collected []PageUsersRow
+				var seek runtime.Seek
+				for page := 0; page < 10; page++ {
+					pageRows, err := q.PageUsers(ctx, PageUsersParams{
+						Seek:       seek,
+						Order:      tc.order,
+						Limit:      4,
+						SelectCols: mask,
+					})
+					if err != nil {
+						t.Fatalf("mask %#x page %d failed: %v", mask, page, err)
+					}
+					if len(pageRows) == 0 {
+						break
+					}
+					collected = append(collected, pageRows...)
+					lastRow := pageRows[len(pageRows)-1]
+					seek = SeekPageUsers(lastRow)
 				}
-				if len(pageRows) == 0 {
-					break
-				}
-				collected = append(collected, pageRows...)
-				lastRow := pageRows[len(pageRows)-1]
-				seek = SeekPageUsers(lastRow)
-			}
 
-			if len(collected) != len(expectedAll) {
-				t.Fatalf("paginated count=%d, expected=%d", len(collected), len(expectedAll))
-			}
-			for i := range expectedAll {
-				if collected[i] != expectedAll[i] {
-					t.Fatalf("mismatch at index %d:\ngot:  %+v\nwant: %+v", i, collected[i], expectedAll[i])
+				if len(collected) != len(expectedAll) {
+					t.Fatalf("mask %#x: paginated count=%d, expected=%d", mask, len(collected), len(expectedAll))
+				}
+				for i := range expectedAll {
+					want := expectedAll[i]
+					if mask == PageUsersColScore {
+						want.Email = "" // not selected
+					}
+					if collected[i] != want {
+						t.Fatalf("mask %#x: mismatch at index %d:\ngot:  %+v\nwant: %+v", mask, i, collected[i], want)
+					}
 				}
 			}
 		})

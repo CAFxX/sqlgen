@@ -241,6 +241,7 @@ Whenever a statement has `len(UncondCols) > 1` (inline output columns in `SELECT
 2. In the top-level `QueryDescriptor`, the entire span of unconditional column expressions (from after the `SELECT ` / `RETURNING ` whitespace to the end of the last unconditional column) is replaced by a single `SlotSelectCols` slot in `QueryDescriptor.Slots`.
 3. Any conditional output columns (`{?WithOrg: , o.name AS org_name:string}`) remain as `SlotOptBlock` occurrences immediately following `SlotSelectCols`.
 4. When no columns are selected (`p.SelectCols & ColsAll` is `0` or every column; the canonical value is `0`, in both argument styles), `in.ColMask` is `0`, which `SlotSelectCols` renders as all unconditional columns (`effectiveMask = validMask`). When `DynamicSlots == 0`, `StaticSQL` also expands `SlotSelectCols` with `ColMask == 0`. This guarantees that discovering a `{?Flag: ...}` block later in `WHERE` never invalidates the already-scanned `SELECT` clause.
+5. In a statement with `sqlgen.Order`, a non-zero mask is OR-ed with the bits of every `Order(...)` column before the "all columns" canonicalisation (`compute<Name>Key`): the sort/cursor columns are always selected, since `Seek<Name>(row)` reads them.
 
 ### 4.5. Inline Branch-Guard Slots (`SlotBranchGuard*` & `SlotInsertValues*`)
 To allow any statement inside a pipelined `p.If(...)` branch to be gated on the server in a **single streaming pass** with **one `strings.Builder`** across both PostgreSQL and SQLite:

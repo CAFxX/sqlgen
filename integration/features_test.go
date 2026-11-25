@@ -247,4 +247,83 @@ func TestRealEngineSelectColsProjection(t *testing.T) {
 	})
 }
 
+// A SelectCols mask that leaves out the sqlgen.Order columns must still paginate: the sort/cursor columns
+// are always selected, so Seek<Name>(lastRow) builds the next cursor from real values (it used to build it
+// from zeroed fields: an ASC walk looped, a DESC walk stopped after the first page).
+func TestRealEngineSeekWithSelectColsOmittingSortColumns(t *testing.T) {
+	forEachEngine(t, func(t *testing.T, e engine, db *sql.DB) {
+		setupItems(t, db)
+		ctx := ctxT(t)
+		a := newAPI(e, db)
+		defer a.Close()
+		all := genItems(1, 100) // org 1: ids 7, 14, ..., 98 (14 rows, 4 pages of 4)
+		if err := a.Insert(ctx, all); err != nil {
+			t.Fatal(err)
+		}
+		const limit = 4
+		for _, desc := range []bool{false, true} {
+			var names []string
+			var ids []int64
+			if e.isPG() {
+				id := pgq.PageItemsOrderByID.Asc()
+				if desc {
+					id = pgq.PageItemsOrderByID.Desc()
+				}
+				q := pgq.New(db)
+				var cursor runtime.Seek
+				for page := 0; page < 10; page++ {
+					r, err := q.PageItems(ctx, pgq.PageItemsParams{OrgID: 1, After: cursor, Sort: pgq.OrderPageItems(id), Limit: limit, SelectCols: pgq.PageItemsColName})
+					if err != nil {
+						t.Fatal(err)
+					}
+					for _, row := range r {
+						names, ids = append(names, row.Name), append(ids, row.ID)
+					}
+					if len(r) < limit {
+						break
+					}
+					cursor = pgq.SeekPageItems(r[len(r)-1])
+				}
+			} else {
+				id := myq.PageItemsOrderByID.Asc()
+				if desc {
+					id = myq.PageItemsOrderByID.Desc()
+				}
+				q := myq.New(db)
+				var cursor runtime.Seek
+				for page := 0; page < 10; page++ {
+					r, err := q.PageItems(ctx, myq.PageItemsParams{OrgID: 1, After: cursor, Sort: myq.OrderPageItems(id), Limit: limit, SelectCols: myq.PageItemsColName})
+					if err != nil {
+						t.Fatal(err)
+					}
+					for _, row := range r {
+						names, ids = append(names, row.Name), append(ids, row.ID)
+					}
+					if len(r) < limit {
+						break
+					}
+					cursor = myq.SeekPageItems(r[len(r)-1])
+				}
+			}
+			var want []int64
+			for _, it := range all {
+				if it.OrgID == 1 {
+					want = append(want, it.ID)
+				}
+			}
+			if desc {
+				slices.Reverse(want)
+			}
+			if !slices.Equal(ids, want) {
+				t.Fatalf("desc=%v: paginated ids %v, want %v", desc, ids, want)
+			}
+			for _, n := range names {
+				if n == "" {
+					t.Fatalf("desc=%v: the selected name column came back empty", desc)
+				}
+			}
+		}
+	})
+}
+
 var _ = context.Background

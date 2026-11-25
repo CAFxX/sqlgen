@@ -1903,6 +1903,9 @@ func computeFzPageKey(p FzPageParams) (runtime.VariantKey, uint64, uint64, int) 
 	_ = p
 	var colMask uint64
 	colMask = p.SelectCols & FzPageColsAll
+	if colMask != 0 {
+		colMask |= 0xfff
+	}
 	if colMask == FzPageColsAll {
 		colMask = 0
 	}
@@ -4533,6 +4536,9 @@ func computeFzTypedPageKey(p paramsFzTypedPage) (runtime.VariantKey, uint64, uin
 	_ = p
 	var colMask uint64
 	colMask = p.SelectCols & FzTypedPageColsAll
+	if colMask != 0 {
+		colMask |= 0xf
+	}
 	if colMask == FzTypedPageColsAll {
 		colMask = 0
 	}

@@ -3260,6 +3260,10 @@ func emitStatementCode(
 	if cs.SelectCols {
 		// 0 is the canonical "every column": the static SQL, fast slot and one variant cover it.
 		fmt.Fprintf(b, "\tcolMask = p.SelectCols & %sColsAll\n", cs.Name)
+		if bits := cs.orderColBits(); bits != 0 {
+			// The sort/cursor columns are always selected: Seek<Name>(row) builds the next cursor from them.
+			fmt.Fprintf(b, "\tif colMask != 0 {\n\t\tcolMask |= %#x\n\t}\n", bits)
+		}
 		fmt.Fprintf(b, "\tif colMask == %sColsAll {\n\t\tcolMask = 0\n\t}\n", cs.Name)
 	}
 	b.WriteString("\tvar flagMask uint64\n")
@@ -3816,6 +3820,16 @@ func (cs *compiledStmt) valuesAccess() string {
 		return "p." + p.FieldName
 	}
 	return p.ParamName
+}
+
+// orderColBits returns the SelectCols bits of the sqlgen.Order columns (the columns a Seek cursor is built
+// from), or 0 when the statement has no sqlgen.Order.
+func (cs *compiledStmt) orderColBits() uint64 {
+	var bits uint64
+	for _, oc := range cs.OrderCols {
+		bits |= 1 << uint(cs.Cols[oc.ColIdx].UncondIdx)
+	}
+	return bits
 }
 
 // batchAccess returns the Go expression of the collection a CanBatch statement chunks.

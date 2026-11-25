@@ -3010,6 +3010,9 @@ func computeQueryRiskPositionsPageKey(p QueryRiskPositionsPageParams) (runtime.V
 	_ = p
 	var colMask uint64
 	colMask = p.SelectCols & QueryRiskPositionsPageColsAll
+	if colMask != 0 {
+		colMask |= 0xe1
+	}
 	if colMask == QueryRiskPositionsPageColsAll {
 		colMask = 0
 	}

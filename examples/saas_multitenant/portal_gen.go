@@ -491,6 +491,9 @@ func computeListMembersPaginatedKey(p ListMembersPaginatedParams) (runtime.Varia
 	_ = p
 	var colMask uint64
 	colMask = p.SelectCols & ListMembersPaginatedColsAll
+	if colMask != 0 {
+		colMask |= 0x39
+	}
 	if colMask == ListMembersPaginatedColsAll {
 		colMask = 0
 	}

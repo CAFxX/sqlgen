@@ -1213,6 +1213,9 @@ func computePageItemsKey(p PageItemsParams) (runtime.VariantKey, uint64, uint64,
 	_ = p
 	var colMask uint64
 	colMask = p.SelectCols & PageItemsColsAll
+	if colMask != 0 {
+		colMask |= 0x9
+	}
 	if colMask == PageItemsColsAll {
 		colMask = 0
 	}
@@ -1443,6 +1446,9 @@ func computeWideRowsKey(p WideRowsParams) (runtime.VariantKey, uint64, uint64, i
 	_ = p
 	var colMask uint64
 	colMask = p.SelectCols & WideRowsColsAll
+	if colMask != 0 {
+		colMask |= 0xfff
+	}
 	if colMask == WideRowsColsAll {
 		colMask = 0
 	}
