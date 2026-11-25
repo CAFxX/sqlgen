@@ -139,6 +139,21 @@ statements:
     kind: many
     sql: SELECT id:int64 FROM sg_items WHERE score > :min:Arg[int64] ORDER BY id
 
+  # ordered SELECTs whose order is not the table's (TestRealEnginePipelineGatedSelectKeepsOrder): inside an
+  # If branch or after an assertion the MySQL flavor gates them in their own HAVING, never in a derived table
+  - name: ItemsByScoreDesc
+    kind: many
+    sql: SELECT id:int64 FROM sg_items WHERE org_id = :org:int64 ORDER BY score DESC, id DESC
+  - name: ScoreByParity
+    kind: many
+    result_type: ParityTotal
+    sql: |
+      SELECT MOD(id, 2) AS k:int64, SUM(score) AS total:int64
+      FROM sg_items
+      GROUP BY MOD(id, 2)
+      HAVING SUM(score) > :min:int64
+      ORDER BY total DESC
+
   # one producer per forwarded type, one consumer for all of them (TestRealEngineForwardTypeFidelity)
   - name: FwdSrcI8
     kind: one

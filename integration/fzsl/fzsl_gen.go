@@ -1249,10 +1249,11 @@ type FzSearchParams struct {
 }
 
 var descFzSearch = &runtime.QueryDescriptor{
-	Name:     "FzSearch",
-	StmtID:   5,
-	StmtVerb: runtime.VerbSelect,
-	Segments: []string{"SELECT ", "\n", "FROM fz_rows\nWHERE k1 >= ", "\n  ", "\n  ", "\n  ", "\n  ", "\n  ", "\n  ", "\n  ", "\n  ", "\nORDER BY id"},
+	Name:       "FzSearch",
+	StmtID:     5,
+	StmtVerb:   runtime.VerbSelect,
+	TopOrderBy: true,
+	Segments:   []string{"SELECT ", "\n", "FROM fz_rows\nWHERE k1 >= ", "\n  ", "\n  ", "\n  ", "\n  ", "\n  ", "\n  ", "\n  ", "\n  ", "\n", "ORDER BY id"},
 	Slots: []runtime.Slot{
 		{Kind: runtime.SlotSelectCols},
 		{Kind: runtime.SlotColPreds},
@@ -1306,6 +1307,7 @@ var descFzSearch = &runtime.QueryDescriptor{
 				{Kind: runtime.SlotScalar},
 			},
 		}},
+		{Kind: runtime.SlotSelectGuardHaving},
 	},
 	SelectColExprs: []string{"id", "grp", "k1", "k2", "k3", "k4", "k5", "k6", "k7", "k8", "tag", "tag2", "note"},
 	NumSlices:      2,
@@ -1626,10 +1628,11 @@ type FzNarrowParams struct {
 }
 
 var descFzNarrow = &runtime.QueryDescriptor{
-	Name:     "FzNarrow",
-	StmtID:   6,
-	StmtVerb: runtime.VerbSelect,
-	Segments: []string{"SELECT ", "\n", "FROM fz_rows\nWHERE id >= ", "\n  ", "\nORDER BY id"},
+	Name:       "FzNarrow",
+	StmtID:     6,
+	StmtVerb:   runtime.VerbSelect,
+	TopOrderBy: true,
+	Segments:   []string{"SELECT ", "\n", "FROM fz_rows\nWHERE id >= ", "\n  ", "\n", "ORDER BY id"},
 	Slots: []runtime.Slot{
 		{Kind: runtime.SlotSelectCols},
 		{Kind: runtime.SlotColPreds},
@@ -1640,6 +1643,7 @@ var descFzNarrow = &runtime.QueryDescriptor{
 				{Kind: runtime.SlotScalar},
 			},
 		}},
+		{Kind: runtime.SlotSelectGuardHaving},
 	},
 	SelectColExprs: []string{"id", "grp", "k1", "k2", "tag", "note"},
 }
@@ -1864,10 +1868,11 @@ type FzPageParams struct {
 }
 
 var descFzPage = &runtime.QueryDescriptor{
-	Name:     "FzPage",
-	StmtID:   7,
-	StmtVerb: runtime.VerbSelect,
-	Segments: []string{"SELECT ", "\n", "FROM fz_rows\nWHERE k1 >= ", "\n  ", "\n  AND ", "\n  ", "\n  ", "\nORDER BY ", "\nLIMIT ", ""},
+	Name:       "FzPage",
+	StmtID:     7,
+	StmtVerb:   runtime.VerbSelect,
+	TopOrderBy: true,
+	Segments:   []string{"SELECT ", "\n", "FROM fz_rows\nWHERE k1 >= ", "\n  ", "\n  AND ", "\n  ", "\n  ", "\n", "ORDER BY ", "\nLIMIT ", ""},
 	Slots: []runtime.Slot{
 		{Kind: runtime.SlotSelectCols},
 		{Kind: runtime.SlotColPreds},
@@ -1893,6 +1898,7 @@ var descFzPage = &runtime.QueryDescriptor{
 				{Kind: runtime.SlotScalar},
 			},
 		}},
+		{Kind: runtime.SlotSelectGuardHaving},
 		{Kind: runtime.SlotOrder},
 		{Kind: runtime.SlotScalar},
 	},
@@ -2177,7 +2183,7 @@ var descFzSubGrps = &runtime.QueryDescriptor{
 	Name:     "FzSubGrps",
 	StmtID:   8,
 	StmtVerb: runtime.VerbSelect,
-	Segments: []string{"SELECT id ", "FROM fz_rows\nWHERE grp IN (", ")\n  ", ""},
+	Segments: []string{"SELECT id ", "FROM fz_rows\nWHERE grp IN (", ")\n  ", "", ""},
 	Slots: []runtime.Slot{
 		{Kind: runtime.SlotColPreds},
 		{Kind: runtime.SlotSlice},
@@ -2187,6 +2193,7 @@ var descFzSubGrps = &runtime.QueryDescriptor{
 				{Kind: runtime.SlotScalar},
 			},
 		}},
+		{Kind: runtime.SlotSelectGuardHaving},
 	},
 	NumSlices: 1,
 }
@@ -2264,7 +2271,7 @@ var descFzSubNote = &runtime.QueryDescriptor{
 	Name:     "FzSubNote",
 	StmtID:   9,
 	StmtVerb: runtime.VerbSelect,
-	Segments: []string{"SELECT id ", "FROM fz_rows\nWHERE note IS NOT NULL AND id IN (", ")\n  ", ""},
+	Segments: []string{"SELECT id ", "FROM fz_rows\nWHERE note IS NOT NULL AND id IN (", ")\n  ", "", ""},
 	Slots: []runtime.Slot{
 		{Kind: runtime.SlotColPreds},
 		{Kind: runtime.SlotQuery},
@@ -2274,6 +2281,7 @@ var descFzSubNote = &runtime.QueryDescriptor{
 				{Kind: runtime.SlotScalar},
 			},
 		}},
+		{Kind: runtime.SlotSelectGuardHaving},
 	},
 	NumSubs: 1,
 }
@@ -2354,10 +2362,11 @@ type FzAggParams struct {
 }
 
 var descFzAgg = &runtime.QueryDescriptor{
-	Name:     "FzAgg",
-	StmtID:   10,
-	StmtVerb: runtime.VerbSelect,
-	Segments: []string{"WITH picked AS (", ")\nSELECT ", "\n", "FROM fz_rows\nWHERE id IN (SELECT id FROM picked)\n  ", "\nGROUP BY grp\nORDER BY grp"},
+	Name:       "FzAgg",
+	StmtID:     10,
+	StmtVerb:   runtime.VerbSelect,
+	TopOrderBy: true,
+	Segments:   []string{"WITH picked AS (", ")\nSELECT ", "\n", "FROM fz_rows\nWHERE id IN (SELECT id FROM picked)\n  ", "\nGROUP BY grp\n", "ORDER BY grp"},
 	Slots: []runtime.Slot{
 		{Kind: runtime.SlotQuery},
 		{Kind: runtime.SlotSelectCols},
@@ -2368,6 +2377,7 @@ var descFzAgg = &runtime.QueryDescriptor{
 				{Kind: runtime.SlotScalar},
 			},
 		}},
+		{Kind: runtime.SlotSelectGuardHaving},
 	},
 	SelectColExprs: []string{"grp", "COUNT(*) AS n", "COALESCE(SUM(k1), 0) AS total"},
 	NumSubs:        1,
@@ -2557,11 +2567,12 @@ var descFzByKeys = &runtime.QueryDescriptor{
 	Name:     "FzByKeys",
 	StmtID:   11,
 	StmtVerb: runtime.VerbSelect,
-	Segments: []string{"SELECT ", "\n", "FROM fz_rows\nWHERE (grp, k1) IN (", ")"},
+	Segments: []string{"SELECT ", "\n", "FROM fz_rows\nWHERE (grp, k1) IN (", ")", ""},
 	Slots: []runtime.Slot{
 		{Kind: runtime.SlotSelectCols},
 		{Kind: runtime.SlotColPreds},
 		{Kind: runtime.SlotTupleSlice, Tuple: &runtime.TupleDescriptor{Segments: []string{"", ", ", ""}, NumFields: 2}},
+		{Kind: runtime.SlotSelectGuardHaving},
 	},
 	SelectColExprs: []string{"id", "grp", "k1", "k2", "k3", "k4", "k5", "k6", "k7", "k8", "tag", "tag2", "note"},
 	NumTuples:      1,
@@ -2939,11 +2950,12 @@ var descFzByIDs = &runtime.QueryDescriptor{
 	Name:     "FzByIDs",
 	StmtID:   12,
 	StmtVerb: runtime.VerbSelect,
-	Segments: []string{"SELECT ", "\n", "FROM fz_rows\nWHERE id IN (", ")"},
+	Segments: []string{"SELECT ", "\n", "FROM fz_rows\nWHERE id IN (", ")", ""},
 	Slots: []runtime.Slot{
 		{Kind: runtime.SlotSelectCols},
 		{Kind: runtime.SlotColPreds},
 		{Kind: runtime.SlotSlice},
+		{Kind: runtime.SlotSelectGuardHaving},
 	},
 	SelectColExprs: []string{"id", "grp", "k1", "k2", "k3", "k4", "k5", "k6", "k7", "k8", "tag", "tag2", "note"},
 	NumSlices:      1,
@@ -3735,10 +3747,11 @@ type FzSubsParams struct {
 }
 
 var descFzSubs = &runtime.QueryDescriptor{
-	Name:     "FzSubs",
-	StmtID:   15,
-	StmtVerb: runtime.VerbSelect,
-	Segments: []string{"SELECT ", "\n", "FROM fz_rows\nWHERE id IN (", ")\n  AND k2 >= ", "\n  ", "\n  ", "\nORDER BY id"},
+	Name:       "FzSubs",
+	StmtID:     15,
+	StmtVerb:   runtime.VerbSelect,
+	TopOrderBy: true,
+	Segments:   []string{"SELECT ", "\n", "FROM fz_rows\nWHERE id IN (", ")\n  AND k2 >= ", "\n  ", "\n  ", "\n", "ORDER BY id"},
 	Slots: []runtime.Slot{
 		{Kind: runtime.SlotSelectCols},
 		{Kind: runtime.SlotColPreds},
@@ -3758,6 +3771,7 @@ var descFzSubs = &runtime.QueryDescriptor{
 			},
 			NumSubs: 1,
 		}},
+		{Kind: runtime.SlotSelectGuardHaving},
 	},
 	SelectColExprs: []string{"id", "grp", "k1", "k2", "k3", "k4", "k5", "k6", "k7", "k8", "tag", "tag2", "note"},
 	NumSubs:        3,
@@ -4015,10 +4029,11 @@ type FzJoinParams struct {
 }
 
 var descFzJoin = &runtime.QueryDescriptor{
-	Name:     "FzJoin",
-	StmtID:   16,
-	StmtVerb: runtime.VerbSelect,
-	Segments: []string{"SELECT ", "\n  ", "\n", "FROM fz_rows r\n", "\nWHERE r.id >= ", "\n  ", "\nORDER BY r.id"},
+	Name:       "FzJoin",
+	StmtID:     16,
+	StmtVerb:   runtime.VerbSelect,
+	TopOrderBy: true,
+	Segments:   []string{"SELECT ", "\n  ", "\n", "FROM fz_rows r\n", "\nWHERE r.id >= ", "\n  ", "\n", "ORDER BY r.id"},
 	Slots: []runtime.Slot{
 		{Kind: runtime.SlotSelectCols},
 		{Kind: runtime.SlotOptBlock, FlagBit: 0, Inner: &runtime.QueryDescriptor{
@@ -4038,6 +4053,7 @@ var descFzJoin = &runtime.QueryDescriptor{
 				{Kind: runtime.SlotScalar},
 			},
 		}},
+		{Kind: runtime.SlotSelectGuardHaving},
 	},
 	SelectColExprs: []string{"r.id", "r.grp", "r.k1"},
 }
@@ -4435,10 +4451,11 @@ type FzTypedSearchParams struct {
 }
 
 var descFzTypedSearch = &runtime.QueryDescriptor{
-	Name:     "FzTypedSearch",
-	StmtID:   18,
-	StmtVerb: runtime.VerbSelect,
-	Segments: []string{"SELECT ", "\n", "FROM fz_typed\nWHERE f64 >= ", "\n  ", "\n  ", "\n  ", "\n  ", "\n  ", "\nORDER BY id"},
+	Name:       "FzTypedSearch",
+	StmtID:     18,
+	StmtVerb:   runtime.VerbSelect,
+	TopOrderBy: true,
+	Segments:   []string{"SELECT ", "\n", "FROM fz_typed\nWHERE f64 >= ", "\n  ", "\n  ", "\n  ", "\n  ", "\n  ", "\n", "ORDER BY id"},
 	Slots: []runtime.Slot{
 		{Kind: runtime.SlotSelectCols},
 		{Kind: runtime.SlotColPreds},
@@ -4475,6 +4492,7 @@ var descFzTypedSearch = &runtime.QueryDescriptor{
 				{Kind: runtime.SlotScalar},
 			},
 		}},
+		{Kind: runtime.SlotSelectGuardHaving},
 	},
 	SelectColExprs: []string{"id", "i32", "f64", "flag", "bin", "ni"},
 	NumSlices:      2,
@@ -4755,14 +4773,16 @@ type paramsFzTypedPage struct {
 }
 
 var descFzTypedPage = &runtime.QueryDescriptor{
-	Name:     "FzTypedPage",
-	StmtID:   19,
-	StmtVerb: runtime.VerbSelect,
-	Segments: []string{"SELECT ", "\n", "FROM fz_typed\nWHERE ", "\nORDER BY ", "\nLIMIT ", ""},
+	Name:       "FzTypedPage",
+	StmtID:     19,
+	StmtVerb:   runtime.VerbSelect,
+	TopOrderBy: true,
+	Segments:   []string{"SELECT ", "\n", "FROM fz_typed\nWHERE ", "\n", "ORDER BY ", "\nLIMIT ", ""},
 	Slots: []runtime.Slot{
 		{Kind: runtime.SlotSelectCols},
 		{Kind: runtime.SlotColPreds},
 		{Kind: runtime.SlotSeek},
+		{Kind: runtime.SlotSelectGuardHaving},
 		{Kind: runtime.SlotOrder},
 		{Kind: runtime.SlotScalar},
 	},

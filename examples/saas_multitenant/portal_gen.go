@@ -156,10 +156,11 @@ type SearchMembersParams struct {
 }
 
 var descSearchMembers = &runtime.QueryDescriptor{
-	Name:     "SearchMembers",
-	StmtID:   1,
-	StmtVerb: runtime.VerbSelect,
-	Segments: []string{"SELECT\n  ", "\n  ", "\n", "FROM members m\n", "\nWHERE m.org_id = ", "\n  ", "\n  ", "\n  ", "\nORDER BY m.id ASC"},
+	Name:       "SearchMembers",
+	StmtID:     1,
+	StmtVerb:   runtime.VerbSelect,
+	TopOrderBy: true,
+	Segments:   []string{"SELECT\n  ", "\n  ", "\n", "FROM members m\n", "\nWHERE m.org_id = ", "\n  ", "\n  ", "\n  ", "\n", "ORDER BY m.id ASC"},
 	Slots: []runtime.Slot{
 		{Kind: runtime.SlotSelectCols},
 		{Kind: runtime.SlotOptBlock, FlagBit: 0, Inner: &runtime.QueryDescriptor{
@@ -189,6 +190,7 @@ var descSearchMembers = &runtime.QueryDescriptor{
 				{Kind: runtime.SlotScalar},
 			},
 		}},
+		{Kind: runtime.SlotSelectGuardHaving},
 	},
 	SelectColExprs: []string{"m.id", "m.org_id", "m.email", "m.role", "m.status", "m.score", "m.created_at"},
 	NumSlices:      1,
@@ -458,15 +460,17 @@ type ListMembersPaginatedParams struct {
 }
 
 var descListMembersPaginated = &runtime.QueryDescriptor{
-	Name:     "ListMembersPaginated",
-	StmtID:   2,
-	StmtVerb: runtime.VerbSelect,
-	Segments: []string{"SELECT\n  ", "\n", "FROM members m\nWHERE m.org_id = ", "\n  AND ", "\nORDER BY ", "\nLIMIT ", ""},
+	Name:       "ListMembersPaginated",
+	StmtID:     2,
+	StmtVerb:   runtime.VerbSelect,
+	TopOrderBy: true,
+	Segments:   []string{"SELECT\n  ", "\n", "FROM members m\nWHERE m.org_id = ", "\n  AND ", "\n", "ORDER BY ", "\nLIMIT ", ""},
 	Slots: []runtime.Slot{
 		{Kind: runtime.SlotSelectCols},
 		{Kind: runtime.SlotColPreds},
 		{Kind: runtime.SlotScalar},
 		{Kind: runtime.SlotSeek},
+		{Kind: runtime.SlotSelectGuardHaving},
 		{Kind: runtime.SlotOrder},
 		{Kind: runtime.SlotScalar},
 	},
@@ -652,10 +656,11 @@ var descActiveOrgs = &runtime.QueryDescriptor{
 	Name:     "ActiveOrgs",
 	StmtID:   3,
 	StmtVerb: runtime.VerbSelect,
-	Segments: []string{"SELECT id\n", "FROM orgs\nWHERE status = 'active'\n  AND plan IN (", ")"},
+	Segments: []string{"SELECT id\n", "FROM orgs\nWHERE status = 'active'\n  AND plan IN (", ")", ""},
 	Slots: []runtime.Slot{
 		{Kind: runtime.SlotColPreds},
 		{Kind: runtime.SlotSlice},
+		{Kind: runtime.SlotSelectGuardHaving},
 	},
 	NumSlices: 1,
 }
@@ -729,11 +734,12 @@ var descCohortMemberIDs = &runtime.QueryDescriptor{
 	Name:     "CohortMemberIDs",
 	StmtID:   4,
 	StmtVerb: runtime.VerbSelect,
-	Segments: []string{"SELECT id, org_id, role\n", "FROM members\nWHERE org_id IN (", ")\n  AND score >= ", ""},
+	Segments: []string{"SELECT id, org_id, role\n", "FROM members\nWHERE org_id IN (", ")\n  AND score >= ", "", ""},
 	Slots: []runtime.Slot{
 		{Kind: runtime.SlotColPreds},
 		{Kind: runtime.SlotQuery},
 		{Kind: runtime.SlotScalar},
+		{Kind: runtime.SlotSelectGuardHaving},
 	},
 	NumSubs: 1,
 }
@@ -813,15 +819,17 @@ type paramsAggregateCohortInvoices struct {
 }
 
 var descAggregateCohortInvoices = &runtime.QueryDescriptor{
-	Name:     "AggregateCohortInvoices",
-	StmtID:   5,
-	StmtVerb: runtime.VerbSelect,
-	Segments: []string{"WITH target_members AS (", ")\nSELECT\n  ", "\n", "FROM target_members tm\nLEFT JOIN invoices i ON i.member_id = tm.id AND i.status = ", "\nGROUP BY tm.org_id, tm.role\nORDER BY tm.org_id ASC, tm.role ASC"},
+	Name:       "AggregateCohortInvoices",
+	StmtID:     5,
+	StmtVerb:   runtime.VerbSelect,
+	TopOrderBy: true,
+	Segments:   []string{"WITH target_members AS (", ")\nSELECT\n  ", "\n", "FROM target_members tm\nLEFT JOIN invoices i ON i.member_id = tm.id AND i.status = ", "\nGROUP BY tm.org_id, tm.role\n", "ORDER BY tm.org_id ASC, tm.role ASC"},
 	Slots: []runtime.Slot{
 		{Kind: runtime.SlotQuery},
 		{Kind: runtime.SlotSelectCols},
 		{Kind: runtime.SlotColPreds},
 		{Kind: runtime.SlotScalar},
+		{Kind: runtime.SlotSelectGuardHaving},
 	},
 	SelectColExprs: []string{"tm.org_id", "tm.role", "COUNT(i.id) AS invoice_count", "COALESCE(SUM(i.amount_cents), 0) AS total_cents"},
 	NumSubs:        1,

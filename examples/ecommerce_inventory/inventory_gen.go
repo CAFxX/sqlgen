@@ -222,14 +222,16 @@ type paramsGetInventoryBySKUs struct {
 }
 
 var descGetInventoryBySKUs = &runtime.QueryDescriptor{
-	Name:     "GetInventoryBySKUs",
-	StmtID:   1,
-	StmtVerb: runtime.VerbSelect,
-	Segments: []string{"SELECT\n  ", "\n", "FROM inventory\nWHERE (warehouse_id, sku) IN (", ")\nORDER BY warehouse_id ASC, sku ASC"},
+	Name:       "GetInventoryBySKUs",
+	StmtID:     1,
+	StmtVerb:   runtime.VerbSelect,
+	TopOrderBy: true,
+	Segments:   []string{"SELECT\n  ", "\n", "FROM inventory\nWHERE (warehouse_id, sku) IN (", ")\n", "ORDER BY warehouse_id ASC, sku ASC"},
 	Slots: []runtime.Slot{
 		{Kind: runtime.SlotSelectCols},
 		{Kind: runtime.SlotColPreds},
 		{Kind: runtime.SlotTupleSlice, Tuple: &runtime.TupleDescriptor{Segments: []string{"", ", ", ""}, NumFields: 2}},
+		{Kind: runtime.SlotSelectGuardHaving},
 	},
 	SelectColExprs: []string{"warehouse_id", "sku", "quantity", "updated_at"},
 	NumTuples:      1,
@@ -683,15 +685,17 @@ type paramsStreamFulfilledOrders struct {
 }
 
 var descStreamFulfilledOrders = &runtime.QueryDescriptor{
-	Name:      "StreamFulfilledOrders",
-	StmtID:    3,
-	StmtVerb:  runtime.VerbSelect,
-	StaticSQL: "SELECT\n  id, customer_id, total_cents, fulfilled_at\nFROM orders\nWHERE status = 'fulfilled' AND fulfilled_at <= ?\nORDER BY id ASC",
-	Segments:  []string{"SELECT\n  ", "\n", "FROM orders\nWHERE status = 'fulfilled' AND fulfilled_at <= ", "\nORDER BY id ASC"},
+	Name:       "StreamFulfilledOrders",
+	StmtID:     3,
+	StmtVerb:   runtime.VerbSelect,
+	TopOrderBy: true,
+	StaticSQL:  "SELECT\n  id, customer_id, total_cents, fulfilled_at\nFROM orders\nWHERE status = 'fulfilled' AND fulfilled_at <= ?\nORDER BY id ASC",
+	Segments:   []string{"SELECT\n  ", "\n", "FROM orders\nWHERE status = 'fulfilled' AND fulfilled_at <= ", "\n", "ORDER BY id ASC"},
 	Slots: []runtime.Slot{
 		{Kind: runtime.SlotSelectCols},
 		{Kind: runtime.SlotColPreds},
 		{Kind: runtime.SlotScalar},
+		{Kind: runtime.SlotSelectGuardHaving},
 	},
 	SelectColExprs: []string{"id", "customer_id", "total_cents", "fulfilled_at"},
 }

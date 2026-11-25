@@ -51,6 +51,15 @@ const (
 	// SlotColPreds marks the end of the top-level output column list (SELECT or RETURNING) of a statement
 	// whose rows a WhereCol predicate can be added to: one more column per RenderInput.ColPreds entry.
 	SlotColPreds
+	// SlotSelectGuardOpen / Close / Having carry the branch gates of a gated top-level SELECT in its own
+	// HAVING clause on the MySQL flavor, so that no derived table (whose ORDER BY MariaDB and TiDB do not
+	// keep) is needed: Open follows the statement's own top-level HAVING ("(" + gates + ") AND ("), Close
+	// ends that HAVING (")"), Having adds the clause (" HAVING " + gates + " ") where the statement has
+	// none, before WINDOW / ORDER BY / LIMIT / FOR / ... . MySQL applies a HAVING without GROUP BY to every
+	// row (and to the single row of an aggregate). They write nothing on every other path.
+	SlotSelectGuardOpen
+	SlotSelectGuardClose
+	SlotSelectGuardHaving
 )
 
 const (
@@ -526,9 +535,11 @@ type QueryDescriptor struct {
 	ResultCols   []string
 	ResultExpr   string
 	HasReturning bool
-	NumSlices    int
-	NumTuples    int
-	NumSubs      int
+	// TopOrderBy: the statement has a top-level ORDER BY, which a derived table around it would not keep.
+	TopOrderBy bool
+	NumSlices  int
+	NumTuples  int
+	NumSubs    int
 }
 
 // AssertionError is the error returned when AssertRows/AssertFound fails. errors.Is(err,

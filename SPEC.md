@@ -247,6 +247,7 @@ Whenever a statement has `len(UncondCols) > 1` (inline output columns in `SELECT
 To allow any statement inside a pipelined `p.If(...)` branch to be gated on the server in a **single streaming pass** with **one `strings.Builder`** across both PostgreSQL and SQLite:
 1. **`SELECT` Statements (`desc.StmtVerb == VerbSelect`)**:
    - Handled directly in `streamOpSQL`: when `len(in.BranchGates) > 0`, `streamOpSQL` writes `"SELECT * FROM ("` before streaming `desc` and writes `") AS _sqlgen_if WHERE "` + `<branch_gates>` after streaming `desc`.
+   - MySQL flavor (`streamCursor.my != nil`): the gates go into the statement's own `HAVING` instead (no derived table: MariaDB drops a derived table's `ORDER BY`, and SQL leaves its row order unspecified). In `scanSpan`, for the main `SELECT` at `parenDepth == 0` at the top level, a `HAVING` keyword emits `SlotSelectGuardOpen` right after `"HAVING "` (written `"("` + gates + `") AND ("`), and the first of `HAVING`'s place-closing words (`WINDOW`, `ORDER`, `LIMIT`, `OFFSET`, `FETCH`, `FOR`, `LOCK`, `UNION`, `INTERSECT`, `EXCEPT`; not after a `.`), a top-level `;` or the end emits `SlotSelectGuardClose` (`") "`) after an open `HAVING`, else `SlotSelectGuardHaving` (`" HAVING "` + gates + `" "`). MySQL applies a `HAVING` without `GROUP BY` to every row and to the single row of an aggregate. The slots are removed from a compound statement and when a `HAVING` or a place-closing word sits in an optional block; `streamCoreStatement` then wraps the `SELECT` as above unless `desc.TopOrderBy` (a top-level `ORDER` of the `SELECT`), which makes the batch `ErrWireNotApplicable`. Every other path writes nothing for the three slots.
 2. **`INSERT` Statements (`desc.StmtVerb == VerbInsert`)**:
    - **Subcase 2A: Single-Row `INSERT INTO tbl (c1, c2) VALUES (e1, e2)`** (where `VALUES` is followed by `(`):
      - Replace `VALUES (` (including the opening parenthesis) with `SlotInsertValuesOpen`, and replace the matching closing `)` of the `VALUES (...)` tuple with `SlotInsertValuesClose`.
@@ -352,6 +353,9 @@ const (
 	SlotInsertTupleValuesOpen                  // "VALUES " or "WITH _sqlgen_v AS (VALUES "
 	SlotInsertTupleValuesClose                 // "" or ") SELECT * FROM _sqlgen_v WHERE " + gates
 	SlotColPreds                               // end of the top-level SELECT / RETURNING list: one WhereCol column per RenderInput.ColPreds
+	SlotSelectGuardOpen                        // MySQL flavor: "(" + gates + ") AND (" after the main SELECT's HAVING
+	SlotSelectGuardClose                       // MySQL flavor: ") " at the end of that HAVING
+	SlotSelectGuardHaving                      // MySQL flavor: " HAVING " + gates + " " in a main SELECT without HAVING
 )
 
 const (

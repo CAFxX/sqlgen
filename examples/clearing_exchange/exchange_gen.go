@@ -710,12 +710,13 @@ var descGetMarginAccount = &runtime.QueryDescriptor{
 	StmtID:    4,
 	StmtVerb:  runtime.VerbSelect,
 	StaticSQL: "SELECT\n  firm_id, account_id, status, collateral_cents, realized_pnl_cents, margin_ratio_bps, kyc_verified, updated_seq\nFROM margin_accounts\nWHERE firm_id = ? AND account_id = ?",
-	Segments:  []string{"SELECT\n  ", "\n", "FROM margin_accounts\nWHERE firm_id = ", " AND account_id = ", ""},
+	Segments:  []string{"SELECT\n  ", "\n", "FROM margin_accounts\nWHERE firm_id = ", " AND account_id = ", "", ""},
 	Slots: []runtime.Slot{
 		{Kind: runtime.SlotSelectCols},
 		{Kind: runtime.SlotColPreds},
 		{Kind: runtime.SlotScalar},
 		{Kind: runtime.SlotScalar},
+		{Kind: runtime.SlotSelectGuardHaving},
 	},
 	SelectColExprs: []string{"firm_id", "account_id", "status", "collateral_cents", "realized_pnl_cents", "margin_ratio_bps", "kyc_verified", "updated_seq"},
 	ResultCols:     []string{"firm_id", "account_id", "status", "collateral_cents", "realized_pnl_cents", "margin_ratio_bps", "kyc_verified", "updated_seq"},
@@ -884,11 +885,12 @@ var descGetAccountCollateralCents = &runtime.QueryDescriptor{
 	StmtID:    5,
 	StmtVerb:  runtime.VerbSelect,
 	StaticSQL: "SELECT collateral_cents\nFROM margin_accounts\nWHERE firm_id = ? AND account_id = ?",
-	Segments:  []string{"SELECT collateral_cents\n", "FROM margin_accounts\nWHERE firm_id = ", " AND account_id = ", ""},
+	Segments:  []string{"SELECT collateral_cents\n", "FROM margin_accounts\nWHERE firm_id = ", " AND account_id = ", "", ""},
 	Slots: []runtime.Slot{
 		{Kind: runtime.SlotColPreds},
 		{Kind: runtime.SlotScalar},
 		{Kind: runtime.SlotScalar},
+		{Kind: runtime.SlotSelectGuardHaving},
 	},
 	ResultCols: []string{"collateral_cents"},
 	ResultExpr: "collateral_cents",
@@ -1787,16 +1789,18 @@ type paramsListOpenOrdersForSymbol struct {
 }
 
 var descListOpenOrdersForSymbol = &runtime.QueryDescriptor{
-	Name:      "ListOpenOrdersForSymbol",
-	StmtID:    9,
-	StmtVerb:  runtime.VerbSelect,
-	StaticSQL: "SELECT\n  order_id, firm_id, account_id, symbol, side, limit_price_cents, quantity, status\nFROM orders\nWHERE symbol = ?\n  AND side = ?\n  AND status = 'open'\nORDER BY limit_price_cents DESC, order_id ASC\nLIMIT ?",
-	Segments:  []string{"SELECT\n  ", "\n", "FROM orders\nWHERE symbol = ", "\n  AND side = ", "\n  AND status = 'open'\nORDER BY limit_price_cents DESC, order_id ASC\nLIMIT ", ""},
+	Name:       "ListOpenOrdersForSymbol",
+	StmtID:     9,
+	StmtVerb:   runtime.VerbSelect,
+	TopOrderBy: true,
+	StaticSQL:  "SELECT\n  order_id, firm_id, account_id, symbol, side, limit_price_cents, quantity, status\nFROM orders\nWHERE symbol = ?\n  AND side = ?\n  AND status = 'open'\nORDER BY limit_price_cents DESC, order_id ASC\nLIMIT ?",
+	Segments:   []string{"SELECT\n  ", "\n", "FROM orders\nWHERE symbol = ", "\n  AND side = ", "\n  AND status = 'open'\n", "ORDER BY limit_price_cents DESC, order_id ASC\nLIMIT ", ""},
 	Slots: []runtime.Slot{
 		{Kind: runtime.SlotSelectCols},
 		{Kind: runtime.SlotColPreds},
 		{Kind: runtime.SlotScalar},
 		{Kind: runtime.SlotScalar},
+		{Kind: runtime.SlotSelectGuardHaving},
 		{Kind: runtime.SlotScalar},
 	},
 	SelectColExprs: []string{"order_id", "firm_id", "account_id", "symbol", "side", "limit_price_cents", "quantity", "status"},
@@ -2603,7 +2607,7 @@ var descEligibleAccountsSubquery = &runtime.QueryDescriptor{
 	Name:     "EligibleAccountsSubquery",
 	StmtID:   17,
 	StmtVerb: runtime.VerbSelect,
-	Segments: []string{"-- Level-1 subquery filtering margin accounts by presorted FirmIDs and optional KYC / margin gates\nSELECT account_id\n", "FROM margin_accounts\nWHERE firm_id IN (", ")\n  AND status = ", "\n  ", "\n  ", ""},
+	Segments: []string{"-- Level-1 subquery filtering margin accounts by presorted FirmIDs and optional KYC / margin gates\nSELECT account_id\n", "FROM margin_accounts\nWHERE firm_id IN (", ")\n  AND status = ", "\n  ", "\n  ", "", ""},
 	Slots: []runtime.Slot{
 		{Kind: runtime.SlotColPreds},
 		{Kind: runtime.SlotSlice},
@@ -2617,6 +2621,7 @@ var descEligibleAccountsSubquery = &runtime.QueryDescriptor{
 				{Kind: runtime.SlotScalar},
 			},
 		}},
+		{Kind: runtime.SlotSelectGuardHaving},
 	},
 	NumSlices: 1,
 }
@@ -2711,7 +2716,7 @@ var descActiveInstrumentsSubquery = &runtime.QueryDescriptor{
 	Name:     "ActiveInstrumentsSubquery",
 	StmtID:   18,
 	StmtVerb: runtime.VerbSelect,
-	Segments: []string{"/* Level-1 subquery filtering tradeable instruments */\nSELECT symbol\n", "FROM instruments\nWHERE asset_class IN (", ")\n  ", "\n  ", ""},
+	Segments: []string{"/* Level-1 subquery filtering tradeable instruments */\nSELECT symbol\n", "FROM instruments\nWHERE asset_class IN (", ")\n  ", "\n  ", "", ""},
 	Slots: []runtime.Slot{
 		{Kind: runtime.SlotColPreds},
 		{Kind: runtime.SlotSlice},
@@ -2724,6 +2729,7 @@ var descActiveInstrumentsSubquery = &runtime.QueryDescriptor{
 				{Kind: runtime.SlotScalar},
 			},
 		}},
+		{Kind: runtime.SlotSelectGuardHaving},
 	},
 	NumSlices: 1,
 }
@@ -2817,7 +2823,7 @@ var descFilteredPositionsSubquery = &runtime.QueryDescriptor{
 	Name:     "FilteredPositionsSubquery",
 	StmtID:   19,
 	StmtVerb: runtime.VerbSelect,
-	Segments: []string{"-- Level-2 subquery composing EligibleAccountsSubquery and ActiveInstrumentsSubquery\nSELECT position_id\n", "FROM positions\nWHERE account_id IN (", ")\n  AND symbol IN (", ")\n  ", ""},
+	Segments: []string{"-- Level-2 subquery composing EligibleAccountsSubquery and ActiveInstrumentsSubquery\nSELECT position_id\n", "FROM positions\nWHERE account_id IN (", ")\n  AND symbol IN (", ")\n  ", "", ""},
 	Slots: []runtime.Slot{
 		{Kind: runtime.SlotColPreds},
 		{Kind: runtime.SlotQuery},
@@ -2828,6 +2834,7 @@ var descFilteredPositionsSubquery = &runtime.QueryDescriptor{
 				{Kind: runtime.SlotScalar},
 			},
 		}},
+		{Kind: runtime.SlotSelectGuardHaving},
 	},
 	NumSubs: 2,
 }
@@ -2960,10 +2967,11 @@ type QueryRiskPositionsPageParams struct {
 }
 
 var descQueryRiskPositionsPage = &runtime.QueryDescriptor{
-	Name:     "QueryRiskPositionsPage",
-	StmtID:   20,
-	StmtVerb: runtime.VerbSelect,
-	Segments: []string{"SELECT\n  ", "\n  ", "\n  ", "\n", "FROM positions p\n", "\nWHERE p.position_id IN (", ")\n  ", "\n  ", "\n  AND ", "\nORDER BY ", "\nLIMIT ", ""},
+	Name:       "QueryRiskPositionsPage",
+	StmtID:     20,
+	StmtVerb:   runtime.VerbSelect,
+	TopOrderBy: true,
+	Segments:   []string{"SELECT\n  ", "\n  ", "\n  ", "\n", "FROM positions p\n", "\nWHERE p.position_id IN (", ")\n  ", "\n  ", "\n  AND ", "\n", "ORDER BY ", "\nLIMIT ", ""},
 	Slots: []runtime.Slot{
 		{Kind: runtime.SlotSelectCols},
 		{Kind: runtime.SlotOptBlock, FlagBit: 0, Inner: &runtime.QueryDescriptor{
@@ -2991,6 +2999,7 @@ var descQueryRiskPositionsPage = &runtime.QueryDescriptor{
 			},
 		}},
 		{Kind: runtime.SlotSeek},
+		{Kind: runtime.SlotSelectGuardHaving},
 		{Kind: runtime.SlotOrder},
 		{Kind: runtime.SlotScalar},
 	},
@@ -3279,9 +3288,10 @@ var descTotalExchangeEquityCents = &runtime.QueryDescriptor{
 	StmtID:    21,
 	StmtVerb:  runtime.VerbSelect,
 	StaticSQL: "SELECT COALESCE(SUM(collateral_cents + realized_pnl_cents), 0) AS total_equity\nFROM margin_accounts",
-	Segments:  []string{"SELECT COALESCE(SUM(collateral_cents + realized_pnl_cents), 0) AS total_equity\n", "FROM margin_accounts"},
+	Segments:  []string{"SELECT COALESCE(SUM(collateral_cents + realized_pnl_cents), 0) AS total_equity\n", "FROM margin_accounts", ""},
 	Slots: []runtime.Slot{
 		{Kind: runtime.SlotColPreds},
+		{Kind: runtime.SlotSelectGuardHaving},
 	},
 	ResultCols: []string{"total_equity"},
 	ResultExpr: "COALESCE(SUM(collateral_cents + realized_pnl_cents), 0)",
@@ -3394,10 +3404,11 @@ var descTotalNetPositionBySymbol = &runtime.QueryDescriptor{
 	StmtID:    22,
 	StmtVerb:  runtime.VerbSelect,
 	StaticSQL: "SELECT COALESCE(SUM(net_quantity), 0) AS net_qty\nFROM positions\nWHERE symbol = ?",
-	Segments:  []string{"SELECT COALESCE(SUM(net_quantity), 0) AS net_qty\n", "FROM positions\nWHERE symbol = ", ""},
+	Segments:  []string{"SELECT COALESCE(SUM(net_quantity), 0) AS net_qty\n", "FROM positions\nWHERE symbol = ", "", ""},
 	Slots: []runtime.Slot{
 		{Kind: runtime.SlotColPreds},
 		{Kind: runtime.SlotScalar},
+		{Kind: runtime.SlotSelectGuardHaving},
 	},
 	ResultCols: []string{"net_qty"},
 	ResultExpr: "COALESCE(SUM(net_quantity), 0)",
@@ -3516,9 +3527,10 @@ var descCountClearingFills = &runtime.QueryDescriptor{
 	StmtID:    23,
 	StmtVerb:  runtime.VerbSelect,
 	StaticSQL: "SELECT COUNT(*) AS cnt\nFROM clearing_fills",
-	Segments:  []string{"SELECT COUNT(*) AS cnt\n", "FROM clearing_fills"},
+	Segments:  []string{"SELECT COUNT(*) AS cnt\n", "FROM clearing_fills", ""},
 	Slots: []runtime.Slot{
 		{Kind: runtime.SlotColPreds},
+		{Kind: runtime.SlotSelectGuardHaving},
 	},
 	ResultCols: []string{"cnt"},
 	ResultExpr: "COUNT(*)",
@@ -3629,10 +3641,11 @@ var descCountComplianceNotices = &runtime.QueryDescriptor{
 	StmtID:    24,
 	StmtVerb:  runtime.VerbSelect,
 	StaticSQL: "SELECT COUNT(*) AS cnt\nFROM compliance_notices\nWHERE notice_kind = ?",
-	Segments:  []string{"SELECT COUNT(*) AS cnt\n", "FROM compliance_notices\nWHERE notice_kind = ", ""},
+	Segments:  []string{"SELECT COUNT(*) AS cnt\n", "FROM compliance_notices\nWHERE notice_kind = ", "", ""},
 	Slots: []runtime.Slot{
 		{Kind: runtime.SlotColPreds},
 		{Kind: runtime.SlotScalar},
+		{Kind: runtime.SlotSelectGuardHaving},
 	},
 	ResultCols: []string{"cnt"},
 	ResultExpr: "COUNT(*)",

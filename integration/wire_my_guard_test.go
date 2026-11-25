@@ -137,25 +137,14 @@ func mySliceFut[T any](f *runtime.SliceFuture[T], hasScore bool) myFut {
 
 // fwdManyRowsFut is myRowFut for a kind-one statement that may return several rows: which row Get reports
 // then depends on the order of the rows, and MariaDB ignores the ORDER BY of the derived table the
-// single-round-trip path wraps a gated SELECT (or a producer of a forwarded value) in, so only the outcome
-// is compared. (With exactly one row, the only case in which the value is forwarded, there is no order.)
+// single-round-trip path wraps a producer of a forwarded value in, so only the outcome is compared. (With
+// exactly one row, the only case in which the value is forwarded, there is no order.) A gated SELECT keeps
+// its order: its gates are in its own HAVING.
 func fwdManyRowsFut(f *runtime.RowFuture[int64]) myFut {
 	m := myRowFut(f, false)
 	m.desc = func() string {
 		_, err := f.Get()
 		return myDescribe("-", err)
-	}
-	return m
-}
-
-// fwdSortedFut is mySliceFut comparing the rows as a set, for the same reason.
-func fwdSortedFut(f *runtime.SliceFuture[int64]) myFut {
-	m := mySliceFut(f, false)
-	m.desc = func() string {
-		v, err := f.Get()
-		v = slices.Clone(v)
-		slices.Sort(v)
-		return myDescribe(v, err)
 	}
 	return m
 }
@@ -211,7 +200,7 @@ func (a myqPipe) FwdSetScore(score, id runtime.Arg[int64]) myFut {
 	return myExecFut(a.p.FwdSetScore(score, id))
 }
 func (a myqPipe) FwdItemsAbove(min runtime.Arg[int64]) myFut {
-	return fwdSortedFut(a.p.FwdItemsAbove(min))
+	return mySliceFut(a.p.FwdItemsAbove(min), false)
 }
 func (a myqPipe) FwdInsertItem(id int64, score runtime.Arg[int64]) myFut {
 	return myExecFut(a.p.FwdInsertItem(runtime.Val(id), "f", score))
@@ -300,7 +289,7 @@ func (a mdbqPipe) FwdSetScore(score, id runtime.Arg[int64]) myFut {
 	return myExecFut(a.p.FwdSetScore(score, id))
 }
 func (a mdbqPipe) FwdItemsAbove(min runtime.Arg[int64]) myFut {
-	return fwdSortedFut(a.p.FwdItemsAbove(min))
+	return mySliceFut(a.p.FwdItemsAbove(min), false)
 }
 func (a mdbqPipe) FwdInsertItem(id int64, score runtime.Arg[int64]) myFut {
 	return myExecFut(a.p.FwdInsertItem(runtime.Val(id), "f", score))

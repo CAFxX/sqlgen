@@ -429,11 +429,12 @@ var descGetUserByID = &runtime.QueryDescriptor{
 	StmtID:    2,
 	StmtVerb:  runtime.VerbSelect,
 	StaticSQL: "SELECT id, org_id, email, role, score, bio\nFROM users\nWHERE id = ?",
-	Segments:  []string{"SELECT ", "\n", "FROM users\nWHERE id = ", ""},
+	Segments:  []string{"SELECT ", "\n", "FROM users\nWHERE id = ", "", ""},
 	Slots: []runtime.Slot{
 		{Kind: runtime.SlotSelectCols},
 		{Kind: runtime.SlotColPreds},
 		{Kind: runtime.SlotScalar},
+		{Kind: runtime.SlotSelectGuardHaving},
 	},
 	SelectColExprs: []string{"id", "org_id", "email", "role", "score", "bio"},
 	ResultCols:     []string{"id", "org_id", "email", "role", "score", "bio"},
@@ -594,14 +595,16 @@ type paramsListUsersByIDs struct {
 }
 
 var descListUsersByIDs = &runtime.QueryDescriptor{
-	Name:     "ListUsersByIDs",
-	StmtID:   3,
-	StmtVerb: runtime.VerbSelect,
-	Segments: []string{"SELECT ", "\n", "FROM users\nWHERE id IN (", ")\nORDER BY id ASC"},
+	Name:       "ListUsersByIDs",
+	StmtID:     3,
+	StmtVerb:   runtime.VerbSelect,
+	TopOrderBy: true,
+	Segments:   []string{"SELECT ", "\n", "FROM users\nWHERE id IN (", ")\n", "ORDER BY id ASC"},
 	Slots: []runtime.Slot{
 		{Kind: runtime.SlotSelectCols},
 		{Kind: runtime.SlotColPreds},
 		{Kind: runtime.SlotSlice},
+		{Kind: runtime.SlotSelectGuardHaving},
 	},
 	SelectColExprs: []string{"id", "org_id", "email", "role", "score", "bio"},
 	NumSlices:      1,
@@ -881,10 +884,11 @@ type SelectUserProfileSubsetParams struct {
 }
 
 var descSelectUserProfileSubset = &runtime.QueryDescriptor{
-	Name:     "SelectUserProfileSubset",
-	StmtID:   4,
-	StmtVerb: runtime.VerbSelect,
-	Segments: []string{"SELECT ", "\n", "\n", "FROM users u\nWHERE u.org_id = ", "\nORDER BY u.id ASC"},
+	Name:       "SelectUserProfileSubset",
+	StmtID:     4,
+	StmtVerb:   runtime.VerbSelect,
+	TopOrderBy: true,
+	Segments:   []string{"SELECT ", "\n", "\n", "FROM users u\nWHERE u.org_id = ", "\n", "ORDER BY u.id ASC"},
 	Slots: []runtime.Slot{
 		{Kind: runtime.SlotSelectCols},
 		{Kind: runtime.SlotOptBlock, FlagBit: 0, Inner: &runtime.QueryDescriptor{
@@ -892,6 +896,7 @@ var descSelectUserProfileSubset = &runtime.QueryDescriptor{
 		}},
 		{Kind: runtime.SlotColPreds},
 		{Kind: runtime.SlotScalar},
+		{Kind: runtime.SlotSelectGuardHaving},
 	},
 	SelectColExprs: []string{"u.id", "u.email", "u.role", "u.score"},
 }
@@ -1059,10 +1064,11 @@ type SearchUsersCoupledParams struct {
 }
 
 var descSearchUsersCoupled = &runtime.QueryDescriptor{
-	Name:     "SearchUsersCoupled",
-	StmtID:   5,
-	StmtVerb: runtime.VerbSelect,
-	Segments: []string{"SELECT ", "\n", "\n", "FROM users u\n", "\nWHERE 1=1\n", "\n", "\nORDER BY u.id ASC"},
+	Name:       "SearchUsersCoupled",
+	StmtID:     5,
+	StmtVerb:   runtime.VerbSelect,
+	TopOrderBy: true,
+	Segments:   []string{"SELECT ", "\n", "\n", "FROM users u\n", "\nWHERE 1=1\n", "\n", "\n", "ORDER BY u.id ASC"},
 	Slots: []runtime.Slot{
 		{Kind: runtime.SlotSelectCols},
 		{Kind: runtime.SlotOptBlock, FlagBit: 0, Inner: &runtime.QueryDescriptor{
@@ -1088,6 +1094,7 @@ var descSearchUsersCoupled = &runtime.QueryDescriptor{
 			},
 			NumSlices: 1,
 		}},
+		{Kind: runtime.SlotSelectGuardHaving},
 	},
 	SelectColExprs: []string{"u.id", "u.email"},
 	NumSlices:      2,
@@ -1327,7 +1334,7 @@ var descSubOrgsByMinID = &runtime.QueryDescriptor{
 	Name:     "SubOrgsByMinID",
 	StmtID:   6,
 	StmtVerb: runtime.VerbSelect,
-	Segments: []string{"SELECT id ", "FROM orgs WHERE id >= ", " ", ""},
+	Segments: []string{"SELECT id ", "FROM orgs WHERE id >= ", " ", "", ""},
 	Slots: []runtime.Slot{
 		{Kind: runtime.SlotColPreds},
 		{Kind: runtime.SlotScalar},
@@ -1337,6 +1344,7 @@ var descSubOrgsByMinID = &runtime.QueryDescriptor{
 				{Kind: runtime.SlotScalar},
 			},
 		}},
+		{Kind: runtime.SlotSelectGuardHaving},
 	},
 }
 
@@ -1437,10 +1445,11 @@ type PageUsersParams struct {
 }
 
 var descPageUsers = &runtime.QueryDescriptor{
-	Name:     "PageUsers",
-	StmtID:   7,
-	StmtVerb: runtime.VerbSelect,
-	Segments: []string{"SELECT ", "\n", "FROM users\nWHERE ", "\n", "\nORDER BY ", "\nLIMIT ", ""},
+	Name:       "PageUsers",
+	StmtID:     7,
+	StmtVerb:   runtime.VerbSelect,
+	TopOrderBy: true,
+	Segments:   []string{"SELECT ", "\n", "FROM users\nWHERE ", "\n", "\n", "ORDER BY ", "\nLIMIT ", ""},
 	Slots: []runtime.Slot{
 		{Kind: runtime.SlotSelectCols},
 		{Kind: runtime.SlotColPreds},
@@ -1451,6 +1460,7 @@ var descPageUsers = &runtime.QueryDescriptor{
 				{Kind: runtime.SlotScalar},
 			},
 		}},
+		{Kind: runtime.SlotSelectGuardHaving},
 		{Kind: runtime.SlotOrder},
 		{Kind: runtime.SlotScalar},
 	},
@@ -1636,15 +1646,17 @@ type paramsUsersFromCTEAndInSubquery struct {
 }
 
 var descUsersFromCTEAndInSubquery = &runtime.QueryDescriptor{
-	Name:     "UsersFromCTEAndInSubquery",
-	StmtID:   8,
-	StmtVerb: runtime.VerbSelect,
-	Segments: []string{"WITH filtered AS (", ")\nSELECT ", "\n", "FROM filtered f\nWHERE f.id IN (", ")\nORDER BY f.id ASC"},
+	Name:       "UsersFromCTEAndInSubquery",
+	StmtID:     8,
+	StmtVerb:   runtime.VerbSelect,
+	TopOrderBy: true,
+	Segments:   []string{"WITH filtered AS (", ")\nSELECT ", "\n", "FROM filtered f\nWHERE f.id IN (", ")\n", "ORDER BY f.id ASC"},
 	Slots: []runtime.Slot{
 		{Kind: runtime.SlotQuery},
 		{Kind: runtime.SlotSelectCols},
 		{Kind: runtime.SlotColPreds},
 		{Kind: runtime.SlotQuery},
+		{Kind: runtime.SlotSelectGuardHaving},
 	},
 	SelectColExprs: []string{"f.id", "f.email"},
 	NumSubs:        2,
@@ -1832,10 +1844,11 @@ var descSubUserIDsByScore = &runtime.QueryDescriptor{
 	StmtID:    9,
 	StmtVerb:  runtime.VerbSelect,
 	StaticSQL: "SELECT id FROM users WHERE score >= ?",
-	Segments:  []string{"SELECT id ", "FROM users WHERE score >= ", ""},
+	Segments:  []string{"SELECT id ", "FROM users WHERE score >= ", "", ""},
 	Slots: []runtime.Slot{
 		{Kind: runtime.SlotColPreds},
 		{Kind: runtime.SlotScalar},
+		{Kind: runtime.SlotSelectGuardHaving},
 	},
 }
 
@@ -2569,13 +2582,14 @@ var descUserIDsNearScore = &runtime.QueryDescriptor{
 	Name:     "UserIDsNearScore",
 	StmtID:   13,
 	StmtVerb: runtime.VerbSelect,
-	Segments: []string{"SELECT id ", "FROM users\nWHERE (score = ", " OR score + 1 = ", " OR score + 2 = ", ") AND id IN (", ")"},
+	Segments: []string{"SELECT id ", "FROM users\nWHERE (score = ", " OR score + 1 = ", " OR score + 2 = ", ") AND id IN (", ")", ""},
 	Slots: []runtime.Slot{
 		{Kind: runtime.SlotColPreds},
 		{Kind: runtime.SlotScalar},
 		{Kind: runtime.SlotScalar},
 		{Kind: runtime.SlotScalar},
 		{Kind: runtime.SlotSlice},
+		{Kind: runtime.SlotSelectGuardHaving},
 	},
 	NumSlices: 1,
 }
@@ -2851,10 +2865,11 @@ var descUserEmailBytes = &runtime.QueryDescriptor{
 	StmtID:    14,
 	StmtVerb:  runtime.VerbSelect,
 	StaticSQL: "SELECT CAST(email AS BLOB) AS raw FROM users WHERE id = ?",
-	Segments:  []string{"SELECT CAST(email AS BLOB) AS raw ", "FROM users WHERE id = ", ""},
+	Segments:  []string{"SELECT CAST(email AS BLOB) AS raw ", "FROM users WHERE id = ", "", ""},
 	Slots: []runtime.Slot{
 		{Kind: runtime.SlotColPreds},
 		{Kind: runtime.SlotScalar},
+		{Kind: runtime.SlotSelectGuardHaving},
 	},
 	ResultCols: []string{"raw"},
 	ResultExpr: "CAST(email AS BLOB)",
@@ -2967,13 +2982,15 @@ type paramsUserBioIfSet struct {
 }
 
 var descUserBioIfSet = &runtime.QueryDescriptor{
-	Name:      "UserBioIfSet",
-	StmtID:    15,
-	StmtVerb:  runtime.VerbSelect,
-	StaticSQL: "SELECT NULLIF(bio, '') AS bio FROM users ORDER BY id",
-	Segments:  []string{"SELECT NULLIF(bio, '') AS bio ", "FROM users ORDER BY id"},
+	Name:       "UserBioIfSet",
+	StmtID:     15,
+	StmtVerb:   runtime.VerbSelect,
+	TopOrderBy: true,
+	StaticSQL:  "SELECT NULLIF(bio, '') AS bio FROM users ORDER BY id",
+	Segments:   []string{"SELECT NULLIF(bio, '') AS bio ", "FROM users ", "ORDER BY id"},
 	Slots: []runtime.Slot{
 		{Kind: runtime.SlotColPreds},
+		{Kind: runtime.SlotSelectGuardHaving},
 	},
 }
 
@@ -3099,10 +3116,11 @@ var descUserEmailOnly = &runtime.QueryDescriptor{
 	StmtID:    16,
 	StmtVerb:  runtime.VerbSelect,
 	StaticSQL: "SELECT email FROM users WHERE id = ?",
-	Segments:  []string{"SELECT email ", "FROM users WHERE id = ", ""},
+	Segments:  []string{"SELECT email ", "FROM users WHERE id = ", "", ""},
 	Slots: []runtime.Slot{
 		{Kind: runtime.SlotColPreds},
 		{Kind: runtime.SlotScalar},
+		{Kind: runtime.SlotSelectGuardHaving},
 	},
 	ResultCols: []string{"email"},
 	ResultExpr: "email",
@@ -3227,11 +3245,12 @@ var descUserRoleCountsIn = &runtime.QueryDescriptor{
 	Name:     "UserRoleCountsIn",
 	StmtID:   17,
 	StmtVerb: runtime.VerbSelect,
-	Segments: []string{"SELECT ", " ", "FROM users WHERE id IN (", ") GROUP BY role"},
+	Segments: []string{"SELECT ", " ", "FROM users WHERE id IN (", ") GROUP BY role", ""},
 	Slots: []runtime.Slot{
 		{Kind: runtime.SlotSelectCols},
 		{Kind: runtime.SlotColPreds},
 		{Kind: runtime.SlotSlice},
+		{Kind: runtime.SlotSelectGuardHaving},
 	},
 	SelectColExprs: []string{"role", "COUNT(*) AS n"},
 	NumSlices:      1,
@@ -3464,13 +3483,15 @@ type paramsTopUsersIn struct {
 }
 
 var descTopUsersIn = &runtime.QueryDescriptor{
-	Name:     "TopUsersIn",
-	StmtID:   18,
-	StmtVerb: runtime.VerbSelect,
-	Segments: []string{"SELECT id ", "FROM users WHERE id IN (", ") ORDER BY id DESC LIMIT 3"},
+	Name:       "TopUsersIn",
+	StmtID:     18,
+	StmtVerb:   runtime.VerbSelect,
+	TopOrderBy: true,
+	Segments:   []string{"SELECT id ", "FROM users WHERE id IN (", ") ", "ORDER BY id DESC LIMIT 3"},
 	Slots: []runtime.Slot{
 		{Kind: runtime.SlotColPreds},
 		{Kind: runtime.SlotSlice},
+		{Kind: runtime.SlotSelectGuardHaving},
 	},
 	NumSlices: 1,
 }
@@ -4066,10 +4087,11 @@ var descQuadIDsByKeys = &runtime.QueryDescriptor{
 	Name:     "QuadIDsByKeys",
 	StmtID:   21,
 	StmtVerb: runtime.VerbSelect,
-	Segments: []string{"SELECT id ", "FROM quad_items WHERE (group_key, id) IN (", ")"},
+	Segments: []string{"SELECT id ", "FROM quad_items WHERE (group_key, id) IN (", ")", ""},
 	Slots: []runtime.Slot{
 		{Kind: runtime.SlotColPreds},
 		{Kind: runtime.SlotTupleSlice, Tuple: &runtime.TupleDescriptor{Segments: []string{"", ", ", ""}, NumFields: 2}},
+		{Kind: runtime.SlotSelectGuardHaving},
 	},
 	NumTuples: 1,
 }
@@ -4370,14 +4392,16 @@ type PageQuadParams struct {
 }
 
 var descPageQuad = &runtime.QueryDescriptor{
-	Name:     "PageQuad",
-	StmtID:   22,
-	StmtVerb: runtime.VerbSelect,
-	Segments: []string{"SELECT ", "\n", "FROM quad_items\nWHERE ", "\nORDER BY ", "\nLIMIT ", ""},
+	Name:       "PageQuad",
+	StmtID:     22,
+	StmtVerb:   runtime.VerbSelect,
+	TopOrderBy: true,
+	Segments:   []string{"SELECT ", "\n", "FROM quad_items\nWHERE ", "\n", "ORDER BY ", "\nLIMIT ", ""},
 	Slots: []runtime.Slot{
 		{Kind: runtime.SlotSelectCols},
 		{Kind: runtime.SlotColPreds},
 		{Kind: runtime.SlotSeek},
+		{Kind: runtime.SlotSelectGuardHaving},
 		{Kind: runtime.SlotOrder},
 		{Kind: runtime.SlotScalar},
 	},
@@ -4909,14 +4933,16 @@ type paramsFwdOrderByCustomer struct {
 }
 
 var descFwdOrderByCustomer = &runtime.QueryDescriptor{
-	Name:      "FwdOrderByCustomer",
-	StmtID:    26,
-	StmtVerb:  runtime.VerbSelect,
-	StaticSQL: "SELECT id AS order_id FROM fwd_orders WHERE customer = ? ORDER BY id",
-	Segments:  []string{"SELECT id AS order_id ", "FROM fwd_orders WHERE customer = ", " ORDER BY id"},
+	Name:       "FwdOrderByCustomer",
+	StmtID:     26,
+	StmtVerb:   runtime.VerbSelect,
+	TopOrderBy: true,
+	StaticSQL:  "SELECT id AS order_id FROM fwd_orders WHERE customer = ? ORDER BY id",
+	Segments:   []string{"SELECT id AS order_id ", "FROM fwd_orders WHERE customer = ", " ", "ORDER BY id"},
 	Slots: []runtime.Slot{
 		{Kind: runtime.SlotColPreds},
 		{Kind: runtime.SlotScalar},
+		{Kind: runtime.SlotSelectGuardHaving},
 	},
 	ResultCols: []string{"order_id"},
 	ResultExpr: "id",
@@ -5210,7 +5236,7 @@ var descFwdCountLines = &runtime.QueryDescriptor{
 	Name:     "FwdCountLines",
 	StmtID:   29,
 	StmtVerb: runtime.VerbSelect,
-	Segments: []string{"SELECT COUNT(*) AS n ", "FROM fwd_lines WHERE order_id = ", " ", ""},
+	Segments: []string{"SELECT COUNT(*) AS n ", "FROM fwd_lines WHERE order_id = ", " ", "", ""},
 	Slots: []runtime.Slot{
 		{Kind: runtime.SlotColPreds},
 		{Kind: runtime.SlotScalar},
@@ -5220,6 +5246,7 @@ var descFwdCountLines = &runtime.QueryDescriptor{
 				{Kind: runtime.SlotScalar},
 			},
 		}},
+		{Kind: runtime.SlotSelectGuardHaving},
 	},
 	ResultCols: []string{"n"},
 	ResultExpr: "COUNT(*)",
@@ -5355,15 +5382,17 @@ type paramsFwdLineSkus struct {
 }
 
 var descFwdLineSkus = &runtime.QueryDescriptor{
-	Name:      "FwdLineSkus",
-	StmtID:    30,
-	StmtVerb:  runtime.VerbSelect,
-	StaticSQL: "SELECT sku FROM fwd_lines WHERE order_id = ? AND qty >= ? ORDER BY sku",
-	Segments:  []string{"SELECT sku ", "FROM fwd_lines WHERE order_id = ", " AND qty >= ", " ORDER BY sku"},
+	Name:       "FwdLineSkus",
+	StmtID:     30,
+	StmtVerb:   runtime.VerbSelect,
+	TopOrderBy: true,
+	StaticSQL:  "SELECT sku FROM fwd_lines WHERE order_id = ? AND qty >= ? ORDER BY sku",
+	Segments:   []string{"SELECT sku ", "FROM fwd_lines WHERE order_id = ", " AND qty >= ", " ", "ORDER BY sku"},
 	Slots: []runtime.Slot{
 		{Kind: runtime.SlotColPreds},
 		{Kind: runtime.SlotScalar},
 		{Kind: runtime.SlotScalar},
+		{Kind: runtime.SlotSelectGuardHaving},
 	},
 }
 

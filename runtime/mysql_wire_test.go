@@ -215,6 +215,14 @@ func shapeDescs() []shapeDesc {
 		{name: "insert-tuples", args: 6, in: RenderInput{TupleLens: []int{2}},
 			desc: &QueryDescriptor{Name: "insn", StmtVerb: VerbInsert, Segments: []string{"INSERT INTO t (id, name, score)\n", "", " ON DUPLICATE KEY UPDATE score = VALUES(score)", ""},
 				Slots: []Slot{{Kind: SlotInsertTupleValuesOpen}, {Kind: SlotTupleSlice, Tuple: &TupleDescriptor{Segments: []string{"", ", ", ", ", ""}, NumFields: 3}}, {Kind: SlotInsertTupleValuesClose}}, NumTuples: 1}},
+		{name: "select-ordered", hasRes: true, args: 2,
+			desc: &QueryDescriptor{Name: "selo", StmtVerb: VerbSelect, TopOrderBy: true,
+				Segments: []string{"SELECT k, SUM(v) AS s ", "FROM t WHERE id > ", " GROUP BY k HAVING ", "SUM(v) > ", " ", "ORDER BY s DESC"},
+				Slots:    []Slot{{Kind: SlotColPreds}, {Kind: SlotScalar}, {Kind: SlotSelectGuardOpen}, {Kind: SlotScalar}, {Kind: SlotSelectGuardClose}}}},
+		{name: "select-limit", hasRes: true, args: 1,
+			desc: &QueryDescriptor{Name: "sell", StmtVerb: VerbSelect, TopOrderBy: true,
+				Segments: []string{"SELECT id ", "FROM t WHERE id > ", "", " ORDER BY id DESC LIMIT 2"},
+				Slots:    []Slot{{Kind: SlotColPreds}, {Kind: SlotScalar}, {Kind: SlotSelectGuardHaving}}}},
 	}
 }
 
@@ -422,6 +430,11 @@ func TestMySQLShapeMatrix(t *testing.T) {
 									continue
 								}
 								checkMySQLBatch(t, name, b, ops, fl, inTx)
+								// a SELECT with its own HAVING guard is gated there, never in a derived table
+								if g := ops[idx].SQL; sd.desc.hasSelectGuard() && (nGates > 0 || prior) &&
+									(strings.Contains(g, "_sqlgen_if") || !strings.Contains(g, "HAVING")) {
+									t.Errorf("%s: gated SELECT not guarded by its HAVING:\n%s", name, g)
+								}
 								if prior || assert >= 0 {
 									// every statement of an operation after a possible failure is gated on it
 									for i := range ops {

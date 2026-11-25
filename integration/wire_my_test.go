@@ -89,6 +89,38 @@ func myFmtRow[T any](f *runtime.RowFuture[T]) string {
 }
 
 var myWireScenarios = []myScenario{
+	// An ordered SELECT inside an If branch, or after an assertion, is gated: its rows must keep the
+	// statement's ORDER BY (a derived table around it would not keep it on MariaDB / TiDB).
+	{"gated SELECT keeps its ORDER BY", func(p *myq.Pipeline) ([]*runtime.IfResult, func() string) {
+		p.AddScoreOne(100, 1)
+		g := p.GetItem(1)
+		var s *runtime.SliceFuture[int64]
+		var tot *runtime.SliceFuture[myq.ParityTotal]
+		var n *runtime.RowFuture[int64]
+		r := p.If(g.Found(), func(p *myq.Pipeline) {
+			s = p.ItemsByScoreDesc(1)
+			tot = p.ScoreByParity(0)
+		}, func(p *myq.Pipeline) { n = p.CountOrgItems(1) })
+		return []*runtime.IfResult{r}, func() string { return myFmtSlice(s) + " " + myFmtSlice(tot) + " " + myFmtRow(n) }
+	}},
+	{"SELECT after an assertion keeps its ORDER BY", func(p *myq.Pipeline) ([]*runtime.IfResult, func() string) {
+		p.AddScoreOne(100, 1).AssertRows(1)
+		s := p.ItemsByScoreDesc(1)
+		tot := p.ScoreByParity(0)
+		n := p.CountOrgItems(1)
+		return nil, func() string { return myFmtSlice(s) + " " + myFmtSlice(tot) + " " + myFmtRow(n) }
+	}},
+	{"untaken branch: an aggregate SELECT returns nothing", func(p *myq.Pipeline) ([]*runtime.IfResult, func() string) {
+		g := p.GetItem(999)
+		var n *runtime.RowFuture[int64]
+		var tot *runtime.SliceFuture[myq.ParityTotal]
+		r := p.If(g.Found(), func(p *myq.Pipeline) {
+			n = p.CountOrgItems(1)
+			tot = p.ScoreByParity(0)
+		}, nil)
+		after := p.If(n.Found().Or(tot.Found()), func(p *myq.Pipeline) { p.AddScoreOne(1000, 2) }, nil)
+		return []*runtime.IfResult{r, after}, func() string { return myFmtRow(n) + " " + myFmtSlice(tot) }
+	}},
 	{"guarded transfer succeeds", func(p *myq.Pipeline) ([]*runtime.IfResult, func() string) {
 		p.AddScoreOne(-5, 1).AssertRows(1)
 		p.AddScoreOne(5, 2).AssertRows(1)

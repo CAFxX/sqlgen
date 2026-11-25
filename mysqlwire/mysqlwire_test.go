@@ -126,8 +126,8 @@ func newKV(table string) *kv {
 	k.get = &runtime.QueryDescriptor{
 		Name: "Get", StmtID: 2, StmtVerb: runtime.VerbSelect,
 		StaticSQL:      "SELECT id, v FROM " + table + " WHERE id = ?",
-		Segments:       []string{"SELECT ", " ", "FROM " + table + " WHERE id = ", ""},
-		Slots:          []runtime.Slot{{Kind: runtime.SlotSelectCols}, {Kind: runtime.SlotColPreds}, {Kind: runtime.SlotScalar}},
+		Segments:       []string{"SELECT ", " ", "FROM " + table + " WHERE id = ", "", ""},
+		Slots:          []runtime.Slot{{Kind: runtime.SlotSelectCols}, {Kind: runtime.SlotColPreds}, {Kind: runtime.SlotScalar}, {Kind: runtime.SlotSelectGuardHaving}},
 		SelectColExprs: []string{"id", "v"},
 	}
 	k.ins = &runtime.QueryDescriptor{

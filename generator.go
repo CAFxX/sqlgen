@@ -710,6 +710,7 @@ type compiledStmt struct {
 	Kind         QueryKind
 	StmtVerb     runtime.StmtVerb
 	HasReturning bool
+	TopOrderBy   bool
 	RowTypeName  string
 	ScalarResult bool
 	StructArgs   bool // args style is ArgsStruct; false is ArgsPositional
@@ -817,6 +818,16 @@ func isIdentContByte(b byte) bool {
 func isSpaceByte(b byte) bool {
 	return b == ' ' || b == '\t' || b == '\r' || b == '\n'
 }
+
+// selectGuardWords are the words of the main SELECT where its HAVING guard goes: its own HAVING, or the
+// first clause that follows the place of one.
+var selectGuardWords = map[string]bool{
+	"having": true, "window": true, "order": true, "limit": true, "offset": true, "fetch": true, "for": true,
+	"lock": true, "union": true, "intersect": true, "except": true,
+}
+
+// OFFSET and FETCH (a clause without LIMIT on MariaDB) are not reserved by MySQL, so a column may be named
+// so: they place no guard, the statement is wrapped instead (or runs sequentially when ordered).
 
 var projectionTerminators = map[string]bool{
 	"from":      true,
@@ -1401,6 +1412,14 @@ type stmtParser struct {
 	selDistinct bool
 	compound    bool
 
+	// The HAVING guard of the main SELECT (SlotSelectGuard*, see runtime.SlotSelectGuardHaving):
+	// selGuardDone once placed, selGuardClose while a HAVING of the statement's own is open, selGuardBad
+	// when it cannot be placed reliably (a HAVING or a later clause inside an optional block): the slots
+	// are removed again, as for a compound statement.
+	selGuardDone  bool
+	selGuardClose bool
+	selGuardBad   bool
+
 	projActive        bool
 	projStartSegIdx   int
 	projStartByteIdx  int
@@ -1659,6 +1678,25 @@ func (p *stmtParser) scanSpan(span string, blk *parsedBlock, isTopLevel bool) er
 		}
 	}
 
+	// flushSelectGuard places the HAVING guard of the main SELECT where its clauses after HAVING start (or
+	// where the statement ends): it closes the statement's own HAVING, or adds one.
+	flushSelectGuard := func() {
+		if p.cs.StmtVerb != runtime.VerbSelect || !p.seenMainSel || p.selGuardDone {
+			return
+		}
+		if !isTopLevel || p.inOptBlock {
+			p.selGuardBad = true
+			return
+		}
+		p.selGuardDone = true
+		if p.selGuardClose {
+			p.selGuardClose = false
+			emitSlot(slotRef{Kind: runtime.SlotSelectGuardClose, ParamIdx: -1})
+		} else {
+			emitSlot(slotRef{Kind: runtime.SlotSelectGuardHaving, ParamIdx: -1})
+		}
+	}
+
 	flushBranchGuardBeforeEnd := func() {
 		if !isTopLevel || p.inOptBlock {
 			return
@@ -1851,6 +1889,7 @@ func (p *stmtParser) scanSpan(span string, blk *parsedBlock, isTopLevel bool) er
 		// Top-level semicolon
 		if ch == ';' && isTopLevel && p.parenDepth == 0 && p.bracketDepth == 0 {
 			endProjection()
+			flushSelectGuard()
 			flushBranchGuardBeforeEnd()
 			seg = append(seg, ch)
 			i++
@@ -2014,6 +2053,33 @@ func (p *stmtParser) scanSpan(span string, blk *parsedBlock, isTopLevel bool) er
 
 					if low == "union" || low == "intersect" || low == "except" {
 						p.compound = true
+					}
+					if low == "order" && p.cs.StmtVerb == runtime.VerbSelect {
+						p.cs.TopOrderBy = true
+					}
+					if p.seenMainSel && !p.selGuardDone && selectGuardWords[low] && !(tokenStart > 0 && span[tokenStart-1] == '.') {
+						endProjection() // a SELECT without FROM
+						switch low {
+						case "having":
+							if !isTopLevel || p.inOptBlock || p.cs.StmtVerb != runtime.VerbSelect {
+								p.selGuardBad = true
+								break
+							}
+							seg = append(seg, span[tokenStart:identEnd]...)
+							i = identEnd
+							for i < len(span) && isSpaceByte(span[i]) {
+								seg = append(seg, span[i])
+								i++
+							}
+							p.selGuardClose = true
+							emitSlot(slotRef{Kind: runtime.SlotSelectGuardOpen, ParamIdx: -1})
+							p.prevWordLow = low
+							continue
+						case "offset", "fetch":
+							p.selGuardBad = true
+						default:
+							flushSelectGuard()
+						}
 					}
 					if low == "select" && p.cs.StmtVerb == runtime.VerbSelect && !p.seenMainSel {
 						p.inProjection = true
@@ -2367,6 +2433,7 @@ func (p *stmtParser) scanSpan(span string, blk *parsedBlock, isTopLevel bool) er
 			return fmt.Errorf("statement %s: unbalanced brackets in SQL", p.spec.Name)
 		}
 		endProjection()
+		flushSelectGuard()
 		flushBranchGuardBeforeEnd()
 	}
 
@@ -2435,6 +2502,14 @@ func compileStatement(id uint32, spec StatementSpec, sd stmtDialect) (*compiledS
 		// A WhereCol column would change which rows a DISTINCT keeps, and only the first SELECT of a
 		// compound statement would get it.
 		removeSlotKind(&cs.Root, runtime.SlotColPreds)
+	}
+	if parser.compound || parser.selGuardBad || parser.selGuardClose {
+		// The HAVING guard would only filter the first SELECT of a compound statement, and cannot be
+		// placed around an optional block; the MySQL flavor wraps such a statement instead (or, when it
+		// is ordered, runs it on the sequential path).
+		removeSlotKind(&cs.Root, runtime.SlotSelectGuardOpen)
+		removeSlotKind(&cs.Root, runtime.SlotSelectGuardClose)
+		removeSlotKind(&cs.Root, runtime.SlotSelectGuardHaving)
 	}
 
 	if kind == KindExec && len(cs.Cols) > 0 {
@@ -2780,6 +2855,7 @@ func buildRuntimeDescriptor(cs *compiledStmt, blk *parsedBlock) *runtime.QueryDe
 		StmtID:         cs.ID,
 		StmtVerb:       cs.StmtVerb,
 		HasReturning:   cs.HasReturning,
+		TopOrderBy:     cs.TopOrderBy,
 		SelectColExprs: cs.SelectColExprs,
 		Segments:       blk.Segments,
 	}
@@ -3168,6 +3244,9 @@ func emitBlockLiteral(b *bytes.Buffer, cs *compiledStmt, blk *parsedBlock, isRoo
 		case runtime.VerbDelete:
 			b.WriteString("\tStmtVerb: runtime.VerbDelete,\n")
 		}
+		if cs.TopOrderBy {
+			b.WriteString("\tTopOrderBy: true,\n")
+		}
 		if cs.HasReturning {
 			b.WriteString("\tHasReturning: true,\n")
 		}
@@ -3238,6 +3317,12 @@ func emitBlockLiteral(b *bytes.Buffer, cs *compiledStmt, blk *parsedBlock, isRoo
 				b.WriteString("runtime.SlotBranchGuardWhere")
 			case runtime.SlotColPreds:
 				b.WriteString("runtime.SlotColPreds")
+			case runtime.SlotSelectGuardOpen:
+				b.WriteString("runtime.SlotSelectGuardOpen")
+			case runtime.SlotSelectGuardClose:
+				b.WriteString("runtime.SlotSelectGuardClose")
+			case runtime.SlotSelectGuardHaving:
+				b.WriteString("runtime.SlotSelectGuardHaving")
 			case runtime.SlotInsertValuesOpen:
 				b.WriteString("runtime.SlotInsertValuesOpen")
 			case runtime.SlotInsertValuesClose:

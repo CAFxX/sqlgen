@@ -21,7 +21,7 @@ type Queries struct {
 	cache       *runtime.StmtCache
 	txCache     *runtime.TxStmtCache
 	usePrepared bool
-	fastSlots   *[21]atomic.Pointer[runtime.ManagedStmt]
+	fastSlots   *[23]atomic.Pointer[runtime.ManagedStmt]
 }
 
 // New creates a new Queries instance with a dedicated StmtCache configured by opts. The views made by
@@ -31,7 +31,7 @@ func New(db *sql.DB, opts ...runtime.CacheOption) *Queries {
 		db:          db,
 		cache:       runtime.NewStmtCache(opts...),
 		usePrepared: true,
-		fastSlots:   new([21]atomic.Pointer[runtime.ManagedStmt]),
+		fastSlots:   new([23]atomic.Pointer[runtime.ManagedStmt]),
 	}
 }
 
@@ -258,6 +258,11 @@ type OrgStat struct {
 type Written struct {
 	ID    int64
 	Score int64
+}
+
+type ParityTotal struct {
+	K     int64
+	Total int64
 }
 
 const stmtIDInsertItems uint32 = 1
@@ -491,11 +496,12 @@ var descGetItem = &runtime.QueryDescriptor{
 	StmtID:    2,
 	StmtVerb:  runtime.VerbSelect,
 	StaticSQL: "SELECT id, org_id, name, score, status\nFROM sg_items\nWHERE id = $1",
-	Segments:  []string{"SELECT ", "\n", "FROM sg_items\nWHERE id = ", ""},
+	Segments:  []string{"SELECT ", "\n", "FROM sg_items\nWHERE id = ", "", ""},
 	Slots: []runtime.Slot{
 		{Kind: runtime.SlotSelectCols},
 		{Kind: runtime.SlotColPreds},
 		{Kind: runtime.SlotScalar},
+		{Kind: runtime.SlotSelectGuardHaving},
 	},
 	SelectColExprs: []string{"id", "org_id", "name", "score", "status"},
 	ResultCols:     []string{"id", "org_id", "name", "score", "status"},
@@ -651,14 +657,16 @@ type paramsItemsByIDs struct {
 }
 
 var descItemsByIDs = &runtime.QueryDescriptor{
-	Name:     "ItemsByIDs",
-	StmtID:   3,
-	StmtVerb: runtime.VerbSelect,
-	Segments: []string{"SELECT ", "\n", "FROM sg_items\nWHERE id IN (", ")\nORDER BY id"},
+	Name:       "ItemsByIDs",
+	StmtID:     3,
+	StmtVerb:   runtime.VerbSelect,
+	TopOrderBy: true,
+	Segments:   []string{"SELECT ", "\n", "FROM sg_items\nWHERE id IN (", ")\n", "ORDER BY id"},
 	Slots: []runtime.Slot{
 		{Kind: runtime.SlotSelectCols},
 		{Kind: runtime.SlotColPreds},
 		{Kind: runtime.SlotSlice},
+		{Kind: runtime.SlotSelectGuardHaving},
 	},
 	SelectColExprs: []string{"id", "org_id", "name", "score", "status"},
 	NumSlices:      1,
@@ -940,10 +948,11 @@ type SearchItemsParams struct {
 }
 
 var descSearchItems = &runtime.QueryDescriptor{
-	Name:     "SearchItems",
-	StmtID:   4,
-	StmtVerb: runtime.VerbSelect,
-	Segments: []string{"SELECT ", "\n", "FROM sg_items\nWHERE score >= ", "\n  ", "\n  ", "\n  ", "\nORDER BY id"},
+	Name:       "SearchItems",
+	StmtID:     4,
+	StmtVerb:   runtime.VerbSelect,
+	TopOrderBy: true,
+	Segments:   []string{"SELECT ", "\n", "FROM sg_items\nWHERE score >= ", "\n  ", "\n  ", "\n  ", "\n", "ORDER BY id"},
 	Slots: []runtime.Slot{
 		{Kind: runtime.SlotSelectCols},
 		{Kind: runtime.SlotColPreds},
@@ -967,6 +976,7 @@ var descSearchItems = &runtime.QueryDescriptor{
 				{Kind: runtime.SlotScalar},
 			},
 		}},
+		{Kind: runtime.SlotSelectGuardHaving},
 	},
 	SelectColExprs: []string{"id", "org_id", "name", "score", "status"},
 	NumSlices:      1,
@@ -1206,15 +1216,17 @@ type PageItemsParams struct {
 }
 
 var descPageItems = &runtime.QueryDescriptor{
-	Name:     "PageItems",
-	StmtID:   5,
-	StmtVerb: runtime.VerbSelect,
-	Segments: []string{"SELECT ", "\n", "FROM sg_items\nWHERE org_id = ", "\n  AND ", "\nORDER BY ", "\nLIMIT ", ""},
+	Name:       "PageItems",
+	StmtID:     5,
+	StmtVerb:   runtime.VerbSelect,
+	TopOrderBy: true,
+	Segments:   []string{"SELECT ", "\n", "FROM sg_items\nWHERE org_id = ", "\n  AND ", "\n", "ORDER BY ", "\nLIMIT ", ""},
 	Slots: []runtime.Slot{
 		{Kind: runtime.SlotSelectCols},
 		{Kind: runtime.SlotColPreds},
 		{Kind: runtime.SlotScalar},
 		{Kind: runtime.SlotSeek},
+		{Kind: runtime.SlotSelectGuardHaving},
 		{Kind: runtime.SlotOrder},
 		{Kind: runtime.SlotScalar},
 	},
@@ -1448,14 +1460,16 @@ type WideRowsParams struct {
 }
 
 var descWideRows = &runtime.QueryDescriptor{
-	Name:     "WideRows",
-	StmtID:   6,
-	StmtVerb: runtime.VerbSelect,
-	Segments: []string{"SELECT ", "\n", "FROM sg_wide\nWHERE ", "\nORDER BY ", "\nLIMIT ", ""},
+	Name:       "WideRows",
+	StmtID:     6,
+	StmtVerb:   runtime.VerbSelect,
+	TopOrderBy: true,
+	Segments:   []string{"SELECT ", "\n", "FROM sg_wide\nWHERE ", "\n", "ORDER BY ", "\nLIMIT ", ""},
 	Slots: []runtime.Slot{
 		{Kind: runtime.SlotSelectCols},
 		{Kind: runtime.SlotColPreds},
 		{Kind: runtime.SlotSeek},
+		{Kind: runtime.SlotSelectGuardHaving},
 		{Kind: runtime.SlotOrder},
 		{Kind: runtime.SlotScalar},
 	},
@@ -2147,10 +2161,12 @@ var descTopOrgs = &runtime.QueryDescriptor{
 	StmtID:    10,
 	StmtVerb:  runtime.VerbSelect,
 	StaticSQL: "SELECT org_id FROM sg_items GROUP BY org_id HAVING COUNT(*) >= $1",
-	Segments:  []string{"SELECT org_id ", "FROM sg_items GROUP BY org_id HAVING COUNT(*) >= ", ""},
+	Segments:  []string{"SELECT org_id ", "FROM sg_items GROUP BY org_id HAVING ", "COUNT(*) >= ", "", ""},
 	Slots: []runtime.Slot{
 		{Kind: runtime.SlotColPreds},
+		{Kind: runtime.SlotSelectGuardOpen},
 		{Kind: runtime.SlotScalar},
+		{Kind: runtime.SlotSelectGuardClose},
 	},
 }
 
@@ -2215,15 +2231,17 @@ type paramsOrgStats struct {
 }
 
 var descOrgStats = &runtime.QueryDescriptor{
-	Name:     "OrgStats",
-	StmtID:   11,
-	StmtVerb: runtime.VerbSelect,
-	Segments: []string{"WITH picked AS (", ")\nSELECT ", "\n", "FROM sg_items i\nWHERE i.org_id IN (SELECT org_id FROM picked) AND i.status = ", "\nGROUP BY i.org_id\nORDER BY i.org_id"},
+	Name:       "OrgStats",
+	StmtID:     11,
+	StmtVerb:   runtime.VerbSelect,
+	TopOrderBy: true,
+	Segments:   []string{"WITH picked AS (", ")\nSELECT ", "\n", "FROM sg_items i\nWHERE i.org_id IN (SELECT org_id FROM picked) AND i.status = ", "\nGROUP BY i.org_id\n", "ORDER BY i.org_id"},
 	Slots: []runtime.Slot{
 		{Kind: runtime.SlotQuery},
 		{Kind: runtime.SlotSelectCols},
 		{Kind: runtime.SlotColPreds},
 		{Kind: runtime.SlotScalar},
+		{Kind: runtime.SlotSelectGuardHaving},
 	},
 	SelectColExprs: []string{"i.org_id", "COUNT(*) AS n", "COALESCE(SUM(i.score), 0) AS total"},
 	NumSubs:        1,
@@ -3478,10 +3496,11 @@ var descCountOrgItems = &runtime.QueryDescriptor{
 	StmtID:    17,
 	StmtVerb:  runtime.VerbSelect,
 	StaticSQL: "SELECT COUNT(*) AS n FROM sg_items WHERE org_id = $1",
-	Segments:  []string{"SELECT COUNT(*) AS n ", "FROM sg_items WHERE org_id = ", ""},
+	Segments:  []string{"SELECT COUNT(*) AS n ", "FROM sg_items WHERE org_id = ", "", ""},
 	Slots: []runtime.Slot{
 		{Kind: runtime.SlotColPreds},
 		{Kind: runtime.SlotScalar},
+		{Kind: runtime.SlotSelectGuardHaving},
 	},
 	ResultCols: []string{"n"},
 	ResultExpr: "COUNT(*)",
@@ -3595,13 +3614,15 @@ type paramsNamesByIDs struct {
 }
 
 var descNamesByIDs = &runtime.QueryDescriptor{
-	Name:     "NamesByIDs",
-	StmtID:   18,
-	StmtVerb: runtime.VerbSelect,
-	Segments: []string{"SELECT name ", "FROM sg_items WHERE id IN (", ") ORDER BY id"},
+	Name:       "NamesByIDs",
+	StmtID:     18,
+	StmtVerb:   runtime.VerbSelect,
+	TopOrderBy: true,
+	Segments:   []string{"SELECT name ", "FROM sg_items WHERE id IN (", ") ", "ORDER BY id"},
 	Slots: []runtime.Slot{
 		{Kind: runtime.SlotColPreds},
 		{Kind: runtime.SlotSlice},
+		{Kind: runtime.SlotSelectGuardHaving},
 	},
 	NumSlices: 1,
 }
@@ -3837,10 +3858,11 @@ var descFwdScoreOf = &runtime.QueryDescriptor{
 	StmtID:    19,
 	StmtVerb:  runtime.VerbSelect,
 	StaticSQL: "SELECT score AS fwd FROM sg_items WHERE id = $1",
-	Segments:  []string{"SELECT score AS fwd ", "FROM sg_items WHERE id = ", ""},
+	Segments:  []string{"SELECT score AS fwd ", "FROM sg_items WHERE id = ", "", ""},
 	Slots: []runtime.Slot{
 		{Kind: runtime.SlotColPreds},
 		{Kind: runtime.SlotScalar},
+		{Kind: runtime.SlotSelectGuardHaving},
 	},
 	ResultCols: []string{"fwd"},
 	ResultExpr: "score",
@@ -3954,14 +3976,16 @@ type paramsFwdIDsByStatus struct {
 }
 
 var descFwdIDsByStatus = &runtime.QueryDescriptor{
-	Name:      "FwdIDsByStatus",
-	StmtID:    20,
-	StmtVerb:  runtime.VerbSelect,
-	StaticSQL: "SELECT id FROM sg_items WHERE status = $1 ORDER BY id",
-	Segments:  []string{"SELECT id ", "FROM sg_items WHERE status = ", " ORDER BY id"},
+	Name:       "FwdIDsByStatus",
+	StmtID:     20,
+	StmtVerb:   runtime.VerbSelect,
+	TopOrderBy: true,
+	StaticSQL:  "SELECT id FROM sg_items WHERE status = $1 ORDER BY id",
+	Segments:   []string{"SELECT id ", "FROM sg_items WHERE status = ", " ", "ORDER BY id"},
 	Slots: []runtime.Slot{
 		{Kind: runtime.SlotColPreds},
 		{Kind: runtime.SlotScalar},
+		{Kind: runtime.SlotSelectGuardHaving},
 	},
 	ResultCols: []string{"id"},
 	ResultExpr: "id",
@@ -4240,14 +4264,16 @@ type paramsFwdItemsAbove struct {
 }
 
 var descFwdItemsAbove = &runtime.QueryDescriptor{
-	Name:      "FwdItemsAbove",
-	StmtID:    23,
-	StmtVerb:  runtime.VerbSelect,
-	StaticSQL: "SELECT id FROM sg_items WHERE score > $1 ORDER BY id",
-	Segments:  []string{"SELECT id ", "FROM sg_items WHERE score > ", " ORDER BY id"},
+	Name:       "FwdItemsAbove",
+	StmtID:     23,
+	StmtVerb:   runtime.VerbSelect,
+	TopOrderBy: true,
+	StaticSQL:  "SELECT id FROM sg_items WHERE score > $1 ORDER BY id",
+	Segments:   []string{"SELECT id ", "FROM sg_items WHERE score > ", " ", "ORDER BY id"},
 	Slots: []runtime.Slot{
 		{Kind: runtime.SlotColPreds},
 		{Kind: runtime.SlotScalar, Cast: "bigint"},
+		{Kind: runtime.SlotSelectGuardHaving},
 	},
 }
 
@@ -4376,7 +4402,313 @@ func (pl *Pipeline) FwdItemsAbove(minParam runtime.Arg[int64]) *runtime.SliceFut
 	return fut
 }
 
-const stmtIDFwdSrcI8 uint32 = 24
+const stmtIDItemsByScoreDesc uint32 = 24
+
+type paramsItemsByScoreDesc struct {
+	Org int64
+}
+
+var descItemsByScoreDesc = &runtime.QueryDescriptor{
+	Name:       "ItemsByScoreDesc",
+	StmtID:     24,
+	StmtVerb:   runtime.VerbSelect,
+	TopOrderBy: true,
+	StaticSQL:  "SELECT id FROM sg_items WHERE org_id = $1 ORDER BY score DESC, id DESC",
+	Segments:   []string{"SELECT id ", "FROM sg_items WHERE org_id = ", " ", "ORDER BY score DESC, id DESC"},
+	Slots: []runtime.Slot{
+		{Kind: runtime.SlotColPreds},
+		{Kind: runtime.SlotScalar},
+		{Kind: runtime.SlotSelectGuardHaving},
+	},
+}
+
+func expandItemsByScoreDescParams(dst *[]any, dialect runtime.Dialect, p paramsItemsByScoreDesc) error {
+	_ = dialect
+	_ = p
+	*dst = append(*dst, p.Org)
+	return nil
+}
+
+func expandItemsByScoreDescArgs(dst *[]any, dialect runtime.Dialect, q *runtime.Query) error {
+	return expandItemsByScoreDescParams(dst, dialect, q.Params.(paramsItemsByScoreDesc))
+}
+
+func computeItemsByScoreDescKey(p paramsItemsByScoreDesc) (runtime.VariantKey, uint64, uint64, int) {
+	_ = p
+	var colMask uint64
+	var flagMask uint64
+	var orderSpec runtime.Order
+	var hasSeek bool
+	orderKey := runtime.EncodeOrderKey(orderSpec, hasSeek)
+	approxArgs := 5
+	vk := runtime.MakeVariantKey(stmtIDItemsByScoreDesc, colMask, flagMask, orderKey)
+	return vk, colMask, flagMask, approxArgs
+}
+
+// ItemsByScoreDescQuery constructs a composable runtime.Query without executing it (stateless: no Queries or DB needed).
+func ItemsByScoreDescQuery(org int64) runtime.Query {
+	p := paramsItemsByScoreDesc{
+		Org: org,
+	}
+	_, colMask, flagMask, _ := computeItemsByScoreDescKey(p)
+	in := runtime.RenderInput{
+		ColMask:  colMask,
+		FlagMask: flagMask,
+	}
+	orderKey := runtime.EncodeOrderKey(in.OrderSpec, in.HasSeek)
+	shapeTag := runtime.ComputeSubqueryShape(stmtIDItemsByScoreDesc, colMask, flagMask, orderKey, false)
+	return runtime.Query{
+		StmtID:   stmtIDItemsByScoreDesc,
+		Desc:     descItemsByScoreDesc,
+		Input:    in,
+		Params:   p,
+		Expand:   expandItemsByScoreDescArgs,
+		ShapeTag: shapeTag,
+	}
+}
+
+func scanItemsByScoreDescRow(scanner interface{ Scan(...any) error }, dst *int64, colMask uint64, p paramsItemsByScoreDesc) error {
+	_ = colMask
+	_ = p
+	var item int64
+	scanDest := [1]any{&item}
+	scanSlice := scanDest[:1]
+	if err := scanner.Scan(scanSlice...); err != nil {
+		return err
+	}
+	*dst = item
+	return nil
+}
+
+func (q *Queries) ItemsByScoreDesc(ctx context.Context, org int64) ([]int64, error) {
+	return runtime.Collect(q.ItemsByScoreDescSeq(ctx, org))
+}
+
+func (q *Queries) ItemsByScoreDescSeq(ctx context.Context, org int64) iter.Seq2[int64, error] {
+	return func(yield func(int64, error) bool) {
+		var zero int64
+		p := paramsItemsByScoreDesc{
+			Org: org,
+		}
+		vk, colMask, flagMask, approxArgs := computeItemsByScoreDescKey(p)
+		_ = colMask
+		argBuf := runtime.AcquireArgsCap(approxArgs)
+		defer runtime.ReleaseArgs(argBuf)
+		_ = expandItemsByScoreDescParams(argBuf, sqlDialect, p)
+		in := runtime.RenderInput{
+			ColMask:  colMask,
+			FlagMask: flagMask,
+		}
+		sqlRows, ms, err := q.cache.Query(ctx, q.db, q.txCache, q.usePrepared, vk, stmtIDItemsByScoreDesc, runtime.ComputeBatchShapeTag(colMask, flagMask), 0, &q.fastSlots[10], sqlDialect, descItemsByScoreDesc, &in, (*argBuf)...)
+		if err != nil {
+			yield(zero, err)
+			return
+		}
+		defer runtime.ReleaseRows(&sqlRows, &ms)
+		var item int64
+		for sqlRows.Next() {
+			if err := scanItemsByScoreDescRow(sqlRows, &item, colMask, p); err != nil {
+				runtime.ReleaseRows(&sqlRows, &ms)
+				yield(zero, err)
+				return
+			}
+			if !yield(item, nil) {
+				return
+			}
+		}
+		err = sqlRows.Err()
+		runtime.ReleaseRows(&sqlRows, &ms)
+		if err != nil {
+			yield(zero, err)
+		}
+	}
+}
+
+func (pl *Pipeline) ItemsByScoreDesc(org int64) *runtime.SliceFuture[int64] {
+	p := paramsItemsByScoreDesc{
+		Org: org,
+	}
+	vk, colMask, flagMask, approxArgs := computeItemsByScoreDescKey(p)
+	argBuf := runtime.AcquireArgsCap(approxArgs)
+	expandErr := expandItemsByScoreDescParams(argBuf, sqlDialect, p)
+	in := runtime.RenderInput{
+		ColMask:  colMask,
+		FlagMask: flagMask,
+	}
+	return runtime.QueueSlice(pl.Pipeline, stmtIDItemsByScoreDesc, descItemsByScoreDesc, in, vk, &pl.q.fastSlots[10], argBuf, expandErr,
+		func(rs runtime.RowScanner, dst *int64) error { return scanItemsByScoreDescRow(rs, dst, colMask, p) },
+	)
+}
+
+const stmtIDScoreByParity uint32 = 25
+
+const (
+	ScoreByParityColK     uint64 = 1 << 0
+	ScoreByParityColTotal uint64 = 1 << 1
+	ScoreByParityColsAll  uint64 = (1 << 2) - 1
+)
+
+type paramsScoreByParity struct {
+	Min        int64
+	SelectCols uint64
+}
+
+var descScoreByParity = &runtime.QueryDescriptor{
+	Name:       "ScoreByParity",
+	StmtID:     25,
+	StmtVerb:   runtime.VerbSelect,
+	TopOrderBy: true,
+	StaticSQL:  "SELECT MOD(id, 2) AS k, SUM(score) AS total\nFROM sg_items\nGROUP BY MOD(id, 2)\nHAVING SUM(score) > $1\nORDER BY total DESC",
+	Segments:   []string{"SELECT ", "\n", "FROM sg_items\nGROUP BY MOD(id, 2)\nHAVING ", "SUM(score) > ", "\n", "ORDER BY total DESC"},
+	Slots: []runtime.Slot{
+		{Kind: runtime.SlotSelectCols},
+		{Kind: runtime.SlotColPreds},
+		{Kind: runtime.SlotSelectGuardOpen},
+		{Kind: runtime.SlotScalar},
+		{Kind: runtime.SlotSelectGuardClose},
+	},
+	SelectColExprs: []string{"MOD(id, 2) AS k", "SUM(score) AS total"},
+}
+
+func expandScoreByParityParams(dst *[]any, dialect runtime.Dialect, p paramsScoreByParity) error {
+	_ = dialect
+	_ = p
+	*dst = append(*dst, p.Min)
+	return nil
+}
+
+func expandScoreByParityArgs(dst *[]any, dialect runtime.Dialect, q *runtime.Query) error {
+	return expandScoreByParityParams(dst, dialect, q.Params.(paramsScoreByParity))
+}
+
+func computeScoreByParityKey(p paramsScoreByParity) (runtime.VariantKey, uint64, uint64, int) {
+	_ = p
+	var colMask uint64
+	colMask = p.SelectCols & ScoreByParityColsAll
+	if colMask == ScoreByParityColsAll {
+		colMask = 0
+	}
+	var flagMask uint64
+	var orderSpec runtime.Order
+	var hasSeek bool
+	orderKey := runtime.EncodeOrderKey(orderSpec, hasSeek)
+	approxArgs := 5
+	vk := runtime.MakeVariantKey(stmtIDScoreByParity, colMask, flagMask, orderKey)
+	return vk, colMask, flagMask, approxArgs
+}
+
+// ScoreByParityQuery constructs a composable runtime.Query without executing it (stateless: no Queries or DB needed).
+func ScoreByParityQuery(minParam int64, selectCols ...uint64) runtime.Query {
+	p := paramsScoreByParity{
+		Min:        minParam,
+		SelectCols: runtime.OrCols(selectCols),
+	}
+	_, colMask, flagMask, _ := computeScoreByParityKey(p)
+	in := runtime.RenderInput{
+		ColMask:  colMask,
+		FlagMask: flagMask,
+	}
+	orderKey := runtime.EncodeOrderKey(in.OrderSpec, in.HasSeek)
+	shapeTag := runtime.ComputeSubqueryShape(stmtIDScoreByParity, colMask, flagMask, orderKey, false)
+	return runtime.Query{
+		StmtID:   stmtIDScoreByParity,
+		Desc:     descScoreByParity,
+		Input:    in,
+		Params:   p,
+		Expand:   expandScoreByParityArgs,
+		ShapeTag: shapeTag,
+	}
+}
+
+func scanScoreByParityRow(scanner interface{ Scan(...any) error }, dst *ParityTotal, colMask uint64, p paramsScoreByParity) error {
+	_ = colMask
+	_ = p
+	var item ParityTotal
+	var scanBuf [2]any
+	scanCount := 0
+	effMask := colMask
+	if effMask == 0 {
+		effMask = ScoreByParityColsAll
+	}
+	if (effMask & (1 << 0)) != 0 {
+		scanBuf[scanCount] = &item.K
+		scanCount++
+	}
+	if (effMask & (1 << 1)) != 0 {
+		scanBuf[scanCount] = &item.Total
+		scanCount++
+	}
+	scanSlice := scanBuf[:scanCount]
+	if err := scanner.Scan(scanSlice...); err != nil {
+		return err
+	}
+	*dst = item
+	return nil
+}
+
+func (q *Queries) ScoreByParity(ctx context.Context, minParam int64, selectCols ...uint64) ([]ParityTotal, error) {
+	return runtime.Collect(q.ScoreByParitySeq(ctx, minParam, selectCols...))
+}
+
+func (q *Queries) ScoreByParitySeq(ctx context.Context, minParam int64, selectCols ...uint64) iter.Seq2[ParityTotal, error] {
+	return func(yield func(ParityTotal, error) bool) {
+		var zero ParityTotal
+		p := paramsScoreByParity{
+			Min:        minParam,
+			SelectCols: runtime.OrCols(selectCols),
+		}
+		vk, colMask, flagMask, approxArgs := computeScoreByParityKey(p)
+		_ = colMask
+		argBuf := runtime.AcquireArgsCap(approxArgs)
+		defer runtime.ReleaseArgs(argBuf)
+		_ = expandScoreByParityParams(argBuf, sqlDialect, p)
+		in := runtime.RenderInput{
+			ColMask:  colMask,
+			FlagMask: flagMask,
+		}
+		sqlRows, ms, err := q.cache.Query(ctx, q.db, q.txCache, q.usePrepared, vk, stmtIDScoreByParity, runtime.ComputeBatchShapeTag(colMask, flagMask), 0, runtime.FastSlot(colMask, &q.fastSlots[11]), sqlDialect, descScoreByParity, &in, (*argBuf)...)
+		if err != nil {
+			yield(zero, err)
+			return
+		}
+		defer runtime.ReleaseRows(&sqlRows, &ms)
+		var item ParityTotal
+		for sqlRows.Next() {
+			if err := scanScoreByParityRow(sqlRows, &item, colMask, p); err != nil {
+				runtime.ReleaseRows(&sqlRows, &ms)
+				yield(zero, err)
+				return
+			}
+			if !yield(item, nil) {
+				return
+			}
+		}
+		err = sqlRows.Err()
+		runtime.ReleaseRows(&sqlRows, &ms)
+		if err != nil {
+			yield(zero, err)
+		}
+	}
+}
+
+func (pl *Pipeline) ScoreByParity(minParam int64, selectCols ...uint64) *runtime.SliceFuture[ParityTotal] {
+	p := paramsScoreByParity{
+		Min:        minParam,
+		SelectCols: runtime.OrCols(selectCols),
+	}
+	vk, colMask, flagMask, approxArgs := computeScoreByParityKey(p)
+	argBuf := runtime.AcquireArgsCap(approxArgs)
+	expandErr := expandScoreByParityParams(argBuf, sqlDialect, p)
+	in := runtime.RenderInput{
+		ColMask:  colMask,
+		FlagMask: flagMask,
+	}
+	return runtime.QueueSlice(pl.Pipeline, stmtIDScoreByParity, descScoreByParity, in, vk, runtime.FastSlot(colMask, &pl.q.fastSlots[11]), argBuf, expandErr,
+		func(rs runtime.RowScanner, dst *ParityTotal) error { return scanScoreByParityRow(rs, dst, colMask, p) },
+	)
+}
+
+const stmtIDFwdSrcI8 uint32 = 26
 
 type paramsFwdSrcI8 struct {
 	K string
@@ -4384,13 +4716,14 @@ type paramsFwdSrcI8 struct {
 
 var descFwdSrcI8 = &runtime.QueryDescriptor{
 	Name:      "FwdSrcI8",
-	StmtID:    24,
+	StmtID:    26,
 	StmtVerb:  runtime.VerbSelect,
 	StaticSQL: "SELECT i8 AS v FROM sg_fwd_src WHERE k = $1",
-	Segments:  []string{"SELECT i8 AS v ", "FROM sg_fwd_src WHERE k = ", ""},
+	Segments:  []string{"SELECT i8 AS v ", "FROM sg_fwd_src WHERE k = ", "", ""},
 	Slots: []runtime.Slot{
 		{Kind: runtime.SlotColPreds},
 		{Kind: runtime.SlotScalar},
+		{Kind: runtime.SlotSelectGuardHaving},
 	},
 	ResultCols: []string{"v"},
 	ResultExpr: "i8",
@@ -4468,7 +4801,7 @@ func (q *Queries) FwdSrcI8(ctx context.Context, kParam string) (int64, error) {
 		ColMask:  colMask,
 		FlagMask: flagMask,
 	}
-	sqlRow, ms, err := q.cache.QueryRow(ctx, q.db, q.txCache, q.usePrepared, vk, stmtIDFwdSrcI8, runtime.ComputeBatchShapeTag(colMask, flagMask), 0, &q.fastSlots[10], sqlDialect, descFwdSrcI8, &in, (*argBuf)...)
+	sqlRow, ms, err := q.cache.QueryRow(ctx, q.db, q.txCache, q.usePrepared, vk, stmtIDFwdSrcI8, runtime.ComputeBatchShapeTag(colMask, flagMask), 0, &q.fastSlots[12], sqlDialect, descFwdSrcI8, &in, (*argBuf)...)
 	if err != nil {
 		return zero, err
 	}
@@ -4492,12 +4825,12 @@ func (pl *Pipeline) FwdSrcI8(kParam string) *runtime.RowFuture[int64] {
 		ColMask:  colMask,
 		FlagMask: flagMask,
 	}
-	return runtime.QueueRow(pl.Pipeline, stmtIDFwdSrcI8, descFwdSrcI8, in, vk, &pl.q.fastSlots[10], argBuf, expandErr,
+	return runtime.QueueRow(pl.Pipeline, stmtIDFwdSrcI8, descFwdSrcI8, in, vk, &pl.q.fastSlots[12], argBuf, expandErr,
 		func(rs runtime.RowScanner, dst *int64) error { return scanFwdSrcI8Row(rs, dst, colMask, p) },
 	)
 }
 
-const stmtIDFwdSrcI8N uint32 = 25
+const stmtIDFwdSrcI8N uint32 = 27
 
 type paramsFwdSrcI8N struct {
 	K string
@@ -4505,13 +4838,14 @@ type paramsFwdSrcI8N struct {
 
 var descFwdSrcI8N = &runtime.QueryDescriptor{
 	Name:      "FwdSrcI8N",
-	StmtID:    25,
+	StmtID:    27,
 	StmtVerb:  runtime.VerbSelect,
 	StaticSQL: "SELECT i8n AS v FROM sg_fwd_src WHERE k = $1",
-	Segments:  []string{"SELECT i8n AS v ", "FROM sg_fwd_src WHERE k = ", ""},
+	Segments:  []string{"SELECT i8n AS v ", "FROM sg_fwd_src WHERE k = ", "", ""},
 	Slots: []runtime.Slot{
 		{Kind: runtime.SlotColPreds},
 		{Kind: runtime.SlotScalar},
+		{Kind: runtime.SlotSelectGuardHaving},
 	},
 	ResultCols: []string{"v"},
 	ResultExpr: "i8n",
@@ -4589,7 +4923,7 @@ func (q *Queries) FwdSrcI8N(ctx context.Context, kParam string) (*int64, error) 
 		ColMask:  colMask,
 		FlagMask: flagMask,
 	}
-	sqlRow, ms, err := q.cache.QueryRow(ctx, q.db, q.txCache, q.usePrepared, vk, stmtIDFwdSrcI8N, runtime.ComputeBatchShapeTag(colMask, flagMask), 0, &q.fastSlots[11], sqlDialect, descFwdSrcI8N, &in, (*argBuf)...)
+	sqlRow, ms, err := q.cache.QueryRow(ctx, q.db, q.txCache, q.usePrepared, vk, stmtIDFwdSrcI8N, runtime.ComputeBatchShapeTag(colMask, flagMask), 0, &q.fastSlots[13], sqlDialect, descFwdSrcI8N, &in, (*argBuf)...)
 	if err != nil {
 		return zero, err
 	}
@@ -4613,12 +4947,12 @@ func (pl *Pipeline) FwdSrcI8N(kParam string) *runtime.RowFuture[*int64] {
 		ColMask:  colMask,
 		FlagMask: flagMask,
 	}
-	return runtime.QueueRow(pl.Pipeline, stmtIDFwdSrcI8N, descFwdSrcI8N, in, vk, &pl.q.fastSlots[11], argBuf, expandErr,
+	return runtime.QueueRow(pl.Pipeline, stmtIDFwdSrcI8N, descFwdSrcI8N, in, vk, &pl.q.fastSlots[13], argBuf, expandErr,
 		func(rs runtime.RowScanner, dst **int64) error { return scanFwdSrcI8NRow(rs, dst, colMask, p) },
 	)
 }
 
-const stmtIDFwdSrcS uint32 = 26
+const stmtIDFwdSrcS uint32 = 28
 
 type paramsFwdSrcS struct {
 	K string
@@ -4626,13 +4960,14 @@ type paramsFwdSrcS struct {
 
 var descFwdSrcS = &runtime.QueryDescriptor{
 	Name:      "FwdSrcS",
-	StmtID:    26,
+	StmtID:    28,
 	StmtVerb:  runtime.VerbSelect,
 	StaticSQL: "SELECT s AS v FROM sg_fwd_src WHERE k = $1",
-	Segments:  []string{"SELECT s AS v ", "FROM sg_fwd_src WHERE k = ", ""},
+	Segments:  []string{"SELECT s AS v ", "FROM sg_fwd_src WHERE k = ", "", ""},
 	Slots: []runtime.Slot{
 		{Kind: runtime.SlotColPreds},
 		{Kind: runtime.SlotScalar},
+		{Kind: runtime.SlotSelectGuardHaving},
 	},
 	ResultCols: []string{"v"},
 	ResultExpr: "s",
@@ -4710,7 +5045,7 @@ func (q *Queries) FwdSrcS(ctx context.Context, kParam string) (string, error) {
 		ColMask:  colMask,
 		FlagMask: flagMask,
 	}
-	sqlRow, ms, err := q.cache.QueryRow(ctx, q.db, q.txCache, q.usePrepared, vk, stmtIDFwdSrcS, runtime.ComputeBatchShapeTag(colMask, flagMask), 0, &q.fastSlots[12], sqlDialect, descFwdSrcS, &in, (*argBuf)...)
+	sqlRow, ms, err := q.cache.QueryRow(ctx, q.db, q.txCache, q.usePrepared, vk, stmtIDFwdSrcS, runtime.ComputeBatchShapeTag(colMask, flagMask), 0, &q.fastSlots[14], sqlDialect, descFwdSrcS, &in, (*argBuf)...)
 	if err != nil {
 		return zero, err
 	}
@@ -4734,12 +5069,12 @@ func (pl *Pipeline) FwdSrcS(kParam string) *runtime.RowFuture[string] {
 		ColMask:  colMask,
 		FlagMask: flagMask,
 	}
-	return runtime.QueueRow(pl.Pipeline, stmtIDFwdSrcS, descFwdSrcS, in, vk, &pl.q.fastSlots[12], argBuf, expandErr,
+	return runtime.QueueRow(pl.Pipeline, stmtIDFwdSrcS, descFwdSrcS, in, vk, &pl.q.fastSlots[14], argBuf, expandErr,
 		func(rs runtime.RowScanner, dst *string) error { return scanFwdSrcSRow(rs, dst, colMask, p) },
 	)
 }
 
-const stmtIDFwdSrcTS uint32 = 27
+const stmtIDFwdSrcTS uint32 = 29
 
 type paramsFwdSrcTS struct {
 	K string
@@ -4747,13 +5082,14 @@ type paramsFwdSrcTS struct {
 
 var descFwdSrcTS = &runtime.QueryDescriptor{
 	Name:      "FwdSrcTS",
-	StmtID:    27,
+	StmtID:    29,
 	StmtVerb:  runtime.VerbSelect,
 	StaticSQL: "SELECT ts AS v FROM sg_fwd_src WHERE k = $1",
-	Segments:  []string{"SELECT ts AS v ", "FROM sg_fwd_src WHERE k = ", ""},
+	Segments:  []string{"SELECT ts AS v ", "FROM sg_fwd_src WHERE k = ", "", ""},
 	Slots: []runtime.Slot{
 		{Kind: runtime.SlotColPreds},
 		{Kind: runtime.SlotScalar},
+		{Kind: runtime.SlotSelectGuardHaving},
 	},
 	ResultCols: []string{"v"},
 	ResultExpr: "ts",
@@ -4831,7 +5167,7 @@ func (q *Queries) FwdSrcTS(ctx context.Context, kParam string) (time.Time, error
 		ColMask:  colMask,
 		FlagMask: flagMask,
 	}
-	sqlRow, ms, err := q.cache.QueryRow(ctx, q.db, q.txCache, q.usePrepared, vk, stmtIDFwdSrcTS, runtime.ComputeBatchShapeTag(colMask, flagMask), 0, &q.fastSlots[13], sqlDialect, descFwdSrcTS, &in, (*argBuf)...)
+	sqlRow, ms, err := q.cache.QueryRow(ctx, q.db, q.txCache, q.usePrepared, vk, stmtIDFwdSrcTS, runtime.ComputeBatchShapeTag(colMask, flagMask), 0, &q.fastSlots[15], sqlDialect, descFwdSrcTS, &in, (*argBuf)...)
 	if err != nil {
 		return zero, err
 	}
@@ -4855,12 +5191,12 @@ func (pl *Pipeline) FwdSrcTS(kParam string) *runtime.RowFuture[time.Time] {
 		ColMask:  colMask,
 		FlagMask: flagMask,
 	}
-	return runtime.QueueRow(pl.Pipeline, stmtIDFwdSrcTS, descFwdSrcTS, in, vk, &pl.q.fastSlots[13], argBuf, expandErr,
+	return runtime.QueueRow(pl.Pipeline, stmtIDFwdSrcTS, descFwdSrcTS, in, vk, &pl.q.fastSlots[15], argBuf, expandErr,
 		func(rs runtime.RowScanner, dst *time.Time) error { return scanFwdSrcTSRow(rs, dst, colMask, p) },
 	)
 }
 
-const stmtIDFwdSrcTSL uint32 = 28
+const stmtIDFwdSrcTSL uint32 = 30
 
 type paramsFwdSrcTSL struct {
 	K string
@@ -4868,13 +5204,14 @@ type paramsFwdSrcTSL struct {
 
 var descFwdSrcTSL = &runtime.QueryDescriptor{
 	Name:      "FwdSrcTSL",
-	StmtID:    28,
+	StmtID:    30,
 	StmtVerb:  runtime.VerbSelect,
 	StaticSQL: "SELECT tsl AS v FROM sg_fwd_src WHERE k = $1",
-	Segments:  []string{"SELECT tsl AS v ", "FROM sg_fwd_src WHERE k = ", ""},
+	Segments:  []string{"SELECT tsl AS v ", "FROM sg_fwd_src WHERE k = ", "", ""},
 	Slots: []runtime.Slot{
 		{Kind: runtime.SlotColPreds},
 		{Kind: runtime.SlotScalar},
+		{Kind: runtime.SlotSelectGuardHaving},
 	},
 	ResultCols: []string{"v"},
 	ResultExpr: "tsl",
@@ -4952,7 +5289,7 @@ func (q *Queries) FwdSrcTSL(ctx context.Context, kParam string) (time.Time, erro
 		ColMask:  colMask,
 		FlagMask: flagMask,
 	}
-	sqlRow, ms, err := q.cache.QueryRow(ctx, q.db, q.txCache, q.usePrepared, vk, stmtIDFwdSrcTSL, runtime.ComputeBatchShapeTag(colMask, flagMask), 0, &q.fastSlots[14], sqlDialect, descFwdSrcTSL, &in, (*argBuf)...)
+	sqlRow, ms, err := q.cache.QueryRow(ctx, q.db, q.txCache, q.usePrepared, vk, stmtIDFwdSrcTSL, runtime.ComputeBatchShapeTag(colMask, flagMask), 0, &q.fastSlots[16], sqlDialect, descFwdSrcTSL, &in, (*argBuf)...)
 	if err != nil {
 		return zero, err
 	}
@@ -4976,12 +5313,12 @@ func (pl *Pipeline) FwdSrcTSL(kParam string) *runtime.RowFuture[time.Time] {
 		ColMask:  colMask,
 		FlagMask: flagMask,
 	}
-	return runtime.QueueRow(pl.Pipeline, stmtIDFwdSrcTSL, descFwdSrcTSL, in, vk, &pl.q.fastSlots[14], argBuf, expandErr,
+	return runtime.QueueRow(pl.Pipeline, stmtIDFwdSrcTSL, descFwdSrcTSL, in, vk, &pl.q.fastSlots[16], argBuf, expandErr,
 		func(rs runtime.RowScanner, dst *time.Time) error { return scanFwdSrcTSLRow(rs, dst, colMask, p) },
 	)
 }
 
-const stmtIDFwdSrcB uint32 = 29
+const stmtIDFwdSrcB uint32 = 31
 
 type paramsFwdSrcB struct {
 	K string
@@ -4989,13 +5326,14 @@ type paramsFwdSrcB struct {
 
 var descFwdSrcB = &runtime.QueryDescriptor{
 	Name:      "FwdSrcB",
-	StmtID:    29,
+	StmtID:    31,
 	StmtVerb:  runtime.VerbSelect,
 	StaticSQL: "SELECT b AS v FROM sg_fwd_src WHERE k = $1",
-	Segments:  []string{"SELECT b AS v ", "FROM sg_fwd_src WHERE k = ", ""},
+	Segments:  []string{"SELECT b AS v ", "FROM sg_fwd_src WHERE k = ", "", ""},
 	Slots: []runtime.Slot{
 		{Kind: runtime.SlotColPreds},
 		{Kind: runtime.SlotScalar},
+		{Kind: runtime.SlotSelectGuardHaving},
 	},
 	ResultCols: []string{"v"},
 	ResultExpr: "b",
@@ -5073,7 +5411,7 @@ func (q *Queries) FwdSrcB(ctx context.Context, kParam string) ([]byte, error) {
 		ColMask:  colMask,
 		FlagMask: flagMask,
 	}
-	sqlRow, ms, err := q.cache.QueryRow(ctx, q.db, q.txCache, q.usePrepared, vk, stmtIDFwdSrcB, runtime.ComputeBatchShapeTag(colMask, flagMask), 0, &q.fastSlots[15], sqlDialect, descFwdSrcB, &in, (*argBuf)...)
+	sqlRow, ms, err := q.cache.QueryRow(ctx, q.db, q.txCache, q.usePrepared, vk, stmtIDFwdSrcB, runtime.ComputeBatchShapeTag(colMask, flagMask), 0, &q.fastSlots[17], sqlDialect, descFwdSrcB, &in, (*argBuf)...)
 	if err != nil {
 		return zero, err
 	}
@@ -5097,12 +5435,12 @@ func (pl *Pipeline) FwdSrcB(kParam string) *runtime.RowFuture[[]byte] {
 		ColMask:  colMask,
 		FlagMask: flagMask,
 	}
-	return runtime.QueueRow(pl.Pipeline, stmtIDFwdSrcB, descFwdSrcB, in, vk, &pl.q.fastSlots[15], argBuf, expandErr,
+	return runtime.QueueRow(pl.Pipeline, stmtIDFwdSrcB, descFwdSrcB, in, vk, &pl.q.fastSlots[17], argBuf, expandErr,
 		func(rs runtime.RowScanner, dst *[]byte) error { return scanFwdSrcBRow(rs, dst, colMask, p) },
 	)
 }
 
-const stmtIDFwdSrcBo uint32 = 30
+const stmtIDFwdSrcBo uint32 = 32
 
 type paramsFwdSrcBo struct {
 	K string
@@ -5110,13 +5448,14 @@ type paramsFwdSrcBo struct {
 
 var descFwdSrcBo = &runtime.QueryDescriptor{
 	Name:      "FwdSrcBo",
-	StmtID:    30,
+	StmtID:    32,
 	StmtVerb:  runtime.VerbSelect,
 	StaticSQL: "SELECT bo AS v FROM sg_fwd_src WHERE k = $1",
-	Segments:  []string{"SELECT bo AS v ", "FROM sg_fwd_src WHERE k = ", ""},
+	Segments:  []string{"SELECT bo AS v ", "FROM sg_fwd_src WHERE k = ", "", ""},
 	Slots: []runtime.Slot{
 		{Kind: runtime.SlotColPreds},
 		{Kind: runtime.SlotScalar},
+		{Kind: runtime.SlotSelectGuardHaving},
 	},
 	ResultCols: []string{"v"},
 	ResultExpr: "bo",
@@ -5194,7 +5533,7 @@ func (q *Queries) FwdSrcBo(ctx context.Context, kParam string) (bool, error) {
 		ColMask:  colMask,
 		FlagMask: flagMask,
 	}
-	sqlRow, ms, err := q.cache.QueryRow(ctx, q.db, q.txCache, q.usePrepared, vk, stmtIDFwdSrcBo, runtime.ComputeBatchShapeTag(colMask, flagMask), 0, &q.fastSlots[16], sqlDialect, descFwdSrcBo, &in, (*argBuf)...)
+	sqlRow, ms, err := q.cache.QueryRow(ctx, q.db, q.txCache, q.usePrepared, vk, stmtIDFwdSrcBo, runtime.ComputeBatchShapeTag(colMask, flagMask), 0, &q.fastSlots[18], sqlDialect, descFwdSrcBo, &in, (*argBuf)...)
 	if err != nil {
 		return zero, err
 	}
@@ -5218,12 +5557,12 @@ func (pl *Pipeline) FwdSrcBo(kParam string) *runtime.RowFuture[bool] {
 		ColMask:  colMask,
 		FlagMask: flagMask,
 	}
-	return runtime.QueueRow(pl.Pipeline, stmtIDFwdSrcBo, descFwdSrcBo, in, vk, &pl.q.fastSlots[16], argBuf, expandErr,
+	return runtime.QueueRow(pl.Pipeline, stmtIDFwdSrcBo, descFwdSrcBo, in, vk, &pl.q.fastSlots[18], argBuf, expandErr,
 		func(rs runtime.RowScanner, dst *bool) error { return scanFwdSrcBoRow(rs, dst, colMask, p) },
 	)
 }
 
-const stmtIDFwdSrcF8 uint32 = 31
+const stmtIDFwdSrcF8 uint32 = 33
 
 type paramsFwdSrcF8 struct {
 	K string
@@ -5231,13 +5570,14 @@ type paramsFwdSrcF8 struct {
 
 var descFwdSrcF8 = &runtime.QueryDescriptor{
 	Name:      "FwdSrcF8",
-	StmtID:    31,
+	StmtID:    33,
 	StmtVerb:  runtime.VerbSelect,
 	StaticSQL: "SELECT f8 AS v FROM sg_fwd_src WHERE k = $1",
-	Segments:  []string{"SELECT f8 AS v ", "FROM sg_fwd_src WHERE k = ", ""},
+	Segments:  []string{"SELECT f8 AS v ", "FROM sg_fwd_src WHERE k = ", "", ""},
 	Slots: []runtime.Slot{
 		{Kind: runtime.SlotColPreds},
 		{Kind: runtime.SlotScalar},
+		{Kind: runtime.SlotSelectGuardHaving},
 	},
 	ResultCols: []string{"v"},
 	ResultExpr: "f8",
@@ -5315,7 +5655,7 @@ func (q *Queries) FwdSrcF8(ctx context.Context, kParam string) (float64, error) 
 		ColMask:  colMask,
 		FlagMask: flagMask,
 	}
-	sqlRow, ms, err := q.cache.QueryRow(ctx, q.db, q.txCache, q.usePrepared, vk, stmtIDFwdSrcF8, runtime.ComputeBatchShapeTag(colMask, flagMask), 0, &q.fastSlots[17], sqlDialect, descFwdSrcF8, &in, (*argBuf)...)
+	sqlRow, ms, err := q.cache.QueryRow(ctx, q.db, q.txCache, q.usePrepared, vk, stmtIDFwdSrcF8, runtime.ComputeBatchShapeTag(colMask, flagMask), 0, &q.fastSlots[19], sqlDialect, descFwdSrcF8, &in, (*argBuf)...)
 	if err != nil {
 		return zero, err
 	}
@@ -5339,12 +5679,12 @@ func (pl *Pipeline) FwdSrcF8(kParam string) *runtime.RowFuture[float64] {
 		ColMask:  colMask,
 		FlagMask: flagMask,
 	}
-	return runtime.QueueRow(pl.Pipeline, stmtIDFwdSrcF8, descFwdSrcF8, in, vk, &pl.q.fastSlots[17], argBuf, expandErr,
+	return runtime.QueueRow(pl.Pipeline, stmtIDFwdSrcF8, descFwdSrcF8, in, vk, &pl.q.fastSlots[19], argBuf, expandErr,
 		func(rs runtime.RowScanner, dst *float64) error { return scanFwdSrcF8Row(rs, dst, colMask, p) },
 	)
 }
 
-const stmtIDFwdSrcU uint32 = 32
+const stmtIDFwdSrcU uint32 = 34
 
 type paramsFwdSrcU struct {
 	K string
@@ -5352,13 +5692,14 @@ type paramsFwdSrcU struct {
 
 var descFwdSrcU = &runtime.QueryDescriptor{
 	Name:      "FwdSrcU",
-	StmtID:    32,
+	StmtID:    34,
 	StmtVerb:  runtime.VerbSelect,
 	StaticSQL: "SELECT u AS v FROM sg_fwd_src WHERE k = $1",
-	Segments:  []string{"SELECT u AS v ", "FROM sg_fwd_src WHERE k = ", ""},
+	Segments:  []string{"SELECT u AS v ", "FROM sg_fwd_src WHERE k = ", "", ""},
 	Slots: []runtime.Slot{
 		{Kind: runtime.SlotColPreds},
 		{Kind: runtime.SlotScalar},
+		{Kind: runtime.SlotSelectGuardHaving},
 	},
 	ResultCols: []string{"v"},
 	ResultExpr: "u",
@@ -5436,7 +5777,7 @@ func (q *Queries) FwdSrcU(ctx context.Context, kParam string) (string, error) {
 		ColMask:  colMask,
 		FlagMask: flagMask,
 	}
-	sqlRow, ms, err := q.cache.QueryRow(ctx, q.db, q.txCache, q.usePrepared, vk, stmtIDFwdSrcU, runtime.ComputeBatchShapeTag(colMask, flagMask), 0, &q.fastSlots[18], sqlDialect, descFwdSrcU, &in, (*argBuf)...)
+	sqlRow, ms, err := q.cache.QueryRow(ctx, q.db, q.txCache, q.usePrepared, vk, stmtIDFwdSrcU, runtime.ComputeBatchShapeTag(colMask, flagMask), 0, &q.fastSlots[20], sqlDialect, descFwdSrcU, &in, (*argBuf)...)
 	if err != nil {
 		return zero, err
 	}
@@ -5460,12 +5801,12 @@ func (pl *Pipeline) FwdSrcU(kParam string) *runtime.RowFuture[string] {
 		ColMask:  colMask,
 		FlagMask: flagMask,
 	}
-	return runtime.QueueRow(pl.Pipeline, stmtIDFwdSrcU, descFwdSrcU, in, vk, &pl.q.fastSlots[18], argBuf, expandErr,
+	return runtime.QueueRow(pl.Pipeline, stmtIDFwdSrcU, descFwdSrcU, in, vk, &pl.q.fastSlots[20], argBuf, expandErr,
 		func(rs runtime.RowScanner, dst *string) error { return scanFwdSrcURow(rs, dst, colMask, p) },
 	)
 }
 
-const stmtIDFwdDst uint32 = 33
+const stmtIDFwdDst uint32 = 35
 
 type paramsFwdDst struct {
 	K   string
@@ -5482,7 +5823,7 @@ type paramsFwdDst struct {
 
 var descFwdDst = &runtime.QueryDescriptor{
 	Name:      "FwdDst",
-	StmtID:    33,
+	StmtID:    35,
 	StmtVerb:  runtime.VerbInsert,
 	StaticSQL: "INSERT INTO sg_fwd_dst (k, i8, i8n, s, ts, tsl, b, bo, f8, u)\nVALUES ($1, $2, $3, $4::text, $5, $6::timestamp,\n  $7, $8, $9, $10::uuid)",
 	Segments:  []string{"INSERT INTO sg_fwd_dst (k, i8, i8n, s, ts, tsl, b, bo, f8, u)\n", "", ", ", ", ", ", ", "::text, ", ", ", "::timestamp,\n  ", ", ", ", ", ", ", "::uuid", ""},
@@ -5567,7 +5908,7 @@ func (q *Queries) FwdDst(ctx context.Context, kParam string, i8 int64, i8n *int6
 		ColMask:  colMask,
 		FlagMask: flagMask,
 	}
-	return q.cache.Exec(ctx, q.db, q.txCache, q.usePrepared, vk, stmtIDFwdDst, runtime.ComputeBatchShapeTag(colMask, flagMask), 0, &q.fastSlots[19], sqlDialect, descFwdDst, &in, (*argBuf)...)
+	return q.cache.Exec(ctx, q.db, q.txCache, q.usePrepared, vk, stmtIDFwdDst, runtime.ComputeBatchShapeTag(colMask, flagMask), 0, &q.fastSlots[21], sqlDialect, descFwdDst, &in, (*argBuf)...)
 }
 
 func (pl *Pipeline) FwdDst(kParam string, i8 runtime.Arg[int64], i8n runtime.Arg[*int64], s runtime.Arg[string], ts runtime.Arg[time.Time], tsl runtime.Arg[time.Time], b runtime.Arg[[]byte], bo runtime.Arg[bool], f8 runtime.Arg[float64], u runtime.Arg[string]) *runtime.ExecFuture {
@@ -5581,12 +5922,12 @@ func (pl *Pipeline) FwdDst(kParam string, i8 runtime.Arg[int64], i8n runtime.Arg
 		ColMask:  colMask,
 		FlagMask: flagMask,
 	}
-	fut := pl.Pipeline.QueueExec(stmtIDFwdDst, descFwdDst, in, vk, &pl.q.fastSlots[19], argBuf, expandErr)
+	fut := pl.Pipeline.QueueExec(stmtIDFwdDst, descFwdDst, in, vk, &pl.q.fastSlots[21], argBuf, expandErr)
 	pl.Pipeline.BindForwarded()
 	return fut
 }
 
-const stmtIDFwdInsertReturningID uint32 = 34
+const stmtIDFwdInsertReturningID uint32 = 36
 
 type paramsFwdInsertReturningID struct {
 	ID    int64
@@ -5596,7 +5937,7 @@ type paramsFwdInsertReturningID struct {
 
 var descFwdInsertReturningID = &runtime.QueryDescriptor{
 	Name:         "FwdInsertReturningID",
-	StmtID:       34,
+	StmtID:       36,
 	StmtVerb:     runtime.VerbInsert,
 	HasReturning: true,
 	StaticSQL:    "INSERT INTO sg_items (id, org_id, name, score, status)\nVALUES ($1, $2, $3, 0, 'new')\nRETURNING id AS new_id",
@@ -5667,7 +6008,7 @@ func (q *Queries) FwdInsertReturningID(ctx context.Context, id int64, orgID int6
 		ColMask:  colMask,
 		FlagMask: flagMask,
 	}
-	sqlRow, ms, err := q.cache.QueryRow(ctx, q.db, q.txCache, q.usePrepared, vk, stmtIDFwdInsertReturningID, runtime.ComputeBatchShapeTag(colMask, flagMask), 0, &q.fastSlots[20], sqlDialect, descFwdInsertReturningID, &in, (*argBuf)...)
+	sqlRow, ms, err := q.cache.QueryRow(ctx, q.db, q.txCache, q.usePrepared, vk, stmtIDFwdInsertReturningID, runtime.ComputeBatchShapeTag(colMask, flagMask), 0, &q.fastSlots[22], sqlDialect, descFwdInsertReturningID, &in, (*argBuf)...)
 	if err != nil {
 		return zero, err
 	}
@@ -5693,12 +6034,12 @@ func (pl *Pipeline) FwdInsertReturningID(id int64, orgID int64, name string) *ru
 		ColMask:  colMask,
 		FlagMask: flagMask,
 	}
-	return runtime.QueueRow(pl.Pipeline, stmtIDFwdInsertReturningID, descFwdInsertReturningID, in, vk, &pl.q.fastSlots[20], argBuf, expandErr,
+	return runtime.QueueRow(pl.Pipeline, stmtIDFwdInsertReturningID, descFwdInsertReturningID, in, vk, &pl.q.fastSlots[22], argBuf, expandErr,
 		func(rs runtime.RowScanner, dst *int64) error { return scanFwdInsertReturningIDRow(rs, dst, colMask, p) },
 	)
 }
 
-const stmtIDInsertedIDs uint32 = 35
+const stmtIDInsertedIDs uint32 = 37
 
 type paramsInsertedIDs struct {
 	Rows []NewItem
@@ -5706,7 +6047,7 @@ type paramsInsertedIDs struct {
 
 var descInsertedIDs = &runtime.QueryDescriptor{
 	Name:         "InsertedIDs",
-	StmtID:       35,
+	StmtID:       37,
 	StmtVerb:     runtime.VerbInsert,
 	HasReturning: true,
 	Segments:     []string{"INSERT INTO sg_items (id, org_id, name, score, status)\n", "", "", "\nRETURNING id", ""},
@@ -5979,7 +6320,7 @@ func (q *Queries) InsertedIDsStream(ctx context.Context, seq iter.Seq2[NewItem, 
 	return runtime.Collect(q.InsertedIDsStreamSeq(ctx, seq))
 }
 
-const stmtIDApplyDeltas uint32 = 36
+const stmtIDApplyDeltas uint32 = 38
 
 type paramsApplyDeltas struct {
 	Rows []ScoreDelta
@@ -5987,7 +6328,7 @@ type paramsApplyDeltas struct {
 
 var descApplyDeltas = &runtime.QueryDescriptor{
 	Name:     "ApplyDeltas",
-	StmtID:   36,
+	StmtID:   38,
 	StmtVerb: runtime.VerbUpdate,
 	Segments: []string{"WITH v(id, delta) AS (VALUES ", ")\nUPDATE sg_items SET score = score + v.delta FROM v WHERE ", "sg_items.id = v.id", ""},
 	Slots: []runtime.Slot{

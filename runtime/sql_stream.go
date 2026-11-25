@@ -504,6 +504,8 @@ func estimateDescriptorBytes(rootDesc, desc *QueryDescriptor, in *RenderInput, c
 			}
 		case SlotColPreds:
 			total += colPredBytes(in.ColPreds)
+		case SlotSelectGuardOpen, SlotSelectGuardClose, SlotSelectGuardHaving:
+			total += 16 + 56*numGates
 		}
 	}
 	return total
@@ -739,6 +741,28 @@ func streamDescriptorSQL(b *strings.Builder, rootDesc, desc *QueryDescriptor, in
 
 		case SlotColPreds:
 			cur.writeColPreds(b, in.ColPreds)
+
+		case SlotSelectGuardOpen:
+			if cur.my != nil && cur.hasGates(in) {
+				b.WriteByte('(')
+				cur.writeBranchGates(b, in.BranchGates)
+				b.WriteString(") AND (")
+			}
+
+		case SlotSelectGuardClose:
+			if cur.my != nil && cur.hasGates(in) {
+				b.WriteString(") ")
+			}
+
+		case SlotSelectGuardHaving:
+			if cur.my != nil && cur.hasGates(in) {
+				if w := b.String(); len(w) > 0 && w[len(w)-1] != ' ' && w[len(w)-1] != '\n' {
+					b.WriteByte(' ')
+				}
+				b.WriteString("HAVING ")
+				cur.writeBranchGates(b, in.BranchGates)
+				b.WriteByte(' ')
+			}
 		}
 	}
 	if len(desc.Segments) > len(desc.Slots) {
@@ -830,11 +854,32 @@ func renderColPredSQL(dialect Dialect, op *PipelineOp) (string, []any) {
 	return b.String(), spliceColArgs(dialect, op.Args, col, cur.colAt)
 }
 
+// hasSelectGuard reports whether the statement carries its gates in its own HAVING (MySQL flavor).
+func (d *QueryDescriptor) hasSelectGuard() bool {
+	for i := range d.Slots {
+		if k := d.Slots[i].Kind; k == SlotSelectGuardClose || k == SlotSelectGuardHaving {
+			return true
+		}
+	}
+	return false
+}
+
 func streamCoreStatement(b *strings.Builder, cur *streamCursor, desc *QueryDescriptor, in *RenderInput) {
 	if desc == nil {
 		return
 	}
 	hasGates := cur.hasGates(in)
+	if desc.StmtVerb == VerbSelect && hasGates && cur.my != nil {
+		// The gates go into the statement's own HAVING: a derived table would lose its ORDER BY on
+		// MariaDB and TiDB (SQL leaves the order of a derived table's rows unspecified).
+		if desc.hasSelectGuard() {
+			streamDescriptorSQL(b, desc, desc, in, cur)
+			return
+		}
+		if desc.TopOrderBy && cur.my.st.err == nil {
+			cur.my.st.err = fmt.Errorf("a gated SELECT whose ORDER BY a derived table would not keep (a UNION, or a clause in an optional block): %w", ErrWireNotApplicable)
+		}
+	}
 	if desc.StmtVerb == VerbSelect && hasGates {
 		b.WriteString("SELECT * FROM (")
 	}
