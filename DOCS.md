@@ -18,7 +18,7 @@ Everything below is the whole surface; each item has one spelling and the sectio
   - `exec`: `q.Name(ctx, ...) (sql.Result, error)`; with a tuple slice also `q.NameStream(ctx, seq, ...)`. A one-collection statement is chunked by the base method.
   - `one`: `q.Name(ctx, ...) (Row, error)`. `many`: `q.Name(ctx, ...) ([]Row, error)` and `q.NameSeq(ctx, ...) iter.Seq2[Row, error]`; with a tuple slice also `NameStream` / `NameStreamSeq`.
   - every kind except `exec`: package-level `NameQuery(...) runtime.Query` (compose into `:sub:sqlgen.Query` slots); every non-`subquery` kind: `p.Name(...)` returning a future (`ExecFuture`, `RowFuture[T]`, `SliceFuture[T]`).
-  - types and helpers: `Row` struct, `NameParams` (struct style), `NameCol<X>` / `NameColsAll` projection masks (trailing `selectCols ...uint64`, or a `SelectCols` field), and per statement with `sqlgen.Order`: `NameOrderBy<Col>.Asc()/.Desc()`, `OrderName(...)`, `SeekName(row)`.
+  - types and helpers: `Row` struct, `NameParams` (struct style), `NameCol<X>` / `NameColsAll` projection masks (trailing `selectCols ...uint64`, or a `SelectCols` field; only for statements that have the projection, i.e. two or more unconditional output columns), and per statement with `sqlgen.Order`: `NameOrderBy<Col>.Asc()/.Desc()`, `OrderName(...)`, `SeekName(row)`.
   - on every `*Queries`: `WithTx(tx)`, `InTx(ctx, opts, fn, ...runtime.TxOption)`, `Pipeline(ctx)`, `PipelineTx(ctx, opts, fn, ...)`, `WithPrepared(bool)`, `CacheStats()`, `Close()`; package-level `New(db, ...runtime.CacheOption)`.
 - **Runtime user API** (import `github.com/CAFxX/sqlgen/runtime`; the generated file declares no aliases):
   - reading: `Collect`, `AppendTo`, `Each` (+ `ErrStop`), `FromSlice`, `FromSeq`, `MapSeq2`.

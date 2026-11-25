@@ -3266,11 +3266,6 @@ func (pl *Pipeline) DeleteReturning(ids []int64, selectCols ...uint64) *runtime.
 
 const stmtIDCountOrgItems uint32 = 17
 
-const (
-	CountOrgItemsColN    uint64 = 1 << 0
-	CountOrgItemsColsAll uint64 = (1 << 1) - 1
-)
-
 type paramsCountOrgItems struct {
 	OrgID int64
 }
@@ -3389,11 +3384,6 @@ func (pl *Pipeline) CountOrgItems(orgID int64) *runtime.RowFuture[int64] {
 }
 
 const stmtIDNamesByIDs uint32 = 18
-
-const (
-	NamesByIDsColName uint64 = 1 << 0
-	NamesByIDsColsAll uint64 = (1 << 1) - 1
-)
 
 type paramsNamesByIDs struct {
 	IDs []int64
@@ -3628,11 +3618,6 @@ func (pl *Pipeline) NamesByIDs(ids []int64) *runtime.SliceFuture[string] {
 }
 
 const stmtIDInsertedIDs uint32 = 19
-
-const (
-	InsertedIDsColID   uint64 = 1 << 0
-	InsertedIDsColsAll uint64 = (1 << 1) - 1
-)
 
 type paramsInsertedIDs struct {
 	Rows []NewItem

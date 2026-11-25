@@ -325,11 +325,6 @@ func (pl *Pipeline) GetAccount(orgID int64, accountID int64, selectCols ...uint6
 
 const stmtIDTotalSupplyByOrg uint32 = 2
 
-const (
-	TotalSupplyByOrgColTotalCents uint64 = 1 << 0
-	TotalSupplyByOrgColsAll       uint64 = (1 << 1) - 1
-)
-
 type paramsTotalSupplyByOrg struct {
 	OrgID int64
 }

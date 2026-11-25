@@ -861,11 +861,6 @@ func (pl *Pipeline) GetMarginAccount(firmID int64, accountID int64, selectCols .
 
 const stmtIDGetAccountCollateralCents uint32 = 5
 
-const (
-	GetAccountCollateralCentsColCollateralCents uint64 = 1 << 0
-	GetAccountCollateralCentsColsAll            uint64 = (1 << 1) - 1
-)
-
 type paramsGetAccountCollateralCents struct {
 	FirmID    int64
 	AccountID int64
@@ -3236,11 +3231,6 @@ func (pl *Pipeline) QueryRiskPositionsPage(p QueryRiskPositionsPageParams) *runt
 
 const stmtIDTotalExchangeEquityCents uint32 = 21
 
-const (
-	TotalExchangeEquityCentsColTotalEquity uint64 = 1 << 0
-	TotalExchangeEquityCentsColsAll        uint64 = (1 << 1) - 1
-)
-
 type paramsTotalExchangeEquityCents struct {
 }
 
@@ -3348,11 +3338,6 @@ func (pl *Pipeline) TotalExchangeEquityCents() *runtime.RowFuture[int64] {
 }
 
 const stmtIDTotalNetPositionBySymbol uint32 = 22
-
-const (
-	TotalNetPositionBySymbolColNetQty uint64 = 1 << 0
-	TotalNetPositionBySymbolColsAll   uint64 = (1 << 1) - 1
-)
 
 type paramsTotalNetPositionBySymbol struct {
 	Symbol string
@@ -3473,11 +3458,6 @@ func (pl *Pipeline) TotalNetPositionBySymbol(symbol string) *runtime.RowFuture[i
 
 const stmtIDCountClearingFills uint32 = 23
 
-const (
-	CountClearingFillsColCnt  uint64 = 1 << 0
-	CountClearingFillsColsAll uint64 = (1 << 1) - 1
-)
-
 type paramsCountClearingFills struct {
 }
 
@@ -3585,11 +3565,6 @@ func (pl *Pipeline) CountClearingFills() *runtime.RowFuture[int64] {
 }
 
 const stmtIDCountComplianceNotices uint32 = 24
-
-const (
-	CountComplianceNoticesColCnt  uint64 = 1 << 0
-	CountComplianceNoticesColsAll uint64 = (1 << 1) - 1
-)
 
 type paramsCountComplianceNotices struct {
 	NoticeKind string

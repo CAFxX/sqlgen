@@ -2542,11 +2542,6 @@ func (q *Queries) InsertQuadBatchStream(ctx context.Context, seq iter.Seq2[QuadI
 
 const stmtIDUserIDsNearScore uint32 = 13
 
-const (
-	UserIDsNearScoreColID   uint64 = 1 << 0
-	UserIDsNearScoreColsAll uint64 = (1 << 1) - 1
-)
-
 type paramsUserIDsNearScore struct {
 	Score int64
 	IDs   []int64
@@ -2762,11 +2757,6 @@ func (pl *Pipeline) UserIDsNearScore(score int64, ids []int64) *runtime.SliceFut
 
 const stmtIDUserEmailBytes uint32 = 14
 
-const (
-	UserEmailBytesColRaw  uint64 = 1 << 0
-	UserEmailBytesColsAll uint64 = (1 << 1) - 1
-)
-
 type paramsUserEmailBytes struct {
 	ID int64
 }
@@ -2885,11 +2875,6 @@ func (pl *Pipeline) UserEmailBytes(id int64) *runtime.RowFuture[[]byte] {
 }
 
 const stmtIDUserBioIfSet uint32 = 15
-
-const (
-	UserBioIfSetColBio  uint64 = 1 << 0
-	UserBioIfSetColsAll uint64 = (1 << 1) - 1
-)
 
 type paramsUserBioIfSet struct {
 }
@@ -3014,11 +2999,6 @@ func (pl *Pipeline) UserBioIfSet() *runtime.SliceFuture[*string] {
 }
 
 const stmtIDUserEmailOnly uint32 = 16
-
-const (
-	UserEmailOnlyColEmail uint64 = 1 << 0
-	UserEmailOnlyColsAll  uint64 = (1 << 1) - 1
-)
 
 type paramsUserEmailOnly struct {
 	ID int64
@@ -3382,11 +3362,6 @@ func (pl *Pipeline) UserRoleCountsIn(ids []int64, selectCols ...uint64) *runtime
 }
 
 const stmtIDTopUsersIn uint32 = 18
-
-const (
-	TopUsersInColID   uint64 = 1 << 0
-	TopUsersInColsAll uint64 = (1 << 1) - 1
-)
 
 type paramsTopUsersIn struct {
 	IDs []int64
@@ -3926,11 +3901,6 @@ func (q *Queries) DeleteQuadsByKeysStream(ctx context.Context, seq iter.Seq2[Qua
 }
 
 const stmtIDQuadIDsByKeys uint32 = 21
-
-const (
-	QuadIDsByKeysColID   uint64 = 1 << 0
-	QuadIDsByKeysColsAll uint64 = (1 << 1) - 1
-)
 
 type QuadIDsByKeysParams struct {
 	Keys []QuadKey

@@ -3184,8 +3184,9 @@ func emitStatementCode(
 	fmt.Fprintf(b, "const stmtID%s uint32 = %d\n\n", cs.Name, cs.ID)
 
 	// SelectCols bitmask constants: one set per statement, <Stmt>Col<X> (a result type shared by several
-	// statements does not share them: each statement projects its own columns).
-	if len(cs.UncondCols) > 0 {
+	// statements does not share them: each statement projects its own columns). Only a statement that has
+	// the projection gets them: elsewhere nothing could use them.
+	if cs.SelectCols {
 		emitColMaskConstants(b, cs.Name, cs.UncondCols)
 	}
 

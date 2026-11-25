@@ -2280,3 +2280,21 @@ func TestSQLiteAcceptsReturning(t *testing.T) {
 		}
 	}
 }
+
+// SelectCols constants exist only where SelectCols does: a single-column statement has no projection, so it
+// gets no <Stmt>Col<X> / <Stmt>ColsAll constants nobody could use.
+func TestSelectColsConstantsOnlyWithProjection(t *testing.T) {
+	src, err := genYAML("postgres", "  - name: One\n    kind: many\n    sql: SELECT id:int64 FROM t\n"+
+		"  - name: Two\n    kind: many\n    sql: SELECT id:int64, name:string FROM t\n")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, c := range []struct {
+		name string
+		want bool
+	}{{"OneColID", false}, {"OneColsAll", false}, {"TwoColID", true}, {"TwoColName", true}, {"TwoColsAll", true}} {
+		if got := bytes.Contains(src, []byte("\t"+c.name+" ")); got != c.want {
+			t.Errorf("constant %s emitted = %v, want %v", c.name, got, c.want)
+		}
+	}
+}
