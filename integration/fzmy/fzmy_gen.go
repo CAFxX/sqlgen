@@ -250,6 +250,13 @@ func isFzTypedNewSorted(rows []FzTypedNew) bool {
 	return true
 }
 
+var chunkPool_int64 = sync.Pool{
+	New: func() any {
+		s := make([]int64, 0, 256)
+		return &s
+	},
+}
+
 func compareint64Asc(a, b int64) int {
 	if a < b {
 		return -1
@@ -3189,6 +3196,69 @@ func (pl *Pipeline) FzByIDs(ids []int64, selectCols ...uint64) *runtime.SliceFut
 	)
 }
 
+// FzByIDsStreamSeq runs FzByIDs over the ids rows pulled from seq, in chunks, and yields their rows in order.
+// seq provides the rows of the collection parameter.
+// An empty seq is runtime.ErrEmptySliceParam, like an empty IN list.
+func (q *Queries) FzByIDsStreamSeq(ctx context.Context, seq iter.Seq2[int64, error], selectCols ...uint64) iter.Seq2[FzRow, error] {
+	return func(yield func(FzRow, error) bool) {
+		var zero FzRow
+		if seq == nil {
+			yield(zero, runtime.ErrNilArgument)
+			return
+		}
+		totalRows := 0
+		chunkCap := min(256, q.cache.MaxRowsPerBatch(sqlDialect, 0, 1))
+		bufPtr := chunkPool_int64.Get().(*[]int64)
+		chunk := (*bufPtr)[:0]
+		defer func() {
+			clear(chunk[:cap(chunk)])
+			*bufPtr = chunk[:0]
+			chunkPool_int64.Put(bufPtr)
+		}()
+		flushChunk := func() bool {
+			if len(chunk) == 0 {
+				return true
+			}
+			for r, err := range q.FzByIDsSeq(ctx, chunk, selectCols...) {
+				if err != nil {
+					yield(zero, err)
+					return false
+				}
+				if !yield(r, nil) {
+					return false
+				}
+			}
+			chunk = chunk[:0]
+			return true
+		}
+		for item, err := range seq {
+			if err != nil {
+				yield(zero, err)
+				return
+			}
+			totalRows++
+			chunk = append(chunk, item)
+			if len(chunk) >= chunkCap {
+				if !flushChunk() {
+					return
+				}
+			}
+		}
+		if totalRows == 0 {
+			yield(zero, runtime.ErrEmptySliceParam)
+			return
+		}
+		_ = flushChunk()
+	}
+}
+
+// FzByIDsStream runs FzByIDs over the ids rows pulled from seq, in chunks, and returns their rows in order.
+// seq provides the rows of the collection parameter.
+// An empty seq is runtime.ErrEmptySliceParam, like an empty IN list.
+func (q *Queries) FzByIDsStream(ctx context.Context, seq iter.Seq2[int64, error], selectCols ...uint64) ([]FzRow, error) {
+	return runtime.Collect(q.FzByIDsStreamSeq(ctx, seq, selectCols...))
+}
+
 const stmtIDFzBump uint32 = 13
 
 type FzBumpParams struct {
@@ -3357,6 +3427,61 @@ func (pl *Pipeline) FzBump(p FzBumpParams) *runtime.ExecFuture {
 	return pl.Pipeline.QueueExec(stmtIDFzBump, descFzBump, in, vk, nil, argBuf, expandErr)
 }
 
+// FzBumpStream runs FzBump over the ids rows pulled from seq, in chunks, and sums the results.
+// seq provides the rows: p.IDs must be empty (runtime.ErrInvalidArgument otherwise).
+// An empty seq is runtime.ErrEmptySliceParam, like an empty IN list.
+func (q *Queries) FzBumpStream(ctx context.Context, p FzBumpParams, seq iter.Seq2[int64, error]) (sql.Result, error) {
+	if seq == nil {
+		return nil, runtime.ErrNilArgument
+	}
+	if len(p.IDs) != 0 {
+		return nil, runtime.InvalidArgument("FzBumpStream: p.IDs must be empty: the rows come from seq")
+	}
+	totalRows := 0
+	chunkCap := min(256, q.cache.MaxRowsPerBatch(sqlDialect, 3, 1))
+	bufPtr := chunkPool_int64.Get().(*[]int64)
+	chunk := (*bufPtr)[:0]
+	defer func() {
+		clear(chunk[:cap(chunk)])
+		*bufPtr = chunk[:0]
+		chunkPool_int64.Put(bufPtr)
+	}()
+	var batchRes runtime.BatchExecResult
+	flushChunk := func() error {
+		if len(chunk) == 0 {
+			return nil
+		}
+		chunkP := p
+		chunkP.IDs = chunk
+		res, err := q.FzBump(ctx, chunkP)
+		if err != nil {
+			return err
+		}
+		batchRes.Add(res)
+		chunk = chunk[:0]
+		return nil
+	}
+	for item, err := range seq {
+		if err != nil {
+			return nil, err
+		}
+		totalRows++
+		chunk = append(chunk, item)
+		if len(chunk) >= chunkCap {
+			if err := flushChunk(); err != nil {
+				return nil, err
+			}
+		}
+	}
+	if totalRows == 0 {
+		return nil, runtime.ErrEmptySliceParam
+	}
+	if err := flushChunk(); err != nil {
+		return nil, err
+	}
+	return batchRes, nil
+}
+
 const stmtIDFzDelete uint32 = 14
 
 type FzDeleteParams struct {
@@ -3516,6 +3641,61 @@ func (pl *Pipeline) FzDelete(p FzDeleteParams) *runtime.ExecFuture {
 		SliceLens: sliceLensBuf[:],
 	}
 	return pl.Pipeline.QueueExec(stmtIDFzDelete, descFzDelete, in, vk, nil, argBuf, expandErr)
+}
+
+// FzDeleteStream runs FzDelete over the ids rows pulled from seq, in chunks, and sums the results.
+// seq provides the rows: p.IDs must be empty (runtime.ErrInvalidArgument otherwise).
+// An empty seq is runtime.ErrEmptySliceParam, like an empty IN list.
+func (q *Queries) FzDeleteStream(ctx context.Context, p FzDeleteParams, seq iter.Seq2[int64, error]) (sql.Result, error) {
+	if seq == nil {
+		return nil, runtime.ErrNilArgument
+	}
+	if len(p.IDs) != 0 {
+		return nil, runtime.InvalidArgument("FzDeleteStream: p.IDs must be empty: the rows come from seq")
+	}
+	totalRows := 0
+	chunkCap := min(256, q.cache.MaxRowsPerBatch(sqlDialect, 1, 1))
+	bufPtr := chunkPool_int64.Get().(*[]int64)
+	chunk := (*bufPtr)[:0]
+	defer func() {
+		clear(chunk[:cap(chunk)])
+		*bufPtr = chunk[:0]
+		chunkPool_int64.Put(bufPtr)
+	}()
+	var batchRes runtime.BatchExecResult
+	flushChunk := func() error {
+		if len(chunk) == 0 {
+			return nil
+		}
+		chunkP := p
+		chunkP.IDs = chunk
+		res, err := q.FzDelete(ctx, chunkP)
+		if err != nil {
+			return err
+		}
+		batchRes.Add(res)
+		chunk = chunk[:0]
+		return nil
+	}
+	for item, err := range seq {
+		if err != nil {
+			return nil, err
+		}
+		totalRows++
+		chunk = append(chunk, item)
+		if len(chunk) >= chunkCap {
+			if err := flushChunk(); err != nil {
+				return nil, err
+			}
+		}
+	}
+	if totalRows == 0 {
+		return nil, runtime.ErrEmptySliceParam
+	}
+	if err := flushChunk(); err != nil {
+		return nil, err
+	}
+	return batchRes, nil
 }
 
 const stmtIDFzSubs uint32 = 15
@@ -5332,4 +5512,73 @@ func (pl *Pipeline) FzDeleteRet(p FzDeleteRetParams) *runtime.SliceFuture[FzOut]
 	return runtime.QueueSlice(pl.Pipeline, stmtIDFzDeleteRet, descFzDeleteRet, in, vk, nil, argBuf, expandErr,
 		func(rs *sql.Rows, dst *FzOut) error { return scanFzDeleteRetRow(rs, dst, colMask, p) },
 	)
+}
+
+// FzDeleteRetStreamSeq runs FzDeleteRet over the ids rows pulled from seq, in chunks, and yields their rows in order.
+// seq provides the rows: p.IDs must be empty (runtime.ErrInvalidArgument otherwise).
+// An empty seq is runtime.ErrEmptySliceParam, like an empty IN list.
+func (q *Queries) FzDeleteRetStreamSeq(ctx context.Context, p FzDeleteRetParams, seq iter.Seq2[int64, error]) iter.Seq2[FzOut, error] {
+	return func(yield func(FzOut, error) bool) {
+		var zero FzOut
+		if seq == nil {
+			yield(zero, runtime.ErrNilArgument)
+			return
+		}
+		if len(p.IDs) != 0 {
+			yield(zero, runtime.InvalidArgument("FzDeleteRetStream: p.IDs must be empty: the rows come from seq"))
+			return
+		}
+		totalRows := 0
+		chunkCap := min(256, q.cache.MaxRowsPerBatch(sqlDialect, 1, 1))
+		bufPtr := chunkPool_int64.Get().(*[]int64)
+		chunk := (*bufPtr)[:0]
+		defer func() {
+			clear(chunk[:cap(chunk)])
+			*bufPtr = chunk[:0]
+			chunkPool_int64.Put(bufPtr)
+		}()
+		flushChunk := func() bool {
+			if len(chunk) == 0 {
+				return true
+			}
+			chunkP := p
+			chunkP.IDs = chunk
+			for r, err := range q.FzDeleteRetSeq(ctx, chunkP) {
+				if err != nil {
+					yield(zero, err)
+					return false
+				}
+				if !yield(r, nil) {
+					return false
+				}
+			}
+			chunk = chunk[:0]
+			return true
+		}
+		for item, err := range seq {
+			if err != nil {
+				yield(zero, err)
+				return
+			}
+			totalRows++
+			chunk = append(chunk, item)
+			if len(chunk) >= chunkCap {
+				if !flushChunk() {
+					return
+				}
+			}
+		}
+		if totalRows == 0 {
+			yield(zero, runtime.ErrEmptySliceParam)
+			return
+		}
+		_ = flushChunk()
+	}
+}
+
+// FzDeleteRetStream runs FzDeleteRet over the ids rows pulled from seq, in chunks, and returns their rows in order.
+// seq provides the rows: p.IDs must be empty (runtime.ErrInvalidArgument otherwise).
+// An empty seq is runtime.ErrEmptySliceParam, like an empty IN list.
+func (q *Queries) FzDeleteRetStream(ctx context.Context, p FzDeleteRetParams, seq iter.Seq2[int64, error]) ([]FzOut, error) {
+	return runtime.Collect(q.FzDeleteRetStreamSeq(ctx, p, seq))
 }

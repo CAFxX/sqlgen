@@ -2424,7 +2424,7 @@ func compileStatement(id uint32, spec StatementSpec, sd stmtDialect) (*compiledS
 			}
 			if sl.Kind == runtime.SlotSlice {
 				cs.CanBatch = true
-				cs.CanStream = false
+				cs.CanStream = true
 				cs.BatchParamIdx = sl.ParamIdx
 				cs.BatchIsTuple = false
 				cs.BatchArity = 1
@@ -2924,6 +2924,22 @@ func Generate(cfg Config) ([]byte, error) {
 			b.WriteString("\tfor i := 1; i < len(rows); i++ {\n")
 			fmt.Fprintf(&b, "\t\tif compare%s(rows[i-1], rows[i]) > 0 {\n\t\t\treturn false\n\t\t}\n", td.Name)
 			b.WriteString("\t}\n\treturn true\n}\n\n")
+		}
+	}
+
+	// Chunk buffers of the Stream methods of 1D-slice statements, one pool per element type (the pools of
+	// tuple-slice statements are declared with their tuple struct above).
+	emittedStreamPool := make(map[string]bool)
+	for _, cs := range compiled {
+		if !cs.CanStream || cs.BatchIsTuple {
+			continue
+		}
+		elem := cs.Params[cs.BatchParamIdx].ElemGoType
+		if name := streamPoolName(cs); !emittedStreamPool[name] {
+			emittedStreamPool[name] = true
+			fmt.Fprintf(&b, "var %s = sync.Pool{\n", name)
+			fmt.Fprintf(&b, "\tNew: func() any {\n\t\ts := make([]%s, 0, 256)\n\t\treturn &s\n\t},\n", elem)
+			b.WriteString("}\n\n")
 		}
 	}
 
@@ -4077,12 +4093,22 @@ func emitExecChunkedBody(
 	b.WriteString("\treturn batchRes, nil\n")
 }
 
+// streamPoolName is the sync.Pool of the chunk buffers of cs's Stream methods: per tuple struct for a
+// tuple slice (declared with the struct), per element type for a 1D slice.
+func streamPoolName(cs *compiledStmt) string {
+	elem := cs.Params[cs.BatchParamIdx].ElemGoType
+	if cs.BatchIsTuple {
+		return lowerFirstIdent(elem) + "ChunkPool"
+	}
+	return "chunkPool_" + sanitizeTypeIdent(elem)
+}
+
 // emitExecStream emits <Name>Stream of an exec statement: the same statement fed from an iterator, in
 // pooled chunks, each flushed through <Name>.
 func emitExecStream(b *bytes.Buffer, cs *compiledStmt, paramsStructName string) {
 	batchParam := cs.Params[cs.BatchParamIdx]
 	sigStream, callBatchArgs := buildStreamSignatures(cs, paramsStructName)
-	poolName := lowerFirstIdent(batchParam.ElemGoType) + "ChunkPool"
+	poolName := streamPoolName(cs)
 
 	emitStreamDoc(b, cs, cs.Name+"Stream", "and sums the results")
 	fmt.Fprintf(b, "func (q *Queries) %sStream(ctx context.Context%s) (sql.Result, error) {\n", cs.Name, sigStream)
@@ -4232,7 +4258,7 @@ func emitManyChunkedSeq(
 	b.WriteString("}\n\n")
 }
 
-// emitManyStream emits <Name>StreamSeq and <Name>Stream of a many statement with a tuple-slice
+// emitManyStream emits <Name>StreamSeq and <Name>Stream of a many statement with a chunked (tuple- or 1D-slice)
 // collection: the statement fed from an iterator in pooled chunks, each flushed through <Name>Seq.
 // emitStreamDoc emits the doc comment of a Stream method: which argument provides the rows.
 func emitStreamDoc(b *bytes.Buffer, cs *compiledStmt, method, what string) {
@@ -4260,7 +4286,7 @@ func streamFieldSetErr(cs *compiledStmt) string {
 func emitManyStream(b *bytes.Buffer, cs *compiledStmt, paramsStructName string) {
 	batchParam := cs.Params[cs.BatchParamIdx]
 	sigStream, callBatchArgs := buildStreamSignatures(cs, paramsStructName)
-	poolName := lowerFirstIdent(batchParam.ElemGoType) + "ChunkPool"
+	poolName := streamPoolName(cs)
 
 	emitStreamDoc(b, cs, cs.Name+"StreamSeq", "and yields their rows in order")
 	fmt.Fprintf(b, "func (q *Queries) %sStreamSeq(ctx context.Context%s) iter.Seq2[%s, error] {\n", cs.Name, sigStream, cs.RowTypeName)

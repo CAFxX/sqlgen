@@ -220,6 +220,13 @@ var quadKeyChunkPool = sync.Pool{
 	},
 }
 
+var chunkPool_int64 = sync.Pool{
+	New: func() any {
+		s := make([]int64, 0, 256)
+		return &s
+	},
+}
+
 func compareint64Asc(a, b int64) int {
 	if a < b {
 		return -1
@@ -2748,6 +2755,69 @@ func (pl *Pipeline) UserIDsNearScore(score int64, ids []int64) *runtime.SliceFut
 	)
 }
 
+// UserIDsNearScoreStreamSeq runs UserIDsNearScore over the IDs rows pulled from seq, in chunks, and yields their rows in order.
+// seq provides the rows of the collection parameter.
+// An empty seq is runtime.ErrEmptySliceParam, like an empty IN list.
+func (q *Queries) UserIDsNearScoreStreamSeq(ctx context.Context, score int64, seq iter.Seq2[int64, error]) iter.Seq2[int64, error] {
+	return func(yield func(int64, error) bool) {
+		var zero int64
+		if seq == nil {
+			yield(zero, runtime.ErrNilArgument)
+			return
+		}
+		totalRows := 0
+		chunkCap := min(256, q.cache.MaxRowsPerBatch(sqlDialect, 3, 1))
+		bufPtr := chunkPool_int64.Get().(*[]int64)
+		chunk := (*bufPtr)[:0]
+		defer func() {
+			clear(chunk[:cap(chunk)])
+			*bufPtr = chunk[:0]
+			chunkPool_int64.Put(bufPtr)
+		}()
+		flushChunk := func() bool {
+			if len(chunk) == 0 {
+				return true
+			}
+			for r, err := range q.UserIDsNearScoreSeq(ctx, score, chunk) {
+				if err != nil {
+					yield(zero, err)
+					return false
+				}
+				if !yield(r, nil) {
+					return false
+				}
+			}
+			chunk = chunk[:0]
+			return true
+		}
+		for item, err := range seq {
+			if err != nil {
+				yield(zero, err)
+				return
+			}
+			totalRows++
+			chunk = append(chunk, item)
+			if len(chunk) >= chunkCap {
+				if !flushChunk() {
+					return
+				}
+			}
+		}
+		if totalRows == 0 {
+			yield(zero, runtime.ErrEmptySliceParam)
+			return
+		}
+		_ = flushChunk()
+	}
+}
+
+// UserIDsNearScoreStream runs UserIDsNearScore over the IDs rows pulled from seq, in chunks, and returns their rows in order.
+// seq provides the rows of the collection parameter.
+// An empty seq is runtime.ErrEmptySliceParam, like an empty IN list.
+func (q *Queries) UserIDsNearScoreStream(ctx context.Context, score int64, seq iter.Seq2[int64, error]) ([]int64, error) {
+	return runtime.Collect(q.UserIDsNearScoreStreamSeq(ctx, score, seq))
+}
+
 const stmtIDUserEmailBytes uint32 = 14
 
 type paramsUserEmailBytes struct {
@@ -3725,6 +3795,56 @@ func (pl *Pipeline) BumpUsersByIDs(bonus int64, ids []int64) *runtime.ExecFuture
 		SliceLens: sliceLensBuf[:],
 	}
 	return pl.Pipeline.QueueExec(stmtIDBumpUsersByIDs, descBumpUsersByIDs, in, vk, nil, argBuf, expandErr)
+}
+
+// BumpUsersByIDsStream runs BumpUsersByIDs over the IDs rows pulled from seq, in chunks, and sums the results.
+// seq provides the rows of the collection parameter.
+// An empty seq is runtime.ErrEmptySliceParam, like an empty IN list.
+func (q *Queries) BumpUsersByIDsStream(ctx context.Context, bonus int64, seq iter.Seq2[int64, error]) (sql.Result, error) {
+	if seq == nil {
+		return nil, runtime.ErrNilArgument
+	}
+	totalRows := 0
+	chunkCap := min(256, q.cache.MaxRowsPerBatch(sqlDialect, 1, 1))
+	bufPtr := chunkPool_int64.Get().(*[]int64)
+	chunk := (*bufPtr)[:0]
+	defer func() {
+		clear(chunk[:cap(chunk)])
+		*bufPtr = chunk[:0]
+		chunkPool_int64.Put(bufPtr)
+	}()
+	var batchRes runtime.BatchExecResult
+	flushChunk := func() error {
+		if len(chunk) == 0 {
+			return nil
+		}
+		res, err := q.BumpUsersByIDs(ctx, bonus, chunk)
+		if err != nil {
+			return err
+		}
+		batchRes.Add(res)
+		chunk = chunk[:0]
+		return nil
+	}
+	for item, err := range seq {
+		if err != nil {
+			return nil, err
+		}
+		totalRows++
+		chunk = append(chunk, item)
+		if len(chunk) >= chunkCap {
+			if err := flushChunk(); err != nil {
+				return nil, err
+			}
+		}
+	}
+	if totalRows == 0 {
+		return nil, runtime.ErrEmptySliceParam
+	}
+	if err := flushChunk(); err != nil {
+		return nil, err
+	}
+	return batchRes, nil
 }
 
 const stmtIDDeleteQuadsByKeys uint32 = 20

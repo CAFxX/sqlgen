@@ -141,6 +141,13 @@ func isNewItemSorted(rows []NewItem) bool {
 	return true
 }
 
+var chunkPool_int64 = sync.Pool{
+	New: func() any {
+		s := make([]int64, 0, 256)
+		return &s
+	},
+}
+
 func compareint64Asc(a, b int64) int {
 	if a < b {
 		return -1
@@ -1770,6 +1777,56 @@ func (pl *Pipeline) AddScore(delta int64, ids []int64, orgID int64) *runtime.Exe
 	return pl.Pipeline.QueueExec(stmtIDAddScore, descAddScore, in, vk, nil, argBuf, expandErr)
 }
 
+// AddScoreStream runs AddScore over the ids rows pulled from seq, in chunks, and sums the results.
+// seq provides the rows of the collection parameter.
+// An empty seq is runtime.ErrEmptySliceParam, like an empty IN list.
+func (q *Queries) AddScoreStream(ctx context.Context, delta int64, seq iter.Seq2[int64, error], orgID int64) (sql.Result, error) {
+	if seq == nil {
+		return nil, runtime.ErrNilArgument
+	}
+	totalRows := 0
+	chunkCap := min(256, q.cache.MaxRowsPerBatch(sqlDialect, 2, 1))
+	bufPtr := chunkPool_int64.Get().(*[]int64)
+	chunk := (*bufPtr)[:0]
+	defer func() {
+		clear(chunk[:cap(chunk)])
+		*bufPtr = chunk[:0]
+		chunkPool_int64.Put(bufPtr)
+	}()
+	var batchRes runtime.BatchExecResult
+	flushChunk := func() error {
+		if len(chunk) == 0 {
+			return nil
+		}
+		res, err := q.AddScore(ctx, delta, chunk, orgID)
+		if err != nil {
+			return err
+		}
+		batchRes.Add(res)
+		chunk = chunk[:0]
+		return nil
+	}
+	for item, err := range seq {
+		if err != nil {
+			return nil, err
+		}
+		totalRows++
+		chunk = append(chunk, item)
+		if len(chunk) >= chunkCap {
+			if err := flushChunk(); err != nil {
+				return nil, err
+			}
+		}
+	}
+	if totalRows == 0 {
+		return nil, runtime.ErrEmptySliceParam
+	}
+	if err := flushChunk(); err != nil {
+		return nil, err
+	}
+	return batchRes, nil
+}
+
 const stmtIDAddScoreOne uint32 = 8
 
 type paramsAddScoreOne struct {
@@ -1990,6 +2047,56 @@ func (pl *Pipeline) DeleteItems(ids []int64) *runtime.ExecFuture {
 		SliceLens: sliceLensBuf[:],
 	}
 	return pl.Pipeline.QueueExec(stmtIDDeleteItems, descDeleteItems, in, vk, nil, argBuf, expandErr)
+}
+
+// DeleteItemsStream runs DeleteItems over the ids rows pulled from seq, in chunks, and sums the results.
+// seq provides the rows of the collection parameter.
+// An empty seq is runtime.ErrEmptySliceParam, like an empty IN list.
+func (q *Queries) DeleteItemsStream(ctx context.Context, seq iter.Seq2[int64, error]) (sql.Result, error) {
+	if seq == nil {
+		return nil, runtime.ErrNilArgument
+	}
+	totalRows := 0
+	chunkCap := min(256, q.cache.MaxRowsPerBatch(sqlDialect, 0, 1))
+	bufPtr := chunkPool_int64.Get().(*[]int64)
+	chunk := (*bufPtr)[:0]
+	defer func() {
+		clear(chunk[:cap(chunk)])
+		*bufPtr = chunk[:0]
+		chunkPool_int64.Put(bufPtr)
+	}()
+	var batchRes runtime.BatchExecResult
+	flushChunk := func() error {
+		if len(chunk) == 0 {
+			return nil
+		}
+		res, err := q.DeleteItems(ctx, chunk)
+		if err != nil {
+			return err
+		}
+		batchRes.Add(res)
+		chunk = chunk[:0]
+		return nil
+	}
+	for item, err := range seq {
+		if err != nil {
+			return nil, err
+		}
+		totalRows++
+		chunk = append(chunk, item)
+		if len(chunk) >= chunkCap {
+			if err := flushChunk(); err != nil {
+				return nil, err
+			}
+		}
+	}
+	if totalRows == 0 {
+		return nil, runtime.ErrEmptySliceParam
+	}
+	if err := flushChunk(); err != nil {
+		return nil, err
+	}
+	return batchRes, nil
 }
 
 const stmtIDTopOrgs uint32 = 10
@@ -3092,6 +3199,69 @@ func (pl *Pipeline) DeleteReturning(ids []int64, selectCols ...uint64) *runtime.
 	return runtime.QueueSlice(pl.Pipeline, stmtIDDeleteReturning, descDeleteReturning, in, vk, nil, argBuf, expandErr,
 		func(rs *sql.Rows, dst *Written) error { return scanDeleteReturningRow(rs, dst, colMask, p) },
 	)
+}
+
+// DeleteReturningStreamSeq runs DeleteReturning over the ids rows pulled from seq, in chunks, and yields their rows in order.
+// seq provides the rows of the collection parameter.
+// An empty seq is runtime.ErrEmptySliceParam, like an empty IN list.
+func (q *Queries) DeleteReturningStreamSeq(ctx context.Context, seq iter.Seq2[int64, error], selectCols ...uint64) iter.Seq2[Written, error] {
+	return func(yield func(Written, error) bool) {
+		var zero Written
+		if seq == nil {
+			yield(zero, runtime.ErrNilArgument)
+			return
+		}
+		totalRows := 0
+		chunkCap := min(256, q.cache.MaxRowsPerBatch(sqlDialect, 0, 1))
+		bufPtr := chunkPool_int64.Get().(*[]int64)
+		chunk := (*bufPtr)[:0]
+		defer func() {
+			clear(chunk[:cap(chunk)])
+			*bufPtr = chunk[:0]
+			chunkPool_int64.Put(bufPtr)
+		}()
+		flushChunk := func() bool {
+			if len(chunk) == 0 {
+				return true
+			}
+			for r, err := range q.DeleteReturningSeq(ctx, chunk, selectCols...) {
+				if err != nil {
+					yield(zero, err)
+					return false
+				}
+				if !yield(r, nil) {
+					return false
+				}
+			}
+			chunk = chunk[:0]
+			return true
+		}
+		for item, err := range seq {
+			if err != nil {
+				yield(zero, err)
+				return
+			}
+			totalRows++
+			chunk = append(chunk, item)
+			if len(chunk) >= chunkCap {
+				if !flushChunk() {
+					return
+				}
+			}
+		}
+		if totalRows == 0 {
+			yield(zero, runtime.ErrEmptySliceParam)
+			return
+		}
+		_ = flushChunk()
+	}
+}
+
+// DeleteReturningStream runs DeleteReturning over the ids rows pulled from seq, in chunks, and returns their rows in order.
+// seq provides the rows of the collection parameter.
+// An empty seq is runtime.ErrEmptySliceParam, like an empty IN list.
+func (q *Queries) DeleteReturningStream(ctx context.Context, seq iter.Seq2[int64, error], selectCols ...uint64) ([]Written, error) {
+	return runtime.Collect(q.DeleteReturningStreamSeq(ctx, seq, selectCols...))
 }
 
 const stmtIDDeleteOneReturning uint32 = 17

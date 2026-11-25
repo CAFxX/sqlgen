@@ -166,6 +166,13 @@ var archivedOrderRowChunkPool = sync.Pool{
 	},
 }
 
+var chunkPool_int64 = sync.Pool{
+	New: func() any {
+		s := make([]int64, 0, 256)
+		return &s
+	},
+}
+
 func compareint64Asc(a, b int64) int {
 	if a < b {
 		return -1
@@ -1160,4 +1167,54 @@ func (pl *Pipeline) DeleteFulfilledOrdersByIDs(ids []int64) *runtime.ExecFuture 
 		SliceLens: sliceLensBuf[:],
 	}
 	return pl.Pipeline.QueueExec(stmtIDDeleteFulfilledOrdersByIDs, descDeleteFulfilledOrdersByIDs, in, vk, nil, argBuf, expandErr)
+}
+
+// DeleteFulfilledOrdersByIDsStream runs DeleteFulfilledOrdersByIDs over the ids rows pulled from seq, in chunks, and sums the results.
+// seq provides the rows of the collection parameter.
+// An empty seq is runtime.ErrEmptySliceParam, like an empty IN list.
+func (q *Queries) DeleteFulfilledOrdersByIDsStream(ctx context.Context, seq iter.Seq2[int64, error]) (sql.Result, error) {
+	if seq == nil {
+		return nil, runtime.ErrNilArgument
+	}
+	totalRows := 0
+	chunkCap := min(256, q.cache.MaxRowsPerBatch(sqlDialect, 0, 1))
+	bufPtr := chunkPool_int64.Get().(*[]int64)
+	chunk := (*bufPtr)[:0]
+	defer func() {
+		clear(chunk[:cap(chunk)])
+		*bufPtr = chunk[:0]
+		chunkPool_int64.Put(bufPtr)
+	}()
+	var batchRes runtime.BatchExecResult
+	flushChunk := func() error {
+		if len(chunk) == 0 {
+			return nil
+		}
+		res, err := q.DeleteFulfilledOrdersByIDs(ctx, chunk)
+		if err != nil {
+			return err
+		}
+		batchRes.Add(res)
+		chunk = chunk[:0]
+		return nil
+	}
+	for item, err := range seq {
+		if err != nil {
+			return nil, err
+		}
+		totalRows++
+		chunk = append(chunk, item)
+		if len(chunk) >= chunkCap {
+			if err := flushChunk(); err != nil {
+				return nil, err
+			}
+		}
+	}
+	if totalRows == 0 {
+		return nil, runtime.ErrEmptySliceParam
+	}
+	if err := flushChunk(); err != nil {
+		return nil, err
+	}
+	return batchRes, nil
 }

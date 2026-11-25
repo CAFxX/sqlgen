@@ -124,6 +124,17 @@ func TestEmptyAndNilCollections(t *testing.T) {
 	if _, err := q.DeleteFulfilledOrdersByIDs(ctx, nil); !errors.Is(err, runtime.ErrEmptySliceParam) {
 		t.Fatalf("DeleteFulfilledOrdersByIDs(nil) = %v", err)
 	}
+	if _, err := q.DeleteFulfilledOrdersByIDsStream(ctx, runtime.FromSlice([]int64(nil))); !errors.Is(err, runtime.ErrEmptySliceParam) {
+		t.Fatalf("DeleteFulfilledOrdersByIDsStream(empty) = %v", err)
+	}
+	if _, err := q.DeleteFulfilledOrdersByIDsStream(ctx, nil); !errors.Is(err, runtime.ErrNilArgument) {
+		t.Fatalf("DeleteFulfilledOrdersByIDsStream(nil) = %v", err)
+	}
+	if res, err := q.DeleteFulfilledOrdersByIDsStream(ctx, runtime.FromSlice([]int64{998, 999})); err != nil {
+		t.Fatalf("DeleteFulfilledOrdersByIDsStream = %v", err)
+	} else if n, _ := res.RowsAffected(); n != 0 {
+		t.Fatalf("DeleteFulfilledOrdersByIDsStream deleted %d unknown orders", n)
+	}
 	if _, err := q.GetInventoryBySKUs(ctx, nil); !errors.Is(err, runtime.ErrEmptySliceParam) {
 		t.Fatalf("GetInventoryBySKUs(nil) = %v", err)
 	}

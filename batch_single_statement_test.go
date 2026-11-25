@@ -391,3 +391,60 @@ func TestPipelineOperationOverTheLimitFailsBeforeSending(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+// A decomposable statement over a 1D slice streams like a tuple-slice one: <Name>Stream takes the values
+// from an iterator in pooled chunks, each run through the chunked method, so an arbitrarily long id source
+// needs O(1) memory. Empty and nil sources fail like an empty IN list.
+func TestOneDimensionalSliceStream(t *testing.T) {
+	ctx := context.Background()
+	q, trs := setupTraceDB(t, runtime.WithMaxBatchParams(4)) // 1 scalar + 3 ids per statement
+	ids := make([]int64, 10)
+	for i := range ids {
+		ids[i] = int64(10 - i) // unsorted: each chunk is presorted (ASC) by the chunked method
+		if _, err := q.db.Exec(`INSERT INTO batch_users (id, name, points) VALUES (?, 'n', 0)`, ids[i]); err != nil {
+			t.Fatal(err)
+		}
+	}
+	trs.reset()
+	res, err := q.BumpUsersByIDsStream(ctx, 5, runtime.FromSlice(ids))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n, err := res.RowsAffected(); err != nil || n != 10 {
+		t.Fatalf("rows affected = %d, %v; want 10", n, err)
+	}
+	if n := trs.stmts(); n != 4 { // 3 + 3 + 3 + 1
+		t.Fatalf("%d statements, want 4 chunks", n)
+	}
+	var total int64
+	if err := q.db.QueryRow(`SELECT SUM(points) FROM batch_users`).Scan(&total); err != nil || total != 50 {
+		t.Fatalf("total points = %d, %v; want 50", total, err)
+	}
+	if _, err := q.BumpUsersByIDsStream(ctx, 5, runtime.FromSlice([]int64(nil))); !errors.Is(err, runtime.ErrEmptySliceParam) {
+		t.Fatalf("empty source: %v", err)
+	}
+	if _, err := q.BumpUsersByIDsStream(ctx, 5, nil); !errors.Is(err, runtime.ErrNilArgument) {
+		t.Fatalf("nil source: %v", err)
+	}
+
+	// A many statement: the rows of every chunk, in chunk order.
+	for i, id := range ids {
+		if _, err := q.db.Exec(`INSERT INTO users (id, org_id, email, role, score, bio) VALUES (?, 1, 'e', 'r', ?, '')`, id, int64(i%2)*7); err != nil {
+			t.Fatal(err)
+		}
+	}
+	trs.reset()
+	got, err := runtime.Collect(q.UserIDsNearScoreStreamSeq(ctx, 7, runtime.FromSlice(ids)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	// ids 10..1 with scores 0, 7, 0, 7, ...: score 7 matches 9, 7, 5, 3, 1 (the row order of one statement
+	// is unspecified: compare sorted)
+	slices.Sort(got)
+	if !slices.Equal(got, []int64{1, 3, 5, 7, 9}) {
+		t.Fatalf("UserIDsNearScoreStreamSeq = %v", got)
+	}
+	if n := trs.stmts(); n < 2 {
+		t.Fatalf("%d statements, want the source split into chunks", n)
+	}
+}

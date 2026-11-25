@@ -206,6 +206,13 @@ func isOrderSubmissionSorted(rows []OrderSubmission) bool {
 	return true
 }
 
+var chunkPool_int64 = sync.Pool{
+	New: func() any {
+		s := make([]int64, 0, 256)
+		return &s
+	},
+}
+
 func compareint64Asc(a, b int64) int {
 	if a < b {
 		return -1
@@ -1684,6 +1691,69 @@ func (pl *Pipeline) CancelOrdersByIDs(cancelSeq int64, firmID int64, orderIDs []
 	return runtime.QueueSlice(pl.Pipeline, stmtIDCancelOrdersByIDs, descCancelOrdersByIDs, in, vk, nil, argBuf, expandErr,
 		func(rs *sql.Rows, dst *OrderAck) error { return scanCancelOrdersByIDsRow(rs, dst, colMask, p) },
 	)
+}
+
+// CancelOrdersByIDsStreamSeq runs CancelOrdersByIDs over the OrderIDs rows pulled from seq, in chunks, and yields their rows in order.
+// seq provides the rows of the collection parameter.
+// An empty seq is runtime.ErrEmptySliceParam, like an empty IN list.
+func (q *Queries) CancelOrdersByIDsStreamSeq(ctx context.Context, cancelSeq int64, firmID int64, seq iter.Seq2[int64, error], selectCols ...uint64) iter.Seq2[OrderAck, error] {
+	return func(yield func(OrderAck, error) bool) {
+		var zero OrderAck
+		if seq == nil {
+			yield(zero, runtime.ErrNilArgument)
+			return
+		}
+		totalRows := 0
+		chunkCap := min(256, q.cache.MaxRowsPerBatch(sqlDialect, 2, 1))
+		bufPtr := chunkPool_int64.Get().(*[]int64)
+		chunk := (*bufPtr)[:0]
+		defer func() {
+			clear(chunk[:cap(chunk)])
+			*bufPtr = chunk[:0]
+			chunkPool_int64.Put(bufPtr)
+		}()
+		flushChunk := func() bool {
+			if len(chunk) == 0 {
+				return true
+			}
+			for r, err := range q.CancelOrdersByIDsSeq(ctx, cancelSeq, firmID, chunk, selectCols...) {
+				if err != nil {
+					yield(zero, err)
+					return false
+				}
+				if !yield(r, nil) {
+					return false
+				}
+			}
+			chunk = chunk[:0]
+			return true
+		}
+		for item, err := range seq {
+			if err != nil {
+				yield(zero, err)
+				return
+			}
+			totalRows++
+			chunk = append(chunk, item)
+			if len(chunk) >= chunkCap {
+				if !flushChunk() {
+					return
+				}
+			}
+		}
+		if totalRows == 0 {
+			yield(zero, runtime.ErrEmptySliceParam)
+			return
+		}
+		_ = flushChunk()
+	}
+}
+
+// CancelOrdersByIDsStream runs CancelOrdersByIDs over the OrderIDs rows pulled from seq, in chunks, and returns their rows in order.
+// seq provides the rows of the collection parameter.
+// An empty seq is runtime.ErrEmptySliceParam, like an empty IN list.
+func (q *Queries) CancelOrdersByIDsStream(ctx context.Context, cancelSeq int64, firmID int64, seq iter.Seq2[int64, error], selectCols ...uint64) ([]OrderAck, error) {
+	return runtime.Collect(q.CancelOrdersByIDsStreamSeq(ctx, cancelSeq, firmID, seq, selectCols...))
 }
 
 const stmtIDListOpenOrdersForSymbol uint32 = 9

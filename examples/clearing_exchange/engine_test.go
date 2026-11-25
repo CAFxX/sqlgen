@@ -824,6 +824,18 @@ func exerciseRemainingExchangeVariants(t *testing.T, ctx context.Context, mode s
 	if err := runtime.Each(q.CancelOrdersByIDsSeq(ctx, 901, 1, []int64{cancelIDs[5]}), func(_ OrderAck) error { return nil }); err != nil {
 		t.Fatalf("[%s] CancelOrdersByIDsEach: %v", mode, err)
 	}
+	// The Stream forms of the 1D-slice statement: the ids come from an iterator.
+	if _, err := q.CancelOrdersByIDsStream(ctx, 906, 1, runtime.FromSlice([]int64{cancelIDs[1], cancelIDs[0]})); err != nil {
+		t.Fatalf("[%s] CancelOrdersByIDsStream: %v", mode, err)
+	}
+	for _, err := range q.CancelOrdersByIDsStreamSeq(ctx, 906, 1, runtime.FromSlice([]int64{cancelIDs[0]})) {
+		if err != nil {
+			t.Fatalf("[%s] CancelOrdersByIDsStreamSeq: %v", mode, err)
+		}
+	}
+	if _, err := q.CancelOrdersByIDsStream(ctx, 906, 1, runtime.FromSlice([]int64(nil))); !errors.Is(err, runtime.ErrEmptySliceParam) {
+		t.Fatalf("[%s] empty CancelOrdersByIDsStream: %v", mode, err)
+	}
 	for range 2 {
 		if _, err := q.CancelOrdersByIDs(ctx, 902, 1, []int64{cancelIDs[6], cancelIDs[7]}); err != nil {
 			t.Fatalf("[%s] 2-row CancelOrdersByIDs: %v", mode, err)
