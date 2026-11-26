@@ -574,7 +574,7 @@ type Slot struct {
 
 // QueryDescriptor holds the pre-parsed static SQL segments and dynamic slots for a statement.
 type QueryDescriptor struct {
-	shapeIdentity atomic.Uint64 // process-unique identity for composable-query cache shapes
+	shapeIdentity  atomic.Uint64 // process-unique identity for composable-query cache shapes
 	Name           string // statement name, used in diagnostics
 	StmtID         uint32
 	StmtVerb       StmtVerb

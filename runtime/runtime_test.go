@@ -3166,7 +3166,6 @@ func TestTranslateWireErrorOnlyTranslatesTheGuardMarkers(t *testing.T) {
 	}
 }
 
-
 func TestComputeQueryShapeNamesDescriptor(t *testing.T) {
 	a := &QueryDescriptor{StmtID: 1}
 	b := &QueryDescriptor{StmtID: 1}
@@ -3217,7 +3216,6 @@ func TestPipelineRequireDialectRejectsMixedGeneratedPackages(t *testing.T) {
 		t.Fatalf("matching dialect unexpectedly failed: %v", p2.buildErr)
 	}
 }
-
 
 func TestPipelineRequireEngineRejectsDifferentEnginesWithSamePlaceholderDialect(t *testing.T) {
 	p := NewPipeline(context.Background(), nil, nil, nil, false, DialectDollar)

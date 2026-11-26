@@ -97,7 +97,9 @@ func (q *Queries) PipelineTx(ctx context.Context, txOpts *sql.TxOptions, fn func
 // WrapPipeline creates this package's typed view of a pipeline owned by another generated package.
 // The original pipeline retains ownership of its DB, transaction, cache, prepared statements and dialect.
 func WrapPipeline(p *runtime.Pipeline) *Pipeline {
-	if p == nil { panic("sqlgen: cannot wrap a nil runtime.Pipeline") }
+	if p == nil {
+		panic("sqlgen: cannot wrap a nil runtime.Pipeline")
+	}
 	p.RequireDialect(sqlDialect)
 	p.RequireEngine(sqlDialectName)
 	return &Pipeline{Pipeline: p}

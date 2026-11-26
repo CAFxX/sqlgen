@@ -99,7 +99,9 @@ func (q *Queries) PipelineTx(ctx context.Context, txOpts *sql.TxOptions, fn func
 // WrapPipeline creates this package's typed view of a pipeline owned by another generated package.
 // The original pipeline retains ownership of its DB, transaction, cache, prepared statements and dialect.
 func WrapPipeline(p *runtime.Pipeline) *Pipeline {
-	if p == nil { panic("sqlgen: cannot wrap a nil runtime.Pipeline") }
+	if p == nil {
+		panic("sqlgen: cannot wrap a nil runtime.Pipeline")
+	}
 	p.RequireDialect(sqlDialect)
 	p.RequireEngine(sqlDialectName)
 	return &Pipeline{Pipeline: p}
@@ -115,11 +117,15 @@ func (pl *Pipeline) If(cond runtime.PipelineCond, fn func(*Pipeline)) *runtime.I
 func (pl *Pipeline) arm(h *runtime.Pipeline) *Pipeline { return &Pipeline{Pipeline: h, q: pl.q} }
 
 func (pl *Pipeline) fastSlot(colMask uint64, index int) *runtime.FastStmtSlot {
-	if pl.q == nil { return nil }
+	if pl.q == nil {
+		return nil
+	}
 	var slot *runtime.FastStmtSlot
 	switch index {
-	case 0: slot = &pl.q.fastSlots[0]
-	default: return nil
+	case 0:
+		slot = &pl.q.fastSlots[0]
+	default:
+		return nil
 	}
 	return runtime.FastSlot(colMask, slot)
 }

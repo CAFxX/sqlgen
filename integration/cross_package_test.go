@@ -1,7 +1,6 @@
 package integration
 
 import (
-	"context"
 	"database/sql"
 	"os"
 	"testing"
@@ -39,7 +38,9 @@ func TestCrossPackageQueryCompositionKeepsCacheEntriesDistinct(t *testing.T) {
 		fromGroups.StmtID = fromItems.StmtID
 		originalDescID := fromGroups.Desc.StmtID
 		fromGroups.Desc.StmtID = fromItems.StmtID
-		defer func() { fromGroups.Desc.StmtID = originalDescID }()
+		defer func() {
+			fromGroups.Desc.StmtID = originalDescID
+		}()
 		fromGroups.ShapeTag = runtime.ComputeSubqueryShape(
 			fromGroups.StmtID,
 			fromGroups.Input.ColMask,

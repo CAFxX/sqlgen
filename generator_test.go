@@ -2385,7 +2385,6 @@ func TestQueryConstructorOnlyForSelect(t *testing.T) {
 	}
 }
 
-
 func TestGeneratedCrossPackagePipelineAPI(t *testing.T) {
 	const cfg = `package: crosspkg
 out: crosspkg_gen.go

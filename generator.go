@@ -3122,7 +3122,9 @@ func Generate(cfg Config) ([]byte, error) {
 	b.WriteString("// WrapPipeline creates this package's typed view of a pipeline owned by another generated package.\n")
 	b.WriteString("// The original pipeline retains ownership of its DB, transaction, cache, prepared statements and dialect.\n")
 	b.WriteString("func WrapPipeline(p *runtime.Pipeline) *Pipeline {\n")
-	b.WriteString("\tif p == nil { panic(\\"sqlgen: cannot wrap a nil runtime.Pipeline\\") }\n")
+	b.WriteString("\tif p == nil {\n")
+	b.WriteString("\t\tpanic(\"sqlgen: cannot wrap a nil runtime.Pipeline\")\n")
+	b.WriteString("\t}\n")
 	b.WriteString("\tp.RequireDialect(sqlDialect)\n")
 	b.WriteString("\tp.RequireEngine(sqlDialectName)\n")
 	b.WriteString("\treturn &Pipeline{Pipeline: p}\n")
@@ -3137,13 +3139,15 @@ func Generate(cfg Config) ([]byte, error) {
 	b.WriteString("func (pl *Pipeline) arm(h *runtime.Pipeline) *Pipeline { return &Pipeline{Pipeline: h, q: pl.q} }\n\n")
 	if numStatic > 0 {
 		b.WriteString("func (pl *Pipeline) fastSlot(colMask uint64, index int) *runtime.FastStmtSlot {\n")
-		b.WriteString("\tif pl.q == nil { return nil }\n")
+		b.WriteString("\tif pl.q == nil {\n")
+		b.WriteString("\t\treturn nil\n")
+		b.WriteString("\t}\n")
 		b.WriteString("\tvar slot *runtime.FastStmtSlot\n")
 		b.WriteString("\tswitch index {\n")
 		for i := 0; i < numStatic; i++ {
-			fmt.Fprintf(&b, "\tcase %d: slot = &pl.q.fastSlots[%d]\n", i, i)
+			fmt.Fprintf(&b, "\tcase %d:\n\t\tslot = &pl.q.fastSlots[%d]\n", i, i)
 		}
-		b.WriteString("\tdefault: return nil\n\t}\n")
+		b.WriteString("\tdefault:\n\t\treturn nil\n\t}\n")
 		b.WriteString("\treturn runtime.FastSlot(colMask, slot)\n")
 		b.WriteString("}\n\n")
 	}

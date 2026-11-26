@@ -101,7 +101,9 @@ func (q *Queries) PipelineTx(ctx context.Context, txOpts *sql.TxOptions, fn func
 // WrapPipeline creates this package's typed view of a pipeline owned by another generated package.
 // The original pipeline retains ownership of its DB, transaction, cache, prepared statements and dialect.
 func WrapPipeline(p *runtime.Pipeline) *Pipeline {
-	if p == nil { panic("sqlgen: cannot wrap a nil runtime.Pipeline") }
+	if p == nil {
+		panic("sqlgen: cannot wrap a nil runtime.Pipeline")
+	}
 	p.RequireDialect(sqlDialect)
 	p.RequireEngine(sqlDialectName)
 	return &Pipeline{Pipeline: p}
@@ -117,33 +119,59 @@ func (pl *Pipeline) If(cond runtime.PipelineCond, fn func(*Pipeline)) *runtime.I
 func (pl *Pipeline) arm(h *runtime.Pipeline) *Pipeline { return &Pipeline{Pipeline: h, q: pl.q} }
 
 func (pl *Pipeline) fastSlot(colMask uint64, index int) *runtime.FastStmtSlot {
-	if pl.q == nil { return nil }
+	if pl.q == nil {
+		return nil
+	}
 	var slot *runtime.FastStmtSlot
 	switch index {
-	case 0: slot = &pl.q.fastSlots[0]
-	case 1: slot = &pl.q.fastSlots[1]
-	case 2: slot = &pl.q.fastSlots[2]
-	case 3: slot = &pl.q.fastSlots[3]
-	case 4: slot = &pl.q.fastSlots[4]
-	case 5: slot = &pl.q.fastSlots[5]
-	case 6: slot = &pl.q.fastSlots[6]
-	case 7: slot = &pl.q.fastSlots[7]
-	case 8: slot = &pl.q.fastSlots[8]
-	case 9: slot = &pl.q.fastSlots[9]
-	case 10: slot = &pl.q.fastSlots[10]
-	case 11: slot = &pl.q.fastSlots[11]
-	case 12: slot = &pl.q.fastSlots[12]
-	case 13: slot = &pl.q.fastSlots[13]
-	case 14: slot = &pl.q.fastSlots[14]
-	case 15: slot = &pl.q.fastSlots[15]
-	case 16: slot = &pl.q.fastSlots[16]
-	case 17: slot = &pl.q.fastSlots[17]
-	case 18: slot = &pl.q.fastSlots[18]
-	case 19: slot = &pl.q.fastSlots[19]
-	case 20: slot = &pl.q.fastSlots[20]
-	case 21: slot = &pl.q.fastSlots[21]
-	case 22: slot = &pl.q.fastSlots[22]
-	default: return nil
+	case 0:
+		slot = &pl.q.fastSlots[0]
+	case 1:
+		slot = &pl.q.fastSlots[1]
+	case 2:
+		slot = &pl.q.fastSlots[2]
+	case 3:
+		slot = &pl.q.fastSlots[3]
+	case 4:
+		slot = &pl.q.fastSlots[4]
+	case 5:
+		slot = &pl.q.fastSlots[5]
+	case 6:
+		slot = &pl.q.fastSlots[6]
+	case 7:
+		slot = &pl.q.fastSlots[7]
+	case 8:
+		slot = &pl.q.fastSlots[8]
+	case 9:
+		slot = &pl.q.fastSlots[9]
+	case 10:
+		slot = &pl.q.fastSlots[10]
+	case 11:
+		slot = &pl.q.fastSlots[11]
+	case 12:
+		slot = &pl.q.fastSlots[12]
+	case 13:
+		slot = &pl.q.fastSlots[13]
+	case 14:
+		slot = &pl.q.fastSlots[14]
+	case 15:
+		slot = &pl.q.fastSlots[15]
+	case 16:
+		slot = &pl.q.fastSlots[16]
+	case 17:
+		slot = &pl.q.fastSlots[17]
+	case 18:
+		slot = &pl.q.fastSlots[18]
+	case 19:
+		slot = &pl.q.fastSlots[19]
+	case 20:
+		slot = &pl.q.fastSlots[20]
+	case 21:
+		slot = &pl.q.fastSlots[21]
+	case 22:
+		slot = &pl.q.fastSlots[22]
+	default:
+		return nil
 	}
 	return runtime.FastSlot(colMask, slot)
 }
