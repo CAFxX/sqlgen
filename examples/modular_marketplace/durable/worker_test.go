@@ -9,8 +9,8 @@ import (
 	"time"
 
 	"github.com/CAFxX/sqlgen/examples/ecommerce_inventory"
-	marketplace "github.com/CAFxX/sqlgen/examples/modular_marketplace"
 	"github.com/CAFxX/sqlgen/examples/fintech_ledger"
+	marketplace "github.com/CAFxX/sqlgen/examples/modular_marketplace"
 	"github.com/dbos-inc/dbos-transact-golang/dbos"
 )
 
