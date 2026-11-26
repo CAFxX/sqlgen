@@ -3165,3 +3165,77 @@ func TestTranslateWireErrorOnlyTranslatesTheGuardMarkers(t *testing.T) {
 		t.Error("nil handling")
 	}
 }
+
+
+func TestComputeQueryShapeNamesDescriptor(t *testing.T) {
+	a := &QueryDescriptor{StmtID: 1}
+	b := &QueryDescriptor{StmtID: 1}
+
+	a1 := ComputeQueryShape(a, 0, 0, 0, false)
+	a2 := ComputeQueryShape(a, 0, 0, 0, false)
+	b1 := ComputeQueryShape(b, 0, 0, 0, false)
+
+	if a1 != a2 {
+		t.Fatalf("same descriptor and shape produced different tags: %#x != %#x", a1, a2)
+	}
+	if a1 == b1 {
+		t.Fatalf("different descriptors with equal local statement IDs collided: %#x", a1)
+	}
+	if a1&inexactKeyBit != 0 || b1&inexactKeyBit != 0 {
+		t.Fatalf("simple descriptor shapes should remain exact: %#x %#x", a1, b1)
+	}
+
+	nested := ComputeQueryShape(b, 0, 0, 0, true)
+	if nested&inexactKeyBit == 0 {
+		t.Fatalf("nested query shape must force exact rendered-SQL keying: %#x", nested)
+	}
+}
+
+func TestVariantKeyWithInexactPreservesExactnessChoice(t *testing.T) {
+	key := MakeVariantKey(1, 0, 0, 0)
+	if !key.IsExact() {
+		t.Fatal("baseline key should be exact")
+	}
+	if key.WithInexact(false) != key || !key.WithInexact(false).IsExact() {
+		t.Fatal("WithInexact(false) changed the key")
+	}
+	if key.WithInexact(true).IsExact() {
+		t.Fatal("WithInexact(true) must force rendered-SQL keying")
+	}
+}
+
+func TestPipelineRequireDialectRejectsMixedGeneratedPackages(t *testing.T) {
+	p := NewPipeline(context.Background(), nil, nil, nil, false, DialectDollar)
+	p.RequireDialect(DialectQuestion)
+	if !errors.Is(p.buildErr, ErrInvalidArgument) {
+		t.Fatalf("expected dialect mismatch build error, got %v", p.buildErr)
+	}
+
+	p2 := NewPipeline(context.Background(), nil, nil, nil, false, DialectDollar)
+	p2.RequireDialect(DialectDollar)
+	if p2.buildErr != nil {
+		t.Fatalf("matching dialect unexpectedly failed: %v", p2.buildErr)
+	}
+}
+
+
+func TestPipelineRequireEngineRejectsDifferentEnginesWithSamePlaceholderDialect(t *testing.T) {
+	p := NewPipeline(context.Background(), nil, nil, nil, false, DialectDollar)
+	p.RequireEngine("postgres")
+	p.RequireEngine("cockroachdb")
+	if !errors.Is(p.buildErr, ErrInvalidArgument) {
+		t.Fatalf("expected exact engine mismatch build error, got %v", p.buildErr)
+	}
+}
+
+
+func TestLegacyComputeSubqueryShapeAlwaysFallsBackToSQLKeying(t *testing.T) {
+	legacy := ComputeSubqueryShape(1, 0, 0, 0, false, 1)
+	if legacy&inexactKeyBit == 0 {
+		t.Fatalf("legacy package-local shape must be marked inexact: %#x", legacy)
+	}
+	parent := MakeVariantKey(7, 0, 0, 0, legacy)
+	if parent.IsExact() {
+		t.Fatalf("a parent of a legacy query must use rendered-SQL keying: %#v", parent)
+	}
+}

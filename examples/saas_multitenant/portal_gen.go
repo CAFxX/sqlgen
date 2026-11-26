@@ -10,6 +10,7 @@ import (
 )
 
 const sqlDialect = runtime.DialectQuestion
+const sqlDialectName = "sqlite"
 
 // Queries executes strongly-typed SQL statements backed by a two-tier adaptive statement cache.
 type Queries struct {
@@ -86,8 +87,18 @@ func (q *Queries) PipelineTx(ctx context.Context, txOpts *sql.TxOptions, fn func
 		return runtime.ErrNilArgument
 	}
 	return runtime.RunPipelineTx(ctx, q.db, q.cache, q.txCache, q.usePrepared, sqlDialect, txOpts, opts, func(p *runtime.Pipeline) error {
+		p.RequireEngine(sqlDialectName)
 		return fn(&Pipeline{Pipeline: p, q: q})
 	})
+}
+
+// WrapPipeline creates this package's typed view of a pipeline owned by another generated package.
+// The original pipeline retains ownership of its DB, transaction, cache, prepared statements and dialect.
+func WrapPipeline(p *runtime.Pipeline) *Pipeline {
+	if p == nil { panic("sqlgen: cannot wrap a nil runtime.Pipeline") }
+	p.RequireDialect(sqlDialect)
+	p.RequireEngine(sqlDialectName)
+	return &Pipeline{Pipeline: p}
 }
 
 // If starts an If chain on pl: fn queues the arm's operations on the handle it receives, which runs
@@ -270,7 +281,7 @@ func SearchMembersQuery(p SearchMembersParams) runtime.Query {
 	orderKey := runtime.EncodeOrderKey(in.OrderSpec, in.HasSeek)
 	var shapeLens [1]int
 	copy(shapeLens[:], in.SliceLens)
-	shapeTag := runtime.ComputeSubqueryShape(stmtIDSearchMembers, colMask, flagMask, orderKey, false, shapeLens[:]...)
+	shapeTag := runtime.ComputeQueryShape(descSearchMembers, colMask, flagMask, orderKey, false, shapeLens[:]...)
 	return runtime.Query{
 		StmtID:   stmtIDSearchMembers,
 		Desc:     descSearchMembers,
@@ -397,7 +408,7 @@ func (pl *Pipeline) SearchMembers(p SearchMembersParams) *runtime.SliceFuture[Me
 		FlagMask:  flagMask,
 		SliceLens: sliceLensBuf[:],
 	}
-	return runtime.QueueSlice(pl.Pipeline, stmtIDSearchMembers, descSearchMembers, in, vk, nil, argBuf, expandErr,
+	return runtime.QueueSlice(pl.Pipeline, stmtIDSearchMembers, descSearchMembers, in, vk.WithInexact(pl.q == nil), nil, argBuf, expandErr,
 		func(rs runtime.RowScanner, dst *MemberRow) error { return scanSearchMembersRow(rs, dst, colMask, p) },
 	)
 }
@@ -527,7 +538,7 @@ func ListMembersPaginatedQuery(p ListMembersPaginatedParams) runtime.Query {
 		HasSeek:   p.After.IsActive(),
 	}
 	orderKey := runtime.EncodeOrderKey(in.OrderSpec, in.HasSeek)
-	shapeTag := runtime.ComputeSubqueryShape(stmtIDListMembersPaginated, colMask, flagMask, orderKey, false)
+	shapeTag := runtime.ComputeQueryShape(descListMembersPaginated, colMask, flagMask, orderKey, false)
 	return runtime.Query{
 		StmtID:   stmtIDListMembersPaginated,
 		Desc:     descListMembersPaginated,
@@ -636,7 +647,7 @@ func (pl *Pipeline) ListMembersPaginated(p ListMembersPaginatedParams) *runtime.
 		OrderSpec: p.Sort,
 		HasSeek:   p.After.IsActive(),
 	}
-	return runtime.QueueSlice(pl.Pipeline, stmtIDListMembersPaginated, descListMembersPaginated, in, vk, nil, argBuf, expandErr,
+	return runtime.QueueSlice(pl.Pipeline, stmtIDListMembersPaginated, descListMembersPaginated, in, vk.WithInexact(pl.q == nil), nil, argBuf, expandErr,
 		func(rs runtime.RowScanner, dst *MemberItem) error {
 			return scanListMembersPaginatedRow(rs, dst, colMask, p)
 		},
@@ -709,7 +720,7 @@ func ActiveOrgsQuery(plans []string) runtime.Query {
 	orderKey := runtime.EncodeOrderKey(in.OrderSpec, in.HasSeek)
 	var shapeLens [1]int
 	copy(shapeLens[:], in.SliceLens)
-	shapeTag := runtime.ComputeSubqueryShape(stmtIDActiveOrgs, colMask, flagMask, orderKey, false, shapeLens[:]...)
+	shapeTag := runtime.ComputeQueryShape(descActiveOrgs, colMask, flagMask, orderKey, false, shapeLens[:]...)
 	return runtime.Query{
 		StmtID:   stmtIDActiveOrgs,
 		Desc:     descActiveOrgs,
@@ -788,7 +799,7 @@ func CohortMemberIDsQuery(activeOrgs runtime.Query, minScore int64) runtime.Quer
 	for i, sub := range in.Subs {
 		shapeLens[0+i] = int(sub.ShapeTag)
 	}
-	shapeTag := runtime.ComputeSubqueryShape(stmtIDCohortMemberIDs, colMask, flagMask, orderKey, true, shapeLens[:]...)
+	shapeTag := runtime.ComputeQueryShape(descCohortMemberIDs, colMask, flagMask, orderKey, true, shapeLens[:]...)
 	return runtime.Query{
 		StmtID:   stmtIDCohortMemberIDs,
 		Desc:     descCohortMemberIDs,
@@ -884,7 +895,7 @@ func AggregateCohortInvoicesQuery(memberQuery runtime.Query, invoiceStatus strin
 	for i, sub := range in.Subs {
 		shapeLens[0+i] = int(sub.ShapeTag)
 	}
-	shapeTag := runtime.ComputeSubqueryShape(stmtIDAggregateCohortInvoices, colMask, flagMask, orderKey, true, shapeLens[:]...)
+	shapeTag := runtime.ComputeQueryShape(descAggregateCohortInvoices, colMask, flagMask, orderKey, true, shapeLens[:]...)
 	return runtime.Query{
 		StmtID:   stmtIDAggregateCohortInvoices,
 		Desc:     descAggregateCohortInvoices,
@@ -997,7 +1008,7 @@ func (pl *Pipeline) AggregateCohortInvoices(memberQuery runtime.Query, invoiceSt
 		FlagMask: flagMask,
 		Subs:     subsBuf[:],
 	}
-	return runtime.QueueSlice(pl.Pipeline, stmtIDAggregateCohortInvoices, descAggregateCohortInvoices, in, vk, nil, argBuf, expandErr,
+	return runtime.QueueSlice(pl.Pipeline, stmtIDAggregateCohortInvoices, descAggregateCohortInvoices, in, vk.WithInexact(pl.q == nil), nil, argBuf, expandErr,
 		func(rs runtime.RowScanner, dst *CohortInvoiceSummary) error {
 			return scanAggregateCohortInvoicesRow(rs, dst, colMask, p)
 		},

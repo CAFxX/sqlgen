@@ -2384,3 +2384,37 @@ func TestQueryConstructorOnlyForSelect(t *testing.T) {
 		}
 	}
 }
+
+
+func TestGeneratedCrossPackagePipelineAPI(t *testing.T) {
+	const cfg = `package: crosspkg
+out: crosspkg_gen.go
+dialect: postgres
+statements:
+  - name: GetThing
+    kind: one
+    result_type: Thing
+    sql: |
+      SELECT id:int64 FROM things WHERE id = :id:int64
+  - name: InsertThing
+    kind: exec
+    sql: |
+      INSERT INTO things (id) VALUES (:id:int64)
+`
+	src, err := sqlgen.GenerateFromYAML([]byte(cfg))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{
+		"func WrapPipeline(p *runtime.Pipeline) *Pipeline",
+		"p.RequireDialect(sqlDialect)",
+		"p.RequireEngine(sqlDialectName)",
+		"vk.WithInexact(pl.q == nil)",
+		"pl.fastSlot(colMask",
+		"runtime.ComputeQueryShape(descGetThing",
+	} {
+		if !bytes.Contains(src, []byte(want)) {
+			t.Errorf("generated source does not contain %q", want)
+		}
+	}
+}

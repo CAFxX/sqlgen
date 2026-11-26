@@ -1,0 +1,123 @@
+package modular_marketplace
+
+import (
+	"context"
+	"database/sql"
+	"testing"
+
+	"github.com/CAFxX/sqlgen/examples/ecommerce_inventory"
+	"github.com/CAFxX/sqlgen/examples/fintech_ledger"
+	_ "modernc.org/sqlite"
+)
+
+func TestCheckoutAcrossGeneratedPackagesIsAtomic(t *testing.T) {
+	ctx := context.Background()
+	db, err := sql.Open("sqlite", ":memory:")
+	if err != nil {
+		t.Fatalf("open sqlite: %v", err)
+	}
+	db.SetMaxOpenConns(1)
+	defer db.Close()
+
+	if _, err := db.ExecContext(ctx, ecommerce_inventory.SchemaDDL); err != nil {
+		t.Fatalf("inventory schema: %v", err)
+	}
+	if _, err := db.ExecContext(ctx, fintech_ledger.SchemaDDL); err != nil {
+		t.Fatalf("ledger schema: %v", err)
+	}
+	for _, account := range []struct {
+		id      int64
+		balance int64
+	}{
+		{id: 101, balance: 50_000},
+		{id: 202, balance: 2_000},
+	} {
+		if _, err := db.ExecContext(ctx,
+			"INSERT INTO accounts (org_id, id, currency, balance_cents, status) VALUES (?, ?, 'USD', ?, 'active')",
+			7, account.id, account.balance,
+		); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	svc := New(db)
+	defer func() { _ = svc.Close() }()
+	in := CheckoutInput{
+		MarketplaceID:   7,
+		OrderID:         1001,
+		BuyerAccountID:  101,
+		SellerAccountID: 202,
+		IdempotencyKey:  "checkout-1001",
+		Items: []ecommerce_inventory.NewOrderItem{
+			{OrderID: 1001, SKU: "BOOK-1", Quantity: 2, UnitPriceCents: 1_250},
+			{OrderID: 1001, SKU: "PEN-2", Quantity: 1, UnitPriceCents: 400},
+		},
+	}
+	if err := svc.Checkout(ctx, in); err != nil {
+		t.Fatalf("checkout: %v", err)
+	}
+
+	assertInt64(t, db, "SELECT balance_cents FROM accounts WHERE org_id = 7 AND id = 101", 47_100)
+	assertInt64(t, db, "SELECT balance_cents FROM accounts WHERE org_id = 7 AND id = 202", 4_900)
+	assertInt64(t, db, "SELECT COUNT(*) FROM order_items WHERE order_id = 1001", 2)
+	assertInt64(t, db, "SELECT COUNT(*) FROM transfer_receipts WHERE idempotency_key = 'checkout-1001'", 1)
+
+	// The duplicate receipt fails after the order and balance statements have been queued.
+	// PipelineTx must roll all of them back because every module shares one transaction.
+	duplicate := in
+	duplicate.OrderID = 1002
+	duplicate.Items = []ecommerce_inventory.NewOrderItem{
+		{OrderID: 1002, SKU: "BOOK-3", Quantity: 1, UnitPriceCents: 9_999},
+	}
+	if err := svc.Checkout(ctx, duplicate); err == nil {
+		t.Fatal("expected duplicate idempotency key to fail")
+	}
+
+	assertInt64(t, db, "SELECT balance_cents FROM accounts WHERE org_id = 7 AND id = 101", 47_100)
+	assertInt64(t, db, "SELECT balance_cents FROM accounts WHERE org_id = 7 AND id = 202", 4_900)
+	assertInt64(t, db, "SELECT COUNT(*) FROM order_items", 2)
+	assertInt64(t, db, "SELECT COUNT(*) FROM transfer_receipts", 1)
+
+	stats := svc.inventory.CacheStats()
+	if stats.SequentialPipelines != 2 || stats.WirePipelines != 0 {
+		t.Fatalf("SQLite should use the sequential transactional fallback for both runs, got %+v", stats)
+	}
+}
+
+func TestCheckoutRejectsInvalidLineBeforeStartingPipeline(t *testing.T) {
+	db, err := sql.Open("sqlite", ":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	db.SetMaxOpenConns(1)
+	if _, err := db.Exec(ecommerce_inventory.SchemaDDL); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(fintech_ledger.SchemaDDL); err != nil {
+		t.Fatal(err)
+	}
+	svc := New(db)
+	defer func() { _ = svc.Close() }()
+	err = svc.Checkout(context.Background(), CheckoutInput{
+		MarketplaceID: 7, OrderID: 1, BuyerAccountID: 101, SellerAccountID: 202,
+		IdempotencyKey: "bad", Items: []ecommerce_inventory.NewOrderItem{
+			{OrderID: 2, SKU: "MISMATCH", Quantity: 1, UnitPriceCents: 100},
+		},
+	})
+	if err != ErrInvalidCheckout {
+		t.Fatalf("expected ErrInvalidCheckout, got %v", err)
+	}
+	assertInt64(t, db, "SELECT COUNT(*) FROM order_items", 0)
+}
+
+func assertInt64(t *testing.T, db *sql.DB, query string, want int64) {
+	t.Helper()
+	var got int64
+	if err := db.QueryRow(query).Scan(&got); err != nil {
+		t.Fatalf("%s: %v", query, err)
+	}
+	if got != want {
+		t.Fatalf("%s: got %d, want %d", query, got, want)
+	}
+}

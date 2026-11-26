@@ -59,6 +59,8 @@ CockroachDB or YugabyteDB, or the `mysqlwire` driver on MySQL, MariaDB or TiDB, 
 value an earlier one produced (`:order_id:Arg[int64]` fed by `order.Arg()`, the id an `INSERT ... RETURNING` generated). A two-tier adaptive statement cache
 (rendered SQL, then prepared statements) keeps hot statements prepared without any caller bookkeeping.
 
+**Examples:** [modular marketplace](examples/modular_marketplace) shows typed operations from two generated packages sharing one transaction.
+
 **Documentation:** [DOCS.md](DOCS.md) is the user manual and DSL cookbook; [SPEC.md](SPEC.md) is the
 engineering specification.
 

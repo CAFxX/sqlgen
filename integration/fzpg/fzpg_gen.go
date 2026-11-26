@@ -12,6 +12,7 @@ import (
 )
 
 const sqlDialect = runtime.DialectDollar
+const sqlDialectName = "postgres"
 
 // Queries executes strongly-typed SQL statements backed by a two-tier adaptive statement cache.
 type Queries struct {
@@ -88,8 +89,18 @@ func (q *Queries) PipelineTx(ctx context.Context, txOpts *sql.TxOptions, fn func
 		return runtime.ErrNilArgument
 	}
 	return runtime.RunPipelineTx(ctx, q.db, q.cache, q.txCache, q.usePrepared, sqlDialect, txOpts, opts, func(p *runtime.Pipeline) error {
+		p.RequireEngine(sqlDialectName)
 		return fn(&Pipeline{Pipeline: p, q: q})
 	})
+}
+
+// WrapPipeline creates this package's typed view of a pipeline owned by another generated package.
+// The original pipeline retains ownership of its DB, transaction, cache, prepared statements and dialect.
+func WrapPipeline(p *runtime.Pipeline) *Pipeline {
+	if p == nil { panic("sqlgen: cannot wrap a nil runtime.Pipeline") }
+	p.RequireDialect(sqlDialect)
+	p.RequireEngine(sqlDialectName)
+	return &Pipeline{Pipeline: p}
 }
 
 // If starts an If chain on pl: fn queues the arm's operations on the handle it receives, which runs
@@ -531,7 +542,7 @@ func (pl *Pipeline) FzInsertAsc(rows []FzNew) *runtime.ExecFuture {
 		FlagMask:  flagMask,
 		TupleLens: tupleLensBuf[:],
 	}
-	return pl.Pipeline.QueueExec(stmtIDFzInsertAsc, descFzInsertAsc, in, vk, nil, argBuf, expandErr)
+	return pl.Pipeline.QueueExec(stmtIDFzInsertAsc, descFzInsertAsc, in, vk.WithInexact(pl.q == nil), nil, argBuf, expandErr)
 }
 
 // FzInsertAscStream runs FzInsertAsc over the rows rows pulled from seq, in chunks, and sums the results.
@@ -765,7 +776,7 @@ func (pl *Pipeline) FzInsertDesc(rows []FzNew) *runtime.ExecFuture {
 		FlagMask:  flagMask,
 		TupleLens: tupleLensBuf[:],
 	}
-	return pl.Pipeline.QueueExec(stmtIDFzInsertDesc, descFzInsertDesc, in, vk, nil, argBuf, expandErr)
+	return pl.Pipeline.QueueExec(stmtIDFzInsertDesc, descFzInsertDesc, in, vk.WithInexact(pl.q == nil), nil, argBuf, expandErr)
 }
 
 // FzInsertDescStream runs FzInsertDesc over the rows rows pulled from seq, in chunks, and sums the results.
@@ -952,7 +963,7 @@ func (pl *Pipeline) FzInsertRaw(rows []FzNew) *runtime.ExecFuture {
 		FlagMask:  flagMask,
 		TupleLens: tupleLensBuf[:],
 	}
-	return pl.Pipeline.QueueExec(stmtIDFzInsertRaw, descFzInsertRaw, in, vk, nil, argBuf, expandErr)
+	return pl.Pipeline.QueueExec(stmtIDFzInsertRaw, descFzInsertRaw, in, vk.WithInexact(pl.q == nil), nil, argBuf, expandErr)
 }
 
 // FzInsertRawStream runs FzInsertRaw over the rows rows pulled from seq, in chunks, and sums the results.
@@ -1159,7 +1170,7 @@ func (pl *Pipeline) FzInsertLit(rows []FzLit) *runtime.ExecFuture {
 		FlagMask:  flagMask,
 		TupleLens: tupleLensBuf[:],
 	}
-	return pl.Pipeline.QueueExec(stmtIDFzInsertLit, descFzInsertLit, in, vk, nil, argBuf, expandErr)
+	return pl.Pipeline.QueueExec(stmtIDFzInsertLit, descFzInsertLit, in, vk.WithInexact(pl.q == nil), nil, argBuf, expandErr)
 }
 
 // FzInsertLitStream runs FzInsertLit over the rows rows pulled from seq, in chunks, and sums the results.
@@ -1441,7 +1452,7 @@ func FzSearchQuery(p FzSearchParams) runtime.Query {
 	var shapeLens [3]int
 	copy(shapeLens[:], in.SliceLens)
 	copy(shapeLens[2:], in.TupleLens)
-	shapeTag := runtime.ComputeSubqueryShape(stmtIDFzSearch, colMask, flagMask, orderKey, false, shapeLens[:]...)
+	shapeTag := runtime.ComputeQueryShape(descFzSearch, colMask, flagMask, orderKey, false, shapeLens[:]...)
 	return runtime.Query{
 		StmtID:   stmtIDFzSearch,
 		Desc:     descFzSearch,
@@ -1600,7 +1611,7 @@ func (pl *Pipeline) FzSearch(p FzSearchParams) *runtime.SliceFuture[FzRow] {
 		SliceLens: sliceLensBuf[:],
 		TupleLens: tupleLensBuf[:],
 	}
-	return runtime.QueueSlice(pl.Pipeline, stmtIDFzSearch, descFzSearch, in, vk, nil, argBuf, expandErr,
+	return runtime.QueueSlice(pl.Pipeline, stmtIDFzSearch, descFzSearch, in, vk.WithInexact(pl.q == nil), nil, argBuf, expandErr,
 		func(rs runtime.RowScanner, dst *FzRow) error { return scanFzSearchRow(rs, dst, colMask, p) },
 	)
 }
@@ -1686,7 +1697,7 @@ func FzNarrowQuery(p FzNarrowParams) runtime.Query {
 		FlagMask: flagMask,
 	}
 	orderKey := runtime.EncodeOrderKey(in.OrderSpec, in.HasSeek)
-	shapeTag := runtime.ComputeSubqueryShape(stmtIDFzNarrow, colMask, flagMask, orderKey, false)
+	shapeTag := runtime.ComputeQueryShape(descFzNarrow, colMask, flagMask, orderKey, false)
 	return runtime.Query{
 		StmtID:   stmtIDFzNarrow,
 		Desc:     descFzNarrow,
@@ -1788,7 +1799,7 @@ func (pl *Pipeline) FzNarrow(p FzNarrowParams) *runtime.SliceFuture[FzNarrowRow]
 		ColMask:  colMask,
 		FlagMask: flagMask,
 	}
-	return runtime.QueueSlice(pl.Pipeline, stmtIDFzNarrow, descFzNarrow, in, vk, nil, argBuf, expandErr,
+	return runtime.QueueSlice(pl.Pipeline, stmtIDFzNarrow, descFzNarrow, in, vk.WithInexact(pl.q == nil), nil, argBuf, expandErr,
 		func(rs runtime.RowScanner, dst *FzNarrowRow) error { return scanFzNarrowRow(rs, dst, colMask, p) },
 	)
 }
@@ -2006,7 +2017,7 @@ func FzPageQuery(p FzPageParams) runtime.Query {
 	for i, sub := range in.Subs {
 		shapeLens[1+i] = int(sub.ShapeTag)
 	}
-	shapeTag := runtime.ComputeSubqueryShape(stmtIDFzPage, colMask, flagMask, orderKey, true, shapeLens[:]...)
+	shapeTag := runtime.ComputeQueryShape(descFzPage, colMask, flagMask, orderKey, true, shapeLens[:]...)
 	return runtime.Query{
 		StmtID:   stmtIDFzPage,
 		Desc:     descFzPage,
@@ -2163,7 +2174,7 @@ func (pl *Pipeline) FzPage(p FzPageParams) *runtime.SliceFuture[FzRow] {
 		SliceLens: sliceLensBuf[:],
 		Subs:      subsBuf[:],
 	}
-	return runtime.QueueSlice(pl.Pipeline, stmtIDFzPage, descFzPage, in, vk, nil, argBuf, expandErr,
+	return runtime.QueueSlice(pl.Pipeline, stmtIDFzPage, descFzPage, in, vk.WithInexact(pl.q == nil), nil, argBuf, expandErr,
 		func(rs runtime.RowScanner, dst *FzRow) error { return scanFzPageRow(rs, dst, colMask, p) },
 	)
 }
@@ -2245,7 +2256,7 @@ func FzSubGrpsQuery(p FzSubGrpsParams) runtime.Query {
 	orderKey := runtime.EncodeOrderKey(in.OrderSpec, in.HasSeek)
 	var shapeLens [1]int
 	copy(shapeLens[:], in.SliceLens)
-	shapeTag := runtime.ComputeSubqueryShape(stmtIDFzSubGrps, colMask, flagMask, orderKey, false, shapeLens[:]...)
+	shapeTag := runtime.ComputeQueryShape(descFzSubGrps, colMask, flagMask, orderKey, false, shapeLens[:]...)
 	return runtime.Query{
 		StmtID:   stmtIDFzSubGrps,
 		Desc:     descFzSubGrps,
@@ -2331,7 +2342,7 @@ func FzSubNoteQuery(p FzSubNoteParams) runtime.Query {
 	for i, sub := range in.Subs {
 		shapeLens[0+i] = int(sub.ShapeTag)
 	}
-	shapeTag := runtime.ComputeSubqueryShape(stmtIDFzSubNote, colMask, flagMask, orderKey, true, shapeLens[:]...)
+	shapeTag := runtime.ComputeQueryShape(descFzSubNote, colMask, flagMask, orderKey, true, shapeLens[:]...)
 	return runtime.Query{
 		StmtID:   stmtIDFzSubNote,
 		Desc:     descFzSubNote,
@@ -2432,7 +2443,7 @@ func FzAggQuery(p FzAggParams) runtime.Query {
 	for i, sub := range in.Subs {
 		shapeLens[0+i] = int(sub.ShapeTag)
 	}
-	shapeTag := runtime.ComputeSubqueryShape(stmtIDFzAgg, colMask, flagMask, orderKey, true, shapeLens[:]...)
+	shapeTag := runtime.ComputeQueryShape(descFzAgg, colMask, flagMask, orderKey, true, shapeLens[:]...)
 	return runtime.Query{
 		StmtID:   stmtIDFzAgg,
 		Desc:     descFzAgg,
@@ -2531,7 +2542,7 @@ func (pl *Pipeline) FzAgg(p FzAggParams) *runtime.SliceFuture[FzAggRow] {
 		FlagMask: flagMask,
 		Subs:     subsBuf[:],
 	}
-	return runtime.QueueSlice(pl.Pipeline, stmtIDFzAgg, descFzAgg, in, vk, nil, argBuf, expandErr,
+	return runtime.QueueSlice(pl.Pipeline, stmtIDFzAgg, descFzAgg, in, vk.WithInexact(pl.q == nil), nil, argBuf, expandErr,
 		func(rs runtime.RowScanner, dst *FzAggRow) error { return scanFzAggRow(rs, dst, colMask, p) },
 	)
 }
@@ -2639,7 +2650,7 @@ func FzByKeysQuery(keys []FzKey, selectCols ...uint64) runtime.Query {
 	orderKey := runtime.EncodeOrderKey(in.OrderSpec, in.HasSeek)
 	var shapeLens [1]int
 	copy(shapeLens[0:], in.TupleLens)
-	shapeTag := runtime.ComputeSubqueryShape(stmtIDFzByKeys, colMask, flagMask, orderKey, false, shapeLens[:]...)
+	shapeTag := runtime.ComputeQueryShape(descFzByKeys, colMask, flagMask, orderKey, false, shapeLens[:]...)
 	return runtime.Query{
 		StmtID:   stmtIDFzByKeys,
 		Desc:     descFzByKeys,
@@ -2851,7 +2862,7 @@ func (pl *Pipeline) FzByKeys(keys []FzKey, selectCols ...uint64) *runtime.SliceF
 		FlagMask:  flagMask,
 		TupleLens: tupleLensBuf[:],
 	}
-	return runtime.QueueSlice(pl.Pipeline, stmtIDFzByKeys, descFzByKeys, in, vk, nil, argBuf, expandErr,
+	return runtime.QueueSlice(pl.Pipeline, stmtIDFzByKeys, descFzByKeys, in, vk.WithInexact(pl.q == nil), nil, argBuf, expandErr,
 		func(rs runtime.RowScanner, dst *FzRow) error { return scanFzByKeysRow(rs, dst, colMask, p) },
 	)
 }
@@ -3010,7 +3021,7 @@ func FzByIDsQuery(ids []int64, selectCols ...uint64) runtime.Query {
 	orderKey := runtime.EncodeOrderKey(in.OrderSpec, in.HasSeek)
 	var shapeLens [1]int
 	copy(shapeLens[:], in.SliceLens)
-	shapeTag := runtime.ComputeSubqueryShape(stmtIDFzByIDs, colMask, flagMask, orderKey, false, shapeLens[:]...)
+	shapeTag := runtime.ComputeQueryShape(descFzByIDs, colMask, flagMask, orderKey, false, shapeLens[:]...)
 	return runtime.Query{
 		StmtID:   stmtIDFzByIDs,
 		Desc:     descFzByIDs,
@@ -3208,7 +3219,7 @@ func (pl *Pipeline) FzByIDs(ids []int64, selectCols ...uint64) *runtime.SliceFut
 		FlagMask:  flagMask,
 		SliceLens: sliceLensBuf[:],
 	}
-	return runtime.QueueSlice(pl.Pipeline, stmtIDFzByIDs, descFzByIDs, in, vk, nil, argBuf, expandErr,
+	return runtime.QueueSlice(pl.Pipeline, stmtIDFzByIDs, descFzByIDs, in, vk.WithInexact(pl.q == nil), nil, argBuf, expandErr,
 		func(rs runtime.RowScanner, dst *FzRow) error { return scanFzByIDsRow(rs, dst, colMask, p) },
 	)
 }
@@ -3441,7 +3452,7 @@ func (pl *Pipeline) FzBump(p FzBumpParams) *runtime.ExecFuture {
 		FlagMask:  flagMask,
 		SliceLens: sliceLensBuf[:],
 	}
-	return pl.Pipeline.QueueExec(stmtIDFzBump, descFzBump, in, vk, nil, argBuf, expandErr)
+	return pl.Pipeline.QueueExec(stmtIDFzBump, descFzBump, in, vk.WithInexact(pl.q == nil), nil, argBuf, expandErr)
 }
 
 // FzBumpStream runs FzBump over the ids rows pulled from seq, in chunks, and sums the results.
@@ -3657,7 +3668,7 @@ func (pl *Pipeline) FzDelete(p FzDeleteParams) *runtime.ExecFuture {
 		FlagMask:  flagMask,
 		SliceLens: sliceLensBuf[:],
 	}
-	return pl.Pipeline.QueueExec(stmtIDFzDelete, descFzDelete, in, vk, nil, argBuf, expandErr)
+	return pl.Pipeline.QueueExec(stmtIDFzDelete, descFzDelete, in, vk.WithInexact(pl.q == nil), nil, argBuf, expandErr)
 }
 
 // FzDeleteStream runs FzDelete over the ids rows pulled from seq, in chunks, and sums the results.
@@ -3851,7 +3862,7 @@ func FzSubsQuery(p FzSubsParams) runtime.Query {
 	for i, sub := range in.Subs {
 		shapeLens[0+i] = int(sub.ShapeTag)
 	}
-	shapeTag := runtime.ComputeSubqueryShape(stmtIDFzSubs, colMask, flagMask, orderKey, true, shapeLens[:]...)
+	shapeTag := runtime.ComputeQueryShape(descFzSubs, colMask, flagMask, orderKey, true, shapeLens[:]...)
 	return runtime.Query{
 		StmtID:   stmtIDFzSubs,
 		Desc:     descFzSubs,
@@ -4002,7 +4013,7 @@ func (pl *Pipeline) FzSubs(p FzSubsParams) *runtime.SliceFuture[FzRow] {
 		FlagMask: flagMask,
 		Subs:     subsBuf[:],
 	}
-	return runtime.QueueSlice(pl.Pipeline, stmtIDFzSubs, descFzSubs, in, vk, nil, argBuf, expandErr,
+	return runtime.QueueSlice(pl.Pipeline, stmtIDFzSubs, descFzSubs, in, vk.WithInexact(pl.q == nil), nil, argBuf, expandErr,
 		func(rs runtime.RowScanner, dst *FzRow) error { return scanFzSubsRow(rs, dst, colMask, p) },
 	)
 }
@@ -4104,7 +4115,7 @@ func FzJoinQuery(p FzJoinParams) runtime.Query {
 		FlagMask: flagMask,
 	}
 	orderKey := runtime.EncodeOrderKey(in.OrderSpec, in.HasSeek)
-	shapeTag := runtime.ComputeSubqueryShape(stmtIDFzJoin, colMask, flagMask, orderKey, false)
+	shapeTag := runtime.ComputeQueryShape(descFzJoin, colMask, flagMask, orderKey, false)
 	return runtime.Query{
 		StmtID:   stmtIDFzJoin,
 		Desc:     descFzJoin,
@@ -4202,7 +4213,7 @@ func (pl *Pipeline) FzJoin(p FzJoinParams) *runtime.SliceFuture[FzJoinRow] {
 		ColMask:  colMask,
 		FlagMask: flagMask,
 	}
-	return runtime.QueueSlice(pl.Pipeline, stmtIDFzJoin, descFzJoin, in, vk, nil, argBuf, expandErr,
+	return runtime.QueueSlice(pl.Pipeline, stmtIDFzJoin, descFzJoin, in, vk.WithInexact(pl.q == nil), nil, argBuf, expandErr,
 		func(rs runtime.RowScanner, dst *FzJoinRow) error { return scanFzJoinRow(rs, dst, colMask, p) },
 	)
 }
@@ -4372,7 +4383,7 @@ func (pl *Pipeline) FzTypedInsert(rows []FzTypedNew) *runtime.ExecFuture {
 		FlagMask:  flagMask,
 		TupleLens: tupleLensBuf[:],
 	}
-	return pl.Pipeline.QueueExec(stmtIDFzTypedInsert, descFzTypedInsert, in, vk, nil, argBuf, expandErr)
+	return pl.Pipeline.QueueExec(stmtIDFzTypedInsert, descFzTypedInsert, in, vk.WithInexact(pl.q == nil), nil, argBuf, expandErr)
 }
 
 // FzTypedInsertStream runs FzTypedInsert over the rows rows pulled from seq, in chunks, and sums the results.
@@ -4590,7 +4601,7 @@ func FzTypedSearchQuery(p FzTypedSearchParams) runtime.Query {
 	orderKey := runtime.EncodeOrderKey(in.OrderSpec, in.HasSeek)
 	var shapeLens [2]int
 	copy(shapeLens[:], in.SliceLens)
-	shapeTag := runtime.ComputeSubqueryShape(stmtIDFzTypedSearch, colMask, flagMask, orderKey, false, shapeLens[:]...)
+	shapeTag := runtime.ComputeQueryShape(descFzTypedSearch, colMask, flagMask, orderKey, false, shapeLens[:]...)
 	return runtime.Query{
 		StmtID:   stmtIDFzTypedSearch,
 		Desc:     descFzTypedSearch,
@@ -4711,7 +4722,7 @@ func (pl *Pipeline) FzTypedSearch(p FzTypedSearchParams) *runtime.SliceFuture[Fz
 		FlagMask:  flagMask,
 		SliceLens: sliceLensBuf[:],
 	}
-	return runtime.QueueSlice(pl.Pipeline, stmtIDFzTypedSearch, descFzTypedSearch, in, vk, nil, argBuf, expandErr,
+	return runtime.QueueSlice(pl.Pipeline, stmtIDFzTypedSearch, descFzTypedSearch, in, vk.WithInexact(pl.q == nil), nil, argBuf, expandErr,
 		func(rs runtime.RowScanner, dst *FzTypedRow) error { return scanFzTypedSearchRow(rs, dst, colMask, p) },
 	)
 }
@@ -4844,7 +4855,7 @@ func FzTypedPageQuery(after runtime.Seek, sort runtime.Order, limit int64, selec
 		HasSeek:   p.After.IsActive(),
 	}
 	orderKey := runtime.EncodeOrderKey(in.OrderSpec, in.HasSeek)
-	shapeTag := runtime.ComputeSubqueryShape(stmtIDFzTypedPage, colMask, flagMask, orderKey, false)
+	shapeTag := runtime.ComputeQueryShape(descFzTypedPage, colMask, flagMask, orderKey, false)
 	return runtime.Query{
 		StmtID:   stmtIDFzTypedPage,
 		Desc:     descFzTypedPage,
@@ -4965,7 +4976,7 @@ func (pl *Pipeline) FzTypedPage(after runtime.Seek, sort runtime.Order, limit in
 		OrderSpec: p.Sort,
 		HasSeek:   p.After.IsActive(),
 	}
-	return runtime.QueueSlice(pl.Pipeline, stmtIDFzTypedPage, descFzTypedPage, in, vk, nil, argBuf, expandErr,
+	return runtime.QueueSlice(pl.Pipeline, stmtIDFzTypedPage, descFzTypedPage, in, vk.WithInexact(pl.q == nil), nil, argBuf, expandErr,
 		func(rs runtime.RowScanner, dst *FzTypedRow) error { return scanFzTypedPageRow(rs, dst, colMask, p) },
 	)
 }
@@ -5242,7 +5253,7 @@ func (pl *Pipeline) FzInsertRet(rows []FzNew, selectCols ...uint64) *runtime.Sli
 		FlagMask:  flagMask,
 		TupleLens: tupleLensBuf[:],
 	}
-	return runtime.QueueSlice(pl.Pipeline, stmtIDFzInsertRet, descFzInsertRet, in, vk, nil, argBuf, expandErr,
+	return runtime.QueueSlice(pl.Pipeline, stmtIDFzInsertRet, descFzInsertRet, in, vk.WithInexact(pl.q == nil), nil, argBuf, expandErr,
 		func(rs runtime.RowScanner, dst *FzOut) error { return scanFzInsertRetRow(rs, dst, colMask, p) },
 	)
 }
@@ -5540,7 +5551,7 @@ func (pl *Pipeline) FzDeleteRet(p FzDeleteRetParams) *runtime.SliceFuture[FzOut]
 		FlagMask:  flagMask,
 		SliceLens: sliceLensBuf[:],
 	}
-	return runtime.QueueSlice(pl.Pipeline, stmtIDFzDeleteRet, descFzDeleteRet, in, vk, nil, argBuf, expandErr,
+	return runtime.QueueSlice(pl.Pipeline, stmtIDFzDeleteRet, descFzDeleteRet, in, vk.WithInexact(pl.q == nil), nil, argBuf, expandErr,
 		func(rs runtime.RowScanner, dst *FzOut) error { return scanFzDeleteRetRow(rs, dst, colMask, p) },
 	)
 }
@@ -5857,7 +5868,7 @@ func (pl *Pipeline) FzBumpRet(p FzBumpRetParams) *runtime.SliceFuture[FzOut] {
 		FlagMask:  flagMask,
 		SliceLens: sliceLensBuf[:],
 	}
-	return runtime.QueueSlice(pl.Pipeline, stmtIDFzBumpRet, descFzBumpRet, in, vk, nil, argBuf, expandErr,
+	return runtime.QueueSlice(pl.Pipeline, stmtIDFzBumpRet, descFzBumpRet, in, vk.WithInexact(pl.q == nil), nil, argBuf, expandErr,
 		func(rs runtime.RowScanner, dst *FzOut) error { return scanFzBumpRetRow(rs, dst, colMask, p) },
 	)
 }

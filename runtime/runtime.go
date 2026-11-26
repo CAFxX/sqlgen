@@ -6,6 +6,7 @@ import (
 	"iter"
 	"strconv"
 	"sync"
+	"sync/atomic"
 )
 
 // Dialect specifies the SQL parameter placeholder format.
@@ -243,6 +244,16 @@ func MakeVariantKey(stmtID uint32, colMask, flagMask, orderKey uint64, dims ...u
 // IsExact reports whether k bijectively encodes the query shape without collisions.
 func (k VariantKey) IsExact() bool { return (k[0] & inexactKeyBit) == 0 }
 
+// WithInexact forces the SQL cache to key this variant by its fully rendered SQL instead of
+// trusting the structural key. It is used when a generated module is composing into a pipeline
+// whose cache is owned by another generated package.
+func (k VariantKey) WithInexact(inexact bool) VariantKey {
+	if inexact {
+		k[0] |= inexactKeyBit
+	}
+	return k
+}
+
 func (k VariantKey) hash() uint64 {
 	h := k[0]*0x9e3779b97f4a7c15 + k[1]*0xbf58476d1ce4e5b9 + k[2]*0x94d049bb133111eb + k[3]
 	h ^= h >> 30
@@ -275,7 +286,44 @@ func hashString(s string) uint64 {
 
 // ComputeSubqueryShape packs a subquery's coordinates bijectively into 63 bits (inexactKeyBit == 0)
 // when all fields fit, or sets inexactKeyBit so the outer query falls back to exact SQL string keying.
+// ComputeQueryShape identifies a composable query by its descriptor identity as well as its dynamic
+// shape. The identity is process-local because the statement cache is process-local. Exact tags are
+// retained for the first 16,383 descriptors; later descriptors conservatively force SQL-string keying.
+func ComputeQueryShape(desc *QueryDescriptor, colMask, flagMask, orderKey uint64, hasNestedSubs bool, sliceOrTupleLens ...int) uint64 {
+	if desc == nil {
+		return inexactKeyBit
+	}
+	id := desc.shapeIdentity.Load()
+	if id == 0 {
+		next := nextQueryDescriptorIdentity.Add(1)
+		if next == 0 {
+			return inexactKeyBit
+		}
+		if desc.shapeIdentity.CompareAndSwap(0, next) {
+			id = next
+		} else {
+			id = desc.shapeIdentity.Load()
+		}
+	}
+	if id == 0 || id > 0x3FFF {
+		return inexactKeyBit
+	}
+	return computeSubqueryShape(uint32(id), colMask, flagMask, orderKey, hasNestedSubs, sliceOrTupleLens...)
+}
+
+var nextQueryDescriptorIdentity atomic.Uint64
+
+// ComputeSubqueryShape packs a subquery's coordinates bijectively into 63 bits (inexactKeyBit == 0)
+// when all fields fit, or sets inexactKeyBit so the outer query falls back to exact SQL string keying.
+// Deprecated: this legacy API does not carry descriptor identity. It always marks its result inexact,
+// forcing parents to key by fully rendered SQL. Old generated packages therefore remain safe when
+// composed with new packages, although regenerating them restores structural cache keys.
 func ComputeSubqueryShape(stmtID uint32, colMask, flagMask, orderKey uint64, hasNestedSubs bool, sliceOrTupleLens ...int) uint64 {
+	return computeSubqueryShape(stmtID, colMask, flagMask, orderKey, hasNestedSubs, sliceOrTupleLens...) | inexactKeyBit
+}
+
+// computeSubqueryShape packs a shape using a caller-supplied globally unique descriptor identity.
+func computeSubqueryShape(stmtID uint32, colMask, flagMask, orderKey uint64, hasNestedSubs bool, sliceOrTupleLens ...int) uint64 {
 	if !hasNestedSubs && orderKey == 0 && stmtID > 0 && stmtID <= 0x3FFF &&
 		colMask <= 0x7F && flagMask <= 0xFF && len(sliceOrTupleLens) <= 2 {
 		var s0, s1 uint64
@@ -526,6 +574,7 @@ type Slot struct {
 
 // QueryDescriptor holds the pre-parsed static SQL segments and dynamic slots for a statement.
 type QueryDescriptor struct {
+	shapeIdentity atomic.Uint64 // process-unique identity for composable-query cache shapes
 	Name           string // statement name, used in diagnostics
 	StmtID         uint32
 	StmtVerb       StmtVerb

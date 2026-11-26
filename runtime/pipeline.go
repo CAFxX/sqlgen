@@ -1088,6 +1088,7 @@ type pipelineState struct {
 	txCache     *TxStmtCache
 	usePrepared bool
 	dialect     Dialect
+	engine      string // exact sqlgen.yaml dialect name, beyond placeholder style
 	ops         []PipelineOp
 	opPtrs      []*PipelineOp
 	branchStack []BranchGate
@@ -1155,6 +1156,29 @@ func (p *Pipeline) finish(err error) {
 func (p *Pipeline) SetBuildError(err error) {
 	if p.buildErr == nil && err != nil {
 		p.buildErr = err
+	}
+}
+
+// RequireDialect rejects a generated module that uses a different placeholder dialect.
+func (p *Pipeline) RequireDialect(want Dialect) {
+	if p == nil || p.pipelineState == nil {
+		panic("sqlgen: cannot wrap a nil pipeline")
+	}
+	if p.dialect != want {
+		p.SetBuildError(InvalidArgument("generated package dialect does not match the pipeline dialect"))
+	}
+}
+
+// RequireEngine rejects generated modules targeting different engine dialects. For example, PostgreSQL
+// and CockroachDB share $N placeholders but are not interchangeable SQL dialects.
+func (p *Pipeline) RequireEngine(want string) {
+	if p == nil || p.pipelineState == nil {
+		panic("sqlgen: cannot wrap a nil pipeline")
+	}
+	if p.engine == "" {
+		p.engine = want
+	} else if p.engine != want {
+		p.SetBuildError(InvalidArgument("generated packages target different database engines"))
 	}
 }
 
