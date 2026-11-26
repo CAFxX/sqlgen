@@ -133,4 +133,3 @@ func TestCrossPackagePipelineTxUsesOneWireRoundTrip(t *testing.T) {
 		}
 	})
 }
-
