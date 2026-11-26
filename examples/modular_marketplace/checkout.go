@@ -12,7 +12,10 @@ import (
 	"github.com/CAFxX/sqlgen/runtime"
 )
 
-var ErrInvalidCheckout = errors.New("modular_marketplace: invalid checkout")
+var (
+	ErrInvalidCheckout = errors.New("modular_marketplace: invalid checkout")
+	ErrCheckoutRejected = errors.New("modular_marketplace: buyer/seller account is unavailable or balance limits would be violated")
+)
 
 // Service owns the inventory module's database handle, pipeline transaction and cache.
 // Other generated packages only receive typed views of that pipeline.
@@ -34,6 +37,7 @@ type CheckoutInput struct {
 	BuyerAccountID  int64
 	SellerAccountID int64
 	IdempotencyKey  string
+	Currency        string
 	Items           []ecommerce_inventory.NewOrderItem
 }
 
@@ -45,19 +49,35 @@ func (s *Service) Checkout(ctx context.Context, in CheckoutInput) error {
 	if err != nil {
 		return err
 	}
-	return s.inventory.PipelineTx(ctx, nil, func(p *ecommerce_inventory.Pipeline) error {
+	return s.inventory.PipelineTx(ctx, &sql.TxOptions{Isolation: sql.LevelSerializable}, func(p *ecommerce_inventory.Pipeline) error {
 		p.InsertOrderItems(in.Items).AssertRows(int64(len(in.Items)))
 
 		ledger := fintech_ledger.WrapPipeline(p.Pipeline)
-		ledger.DebitAccount(total, in.MarketplaceID, in.BuyerAccountID).AssertRows(1)
-		ledger.CreditAccount(total, in.MarketplaceID, in.SellerAccountID).AssertRows(1)
-		ledger.InsertTransferReceipt(
-			in.IdempotencyKey,
-			in.MarketplaceID,
-			in.BuyerAccountID,
-			in.SellerAccountID,
-			total,
-		).AssertRows(1)
+		buyer := ledger.GetAccount(in.MarketplaceID, in.BuyerAccountID)
+		seller := ledger.GetAccount(in.MarketplaceID, in.SellerAccountID)
+		const maxInt64 = int64(^uint64(0) >> 1)
+		canSettle := buyer.Found().
+			And(buyer.WhereCol("status = 'active'")).
+			And(buyer.WhereCol("currency = ?", in.Currency)).
+			And(buyer.WhereCol("balance_cents >= ?", total)).
+			And(seller.Found()).
+			And(seller.WhereCol("status = 'active'")).
+			And(seller.WhereCol("currency = ?", in.Currency)).
+			And(seller.WhereCol("balance_cents <= ?", maxInt64-total))
+
+		ledger.If(canSettle, func(approved *fintech_ledger.Pipeline) {
+			approved.DebitAccount(total, in.MarketplaceID, in.BuyerAccountID).AssertRows(1)
+			approved.CreditAccount(total, in.MarketplaceID, in.SellerAccountID).AssertRows(1)
+			approved.InsertTransferReceipt(
+				in.IdempotencyKey,
+				in.MarketplaceID,
+				in.BuyerAccountID,
+				in.SellerAccountID,
+				total,
+			).AssertRows(1)
+		}).Else(func(rejected *fintech_ledger.Pipeline) {
+			rejected.Abort(ErrCheckoutRejected)
+		})
 		return nil
 	}, runtime.WithTxRetry(runtime.DefaultRetryPolicy()))
 }
@@ -66,7 +86,7 @@ func validateAndTotal(in CheckoutInput) (int64, error) {
 	if in.MarketplaceID <= 0 || in.OrderID <= 0 ||
 		in.BuyerAccountID <= 0 || in.SellerAccountID <= 0 ||
 		in.BuyerAccountID == in.SellerAccountID ||
-		in.IdempotencyKey == "" || len(in.Items) == 0 {
+		in.IdempotencyKey == "" || in.Currency == "" || len(in.Items) == 0 {
 		return 0, ErrInvalidCheckout
 	}
 	const maxInt64 = int64(^uint64(0) >> 1)

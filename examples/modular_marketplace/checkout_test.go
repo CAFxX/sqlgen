@@ -3,6 +3,7 @@ package modular_marketplace
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"testing"
 
 	"github.com/CAFxX/sqlgen/examples/ecommerce_inventory"
@@ -48,6 +49,7 @@ func TestCheckoutAcrossGeneratedPackagesIsAtomic(t *testing.T) {
 		BuyerAccountID:  101,
 		SellerAccountID: 202,
 		IdempotencyKey:  "checkout-1001",
+		Currency:        "USD",
 		Items: []ecommerce_inventory.NewOrderItem{
 			{OrderID: 1001, SKU: "BOOK-1", Quantity: 2, UnitPriceCents: 1_250},
 			{OrderID: 1001, SKU: "PEN-2", Quantity: 1, UnitPriceCents: 400},
@@ -82,6 +84,77 @@ func TestCheckoutAcrossGeneratedPackagesIsAtomic(t *testing.T) {
 	if stats.SequentialPipelines != 2 || stats.WirePipelines != 0 {
 		t.Fatalf("SQLite should use the sequential transactional fallback for both runs, got %+v", stats)
 	}
+}
+
+func TestCheckoutRejectsInsufficientFundsAndSellerBalanceOverflow(t *testing.T) {
+	const maxInt64 = int64(^uint64(0) >> 1)
+	cases := []struct {
+		name   string
+		buyer  int64
+		seller int64
+		price  int64
+	}{
+		{name: "insufficient buyer funds", buyer: 100, seller: 2_000, price: 250},
+		{name: "seller balance overflow", buyer: 1_000, seller: maxInt64 - 100, price: 250},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			db, svc := newCheckoutFixture(t, tc.buyer, tc.seller)
+			err := svc.Checkout(context.Background(), CheckoutInput{
+				MarketplaceID: 7, OrderID: 2001, BuyerAccountID: 101, SellerAccountID: 202,
+				IdempotencyKey: "rejected-" + tc.name, Currency: "USD",
+				Items: []ecommerce_inventory.NewOrderItem{
+					{OrderID: 2001, SKU: "BOUNDARY", Quantity: 1, UnitPriceCents: tc.price},
+				},
+			})
+			if !errors.Is(err, ErrCheckoutRejected) {
+				t.Fatalf("expected ErrCheckoutRejected, got %v", err)
+			}
+			assertInt64(t, db, "SELECT balance_cents FROM accounts WHERE org_id = 7 AND id = 101", tc.buyer)
+			assertInt64(t, db, "SELECT balance_cents FROM accounts WHERE org_id = 7 AND id = 202", tc.seller)
+			assertInt64(t, db, "SELECT COUNT(*) FROM order_items", 0)
+			assertInt64(t, db, "SELECT COUNT(*) FROM transfer_receipts", 0)
+		})
+	}
+}
+
+func newCheckoutFixture(t *testing.T, buyerBalance, sellerBalance int64) (*sql.DB, *Service) {
+	t.Helper()
+	ctx := context.Background()
+	db, err := sql.Open("sqlite", ":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	db.SetMaxOpenConns(1)
+	if _, err := db.ExecContext(ctx, ecommerce_inventory.SchemaDDL); err != nil {
+		_ = db.Close()
+		t.Fatalf("inventory schema: %v", err)
+	}
+	if _, err := db.ExecContext(ctx, fintech_ledger.SchemaDDL); err != nil {
+		_ = db.Close()
+		t.Fatalf("ledger schema: %v", err)
+	}
+	for _, account := range []struct {
+		id      int64
+		balance int64
+	}{
+		{id: 101, balance: buyerBalance},
+		{id: 202, balance: sellerBalance},
+	} {
+		if _, err := db.ExecContext(ctx,
+			"INSERT INTO accounts (org_id, id, currency, balance_cents, status) VALUES (?, ?, 'USD', ?, 'active')",
+			7, account.id, account.balance,
+		); err != nil {
+			_ = db.Close()
+			t.Fatal(err)
+		}
+	}
+	svc := New(db)
+	t.Cleanup(func() {
+		_ = svc.Close()
+		_ = db.Close()
+	})
+	return db, svc
 }
 
 func TestCheckoutRejectsInvalidLineBeforeStartingPipeline(t *testing.T) {

@@ -19,6 +19,8 @@ The checkout flow is intentionally small:
 
 WrapPipeline does not create another connection or transaction. The wrapped package retains typed generated methods and futures, while all operations use the original pipeline's database, transaction, cache and execution path. Its package-local prepared-statement fast slots are not used; cross-package operations use rendered-SQL cache keys, avoiding collisions between package-local statement IDs.
 
+Checkout uses a serializable transaction and validates both account states before settlement: the buyer must have sufficient funds, and the seller balance must have room for the credit without overflowing `int64`. A failed check aborts the entire pipeline. The tests cover duplicate idempotency, insufficient funds and seller-balance overflow, verifying that no partial order or ledger writes survive.
+
 The test verifies that a duplicate transfer receipt rolls back the order lines and both account updates. Because this example uses SQLite, it exercises the sequential transactional fallback. The integration suite separately exercises shared pipelines on the PostgreSQL wire path and counts network turns.
 
 This is intentionally a focused integration example, not a complete marketplace. It omits tenant authorization, stock reservation, tax, payment-provider calls and durable workflow orchestration; those belong in a larger application built on the same module boundaries.
