@@ -1134,8 +1134,8 @@ func FuzzVariantKeyAndSubqueryShapeBijectivity(f *testing.F) {
 			}
 		}
 
-		s1 := ComputeSubqueryShape(id1, col1, flag1, ord1, false, int(d1a&0xFFFF), int(d1b&0xFFFF))
-		s2 := ComputeSubqueryShape(id2, col2, flag2, ord2, false, int(d2a&0xFFFF), int(d2b&0xFFFF))
+		s1 := computeSubqueryShape(id1, col1, flag1, ord1, false, int(d1a&0xFFFF), int(d1b&0xFFFF))
+		s2 := computeSubqueryShape(id2, col2, flag2, ord2, false, int(d2a&0xFFFF), int(d2b&0xFFFF))
 		sameSubCoords := id1 == id2 && col1 == col2 && flag1 == flag2 && ord1 == ord2 && (d1a&0xFFFF) == (d2a&0xFFFF) && (d1b&0xFFFF) == (d2b&0xFFFF)
 		if (s1&inexactKeyBit) == 0 && (s2&inexactKeyBit) == 0 {
 			if (s1 == s2) != sameSubCoords {
@@ -1353,20 +1353,20 @@ func TestVariantKeyAndSubqueryShape(t *testing.T) {
 		}
 	}
 
-	sExact := ComputeSubqueryShape(3, 0x07, 0x01, 0, false, 4, 8)
+	sExact := computeSubqueryShape(3, 0x07, 0x01, 0, false, 4, 8)
 	if sExact&inexactKeyBit != 0 {
 		t.Fatalf("expected exact subquery shape tag, got %#x", sExact)
 	}
 	sInexactCases := []uint64{
-		ComputeSubqueryShape(3, 0x07, 0x01, 0, true, 4),
-		ComputeSubqueryShape(3, 0x07, 0x01, 1, false, 4),
-		ComputeSubqueryShape(0, 0x07, 0x01, 0, false),
-		ComputeSubqueryShape(0x8000, 0x07, 0x01, 0, false),
-		ComputeSubqueryShape(3, 0x100, 0x01, 0, false),
-		ComputeSubqueryShape(3, 0x07, 0x100, 0, false),
-		ComputeSubqueryShape(3, 0x07, 0x01, 0, false, 1, 2, 3),
-		ComputeSubqueryShape(3, 0x07, 0x01, 0, false, 70000),
-		ComputeSubqueryShape(3, 0x07, 0x01, 0, false, 1, 70000),
+		computeSubqueryShape(3, 0x07, 0x01, 0, true, 4),
+		computeSubqueryShape(3, 0x07, 0x01, 1, false, 4),
+		computeSubqueryShape(0, 0x07, 0x01, 0, false),
+		computeSubqueryShape(0x8000, 0x07, 0x01, 0, false),
+		computeSubqueryShape(3, 0x100, 0x01, 0, false),
+		computeSubqueryShape(3, 0x07, 0x100, 0, false),
+		computeSubqueryShape(3, 0x07, 0x01, 0, false, 1, 2, 3),
+		computeSubqueryShape(3, 0x07, 0x01, 0, false, 70000),
+		computeSubqueryShape(3, 0x07, 0x01, 0, false, 1, 70000),
 	}
 	for i, s := range sInexactCases {
 		if s&inexactKeyBit == 0 {
