@@ -2408,6 +2408,7 @@ statements:
 		"func WrapPipeline(p *runtime.Pipeline) *Pipeline",
 		"p.RequireDialect(sqlDialect)",
 		"p.RequireEngine(sqlDialectName)",
+		"p.SetEngine(sqlDialectName)",
 		"vk.WithInexact(pl.q == nil)",
 		"pl.fastSlot(colMask",
 		"runtime.ComputeQueryShape(descGetThing",

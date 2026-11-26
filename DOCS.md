@@ -625,6 +625,8 @@ func WrapPipeline(p *runtime.Pipeline) *Pipeline
 
 The wrapper provides that package's generated, typed statement methods over the **same** underlying runtime pipeline. It does not open a connection, create a transaction, substitute a statement cache, or acquire another pipeline. The package that created the pipeline remains responsible for its database handle, transaction boundary, retry policy, and cache.
 
+The pipeline owner records its exact engine identity when it creates a generated `Pipeline` or enters `PipelineTx`. `WrapPipeline` verifies that identity and fails closed if it is unknown or different. A manually constructed pipeline must call `p.SetEngine("postgres")` (using its actual SQLGen dialect name) before it can be wrapped; an older generated package that does not tag its originating engine must be upgraded or explicitly tagged by its owner. Placeholder compatibility alone is insufficient because distinct engines can share the same placeholder syntax.
+
 ```go
 err := s.inventory.PipelineTx(ctx, nil, func(p *ecommerce_inventory.Pipeline) error {
     p.InsertOrderItems(in.Items).AssertRows(int64(len(in.Items)))
@@ -1020,7 +1022,7 @@ Every generated file declares the same fixed set of exported top-level names in 
 
 The generated file never re-declares runtime symbols: everything user-facing from the runtime (`runtime.Query`, `runtime.Order`, `runtime.Seek`, `runtime.WithTxRetry`, `runtime.DefaultRetryPolicy`, `runtime.PipelineCond`, `runtime.ExecFuture`, `runtime.IfChain`, ...) is spelled `runtime.X` in application code, which imports `github.com/CAFxX/sqlgen/runtime` itself. For example `q.InTx(ctx, nil, fn, runtime.WithTxRetry(runtime.DefaultRetryPolicy()))` and `After: runtime.Seek{}` (the first page).
 
-**Method names generated on `*Queries` and `*Pipeline`** that a statement name must avoid (`reservedStatementNames`): `CacheStats`, `Close`, `If`, `InTx`, `Pipeline`, `PipelineTx`, `WithPrepared`, `WithTx`, plus `SetBuildError`, `QueueExec`, `QueueExecNoop`, `Abort`, `Flush`, `BindForwarded`, `RequireDialect` and `RequireEngine`, which the generated `Pipeline` inherits from `runtime.Pipeline`. A statement becomes a method with its own name on both `*Queries` and `*Pipeline`, so it must not shadow any of them.
+**Method names generated on `*Queries` and `*Pipeline`** that a statement name must avoid (`reservedStatementNames`): `CacheStats`, `Close`, `If`, `InTx`, `Pipeline`, `PipelineTx`, `WithPrepared`, `WithTx`, plus `SetBuildError`, `QueueExec`, `QueueExecNoop`, `Abort`, `Flush`, `BindForwarded`, `RequireDialect`, `RequireEngine` and `SetEngine`, which the generated `Pipeline` inherits from `runtime.Pipeline`. A statement becomes a method with its own name on both `*Queries` and `*Pipeline`, so it must not shadow any of them.
 
 **What happens on a clash.** Generation fails with a clear error instead of emitting code that does not compile:
 

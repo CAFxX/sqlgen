@@ -1169,14 +1169,31 @@ func (p *Pipeline) RequireDialect(want Dialect) {
 	}
 }
 
-// RequireEngine rejects generated modules targeting different engine dialects. For example, PostgreSQL
-// and CockroachDB share $N placeholders but are not interchangeable SQL dialects.
+// SetEngine records the exact engine that owns this pipeline. Generated Pipeline/PipelineTx
+// constructors call this before user operations are queued. A conflicting declaration is a build error.
+func (p *Pipeline) SetEngine(engine string) {
+	if p == nil || p.pipelineState == nil {
+		panic("sqlgen: cannot set the engine on a nil pipeline")
+	}
+	if engine == "" {
+		p.SetBuildError(InvalidArgument("pipeline engine name cannot be empty"))
+		return
+	}
+	if p.engine == "" {
+		p.engine = engine
+	} else if p.engine != engine {
+		p.SetBuildError(InvalidArgument("pipeline owner declared different database engines"))
+	}
+}
+
+// RequireEngine verifies that this pipeline's owner has explicitly recorded the exact database engine.
+// It deliberately fails closed for raw or older generated pipelines whose engine identity is unknown.
 func (p *Pipeline) RequireEngine(want string) {
 	if p == nil || p.pipelineState == nil {
 		panic("sqlgen: cannot wrap a nil pipeline")
 	}
 	if p.engine == "" {
-		p.engine = want
+		p.SetBuildError(InvalidArgument("pipeline engine identity is unknown; its owner must call SetEngine before it can be wrapped"))
 	} else if p.engine != want {
 		p.SetBuildError(InvalidArgument("generated packages target different database engines"))
 	}

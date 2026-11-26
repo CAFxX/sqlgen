@@ -3217,9 +3217,19 @@ func TestPipelineRequireDialectRejectsMixedGeneratedPackages(t *testing.T) {
 	}
 }
 
-func TestPipelineRequireEngineRejectsDifferentEnginesWithSamePlaceholderDialect(t *testing.T) {
+func TestPipelineRequireEngineRequiresKnownOwnerEngine(t *testing.T) {
+	untagged := NewPipeline(context.Background(), nil, nil, nil, false, DialectDollar)
+	untagged.RequireEngine("postgres")
+	if !errors.Is(untagged.buildErr, ErrInvalidArgument) {
+		t.Fatalf("expected unknown owner engine to fail closed, got %v", untagged.buildErr)
+	}
+
 	p := NewPipeline(context.Background(), nil, nil, nil, false, DialectDollar)
+	p.SetEngine("postgres")
 	p.RequireEngine("postgres")
+	if p.buildErr != nil {
+		t.Fatalf("matching engine unexpectedly failed: %v", p.buildErr)
+	}
 	p.RequireEngine("cockroachdb")
 	if !errors.Is(p.buildErr, ErrInvalidArgument) {
 		t.Fatalf("expected exact engine mismatch build error, got %v", p.buildErr)

@@ -78,7 +78,7 @@ type Pipeline struct {
 // Pipeline creates a new Pipeline bound to ctx.
 func (q *Queries) Pipeline(ctx context.Context) *Pipeline {
 	p := runtime.NewPipeline(ctx, q.db, q.cache, q.txCache, q.usePrepared, sqlDialect)
-	p.RequireEngine(sqlDialectName)
+	p.SetEngine(sqlDialectName)
 	return &Pipeline{Pipeline: p, q: q}
 }
 
@@ -88,7 +88,7 @@ func (q *Queries) PipelineTx(ctx context.Context, txOpts *sql.TxOptions, fn func
 		return runtime.ErrNilArgument
 	}
 	return runtime.RunPipelineTx(ctx, q.db, q.cache, q.txCache, q.usePrepared, sqlDialect, txOpts, opts, func(p *runtime.Pipeline) error {
-		p.RequireEngine(sqlDialectName)
+		p.SetEngine(sqlDialectName)
 		return fn(&Pipeline{Pipeline: p, q: q})
 	})
 }

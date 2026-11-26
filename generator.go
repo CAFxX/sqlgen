@@ -605,7 +605,7 @@ var (
 	reservedTypeNames      = setOf("New", "Pipeline", "Queries", "WrapPipeline")
 	reservedStatementNames = setOf("CacheStats", "Close", "If", "InTx", "Pipeline", "PipelineTx",
 		"WithPrepared", "WithTx", "SetBuildError", "QueueExec", "QueueExecNoop", "Abort", "Flush", "BindForwarded",
-		"RequireDialect", "RequireEngine")
+		"RequireDialect", "RequireEngine", "SetEngine")
 )
 
 func setOf(names ...string) map[string]bool {
@@ -3107,7 +3107,7 @@ func Generate(cfg Config) ([]byte, error) {
 	b.WriteString("// Pipeline creates a new Pipeline bound to ctx.\n")
 	b.WriteString("func (q *Queries) Pipeline(ctx context.Context) *Pipeline {\n")
 	b.WriteString("\tp := runtime.NewPipeline(ctx, q.db, q.cache, q.txCache, q.usePrepared, sqlDialect)\n")
-	b.WriteString("\tp.RequireEngine(sqlDialectName)\n")
+	b.WriteString("\tp.SetEngine(sqlDialectName)\n")
 	b.WriteString("\treturn &Pipeline{Pipeline: p, q: q}\n")
 	b.WriteString("}\n\n")
 
@@ -3115,7 +3115,7 @@ func Generate(cfg Config) ([]byte, error) {
 	b.WriteString("func (q *Queries) PipelineTx(ctx context.Context, txOpts *sql.TxOptions, fn func(*Pipeline) error, opts ...runtime.TxOption) error {\n")
 	b.WriteString("\tif fn == nil {\n\t\treturn runtime.ErrNilArgument\n\t}\n")
 	b.WriteString("\treturn runtime.RunPipelineTx(ctx, q.db, q.cache, q.txCache, q.usePrepared, sqlDialect, txOpts, opts, func(p *runtime.Pipeline) error {\n")
-	b.WriteString("\t\tp.RequireEngine(sqlDialectName)\n")
+	b.WriteString("\t\tp.SetEngine(sqlDialectName)\n")
 	b.WriteString("\t\treturn fn(&Pipeline{Pipeline: p, q: q})\n")
 	b.WriteString("\t})\n")
 	b.WriteString("}\n\n")
