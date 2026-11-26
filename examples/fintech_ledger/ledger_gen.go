@@ -13,6 +13,7 @@ import (
 )
 
 const sqlDialect = runtime.DialectQuestion
+const sqlDialectName = "sqlite"
 
 // Queries executes strongly-typed SQL statements backed by a two-tier adaptive statement cache.
 type Queries struct {
@@ -79,10 +80,9 @@ type Pipeline struct {
 
 // Pipeline creates a new Pipeline bound to ctx.
 func (q *Queries) Pipeline(ctx context.Context) *Pipeline {
-	return &Pipeline{
-		Pipeline: runtime.NewPipeline(ctx, q.db, q.cache, q.txCache, q.usePrepared, sqlDialect),
-		q:        q,
-	}
+	p := runtime.NewPipeline(ctx, q.db, q.cache, q.txCache, q.usePrepared, sqlDialect)
+	p.SetEngine(sqlDialectName)
+	return &Pipeline{Pipeline: p, q: q}
 }
 
 // PipelineTx executes a transactional pipeline batch with optional retry policy.
@@ -91,8 +91,20 @@ func (q *Queries) PipelineTx(ctx context.Context, txOpts *sql.TxOptions, fn func
 		return runtime.ErrNilArgument
 	}
 	return runtime.RunPipelineTx(ctx, q.db, q.cache, q.txCache, q.usePrepared, sqlDialect, txOpts, opts, func(p *runtime.Pipeline) error {
+		p.SetEngine(sqlDialectName)
 		return fn(&Pipeline{Pipeline: p, q: q})
 	})
+}
+
+// WrapPipeline creates this package's typed view of a pipeline owned by another generated package.
+// The original pipeline retains ownership of its DB, transaction, cache, prepared statements and dialect.
+func WrapPipeline(p *runtime.Pipeline) *Pipeline {
+	if p == nil {
+		panic("sqlgen: cannot wrap a nil runtime.Pipeline")
+	}
+	p.RequireDialect(sqlDialect)
+	p.RequireEngine(sqlDialectName)
+	return &Pipeline{Pipeline: p}
 }
 
 // If starts an If chain on pl: fn queues the arm's operations on the handle it receives, which runs
@@ -103,6 +115,32 @@ func (pl *Pipeline) If(cond runtime.PipelineCond, fn func(*Pipeline)) *runtime.I
 }
 
 func (pl *Pipeline) arm(h *runtime.Pipeline) *Pipeline { return &Pipeline{Pipeline: h, q: pl.q} }
+
+func (pl *Pipeline) fastSlot(colMask uint64, index int) *runtime.FastStmtSlot {
+	if pl.q == nil {
+		return nil
+	}
+	var slot *runtime.FastStmtSlot
+	switch index {
+	case 0:
+		slot = &pl.q.fastSlots[0]
+	case 1:
+		slot = &pl.q.fastSlots[1]
+	case 2:
+		slot = &pl.q.fastSlots[2]
+	case 3:
+		slot = &pl.q.fastSlots[3]
+	case 4:
+		slot = &pl.q.fastSlots[4]
+	case 5:
+		slot = &pl.q.fastSlots[5]
+	case 6:
+		slot = &pl.q.fastSlots[6]
+	default:
+		return nil
+	}
+	return runtime.FastSlot(colMask, slot)
+}
 
 type AccountSettlement struct {
 	OrgID      int64
@@ -226,7 +264,7 @@ func GetAccountQuery(orgID int64, accountID int64, selectCols ...uint64) runtime
 		FlagMask: flagMask,
 	}
 	orderKey := runtime.EncodeOrderKey(in.OrderSpec, in.HasSeek)
-	shapeTag := runtime.ComputeSubqueryShape(stmtIDGetAccount, colMask, flagMask, orderKey, false)
+	shapeTag := runtime.ComputeQueryShape(descGetAccount, colMask, flagMask, orderKey, false)
 	return runtime.Query{
 		StmtID:   stmtIDGetAccount,
 		Desc:     descGetAccount,
@@ -317,7 +355,7 @@ func (pl *Pipeline) GetAccount(orgID int64, accountID int64, selectCols ...uint6
 		ColMask:  colMask,
 		FlagMask: flagMask,
 	}
-	return runtime.QueueRow(pl.Pipeline, stmtIDGetAccount, descGetAccount, in, vk, runtime.FastSlot(colMask, &pl.q.fastSlots[0]), argBuf, expandErr,
+	return runtime.QueueRow(pl.Pipeline, stmtIDGetAccount, descGetAccount, in, vk.WithInexact(pl.q == nil), pl.fastSlot(colMask, 0), argBuf, expandErr,
 		func(rs runtime.RowScanner, dst *Account) error { return scanGetAccountRow(rs, dst, colMask, p) },
 	)
 }
@@ -377,7 +415,7 @@ func TotalSupplyByOrgQuery(orgID int64) runtime.Query {
 		FlagMask: flagMask,
 	}
 	orderKey := runtime.EncodeOrderKey(in.OrderSpec, in.HasSeek)
-	shapeTag := runtime.ComputeSubqueryShape(stmtIDTotalSupplyByOrg, colMask, flagMask, orderKey, false)
+	shapeTag := runtime.ComputeQueryShape(descTotalSupplyByOrg, colMask, flagMask, orderKey, false)
 	return runtime.Query{
 		StmtID:   stmtIDTotalSupplyByOrg,
 		Desc:     descTotalSupplyByOrg,
@@ -439,7 +477,7 @@ func (pl *Pipeline) TotalSupplyByOrg(orgID int64) *runtime.RowFuture[int64] {
 		ColMask:  colMask,
 		FlagMask: flagMask,
 	}
-	return runtime.QueueRow(pl.Pipeline, stmtIDTotalSupplyByOrg, descTotalSupplyByOrg, in, vk, &pl.q.fastSlots[1], argBuf, expandErr,
+	return runtime.QueueRow(pl.Pipeline, stmtIDTotalSupplyByOrg, descTotalSupplyByOrg, in, vk.WithInexact(pl.q == nil), pl.fastSlot(colMask, 1), argBuf, expandErr,
 		func(rs runtime.RowScanner, dst *int64) error { return scanTotalSupplyByOrgRow(rs, dst, colMask, p) },
 	)
 }
@@ -518,7 +556,7 @@ func (pl *Pipeline) SetAccountStatus(status string, orgID int64, accountID int64
 		ColMask:  colMask,
 		FlagMask: flagMask,
 	}
-	return pl.Pipeline.QueueExec(stmtIDSetAccountStatus, descSetAccountStatus, in, vk, &pl.q.fastSlots[2], argBuf, expandErr)
+	return pl.Pipeline.QueueExec(stmtIDSetAccountStatus, descSetAccountStatus, in, vk.WithInexact(pl.q == nil), pl.fastSlot(colMask, 2), argBuf, expandErr)
 }
 
 const stmtIDDebitAccount uint32 = 4
@@ -595,7 +633,7 @@ func (pl *Pipeline) DebitAccount(amountCents int64, orgID int64, accountID int64
 		ColMask:  colMask,
 		FlagMask: flagMask,
 	}
-	return pl.Pipeline.QueueExec(stmtIDDebitAccount, descDebitAccount, in, vk, &pl.q.fastSlots[3], argBuf, expandErr)
+	return pl.Pipeline.QueueExec(stmtIDDebitAccount, descDebitAccount, in, vk.WithInexact(pl.q == nil), pl.fastSlot(colMask, 3), argBuf, expandErr)
 }
 
 const stmtIDCreditAccount uint32 = 5
@@ -672,7 +710,7 @@ func (pl *Pipeline) CreditAccount(amountCents int64, orgID int64, accountID int6
 		ColMask:  colMask,
 		FlagMask: flagMask,
 	}
-	return pl.Pipeline.QueueExec(stmtIDCreditAccount, descCreditAccount, in, vk, &pl.q.fastSlots[4], argBuf, expandErr)
+	return pl.Pipeline.QueueExec(stmtIDCreditAccount, descCreditAccount, in, vk.WithInexact(pl.q == nil), pl.fastSlot(colMask, 4), argBuf, expandErr)
 }
 
 const stmtIDInsertTransferReceipt uint32 = 6
@@ -759,7 +797,7 @@ func (pl *Pipeline) InsertTransferReceipt(idempotencyKey string, orgID int64, se
 		ColMask:  colMask,
 		FlagMask: flagMask,
 	}
-	return pl.Pipeline.QueueExec(stmtIDInsertTransferReceipt, descInsertTransferReceipt, in, vk, &pl.q.fastSlots[5], argBuf, expandErr)
+	return pl.Pipeline.QueueExec(stmtIDInsertTransferReceipt, descInsertTransferReceipt, in, vk.WithInexact(pl.q == nil), pl.fastSlot(colMask, 5), argBuf, expandErr)
 }
 
 const stmtIDInsertAuditEvent uint32 = 7
@@ -841,7 +879,7 @@ func (pl *Pipeline) InsertAuditEvent(orgID int64, accountID int64, eventType str
 		ColMask:  colMask,
 		FlagMask: flagMask,
 	}
-	return pl.Pipeline.QueueExec(stmtIDInsertAuditEvent, descInsertAuditEvent, in, vk, &pl.q.fastSlots[6], argBuf, expandErr)
+	return pl.Pipeline.QueueExec(stmtIDInsertAuditEvent, descInsertAuditEvent, in, vk.WithInexact(pl.q == nil), pl.fastSlot(colMask, 6), argBuf, expandErr)
 }
 
 const stmtIDUpsertAccountBalances uint32 = 8
@@ -1003,7 +1041,7 @@ func (pl *Pipeline) UpsertAccountBalances(items []AccountSettlement) *runtime.Ex
 		FlagMask:  flagMask,
 		TupleLens: tupleLensBuf[:],
 	}
-	return pl.Pipeline.QueueExec(stmtIDUpsertAccountBalances, descUpsertAccountBalances, in, vk, nil, argBuf, expandErr)
+	return pl.Pipeline.QueueExec(stmtIDUpsertAccountBalances, descUpsertAccountBalances, in, vk.WithInexact(pl.q == nil), nil, argBuf, expandErr)
 }
 
 // UpsertAccountBalancesStream runs UpsertAccountBalances over the items rows pulled from seq, in chunks, and sums the results.

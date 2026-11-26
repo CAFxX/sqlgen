@@ -1088,6 +1088,7 @@ type pipelineState struct {
 	txCache     *TxStmtCache
 	usePrepared bool
 	dialect     Dialect
+	engine      string // exact sqlgen.yaml dialect name, beyond placeholder style
 	ops         []PipelineOp
 	opPtrs      []*PipelineOp
 	branchStack []BranchGate
@@ -1155,6 +1156,46 @@ func (p *Pipeline) finish(err error) {
 func (p *Pipeline) SetBuildError(err error) {
 	if p.buildErr == nil && err != nil {
 		p.buildErr = err
+	}
+}
+
+// RequireDialect rejects a generated module that uses a different placeholder dialect.
+func (p *Pipeline) RequireDialect(want Dialect) {
+	if p == nil || p.pipelineState == nil {
+		panic("sqlgen: cannot wrap a nil pipeline")
+	}
+	if p.dialect != want {
+		p.SetBuildError(InvalidArgument("generated package dialect does not match the pipeline dialect"))
+	}
+}
+
+// SetEngine records the exact engine that owns this pipeline. Generated Pipeline/PipelineTx
+// constructors call this before user operations are queued. A conflicting declaration is a build error.
+func (p *Pipeline) SetEngine(engine string) {
+	if p == nil || p.pipelineState == nil {
+		panic("sqlgen: cannot set the engine on a nil pipeline")
+	}
+	if engine == "" {
+		p.SetBuildError(InvalidArgument("pipeline engine name cannot be empty"))
+		return
+	}
+	if p.engine == "" {
+		p.engine = engine
+	} else if p.engine != engine {
+		p.SetBuildError(InvalidArgument("pipeline owner declared different database engines"))
+	}
+}
+
+// RequireEngine verifies that this pipeline's owner has explicitly recorded the exact database engine.
+// It deliberately fails closed for raw or older generated pipelines whose engine identity is unknown.
+func (p *Pipeline) RequireEngine(want string) {
+	if p == nil || p.pipelineState == nil {
+		panic("sqlgen: cannot wrap a nil pipeline")
+	}
+	if p.engine == "" {
+		p.SetBuildError(InvalidArgument("pipeline engine identity is unknown; its owner must call SetEngine before it can be wrapped"))
+	} else if p.engine != want {
+		p.SetBuildError(InvalidArgument("generated packages target different database engines"))
 	}
 }
 

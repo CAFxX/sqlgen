@@ -13,6 +13,7 @@ import (
 )
 
 const sqlDialect = runtime.DialectQuestion
+const sqlDialectName = "sqlite"
 
 // Queries executes strongly-typed SQL statements backed by a two-tier adaptive statement cache.
 type Queries struct {
@@ -79,10 +80,9 @@ type Pipeline struct {
 
 // Pipeline creates a new Pipeline bound to ctx.
 func (q *Queries) Pipeline(ctx context.Context) *Pipeline {
-	return &Pipeline{
-		Pipeline: runtime.NewPipeline(ctx, q.db, q.cache, q.txCache, q.usePrepared, sqlDialect),
-		q:        q,
-	}
+	p := runtime.NewPipeline(ctx, q.db, q.cache, q.txCache, q.usePrepared, sqlDialect)
+	p.SetEngine(sqlDialectName)
+	return &Pipeline{Pipeline: p, q: q}
 }
 
 // PipelineTx executes a transactional pipeline batch with optional retry policy.
@@ -91,8 +91,20 @@ func (q *Queries) PipelineTx(ctx context.Context, txOpts *sql.TxOptions, fn func
 		return runtime.ErrNilArgument
 	}
 	return runtime.RunPipelineTx(ctx, q.db, q.cache, q.txCache, q.usePrepared, sqlDialect, txOpts, opts, func(p *runtime.Pipeline) error {
+		p.SetEngine(sqlDialectName)
 		return fn(&Pipeline{Pipeline: p, q: q})
 	})
+}
+
+// WrapPipeline creates this package's typed view of a pipeline owned by another generated package.
+// The original pipeline retains ownership of its DB, transaction, cache, prepared statements and dialect.
+func WrapPipeline(p *runtime.Pipeline) *Pipeline {
+	if p == nil {
+		panic("sqlgen: cannot wrap a nil runtime.Pipeline")
+	}
+	p.RequireDialect(sqlDialect)
+	p.RequireEngine(sqlDialectName)
+	return &Pipeline{Pipeline: p}
 }
 
 // If starts an If chain on pl: fn queues the arm's operations on the handle it receives, which runs
@@ -103,6 +115,38 @@ func (pl *Pipeline) If(cond runtime.PipelineCond, fn func(*Pipeline)) *runtime.I
 }
 
 func (pl *Pipeline) arm(h *runtime.Pipeline) *Pipeline { return &Pipeline{Pipeline: h, q: pl.q} }
+
+func (pl *Pipeline) fastSlot(colMask uint64, index int) *runtime.FastStmtSlot {
+	if pl.q == nil {
+		return nil
+	}
+	var slot *runtime.FastStmtSlot
+	switch index {
+	case 0:
+		slot = &pl.q.fastSlots[0]
+	case 1:
+		slot = &pl.q.fastSlots[1]
+	case 2:
+		slot = &pl.q.fastSlots[2]
+	case 3:
+		slot = &pl.q.fastSlots[3]
+	case 4:
+		slot = &pl.q.fastSlots[4]
+	case 5:
+		slot = &pl.q.fastSlots[5]
+	case 6:
+		slot = &pl.q.fastSlots[6]
+	case 7:
+		slot = &pl.q.fastSlots[7]
+	case 8:
+		slot = &pl.q.fastSlots[8]
+	case 9:
+		slot = &pl.q.fastSlots[9]
+	default:
+		return nil
+	}
+	return runtime.FastSlot(colMask, slot)
+}
 
 type BatchUserInput struct {
 	ID     int64
@@ -401,7 +445,7 @@ func (pl *Pipeline) CreateUser(id int64, orgID int64, email string, role string,
 		ColMask:  colMask,
 		FlagMask: flagMask,
 	}
-	return pl.Pipeline.QueueExec(stmtIDCreateUser, descCreateUser, in, vk, &pl.q.fastSlots[0], argBuf, expandErr)
+	return pl.Pipeline.QueueExec(stmtIDCreateUser, descCreateUser, in, vk.WithInexact(pl.q == nil), pl.fastSlot(colMask, 0), argBuf, expandErr)
 }
 
 const stmtIDGetUserByID uint32 = 2
@@ -476,7 +520,7 @@ func GetUserByIDQuery(id int64, selectCols ...uint64) runtime.Query {
 		FlagMask: flagMask,
 	}
 	orderKey := runtime.EncodeOrderKey(in.OrderSpec, in.HasSeek)
-	shapeTag := runtime.ComputeSubqueryShape(stmtIDGetUserByID, colMask, flagMask, orderKey, false)
+	shapeTag := runtime.ComputeQueryShape(descGetUserByID, colMask, flagMask, orderKey, false)
 	return runtime.Query{
 		StmtID:   stmtIDGetUserByID,
 		Desc:     descGetUserByID,
@@ -569,7 +613,7 @@ func (pl *Pipeline) GetUserByID(id int64, selectCols ...uint64) *runtime.RowFutu
 		ColMask:  colMask,
 		FlagMask: flagMask,
 	}
-	return runtime.QueueRow(pl.Pipeline, stmtIDGetUserByID, descGetUserByID, in, vk, runtime.FastSlot(colMask, &pl.q.fastSlots[1]), argBuf, expandErr,
+	return runtime.QueueRow(pl.Pipeline, stmtIDGetUserByID, descGetUserByID, in, vk.WithInexact(pl.q == nil), pl.fastSlot(colMask, 1), argBuf, expandErr,
 		func(rs runtime.RowScanner, dst *User) error { return scanGetUserByIDRow(rs, dst, colMask, p) },
 	)
 }
@@ -669,7 +713,7 @@ func ListUsersByIDsQuery(ids []int64, selectCols ...uint64) runtime.Query {
 	orderKey := runtime.EncodeOrderKey(in.OrderSpec, in.HasSeek)
 	var shapeLens [1]int
 	copy(shapeLens[:], in.SliceLens)
-	shapeTag := runtime.ComputeSubqueryShape(stmtIDListUsersByIDs, colMask, flagMask, orderKey, false, shapeLens[:]...)
+	shapeTag := runtime.ComputeQueryShape(descListUsersByIDs, colMask, flagMask, orderKey, false, shapeLens[:]...)
 	return runtime.Query{
 		StmtID:   stmtIDListUsersByIDs,
 		Desc:     descListUsersByIDs,
@@ -859,7 +903,7 @@ func (pl *Pipeline) ListUsersByIDs(ids []int64, selectCols ...uint64) *runtime.S
 		FlagMask:  flagMask,
 		SliceLens: sliceLensBuf[:],
 	}
-	return runtime.QueueSlice(pl.Pipeline, stmtIDListUsersByIDs, descListUsersByIDs, in, vk, nil, argBuf, expandErr,
+	return runtime.QueueSlice(pl.Pipeline, stmtIDListUsersByIDs, descListUsersByIDs, in, vk.WithInexact(pl.q == nil), nil, argBuf, expandErr,
 		func(rs runtime.RowScanner, dst *User) error { return scanListUsersByIDsRow(rs, dst, colMask, p) },
 	)
 }
@@ -938,7 +982,7 @@ func SelectUserProfileSubsetQuery(p SelectUserProfileSubsetParams) runtime.Query
 		FlagMask: flagMask,
 	}
 	orderKey := runtime.EncodeOrderKey(in.OrderSpec, in.HasSeek)
-	shapeTag := runtime.ComputeSubqueryShape(stmtIDSelectUserProfileSubset, colMask, flagMask, orderKey, false)
+	shapeTag := runtime.ComputeQueryShape(descSelectUserProfileSubset, colMask, flagMask, orderKey, false)
 	return runtime.Query{
 		StmtID:   stmtIDSelectUserProfileSubset,
 		Desc:     descSelectUserProfileSubset,
@@ -1036,7 +1080,7 @@ func (pl *Pipeline) SelectUserProfileSubset(p SelectUserProfileSubsetParams) *ru
 		ColMask:  colMask,
 		FlagMask: flagMask,
 	}
-	return runtime.QueueSlice(pl.Pipeline, stmtIDSelectUserProfileSubset, descSelectUserProfileSubset, in, vk, nil, argBuf, expandErr,
+	return runtime.QueueSlice(pl.Pipeline, stmtIDSelectUserProfileSubset, descSelectUserProfileSubset, in, vk.WithInexact(pl.q == nil), nil, argBuf, expandErr,
 		func(rs runtime.RowScanner, dst *SelectUserProfileSubsetRow) error {
 			return scanSelectUserProfileSubsetRow(rs, dst, colMask, p)
 		},
@@ -1193,7 +1237,7 @@ func SearchUsersCoupledQuery(p SearchUsersCoupledParams) runtime.Query {
 	for i, sub := range in.Subs {
 		shapeLens[2+i] = int(sub.ShapeTag)
 	}
-	shapeTag := runtime.ComputeSubqueryShape(stmtIDSearchUsersCoupled, colMask, flagMask, orderKey, true, shapeLens[:]...)
+	shapeTag := runtime.ComputeQueryShape(descSearchUsersCoupled, colMask, flagMask, orderKey, true, shapeLens[:]...)
 	return runtime.Query{
 		StmtID:   stmtIDSearchUsersCoupled,
 		Desc:     descSearchUsersCoupled,
@@ -1312,7 +1356,7 @@ func (pl *Pipeline) SearchUsersCoupled(p SearchUsersCoupledParams) *runtime.Slic
 		SliceLens: sliceLensBuf[:],
 		Subs:      subsBuf[:],
 	}
-	return runtime.QueueSlice(pl.Pipeline, stmtIDSearchUsersCoupled, descSearchUsersCoupled, in, vk, nil, argBuf, expandErr,
+	return runtime.QueueSlice(pl.Pipeline, stmtIDSearchUsersCoupled, descSearchUsersCoupled, in, vk.WithInexact(pl.q == nil), nil, argBuf, expandErr,
 		func(rs runtime.RowScanner, dst *SearchUsersCoupledRow) error {
 			return scanSearchUsersCoupledRow(rs, dst, colMask, p)
 		},
@@ -1382,7 +1426,7 @@ func SubOrgsByMinIDQuery(p SubOrgsByMinIDParams) runtime.Query {
 		FlagMask: flagMask,
 	}
 	orderKey := runtime.EncodeOrderKey(in.OrderSpec, in.HasSeek)
-	shapeTag := runtime.ComputeSubqueryShape(stmtIDSubOrgsByMinID, colMask, flagMask, orderKey, false)
+	shapeTag := runtime.ComputeQueryShape(descSubOrgsByMinID, colMask, flagMask, orderKey, false)
 	return runtime.Query{
 		StmtID:   stmtIDSubOrgsByMinID,
 		Desc:     descSubOrgsByMinID,
@@ -1522,7 +1566,7 @@ func PageUsersQuery(p PageUsersParams) runtime.Query {
 		HasSeek:   p.Seek.IsActive(),
 	}
 	orderKey := runtime.EncodeOrderKey(in.OrderSpec, in.HasSeek)
-	shapeTag := runtime.ComputeSubqueryShape(stmtIDPageUsers, colMask, flagMask, orderKey, false)
+	shapeTag := runtime.ComputeQueryShape(descPageUsers, colMask, flagMask, orderKey, false)
 	return runtime.Query{
 		StmtID:   stmtIDPageUsers,
 		Desc:     descPageUsers,
@@ -1623,7 +1667,7 @@ func (pl *Pipeline) PageUsers(p PageUsersParams) *runtime.SliceFuture[PageUsersR
 		OrderSpec: p.Order,
 		HasSeek:   p.Seek.IsActive(),
 	}
-	return runtime.QueueSlice(pl.Pipeline, stmtIDPageUsers, descPageUsers, in, vk, nil, argBuf, expandErr,
+	return runtime.QueueSlice(pl.Pipeline, stmtIDPageUsers, descPageUsers, in, vk.WithInexact(pl.q == nil), nil, argBuf, expandErr,
 		func(rs runtime.RowScanner, dst *PageUsersRow) error { return scanPageUsersRow(rs, dst, colMask, p) },
 	)
 }
@@ -1716,7 +1760,7 @@ func UsersFromCTEAndInSubqueryQuery(ctesub runtime.Query, idsub runtime.Query, s
 	for i, sub := range in.Subs {
 		shapeLens[0+i] = int(sub.ShapeTag)
 	}
-	shapeTag := runtime.ComputeSubqueryShape(stmtIDUsersFromCTEAndInSubquery, colMask, flagMask, orderKey, true, shapeLens[:]...)
+	shapeTag := runtime.ComputeQueryShape(descUsersFromCTEAndInSubquery, colMask, flagMask, orderKey, true, shapeLens[:]...)
 	return runtime.Query{
 		StmtID:   stmtIDUsersFromCTEAndInSubquery,
 		Desc:     descUsersFromCTEAndInSubquery,
@@ -1823,7 +1867,7 @@ func (pl *Pipeline) UsersFromCTEAndInSubquery(ctesub runtime.Query, idsub runtim
 		FlagMask: flagMask,
 		Subs:     subsBuf[:],
 	}
-	return runtime.QueueSlice(pl.Pipeline, stmtIDUsersFromCTEAndInSubquery, descUsersFromCTEAndInSubquery, in, vk, nil, argBuf, expandErr,
+	return runtime.QueueSlice(pl.Pipeline, stmtIDUsersFromCTEAndInSubquery, descUsersFromCTEAndInSubquery, in, vk.WithInexact(pl.q == nil), nil, argBuf, expandErr,
 		func(rs runtime.RowScanner, dst *UsersFromCTEAndInSubqueryRow) error {
 			return scanUsersFromCTEAndInSubqueryRow(rs, dst, colMask, p)
 		},
@@ -1883,7 +1927,7 @@ func SubUserIDsByScoreQuery(minScore int64) runtime.Query {
 		FlagMask: flagMask,
 	}
 	orderKey := runtime.EncodeOrderKey(in.OrderSpec, in.HasSeek)
-	shapeTag := runtime.ComputeSubqueryShape(stmtIDSubUserIDsByScore, colMask, flagMask, orderKey, false)
+	shapeTag := runtime.ComputeQueryShape(descSubUserIDsByScore, colMask, flagMask, orderKey, false)
 	return runtime.Query{
 		StmtID:   stmtIDSubUserIDsByScore,
 		Desc:     descSubUserIDsByScore,
@@ -2141,7 +2185,7 @@ func (pl *Pipeline) InsertUsersBatchReturning(rows []BatchUserInput, selectCols 
 		FlagMask:  flagMask,
 		TupleLens: tupleLensBuf[:],
 	}
-	return runtime.QueueSlice(pl.Pipeline, stmtIDInsertUsersBatchReturning, descInsertUsersBatchReturning, in, vk, nil, argBuf, expandErr,
+	return runtime.QueueSlice(pl.Pipeline, stmtIDInsertUsersBatchReturning, descInsertUsersBatchReturning, in, vk.WithInexact(pl.q == nil), nil, argBuf, expandErr,
 		func(rs runtime.RowScanner, dst *InsertUsersBatchReturningRow) error {
 			return scanInsertUsersBatchReturningRow(rs, dst, colMask, p)
 		},
@@ -2358,7 +2402,7 @@ func (pl *Pipeline) UpdateUsersBatchFromValues(rows []BatchBonusInput) *runtime.
 		FlagMask:  flagMask,
 		TupleLens: tupleLensBuf[:],
 	}
-	return pl.Pipeline.QueueExec(stmtIDUpdateUsersBatchFromValues, descUpdateUsersBatchFromValues, in, vk, nil, argBuf, expandErr)
+	return pl.Pipeline.QueueExec(stmtIDUpdateUsersBatchFromValues, descUpdateUsersBatchFromValues, in, vk.WithInexact(pl.q == nil), nil, argBuf, expandErr)
 }
 
 const stmtIDInsertQuadBatch uint32 = 12
@@ -2520,7 +2564,7 @@ func (pl *Pipeline) InsertQuadBatch(rows []QuadInput) *runtime.ExecFuture {
 		FlagMask:  flagMask,
 		TupleLens: tupleLensBuf[:],
 	}
-	return pl.Pipeline.QueueExec(stmtIDInsertQuadBatch, descInsertQuadBatch, in, vk, nil, argBuf, expandErr)
+	return pl.Pipeline.QueueExec(stmtIDInsertQuadBatch, descInsertQuadBatch, in, vk.WithInexact(pl.q == nil), nil, argBuf, expandErr)
 }
 
 // InsertQuadBatchStream runs InsertQuadBatch over the Rows rows pulled from seq, in chunks, and sums the results.
@@ -2642,7 +2686,7 @@ func UserIDsNearScoreQuery(score int64, ids []int64) runtime.Query {
 	orderKey := runtime.EncodeOrderKey(in.OrderSpec, in.HasSeek)
 	var shapeLens [1]int
 	copy(shapeLens[:], in.SliceLens)
-	shapeTag := runtime.ComputeSubqueryShape(stmtIDUserIDsNearScore, colMask, flagMask, orderKey, false, shapeLens[:]...)
+	shapeTag := runtime.ComputeQueryShape(descUserIDsNearScore, colMask, flagMask, orderKey, false, shapeLens[:]...)
 	return runtime.Query{
 		StmtID:   stmtIDUserIDsNearScore,
 		Desc:     descUserIDsNearScore,
@@ -2783,7 +2827,7 @@ func (pl *Pipeline) UserIDsNearScore(score int64, ids []int64) *runtime.SliceFut
 		FlagMask:  flagMask,
 		SliceLens: sliceLensBuf[:],
 	}
-	return runtime.QueueSlice(pl.Pipeline, stmtIDUserIDsNearScore, descUserIDsNearScore, in, vk, nil, argBuf, expandErr,
+	return runtime.QueueSlice(pl.Pipeline, stmtIDUserIDsNearScore, descUserIDsNearScore, in, vk.WithInexact(pl.q == nil), nil, argBuf, expandErr,
 		func(rs runtime.RowScanner, dst *int64) error { return scanUserIDsNearScoreRow(rs, dst, colMask, p) },
 	)
 }
@@ -2906,7 +2950,7 @@ func UserEmailBytesQuery(id int64) runtime.Query {
 		FlagMask: flagMask,
 	}
 	orderKey := runtime.EncodeOrderKey(in.OrderSpec, in.HasSeek)
-	shapeTag := runtime.ComputeSubqueryShape(stmtIDUserEmailBytes, colMask, flagMask, orderKey, false)
+	shapeTag := runtime.ComputeQueryShape(descUserEmailBytes, colMask, flagMask, orderKey, false)
 	return runtime.Query{
 		StmtID:   stmtIDUserEmailBytes,
 		Desc:     descUserEmailBytes,
@@ -2968,7 +3012,7 @@ func (pl *Pipeline) UserEmailBytes(id int64) *runtime.RowFuture[[]byte] {
 		ColMask:  colMask,
 		FlagMask: flagMask,
 	}
-	return runtime.QueueRow(pl.Pipeline, stmtIDUserEmailBytes, descUserEmailBytes, in, vk, &pl.q.fastSlots[2], argBuf, expandErr,
+	return runtime.QueueRow(pl.Pipeline, stmtIDUserEmailBytes, descUserEmailBytes, in, vk.WithInexact(pl.q == nil), pl.fastSlot(colMask, 2), argBuf, expandErr,
 		func(rs runtime.RowScanner, dst *[]byte) error { return scanUserEmailBytesRow(rs, dst, colMask, p) },
 	)
 }
@@ -3022,7 +3066,7 @@ func UserBioIfSetQuery() runtime.Query {
 		FlagMask: flagMask,
 	}
 	orderKey := runtime.EncodeOrderKey(in.OrderSpec, in.HasSeek)
-	shapeTag := runtime.ComputeSubqueryShape(stmtIDUserBioIfSet, colMask, flagMask, orderKey, false)
+	shapeTag := runtime.ComputeQueryShape(descUserBioIfSet, colMask, flagMask, orderKey, false)
 	return runtime.Query{
 		StmtID:   stmtIDUserBioIfSet,
 		Desc:     descUserBioIfSet,
@@ -3097,7 +3141,7 @@ func (pl *Pipeline) UserBioIfSet() *runtime.SliceFuture[*string] {
 		ColMask:  colMask,
 		FlagMask: flagMask,
 	}
-	return runtime.QueueSlice(pl.Pipeline, stmtIDUserBioIfSet, descUserBioIfSet, in, vk, &pl.q.fastSlots[3], argBuf, expandErr,
+	return runtime.QueueSlice(pl.Pipeline, stmtIDUserBioIfSet, descUserBioIfSet, in, vk.WithInexact(pl.q == nil), pl.fastSlot(colMask, 3), argBuf, expandErr,
 		func(rs runtime.RowScanner, dst **string) error { return scanUserBioIfSetRow(rs, dst, colMask, p) },
 	)
 }
@@ -3157,7 +3201,7 @@ func UserEmailOnlyQuery(id int64) runtime.Query {
 		FlagMask: flagMask,
 	}
 	orderKey := runtime.EncodeOrderKey(in.OrderSpec, in.HasSeek)
-	shapeTag := runtime.ComputeSubqueryShape(stmtIDUserEmailOnly, colMask, flagMask, orderKey, false)
+	shapeTag := runtime.ComputeQueryShape(descUserEmailOnly, colMask, flagMask, orderKey, false)
 	return runtime.Query{
 		StmtID:   stmtIDUserEmailOnly,
 		Desc:     descUserEmailOnly,
@@ -3220,7 +3264,7 @@ func (pl *Pipeline) UserEmailOnly(id int64) *runtime.RowFuture[EmailOnly] {
 		ColMask:  colMask,
 		FlagMask: flagMask,
 	}
-	return runtime.QueueRow(pl.Pipeline, stmtIDUserEmailOnly, descUserEmailOnly, in, vk, &pl.q.fastSlots[4], argBuf, expandErr,
+	return runtime.QueueRow(pl.Pipeline, stmtIDUserEmailOnly, descUserEmailOnly, in, vk.WithInexact(pl.q == nil), pl.fastSlot(colMask, 4), argBuf, expandErr,
 		func(rs runtime.RowScanner, dst *EmailOnly) error { return scanUserEmailOnlyRow(rs, dst, colMask, p) },
 	)
 }
@@ -3305,7 +3349,7 @@ func UserRoleCountsInQuery(ids []int64, selectCols ...uint64) runtime.Query {
 	orderKey := runtime.EncodeOrderKey(in.OrderSpec, in.HasSeek)
 	var shapeLens [1]int
 	copy(shapeLens[:], in.SliceLens)
-	shapeTag := runtime.ComputeSubqueryShape(stmtIDUserRoleCountsIn, colMask, flagMask, orderKey, false, shapeLens[:]...)
+	shapeTag := runtime.ComputeQueryShape(descUserRoleCountsIn, colMask, flagMask, orderKey, false, shapeLens[:]...)
 	return runtime.Query{
 		StmtID:   stmtIDUserRoleCountsIn,
 		Desc:     descUserRoleCountsIn,
@@ -3466,7 +3510,7 @@ func (pl *Pipeline) UserRoleCountsIn(ids []int64, selectCols ...uint64) *runtime
 		FlagMask:  flagMask,
 		SliceLens: sliceLensBuf[:],
 	}
-	return runtime.QueueSlice(pl.Pipeline, stmtIDUserRoleCountsIn, descUserRoleCountsIn, in, vk, nil, argBuf, expandErr,
+	return runtime.QueueSlice(pl.Pipeline, stmtIDUserRoleCountsIn, descUserRoleCountsIn, in, vk.WithInexact(pl.q == nil), nil, argBuf, expandErr,
 		func(rs runtime.RowScanner, dst *UserRoleCountsInRow) error {
 			return scanUserRoleCountsInRow(rs, dst, colMask, p)
 		},
@@ -3540,7 +3584,7 @@ func TopUsersInQuery(ids []int64) runtime.Query {
 	orderKey := runtime.EncodeOrderKey(in.OrderSpec, in.HasSeek)
 	var shapeLens [1]int
 	copy(shapeLens[:], in.SliceLens)
-	shapeTag := runtime.ComputeSubqueryShape(stmtIDTopUsersIn, colMask, flagMask, orderKey, false, shapeLens[:]...)
+	shapeTag := runtime.ComputeQueryShape(descTopUsersIn, colMask, flagMask, orderKey, false, shapeLens[:]...)
 	return runtime.Query{
 		StmtID:   stmtIDTopUsersIn,
 		Desc:     descTopUsersIn,
@@ -3685,7 +3729,7 @@ func (pl *Pipeline) TopUsersIn(ids []int64) *runtime.SliceFuture[int64] {
 		FlagMask:  flagMask,
 		SliceLens: sliceLensBuf[:],
 	}
-	return runtime.QueueSlice(pl.Pipeline, stmtIDTopUsersIn, descTopUsersIn, in, vk, nil, argBuf, expandErr,
+	return runtime.QueueSlice(pl.Pipeline, stmtIDTopUsersIn, descTopUsersIn, in, vk.WithInexact(pl.q == nil), nil, argBuf, expandErr,
 		func(rs runtime.RowScanner, dst *int64) error { return scanTopUsersInRow(rs, dst, colMask, p) },
 	)
 }
@@ -3843,7 +3887,7 @@ func (pl *Pipeline) BumpUsersByIDs(bonus int64, ids []int64) *runtime.ExecFuture
 		FlagMask:  flagMask,
 		SliceLens: sliceLensBuf[:],
 	}
-	return pl.Pipeline.QueueExec(stmtIDBumpUsersByIDs, descBumpUsersByIDs, in, vk, nil, argBuf, expandErr)
+	return pl.Pipeline.QueueExec(stmtIDBumpUsersByIDs, descBumpUsersByIDs, in, vk.WithInexact(pl.q == nil), nil, argBuf, expandErr)
 }
 
 // BumpUsersByIDsStream runs BumpUsersByIDs over the IDs rows pulled from seq, in chunks, and sums the results.
@@ -4021,7 +4065,7 @@ func (pl *Pipeline) DeleteQuadsByKeys(keys []QuadDelKey) *runtime.ExecFuture {
 		FlagMask:  flagMask,
 		TupleLens: tupleLensBuf[:],
 	}
-	return pl.Pipeline.QueueExec(stmtIDDeleteQuadsByKeys, descDeleteQuadsByKeys, in, vk, nil, argBuf, expandErr)
+	return pl.Pipeline.QueueExec(stmtIDDeleteQuadsByKeys, descDeleteQuadsByKeys, in, vk.WithInexact(pl.q == nil), nil, argBuf, expandErr)
 }
 
 // DeleteQuadsByKeysStream runs DeleteQuadsByKeys over the Keys rows pulled from seq, in chunks, and sums the results.
@@ -4138,7 +4182,7 @@ func QuadIDsByKeysQuery(p QuadIDsByKeysParams) runtime.Query {
 	orderKey := runtime.EncodeOrderKey(in.OrderSpec, in.HasSeek)
 	var shapeLens [1]int
 	copy(shapeLens[0:], in.TupleLens)
-	shapeTag := runtime.ComputeSubqueryShape(stmtIDQuadIDsByKeys, colMask, flagMask, orderKey, false, shapeLens[:]...)
+	shapeTag := runtime.ComputeQueryShape(descQuadIDsByKeys, colMask, flagMask, orderKey, false, shapeLens[:]...)
 	return runtime.Query{
 		StmtID:   stmtIDQuadIDsByKeys,
 		Desc:     descQuadIDsByKeys,
@@ -4267,7 +4311,7 @@ func (pl *Pipeline) QuadIDsByKeys(p QuadIDsByKeysParams) *runtime.SliceFuture[in
 		FlagMask:  flagMask,
 		TupleLens: tupleLensBuf[:],
 	}
-	return runtime.QueueSlice(pl.Pipeline, stmtIDQuadIDsByKeys, descQuadIDsByKeys, in, vk, nil, argBuf, expandErr,
+	return runtime.QueueSlice(pl.Pipeline, stmtIDQuadIDsByKeys, descQuadIDsByKeys, in, vk.WithInexact(pl.q == nil), nil, argBuf, expandErr,
 		func(rs runtime.RowScanner, dst *int64) error { return scanQuadIDsByKeysRow(rs, dst, colMask, p) },
 	)
 }
@@ -4457,7 +4501,7 @@ func PageQuadQuery(p PageQuadParams) runtime.Query {
 		HasSeek:   p.Seek.IsActive(),
 	}
 	orderKey := runtime.EncodeOrderKey(in.OrderSpec, in.HasSeek)
-	shapeTag := runtime.ComputeSubqueryShape(stmtIDPageQuad, colMask, flagMask, orderKey, false)
+	shapeTag := runtime.ComputeQueryShape(descPageQuad, colMask, flagMask, orderKey, false)
 	return runtime.Query{
 		StmtID:   stmtIDPageQuad,
 		Desc:     descPageQuad,
@@ -4558,7 +4602,7 @@ func (pl *Pipeline) PageQuad(p PageQuadParams) *runtime.SliceFuture[QuadItem] {
 		OrderSpec: p.Order,
 		HasSeek:   p.Seek.IsActive(),
 	}
-	return runtime.QueueSlice(pl.Pipeline, stmtIDPageQuad, descPageQuad, in, vk, nil, argBuf, expandErr,
+	return runtime.QueueSlice(pl.Pipeline, stmtIDPageQuad, descPageQuad, in, vk.WithInexact(pl.q == nil), nil, argBuf, expandErr,
 		func(rs runtime.RowScanner, dst *QuadItem) error { return scanPageQuadRow(rs, dst, colMask, p) },
 	)
 }
@@ -4665,7 +4709,7 @@ func (pl *Pipeline) FwdInsertOrder(customer string, total int64) *runtime.RowFut
 		ColMask:  colMask,
 		FlagMask: flagMask,
 	}
-	return runtime.QueueRow(pl.Pipeline, stmtIDFwdInsertOrder, descFwdInsertOrder, in, vk, &pl.q.fastSlots[5], argBuf, expandErr,
+	return runtime.QueueRow(pl.Pipeline, stmtIDFwdInsertOrder, descFwdInsertOrder, in, vk.WithInexact(pl.q == nil), pl.fastSlot(colMask, 5), argBuf, expandErr,
 		func(rs runtime.RowScanner, dst *int64) error { return scanFwdInsertOrderRow(rs, dst, colMask, p) },
 	)
 }
@@ -4744,7 +4788,7 @@ func (pl *Pipeline) FwdInsertOrderPlain(id *int64, customer string, total int64)
 		ColMask:  colMask,
 		FlagMask: flagMask,
 	}
-	return pl.Pipeline.QueueExec(stmtIDFwdInsertOrderPlain, descFwdInsertOrderPlain, in, vk, &pl.q.fastSlots[6], argBuf, expandErr)
+	return pl.Pipeline.QueueExec(stmtIDFwdInsertOrderPlain, descFwdInsertOrderPlain, in, vk.WithInexact(pl.q == nil), pl.fastSlot(colMask, 6), argBuf, expandErr)
 }
 
 const stmtIDFwdInsertOrders uint32 = 25
@@ -4875,7 +4919,7 @@ func (pl *Pipeline) FwdInsertOrders(rows []FwdOrderRow) *runtime.ExecFuture {
 		FlagMask:  flagMask,
 		TupleLens: tupleLensBuf[:],
 	}
-	return pl.Pipeline.QueueExec(stmtIDFwdInsertOrders, descFwdInsertOrders, in, vk, nil, argBuf, expandErr)
+	return pl.Pipeline.QueueExec(stmtIDFwdInsertOrders, descFwdInsertOrders, in, vk.WithInexact(pl.q == nil), nil, argBuf, expandErr)
 }
 
 // FwdInsertOrdersStream runs FwdInsertOrders over the Rows rows pulled from seq, in chunks, and sums the results.
@@ -4979,7 +5023,7 @@ func FwdOrderByCustomerQuery(customer string) runtime.Query {
 		FlagMask: flagMask,
 	}
 	orderKey := runtime.EncodeOrderKey(in.OrderSpec, in.HasSeek)
-	shapeTag := runtime.ComputeSubqueryShape(stmtIDFwdOrderByCustomer, colMask, flagMask, orderKey, false)
+	shapeTag := runtime.ComputeQueryShape(descFwdOrderByCustomer, colMask, flagMask, orderKey, false)
 	return runtime.Query{
 		StmtID:   stmtIDFwdOrderByCustomer,
 		Desc:     descFwdOrderByCustomer,
@@ -5041,7 +5085,7 @@ func (pl *Pipeline) FwdOrderByCustomer(customer string) *runtime.RowFuture[int64
 		ColMask:  colMask,
 		FlagMask: flagMask,
 	}
-	return runtime.QueueRow(pl.Pipeline, stmtIDFwdOrderByCustomer, descFwdOrderByCustomer, in, vk, &pl.q.fastSlots[7], argBuf, expandErr,
+	return runtime.QueueRow(pl.Pipeline, stmtIDFwdOrderByCustomer, descFwdOrderByCustomer, in, vk.WithInexact(pl.q == nil), pl.fastSlot(colMask, 7), argBuf, expandErr,
 		func(rs runtime.RowScanner, dst *int64) error { return scanFwdOrderByCustomerRow(rs, dst, colMask, p) },
 	)
 }
@@ -5128,7 +5172,7 @@ func (pl *Pipeline) FwdInsertLine(orderID runtime.Arg[int64], sku string, qty in
 		ColMask:  colMask,
 		FlagMask: flagMask,
 	}
-	fut := pl.Pipeline.QueueExec(stmtIDFwdInsertLine, descFwdInsertLine, in, vk, &pl.q.fastSlots[8], argBuf, expandErr)
+	fut := pl.Pipeline.QueueExec(stmtIDFwdInsertLine, descFwdInsertLine, in, vk.WithInexact(pl.q == nil), pl.fastSlot(colMask, 8), argBuf, expandErr)
 	pl.Pipeline.BindForwarded()
 	return fut
 }
@@ -5216,7 +5260,7 @@ func (pl *Pipeline) FwdInsertLineStruct(pa FwdInsertLineStructPipelineParams) *r
 		ColMask:  colMask,
 		FlagMask: flagMask,
 	}
-	fut := pl.Pipeline.QueueExec(stmtIDFwdInsertLineStruct, descFwdInsertLineStruct, in, vk, nil, argBuf, expandErr)
+	fut := pl.Pipeline.QueueExec(stmtIDFwdInsertLineStruct, descFwdInsertLineStruct, in, vk.WithInexact(pl.q == nil), nil, argBuf, expandErr)
 	pl.Pipeline.BindForwarded()
 	return fut
 }
@@ -5304,7 +5348,7 @@ func FwdCountLinesQuery(p FwdCountLinesParams) runtime.Query {
 		FlagMask: flagMask,
 	}
 	orderKey := runtime.EncodeOrderKey(in.OrderSpec, in.HasSeek)
-	shapeTag := runtime.ComputeSubqueryShape(stmtIDFwdCountLines, colMask, flagMask, orderKey, false)
+	shapeTag := runtime.ComputeQueryShape(descFwdCountLines, colMask, flagMask, orderKey, false)
 	return runtime.Query{
 		StmtID:   stmtIDFwdCountLines,
 		Desc:     descFwdCountLines,
@@ -5364,7 +5408,7 @@ func (pl *Pipeline) FwdCountLines(pa FwdCountLinesPipelineParams) *runtime.RowFu
 		ColMask:  colMask,
 		FlagMask: flagMask,
 	}
-	fut := runtime.QueueRow(pl.Pipeline, stmtIDFwdCountLines, descFwdCountLines, in, vk, nil, argBuf, expandErr,
+	fut := runtime.QueueRow(pl.Pipeline, stmtIDFwdCountLines, descFwdCountLines, in, vk.WithInexact(pl.q == nil), nil, argBuf, expandErr,
 		func(rs runtime.RowScanner, dst *int64) error { return scanFwdCountLinesRow(rs, dst, colMask, p) },
 	)
 	pl.Pipeline.BindForwarded()
@@ -5437,7 +5481,7 @@ func FwdLineSkusQuery(orderID int64, minQty int64) runtime.Query {
 		FlagMask: flagMask,
 	}
 	orderKey := runtime.EncodeOrderKey(in.OrderSpec, in.HasSeek)
-	shapeTag := runtime.ComputeSubqueryShape(stmtIDFwdLineSkus, colMask, flagMask, orderKey, false)
+	shapeTag := runtime.ComputeQueryShape(descFwdLineSkus, colMask, flagMask, orderKey, false)
 	return runtime.Query{
 		StmtID:   stmtIDFwdLineSkus,
 		Desc:     descFwdLineSkus,
@@ -5515,7 +5559,7 @@ func (pl *Pipeline) FwdLineSkus(orderID runtime.Arg[int64], minQty runtime.Arg[i
 		ColMask:  colMask,
 		FlagMask: flagMask,
 	}
-	fut := runtime.QueueSlice(pl.Pipeline, stmtIDFwdLineSkus, descFwdLineSkus, in, vk, &pl.q.fastSlots[9], argBuf, expandErr,
+	fut := runtime.QueueSlice(pl.Pipeline, stmtIDFwdLineSkus, descFwdLineSkus, in, vk.WithInexact(pl.q == nil), pl.fastSlot(colMask, 9), argBuf, expandErr,
 		func(rs runtime.RowScanner, dst *string) error { return scanFwdLineSkusRow(rs, dst, colMask, p) },
 	)
 	pl.Pipeline.BindForwarded()

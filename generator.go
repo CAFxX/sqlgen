@@ -587,7 +587,7 @@ var reservedParamNames = func() map[string]bool {
 		offset orderKey orderSpec out p r res row rs scanBuf scanCount scanDest scanSlice shapeLens shapeTag
 		sliceLensBuf sortedIdx sqlRow sqlRows sub subsBuf tFn targetQ tc totalRows tupleLensBuf txCache txQ v vk
 		yield zero
-		ctx q pl fn seq fut pa
+		ctx q pl fn seq fut pa slot
 		sql runtime context iter slices sync atomic time json big netip url driver errors strconv
 		append cap clear close complete copy delete imag len make max min new panic print println real recover
 		any bool byte comparable complex128 complex64 error float32 float64 int int16 int32 int64 int8 rune string
@@ -602,9 +602,10 @@ var reservedParamNames = func() map[string]bool {
 // *Queries and *Pipeline (including those promoted from runtime.Pipeline).
 // TestReservedNamesCoverGeneratedDeclarations checks both against real generated output.
 var (
-	reservedTypeNames      = setOf("New", "Pipeline", "Queries")
+	reservedTypeNames      = setOf("New", "Pipeline", "Queries", "WrapPipeline")
 	reservedStatementNames = setOf("CacheStats", "Close", "If", "InTx", "Pipeline", "PipelineTx",
-		"WithPrepared", "WithTx", "SetBuildError", "QueueExec", "QueueExecNoop", "Abort", "Flush", "BindForwarded")
+		"WithPrepared", "WithTx", "SetBuildError", "QueueExec", "QueueExecNoop", "Abort", "Flush", "BindForwarded",
+		"RequireDialect", "RequireEngine", "SetEngine")
 )
 
 func setOf(names ...string) map[string]bool {
@@ -3025,7 +3026,8 @@ func Generate(cfg Config) ([]byte, error) {
 	if dialect == runtime.DialectQuestion {
 		dialectConst = "runtime.DialectQuestion"
 	}
-	fmt.Fprintf(&b, "const sqlDialect = %s\n\n", dialectConst)
+	fmt.Fprintf(&b, "const sqlDialect = %s\n", dialectConst)
+	fmt.Fprintf(&b, "const sqlDialectName = %s\n\n", strconv.Quote(cfg.Dialect))
 
 	numStatic := 0
 	staticIdxByStmt := make(map[uint32]int)
@@ -3104,18 +3106,29 @@ func Generate(cfg Config) ([]byte, error) {
 
 	b.WriteString("// Pipeline creates a new Pipeline bound to ctx.\n")
 	b.WriteString("func (q *Queries) Pipeline(ctx context.Context) *Pipeline {\n")
-	b.WriteString("\treturn &Pipeline{\n")
-	b.WriteString("\t\tPipeline: runtime.NewPipeline(ctx, q.db, q.cache, q.txCache, q.usePrepared, sqlDialect),\n")
-	b.WriteString("\t\tq:        q,\n")
-	b.WriteString("\t}\n")
+	b.WriteString("\tp := runtime.NewPipeline(ctx, q.db, q.cache, q.txCache, q.usePrepared, sqlDialect)\n")
+	b.WriteString("\tp.SetEngine(sqlDialectName)\n")
+	b.WriteString("\treturn &Pipeline{Pipeline: p, q: q}\n")
 	b.WriteString("}\n\n")
 
 	b.WriteString("// PipelineTx executes a transactional pipeline batch with optional retry policy.\n")
 	b.WriteString("func (q *Queries) PipelineTx(ctx context.Context, txOpts *sql.TxOptions, fn func(*Pipeline) error, opts ...runtime.TxOption) error {\n")
 	b.WriteString("\tif fn == nil {\n\t\treturn runtime.ErrNilArgument\n\t}\n")
 	b.WriteString("\treturn runtime.RunPipelineTx(ctx, q.db, q.cache, q.txCache, q.usePrepared, sqlDialect, txOpts, opts, func(p *runtime.Pipeline) error {\n")
+	b.WriteString("\t\tp.SetEngine(sqlDialectName)\n")
 	b.WriteString("\t\treturn fn(&Pipeline{Pipeline: p, q: q})\n")
 	b.WriteString("\t})\n")
+	b.WriteString("}\n\n")
+
+	b.WriteString("// WrapPipeline creates this package's typed view of a pipeline owned by another generated package.\n")
+	b.WriteString("// The original pipeline retains ownership of its DB, transaction, cache, prepared statements and dialect.\n")
+	b.WriteString("func WrapPipeline(p *runtime.Pipeline) *Pipeline {\n")
+	b.WriteString("\tif p == nil {\n")
+	b.WriteString("\t\tpanic(\"sqlgen: cannot wrap a nil runtime.Pipeline\")\n")
+	b.WriteString("\t}\n")
+	b.WriteString("\tp.RequireDialect(sqlDialect)\n")
+	b.WriteString("\tp.RequireEngine(sqlDialectName)\n")
+	b.WriteString("\treturn &Pipeline{Pipeline: p}\n")
 	b.WriteString("}\n\n")
 
 	b.WriteString("// If starts an If chain on pl: fn queues the arm's operations on the handle it receives, which runs\n")
@@ -3125,6 +3138,20 @@ func Generate(cfg Config) ([]byte, error) {
 	b.WriteString("\treturn runtime.If(pl.Pipeline, cond, fn, pl.arm)\n")
 	b.WriteString("}\n\n")
 	b.WriteString("func (pl *Pipeline) arm(h *runtime.Pipeline) *Pipeline { return &Pipeline{Pipeline: h, q: pl.q} }\n\n")
+	if numStatic > 0 {
+		b.WriteString("func (pl *Pipeline) fastSlot(colMask uint64, index int) *runtime.FastStmtSlot {\n")
+		b.WriteString("\tif pl.q == nil {\n")
+		b.WriteString("\t\treturn nil\n")
+		b.WriteString("\t}\n")
+		b.WriteString("\tvar slot *runtime.FastStmtSlot\n")
+		b.WriteString("\tswitch index {\n")
+		for i := 0; i < numStatic; i++ {
+			fmt.Fprintf(&b, "\tcase %d:\n\t\tslot = &pl.q.fastSlots[%d]\n", i, i)
+		}
+		b.WriteString("\tdefault:\n\t\treturn nil\n\t}\n")
+		b.WriteString("\treturn runtime.FastSlot(colMask, slot)\n")
+		b.WriteString("}\n\n")
+	}
 
 	// Emit tuple struct definitions, chunk pools, and presort comparators
 	for _, tName := range tupleStructOrder {
@@ -3897,7 +3924,7 @@ func emitStatementCode(
 			hasSubsLiteral = "true"
 		}
 		if totalDims == 0 {
-			fmt.Fprintf(b, "\tshapeTag := runtime.ComputeSubqueryShape(stmtID%s, colMask, flagMask, orderKey, %s)\n", cs.Name, hasSubsLiteral)
+			fmt.Fprintf(b, "\tshapeTag := runtime.ComputeQueryShape(desc%s, colMask, flagMask, orderKey, %s)\n", cs.Name, hasSubsLiteral)
 		} else {
 			fmt.Fprintf(b, "\tvar shapeLens [%d]int\n", totalDims)
 			if cs.TotalSlices > 0 {
@@ -3909,7 +3936,7 @@ func emitStatementCode(
 			if cs.TotalSubs > 0 {
 				fmt.Fprintf(b, "\tfor i, sub := range in.Subs {\n\t\tshapeLens[%d+i] = int(sub.ShapeTag)\n\t}\n", cs.TotalSlices+cs.TotalTuples)
 			}
-			fmt.Fprintf(b, "\tshapeTag := runtime.ComputeSubqueryShape(stmtID%s, colMask, flagMask, orderKey, %s, shapeLens[:]...)\n", cs.Name, hasSubsLiteral)
+			fmt.Fprintf(b, "\tshapeTag := runtime.ComputeQueryShape(desc%s, colMask, flagMask, orderKey, %s, shapeLens[:]...)\n", cs.Name, hasSubsLiteral)
 		}
 
 		fmt.Fprintf(b, "\treturn runtime.Query{\n")
@@ -3932,11 +3959,10 @@ func emitStatementCode(
 	pipelineFastSlotExpr := "nil"
 	if slotIdx, ok := staticIdxByStmt[cs.ID]; ok {
 		fastSlotExpr = fmt.Sprintf("&q.fastSlots[%d]", slotIdx)
-		pipelineFastSlotExpr = fmt.Sprintf("&pl.q.fastSlots[%d]", slotIdx)
+		pipelineFastSlotExpr = fmt.Sprintf("pl.fastSlot(colMask, %d)", slotIdx)
 		if cs.SelectCols {
 			// The slot caches one statement; a projected call renders other SQL and must not use it.
 			fastSlotExpr = fmt.Sprintf("runtime.FastSlot(colMask, %s)", fastSlotExpr)
-			pipelineFastSlotExpr = fmt.Sprintf("runtime.FastSlot(colMask, %s)", pipelineFastSlotExpr)
 		}
 	}
 
@@ -4045,7 +4071,7 @@ func emitStatementCode(
 		pipeExpand()
 		emitPipelineTooLargeGuard(b, cs)
 		emitStackRenderInput("\t", "p")
-		fmt.Fprintf(b, "%spl.Pipeline.QueueExec(stmtID%s, desc%s, in, vk, %s, argBuf, expandErr)\n", pipeQueue(), cs.Name, cs.Name, pipelineFastSlotExpr)
+		fmt.Fprintf(b, "%spl.Pipeline.QueueExec(stmtID%s, desc%s, in, vk.WithInexact(pl.q == nil), %s, argBuf, expandErr)\n", pipeQueue(), cs.Name, cs.Name, pipelineFastSlotExpr)
 		pipeReturn()
 		b.WriteString("}\n\n")
 
@@ -4147,7 +4173,7 @@ func emitStatementCode(
 		b.WriteString("\targBuf := runtime.AcquireArgsCap(approxArgs)\n")
 		pipeExpand()
 		emitStackRenderInput("\t", "p")
-		fmt.Fprintf(b, "%sruntime.QueueRow(pl.Pipeline, stmtID%s, desc%s, in, vk, %s, argBuf, expandErr,\n", pipeQueue(), cs.Name, cs.Name, pipelineFastSlotExpr)
+		fmt.Fprintf(b, "%sruntime.QueueRow(pl.Pipeline, stmtID%s, desc%s, in, vk.WithInexact(pl.q == nil), %s, argBuf, expandErr,\n", pipeQueue(), cs.Name, cs.Name, pipelineFastSlotExpr)
 		fmt.Fprintf(b, "\t\tfunc(rs runtime.RowScanner, dst *%s) error { return scan%sRow(rs, dst, colMask, p) },\n", cs.RowTypeName, cs.Name)
 		b.WriteString("\t)\n")
 		pipeReturn()
@@ -4230,7 +4256,7 @@ func emitStatementCode(
 	pipeExpand()
 	emitPipelineTooLargeGuard(b, cs)
 	emitStackRenderInput("\t", "p")
-	fmt.Fprintf(b, "%sruntime.QueueSlice(pl.Pipeline, stmtID%s, desc%s, in, vk, %s, argBuf, expandErr,\n", pipeQueue(), cs.Name, cs.Name, pipelineFastSlotExpr)
+	fmt.Fprintf(b, "%sruntime.QueueSlice(pl.Pipeline, stmtID%s, desc%s, in, vk.WithInexact(pl.q == nil), %s, argBuf, expandErr,\n", pipeQueue(), cs.Name, cs.Name, pipelineFastSlotExpr)
 	fmt.Fprintf(b, "\t\tfunc(rs runtime.RowScanner, dst *%s) error { return scan%sRow(rs, dst, colMask, p) },\n", cs.RowTypeName, cs.Name)
 	b.WriteString("\t)\n")
 	pipeReturn()

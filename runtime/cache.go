@@ -38,6 +38,9 @@ const (
 
 // ManagedStmt wraps a *sql.Stmt with atomic reference counting so concurrent
 // callers and open transactions never observe a closed statement on demotion.
+// FastStmtSlot is the type of a generated package's optional per-statement prepared fast slot.
+type FastStmtSlot = atomic.Pointer[ManagedStmt]
+
 type ManagedStmt struct {
 	stmt *sql.Stmt
 	refs atomic.Int32

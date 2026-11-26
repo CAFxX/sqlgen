@@ -13,6 +13,7 @@ import (
 )
 
 const sqlDialect = runtime.DialectQuestion
+const sqlDialectName = "sqlite"
 
 // Queries executes strongly-typed SQL statements backed by a two-tier adaptive statement cache.
 type Queries struct {
@@ -79,10 +80,9 @@ type Pipeline struct {
 
 // Pipeline creates a new Pipeline bound to ctx.
 func (q *Queries) Pipeline(ctx context.Context) *Pipeline {
-	return &Pipeline{
-		Pipeline: runtime.NewPipeline(ctx, q.db, q.cache, q.txCache, q.usePrepared, sqlDialect),
-		q:        q,
-	}
+	p := runtime.NewPipeline(ctx, q.db, q.cache, q.txCache, q.usePrepared, sqlDialect)
+	p.SetEngine(sqlDialectName)
+	return &Pipeline{Pipeline: p, q: q}
 }
 
 // PipelineTx executes a transactional pipeline batch with optional retry policy.
@@ -91,8 +91,20 @@ func (q *Queries) PipelineTx(ctx context.Context, txOpts *sql.TxOptions, fn func
 		return runtime.ErrNilArgument
 	}
 	return runtime.RunPipelineTx(ctx, q.db, q.cache, q.txCache, q.usePrepared, sqlDialect, txOpts, opts, func(p *runtime.Pipeline) error {
+		p.SetEngine(sqlDialectName)
 		return fn(&Pipeline{Pipeline: p, q: q})
 	})
+}
+
+// WrapPipeline creates this package's typed view of a pipeline owned by another generated package.
+// The original pipeline retains ownership of its DB, transaction, cache, prepared statements and dialect.
+func WrapPipeline(p *runtime.Pipeline) *Pipeline {
+	if p == nil {
+		panic("sqlgen: cannot wrap a nil runtime.Pipeline")
+	}
+	p.RequireDialect(sqlDialect)
+	p.RequireEngine(sqlDialectName)
+	return &Pipeline{Pipeline: p}
 }
 
 // If starts an If chain on pl: fn queues the arm's operations on the handle it receives, which runs
@@ -103,6 +115,20 @@ func (pl *Pipeline) If(cond runtime.PipelineCond, fn func(*Pipeline)) *runtime.I
 }
 
 func (pl *Pipeline) arm(h *runtime.Pipeline) *Pipeline { return &Pipeline{Pipeline: h, q: pl.q} }
+
+func (pl *Pipeline) fastSlot(colMask uint64, index int) *runtime.FastStmtSlot {
+	if pl.q == nil {
+		return nil
+	}
+	var slot *runtime.FastStmtSlot
+	switch index {
+	case 0:
+		slot = &pl.q.fastSlots[0]
+	default:
+		return nil
+	}
+	return runtime.FastSlot(colMask, slot)
+}
 
 type SKUKey struct {
 	WarehouseID int64
@@ -298,7 +324,7 @@ func GetInventoryBySKUsQuery(keys []SKUKey, selectCols ...uint64) runtime.Query 
 	orderKey := runtime.EncodeOrderKey(in.OrderSpec, in.HasSeek)
 	var shapeLens [1]int
 	copy(shapeLens[0:], in.TupleLens)
-	shapeTag := runtime.ComputeSubqueryShape(stmtIDGetInventoryBySKUs, colMask, flagMask, orderKey, false, shapeLens[:]...)
+	shapeTag := runtime.ComputeQueryShape(descGetInventoryBySKUs, colMask, flagMask, orderKey, false, shapeLens[:]...)
 	return runtime.Query{
 		StmtID:   stmtIDGetInventoryBySKUs,
 		Desc:     descGetInventoryBySKUs,
@@ -481,7 +507,7 @@ func (pl *Pipeline) GetInventoryBySKUs(keys []SKUKey, selectCols ...uint64) *run
 		FlagMask:  flagMask,
 		TupleLens: tupleLensBuf[:],
 	}
-	return runtime.QueueSlice(pl.Pipeline, stmtIDGetInventoryBySKUs, descGetInventoryBySKUs, in, vk, nil, argBuf, expandErr,
+	return runtime.QueueSlice(pl.Pipeline, stmtIDGetInventoryBySKUs, descGetInventoryBySKUs, in, vk.WithInexact(pl.q == nil), nil, argBuf, expandErr,
 		func(rs runtime.RowScanner, dst *InventoryItem) error {
 			return scanGetInventoryBySKUsRow(rs, dst, colMask, p)
 		},
@@ -618,7 +644,7 @@ func (pl *Pipeline) InsertOrderItems(items []NewOrderItem) *runtime.ExecFuture {
 		FlagMask:  flagMask,
 		TupleLens: tupleLensBuf[:],
 	}
-	return pl.Pipeline.QueueExec(stmtIDInsertOrderItems, descInsertOrderItems, in, vk, nil, argBuf, expandErr)
+	return pl.Pipeline.QueueExec(stmtIDInsertOrderItems, descInsertOrderItems, in, vk.WithInexact(pl.q == nil), nil, argBuf, expandErr)
 }
 
 // InsertOrderItemsStream runs InsertOrderItems over the items rows pulled from seq, in chunks, and sums the results.
@@ -736,7 +762,7 @@ func StreamFulfilledOrdersQuery(cutoffTs int64, selectCols ...uint64) runtime.Qu
 		FlagMask: flagMask,
 	}
 	orderKey := runtime.EncodeOrderKey(in.OrderSpec, in.HasSeek)
-	shapeTag := runtime.ComputeSubqueryShape(stmtIDStreamFulfilledOrders, colMask, flagMask, orderKey, false)
+	shapeTag := runtime.ComputeQueryShape(descStreamFulfilledOrders, colMask, flagMask, orderKey, false)
 	return runtime.Query{
 		StmtID:   stmtIDStreamFulfilledOrders,
 		Desc:     descStreamFulfilledOrders,
@@ -838,7 +864,7 @@ func (pl *Pipeline) StreamFulfilledOrders(cutoffTs int64, selectCols ...uint64) 
 		ColMask:  colMask,
 		FlagMask: flagMask,
 	}
-	return runtime.QueueSlice(pl.Pipeline, stmtIDStreamFulfilledOrders, descStreamFulfilledOrders, in, vk, runtime.FastSlot(colMask, &pl.q.fastSlots[0]), argBuf, expandErr,
+	return runtime.QueueSlice(pl.Pipeline, stmtIDStreamFulfilledOrders, descStreamFulfilledOrders, in, vk.WithInexact(pl.q == nil), pl.fastSlot(colMask, 0), argBuf, expandErr,
 		func(rs runtime.RowScanner, dst *FulfilledOrder) error {
 			return scanStreamFulfilledOrdersRow(rs, dst, colMask, p)
 		},
@@ -976,7 +1002,7 @@ func (pl *Pipeline) InsertArchivedOrders(rows []ArchivedOrderRow) *runtime.ExecF
 		FlagMask:  flagMask,
 		TupleLens: tupleLensBuf[:],
 	}
-	return pl.Pipeline.QueueExec(stmtIDInsertArchivedOrders, descInsertArchivedOrders, in, vk, nil, argBuf, expandErr)
+	return pl.Pipeline.QueueExec(stmtIDInsertArchivedOrders, descInsertArchivedOrders, in, vk.WithInexact(pl.q == nil), nil, argBuf, expandErr)
 }
 
 // InsertArchivedOrdersStream runs InsertArchivedOrders over the rows rows pulled from seq, in chunks, and sums the results.
@@ -1171,7 +1197,7 @@ func (pl *Pipeline) DeleteFulfilledOrdersByIDs(ids []int64) *runtime.ExecFuture 
 		FlagMask:  flagMask,
 		SliceLens: sliceLensBuf[:],
 	}
-	return pl.Pipeline.QueueExec(stmtIDDeleteFulfilledOrdersByIDs, descDeleteFulfilledOrdersByIDs, in, vk, nil, argBuf, expandErr)
+	return pl.Pipeline.QueueExec(stmtIDDeleteFulfilledOrdersByIDs, descDeleteFulfilledOrdersByIDs, in, vk.WithInexact(pl.q == nil), nil, argBuf, expandErr)
 }
 
 // DeleteFulfilledOrdersByIDsStream runs DeleteFulfilledOrdersByIDs over the ids rows pulled from seq, in chunks, and sums the results.

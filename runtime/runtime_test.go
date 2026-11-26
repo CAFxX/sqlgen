@@ -1134,8 +1134,8 @@ func FuzzVariantKeyAndSubqueryShapeBijectivity(f *testing.F) {
 			}
 		}
 
-		s1 := ComputeSubqueryShape(id1, col1, flag1, ord1, false, int(d1a&0xFFFF), int(d1b&0xFFFF))
-		s2 := ComputeSubqueryShape(id2, col2, flag2, ord2, false, int(d2a&0xFFFF), int(d2b&0xFFFF))
+		s1 := computeSubqueryShape(id1, col1, flag1, ord1, false, int(d1a&0xFFFF), int(d1b&0xFFFF))
+		s2 := computeSubqueryShape(id2, col2, flag2, ord2, false, int(d2a&0xFFFF), int(d2b&0xFFFF))
 		sameSubCoords := id1 == id2 && col1 == col2 && flag1 == flag2 && ord1 == ord2 && (d1a&0xFFFF) == (d2a&0xFFFF) && (d1b&0xFFFF) == (d2b&0xFFFF)
 		if (s1&inexactKeyBit) == 0 && (s2&inexactKeyBit) == 0 {
 			if (s1 == s2) != sameSubCoords {
@@ -1353,20 +1353,20 @@ func TestVariantKeyAndSubqueryShape(t *testing.T) {
 		}
 	}
 
-	sExact := ComputeSubqueryShape(3, 0x07, 0x01, 0, false, 4, 8)
+	sExact := computeSubqueryShape(3, 0x07, 0x01, 0, false, 4, 8)
 	if sExact&inexactKeyBit != 0 {
 		t.Fatalf("expected exact subquery shape tag, got %#x", sExact)
 	}
 	sInexactCases := []uint64{
-		ComputeSubqueryShape(3, 0x07, 0x01, 0, true, 4),
-		ComputeSubqueryShape(3, 0x07, 0x01, 1, false, 4),
-		ComputeSubqueryShape(0, 0x07, 0x01, 0, false),
-		ComputeSubqueryShape(0x8000, 0x07, 0x01, 0, false),
-		ComputeSubqueryShape(3, 0x100, 0x01, 0, false),
-		ComputeSubqueryShape(3, 0x07, 0x100, 0, false),
-		ComputeSubqueryShape(3, 0x07, 0x01, 0, false, 1, 2, 3),
-		ComputeSubqueryShape(3, 0x07, 0x01, 0, false, 70000),
-		ComputeSubqueryShape(3, 0x07, 0x01, 0, false, 1, 70000),
+		computeSubqueryShape(3, 0x07, 0x01, 0, true, 4),
+		computeSubqueryShape(3, 0x07, 0x01, 1, false, 4),
+		computeSubqueryShape(0, 0x07, 0x01, 0, false),
+		computeSubqueryShape(0x8000, 0x07, 0x01, 0, false),
+		computeSubqueryShape(3, 0x100, 0x01, 0, false),
+		computeSubqueryShape(3, 0x07, 0x100, 0, false),
+		computeSubqueryShape(3, 0x07, 0x01, 0, false, 1, 2, 3),
+		computeSubqueryShape(3, 0x07, 0x01, 0, false, 70000),
+		computeSubqueryShape(3, 0x07, 0x01, 0, false, 1, 70000),
 	}
 	for i, s := range sInexactCases {
 		if s&inexactKeyBit == 0 {
@@ -3163,5 +3163,86 @@ func TestTranslateWireErrorOnlyTranslatesTheGuardMarkers(t *testing.T) {
 	// nil error / nil op
 	if TranslateWireError(assertOp(), nil) != nil || TranslateWireError(nil, errors.New("x")) == nil {
 		t.Error("nil handling")
+	}
+}
+
+func TestComputeQueryShapeNamesDescriptor(t *testing.T) {
+	a := &QueryDescriptor{StmtID: 1}
+	b := &QueryDescriptor{StmtID: 1}
+
+	a1 := ComputeQueryShape(a, 0, 0, 0, false)
+	a2 := ComputeQueryShape(a, 0, 0, 0, false)
+	b1 := ComputeQueryShape(b, 0, 0, 0, false)
+
+	if a1 != a2 {
+		t.Fatalf("same descriptor and shape produced different tags: %#x != %#x", a1, a2)
+	}
+	if a1 == b1 {
+		t.Fatalf("different descriptors with equal local statement IDs collided: %#x", a1)
+	}
+	if a1&inexactKeyBit != 0 || b1&inexactKeyBit != 0 {
+		t.Fatalf("simple descriptor shapes should remain exact: %#x %#x", a1, b1)
+	}
+
+	nested := ComputeQueryShape(b, 0, 0, 0, true)
+	if nested&inexactKeyBit == 0 {
+		t.Fatalf("nested query shape must force exact rendered-SQL keying: %#x", nested)
+	}
+}
+
+func TestVariantKeyWithInexactPreservesExactnessChoice(t *testing.T) {
+	key := MakeVariantKey(1, 0, 0, 0)
+	if !key.IsExact() {
+		t.Fatal("baseline key should be exact")
+	}
+	if key.WithInexact(false) != key || !key.WithInexact(false).IsExact() {
+		t.Fatal("WithInexact(false) changed the key")
+	}
+	if key.WithInexact(true).IsExact() {
+		t.Fatal("WithInexact(true) must force rendered-SQL keying")
+	}
+}
+
+func TestPipelineRequireDialectRejectsMixedGeneratedPackages(t *testing.T) {
+	p := NewPipeline(context.Background(), nil, nil, nil, false, DialectDollar)
+	p.RequireDialect(DialectQuestion)
+	if !errors.Is(p.buildErr, ErrInvalidArgument) {
+		t.Fatalf("expected dialect mismatch build error, got %v", p.buildErr)
+	}
+
+	p2 := NewPipeline(context.Background(), nil, nil, nil, false, DialectDollar)
+	p2.RequireDialect(DialectDollar)
+	if p2.buildErr != nil {
+		t.Fatalf("matching dialect unexpectedly failed: %v", p2.buildErr)
+	}
+}
+
+func TestPipelineRequireEngineRequiresKnownOwnerEngine(t *testing.T) {
+	untagged := NewPipeline(context.Background(), nil, nil, nil, false, DialectDollar)
+	untagged.RequireEngine("postgres")
+	if !errors.Is(untagged.buildErr, ErrInvalidArgument) {
+		t.Fatalf("expected unknown owner engine to fail closed, got %v", untagged.buildErr)
+	}
+
+	p := NewPipeline(context.Background(), nil, nil, nil, false, DialectDollar)
+	p.SetEngine("postgres")
+	p.RequireEngine("postgres")
+	if p.buildErr != nil {
+		t.Fatalf("matching engine unexpectedly failed: %v", p.buildErr)
+	}
+	p.RequireEngine("cockroachdb")
+	if !errors.Is(p.buildErr, ErrInvalidArgument) {
+		t.Fatalf("expected exact engine mismatch build error, got %v", p.buildErr)
+	}
+}
+
+func TestLegacyComputeSubqueryShapeAlwaysFallsBackToSQLKeying(t *testing.T) {
+	legacy := ComputeSubqueryShape(1, 0, 0, 0, false, 1)
+	if legacy&inexactKeyBit == 0 {
+		t.Fatalf("legacy package-local shape must be marked inexact: %#x", legacy)
+	}
+	parent := MakeVariantKey(7, 0, 0, 0, legacy)
+	if parent.IsExact() {
+		t.Fatalf("a parent of a legacy query must use rendered-SQL keying: %#v", parent)
 	}
 }
