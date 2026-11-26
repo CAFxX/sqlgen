@@ -13,7 +13,7 @@ import (
 )
 
 var (
-	ErrInvalidCheckout = errors.New("modular_marketplace: invalid checkout")
+	ErrInvalidCheckout  = errors.New("modular_marketplace: invalid checkout")
 	ErrCheckoutRejected = errors.New("modular_marketplace: buyer/seller account is unavailable or balance limits would be violated")
 )
 
