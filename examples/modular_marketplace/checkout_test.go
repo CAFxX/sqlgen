@@ -48,7 +48,7 @@ func TestCheckoutAcrossGeneratedPackagesIsAtomic(t *testing.T) {
 		OrderID:         1001,
 		BuyerAccountID:  101,
 		SellerAccountID: 202,
-		IdempotencyKey:  "checkout-1001",
+		IdempotencyKey:  "checkout-7-1001",
 		Currency:        "USD",
 		Items: []ecommerce_inventory.NewOrderItem{
 			{OrderID: 1001, SKU: "BOOK-1", Quantity: 2, UnitPriceCents: 1_250},
@@ -62,17 +62,22 @@ func TestCheckoutAcrossGeneratedPackagesIsAtomic(t *testing.T) {
 	assertInt64(t, db, "SELECT balance_cents FROM accounts WHERE org_id = 7 AND id = 101", 47_100)
 	assertInt64(t, db, "SELECT balance_cents FROM accounts WHERE org_id = 7 AND id = 202", 4_900)
 	assertInt64(t, db, "SELECT COUNT(*) FROM order_items WHERE order_id = 1001", 2)
-	assertInt64(t, db, "SELECT COUNT(*) FROM transfer_receipts WHERE idempotency_key = 'checkout-1001'", 1)
+	assertInt64(t, db, "SELECT COUNT(*) FROM transfer_receipts WHERE idempotency_key = 'checkout-7-1001'", 1)
 
-	// The duplicate receipt fails after the order and balance statements have been queued.
-	// PipelineTx must roll all of them back because every module shares one transaction.
-	duplicate := in
-	duplicate.OrderID = 1002
-	duplicate.Items = []ecommerce_inventory.NewOrderItem{
-		{OrderID: 1002, SKU: "BOOK-3", Quantity: 1, UnitPriceCents: 9_999},
+	// An exact replay is a no-op: this is the crash-recovery path when the SQLGen
+	// transaction committed but DBOS did not get to checkpoint its step result.
+	if err := svc.Checkout(ctx, in); err != nil {
+		t.Fatalf("same checkout replay must be idempotent: %v", err)
 	}
-	if err := svc.Checkout(ctx, duplicate); err == nil {
-		t.Fatal("expected duplicate idempotency key to fail")
+
+	// Reusing the receipt key for a different transfer is rejected before any new
+	// order item or ledger operation can be committed.
+	duplicate := in
+	duplicate.Items = []ecommerce_inventory.NewOrderItem{
+		{OrderID: 1001, SKU: "BOOK-3", Quantity: 1, UnitPriceCents: 9_999},
+	}
+	if err := svc.Checkout(ctx, duplicate); !errors.Is(err, ErrIdempotencyConflict) {
+		t.Fatalf("expected ErrIdempotencyConflict, got %v", err)
 	}
 
 	assertInt64(t, db, "SELECT balance_cents FROM accounts WHERE org_id = 7 AND id = 101", 47_100)
@@ -81,8 +86,8 @@ func TestCheckoutAcrossGeneratedPackagesIsAtomic(t *testing.T) {
 	assertInt64(t, db, "SELECT COUNT(*) FROM transfer_receipts", 1)
 
 	stats := svc.inventory.CacheStats()
-	if stats.SequentialPipelines != 2 || stats.WirePipelines != 0 {
-		t.Fatalf("SQLite should use the sequential transactional fallback for both runs, got %+v", stats)
+	if stats.SequentialPipelines != 1 || stats.WirePipelines != 0 {
+		t.Fatalf("SQLite should use the sequential transactional fallback for the first run only, got %+v", stats)
 	}
 }
 
@@ -102,7 +107,7 @@ func TestCheckoutRejectsInsufficientFundsAndSellerBalanceOverflow(t *testing.T) 
 			db, svc := newCheckoutFixture(t, tc.buyer, tc.seller)
 			err := svc.Checkout(context.Background(), CheckoutInput{
 				MarketplaceID: 7, OrderID: 2001, BuyerAccountID: 101, SellerAccountID: 202,
-				IdempotencyKey: "rejected-" + tc.name, Currency: "USD",
+				IdempotencyKey: CheckoutIdempotencyKey(7, 2001), Currency: "USD",
 				Items: []ecommerce_inventory.NewOrderItem{
 					{OrderID: 2001, SKU: "BOUNDARY", Quantity: 1, UnitPriceCents: tc.price},
 				},

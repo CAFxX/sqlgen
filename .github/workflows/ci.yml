@@ -29,6 +29,10 @@ jobs:
       - name: pgxwire and mysqlwire build and their hermetic tests pass (engine tests run in the engines job)
         run: make test-wire-hermetic
 
+      # Durable checkout process: DBOS recovery, workflow-ID deduplication and SQLGen step idempotency.
+      - name: modular marketplace DBOS workflow (race)
+        run: make test-marketplace-durable
+
       # The seeded differential suite (integration/fuzz_*_test.go) needs no server for SQLite; the engines
       # job below runs the same cases on every server engine.
       - name: differential fuzz against SQLite (race)
