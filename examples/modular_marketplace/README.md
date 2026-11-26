@@ -23,4 +23,12 @@ Checkout uses a serializable transaction and validates both account states befor
 
 The test verifies that a duplicate transfer receipt rolls back the order lines and both account updates. Because this example uses SQLite, it exercises the sequential transactional fallback. The integration suite separately exercises shared pipelines on the PostgreSQL wire path and counts network turns.
 
-This is intentionally a focused integration example, not a complete marketplace. It omits tenant authorization, stock reservation, tax, payment-provider calls and durable workflow orchestration; those belong in a larger application built on the same module boundaries.
+## Durable process
+
+The nested [`durable`](durable) Go module integrates DBOS without adding DBOS to SQLGen's core dependencies. It starts a partitioned checkout queue, runs the SQLGen `Checkout` pipeline as a durable DBOS step, persists a delay with `dbos.Sleep`, then creates a carrier label in a separately checkpointed step.
+
+The checkout receipt is an idempotency fence in the same SQLGen transaction as the order lines and ledger postings. When a worker crashes after that transaction commits but before DBOS persists the step result, recovery replays the step, sees the matching receipt and returns success without charging again. The carrier adapter must also pass its stable idempotency key to the provider; DBOS cannot make an arbitrary external API call exactly once.
+
+Run the DBOS sample with `cd examples/modular_marketplace/durable && go test -race ./...`. It uses DBOS's SQLite system database for a hermetic test. The cross-package PostgreSQL wire-path test remains in `integration/cross_package_test.go`.
+
+This is still a focused vertical slice rather than the full storefront application: production deployments would add tenant authorization, reservations, tax, provider webhooks, shipping state, outbox/inbox consumers and read projections.

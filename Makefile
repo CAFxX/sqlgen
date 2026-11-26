@@ -23,18 +23,22 @@ run_regex = $(if $(SMOKE),$(SMOKE_RUN),$(RUN))
 comma := ,
 ENV := . scripts/engines-env.sh &&
 
-.PHONY: all test check gen engines-up engines-down test-engines test-integration test-pgxwire test-mysqlwire test-wire-hermetic test-fuzz-sqlite bench-engines
+.PHONY: all test check test-marketplace-durable gen engines-up engines-down test-engines test-integration test-pgxwire test-mysqlwire test-wire-hermetic test-fuzz-sqlite bench-engines
 
 all: check test
 
 # Hermetic tests (SQLite + mock driver); no containers needed.
 test:
 	go test -race -count=1 ./...
+	$(MAKE) test-marketplace-durable
+
+test-marketplace-durable:
+	cd examples/modular_marketplace/durable && go test -race -count=1 ./...
 
 # gofmt, vet of every module, the committed fixtures and generated code are up to date.
 check:
 	@out=$$(gofmt -l .); if [ -n "$$out" ]; then echo "needs gofmt:"; echo "$$out"; exit 1; fi
-	@for m in . integration pgxwire mysqlwire; do (cd $$m && go vet ./...) || exit 1; done
+	@for m in . integration pgxwire mysqlwire examples/modular_marketplace/durable; do (cd $m && go vet ./...) || exit 1; done
 	cd integration && go run ./fixtures -check
 	scripts/sqlgen-all.sh -check
 
