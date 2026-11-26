@@ -17,6 +17,19 @@ jobs:
         with:
           go-version-file: go.mod
 
+      - name: print gofmt diff
+        run: |
+          gofmt -d e2e_gen_test.go \
+            examples/clearing_exchange/exchange_gen.go \
+            examples/ecommerce_inventory/inventory_gen.go \
+            examples/fintech_ledger/ledger_gen.go \
+            integration/cross_package_test.go \
+            integration/mdbq/mdbq_gen.go \
+            integration/myq/myq_gen.go \
+            integration/pgq/pgq_gen.go \
+            runtime/runtime.go \
+            runtime/runtime_test.go
+
       # gofmt, vet of every module, fixtures and generated code up to date (SPEC §13.1).
       - name: make check
         run: make check

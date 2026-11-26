@@ -162,7 +162,6 @@ func (pl *Pipeline) fastSlot(colMask uint64, index int) *runtime.FastStmtSlot {
 	return runtime.FastSlot(colMask, slot)
 }
 
-
 type MarginSettlement struct {
 	FirmID           int64
 	AccountID        int64

@@ -3226,7 +3226,6 @@ func TestPipelineRequireEngineRejectsDifferentEnginesWithSamePlaceholderDialect(
 	}
 }
 
-
 func TestLegacyComputeSubqueryShapeAlwaysFallsBackToSQLKeying(t *testing.T) {
 	legacy := ComputeSubqueryShape(1, 0, 0, 0, false, 1)
 	if legacy&inexactKeyBit == 0 {

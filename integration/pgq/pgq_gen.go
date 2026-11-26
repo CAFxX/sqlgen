@@ -176,7 +176,6 @@ func (pl *Pipeline) fastSlot(colMask uint64, index int) *runtime.FastStmtSlot {
 	return runtime.FastSlot(colMask, slot)
 }
 
-
 type NewItem struct {
 	ID     int64
 	OrgID  int64
