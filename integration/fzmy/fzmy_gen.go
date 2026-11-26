@@ -77,10 +77,9 @@ type Pipeline struct {
 
 // Pipeline creates a new Pipeline bound to ctx.
 func (q *Queries) Pipeline(ctx context.Context) *Pipeline {
-	return &Pipeline{
-		Pipeline: runtime.NewPipeline(ctx, q.db, q.cache, q.txCache, q.usePrepared, sqlDialect),
-		q:        q,
-	}
+	p := runtime.NewPipeline(ctx, q.db, q.cache, q.txCache, q.usePrepared, sqlDialect)
+	p.RequireEngine(sqlDialectName)
+	return &Pipeline{Pipeline: p, q: q}
 }
 
 // PipelineTx executes a transactional pipeline batch with optional retry policy.
