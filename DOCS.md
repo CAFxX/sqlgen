@@ -626,16 +626,21 @@ func WrapPipeline(p *runtime.Pipeline) *Pipeline
 The wrapper provides that package's generated, typed statement methods over the **same** underlying runtime pipeline. It does not open a connection, create a transaction, substitute a statement cache, or acquire another pipeline. The package that created the pipeline remains responsible for its database handle, transaction boundary, retry policy, and cache.
 
 ```go
-err := orders.PipelineTx(ctx, nil, func(p *orders.Pipeline) error {
-    order := p.InsertOrder(...)
+err := s.inventory.PipelineTx(ctx, nil, func(p *ecommerce_inventory.Pipeline) error {
+    p.InsertOrderItems(in.Items).AssertRows(int64(len(in.Items)))
 
-    inventory := stock.WrapPipeline(p.Pipeline)
-    inventory.Reserve(order.Arg(), ...).AssertRows(1)
-
-    ledger := accounting.WrapPipeline(p.Pipeline)
-    ledger.RecordSale(order.Arg(), ...).AssertRows(1)
+    ledger := fintech_ledger.WrapPipeline(p.Pipeline)
+    ledger.DebitAccount(total, in.MarketplaceID, in.BuyerAccountID).AssertRows(1)
+    ledger.CreditAccount(total, in.MarketplaceID, in.SellerAccountID).AssertRows(1)
+    ledger.InsertTransferReceipt(
+        in.IdempotencyKey,
+        in.MarketplaceID,
+        in.BuyerAccountID,
+        in.SellerAccountID,
+        total,
+    ).AssertRows(1)
     return nil
-})
+}, runtime.WithTxRetry(runtime.DefaultRetryPolicy()))
 ```
 
 The example above is schematic; the forwarded values must follow the normal `runtime.Arg[T]` producer/consumer rules (for example, the producer must return exactly one scalar column). `If` branches, assertions, aborts, and future ownership remain attached to the same pipeline, so cross-package operations retain the usual pipeline lifecycle checks. A wrapper created from a different dialect or exact engine name records a pipeline build error; it cannot silently mix PostgreSQL with CockroachDB, or MySQL with MariaDB, merely because they share a placeholder style.
@@ -1015,7 +1020,7 @@ Every generated file declares the same fixed set of exported top-level names in 
 
 The generated file never re-declares runtime symbols: everything user-facing from the runtime (`runtime.Query`, `runtime.Order`, `runtime.Seek`, `runtime.WithTxRetry`, `runtime.DefaultRetryPolicy`, `runtime.PipelineCond`, `runtime.ExecFuture`, `runtime.IfChain`, ...) is spelled `runtime.X` in application code, which imports `github.com/CAFxX/sqlgen/runtime` itself. For example `q.InTx(ctx, nil, fn, runtime.WithTxRetry(runtime.DefaultRetryPolicy()))` and `After: runtime.Seek{}` (the first page).
 
-**Method names generated on `*Queries` and `*Pipeline`** that a statement name must avoid (`reservedStatementNames`): `CacheStats`, `Close`, `If`, `InTx`, `Pipeline`, `PipelineTx`, `WithPrepared`, `WithTx`, plus `SetBuildError`, `QueueExec`, `QueueExecNoop`, `Abort` and `Flush`, which the generated `Pipeline` inherits from `runtime.Pipeline`. A statement becomes a method with its own name on both `*Queries` and `*Pipeline`, so it must not shadow any of them.
+**Method names generated on `*Queries` and `*Pipeline`** that a statement name must avoid (`reservedStatementNames`): `CacheStats`, `Close`, `If`, `InTx`, `Pipeline`, `PipelineTx`, `WithPrepared`, `WithTx`, plus `SetBuildError`, `QueueExec`, `QueueExecNoop`, `Abort`, `Flush`, `BindForwarded`, `RequireDialect` and `RequireEngine`, which the generated `Pipeline` inherits from `runtime.Pipeline`. A statement becomes a method with its own name on both `*Queries` and `*Pipeline`, so it must not shadow any of them.
 
 **What happens on a clash.** Generation fails with a clear error instead of emitting code that does not compile:
 
